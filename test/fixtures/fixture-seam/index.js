@@ -184,6 +184,19 @@ export default function createSeamFixture(host) {
 	return {
 		interactionKinds: ["fixture.ask"],
 		ambientKinds: ["fixture.panel"],
+		// A6: host.notify may deep-link only to a view this extension declared.
+		surfaces: {
+			views: [
+				{
+					id: "inbox",
+					title: "Inbox",
+					icon: "board",
+					placement: "view",
+					sharedData: false,
+					render: () => ({ v: BLOCK_SET_VERSION, root: { type: "markdown", text: "Inbox" } }),
+				},
+			],
+		},
 		extension: defineExtension({
 			name: "sigrun-fixture-seam",
 			tools: [emitInteraction, answerInteraction, setAmbient, clearAmbient],

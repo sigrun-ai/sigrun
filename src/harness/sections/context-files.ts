@@ -54,11 +54,14 @@ async function readContextFile(
 /**
  * The static `identity` section body: runtime facts only. No tool claims
  * (the system prompt already declares the actually-offered tools per
- * request) and no model name (it would re-emit this section on every
- * mid-conversation model swap, defeating the minimal-patch design).
+ * request), no model name (it would re-emit this section on every
+ * mid-conversation model swap, defeating the minimal-patch design), and
+ * no NAME: what the agent is called is `SOUL.md` territory, since a user
+ * may choose a different name for their own agent. Durability is runtime
+ * truth, not identity copy — it stays out of this section.
  */
 export const IDENTITY_TEXT =
-	"You are sigrun, an AI assistant running as a persistent server built on the pi-durable harness. Conversations are durable: they survive restarts and can span channels (web UI, terminal UI, HTTP API). Multiple conversations may be active at once; each is independent.";
+	"You are a small but extensible multi-user AI assistant built on the pi-durable harness. Conversations can span channels (web UI, terminal UI, HTTP API), and multiple independent conversations may be active at once.";
 
 /**
  * The persona sigrun ships when no `SOUL.md` exists. A present `SOUL.md`

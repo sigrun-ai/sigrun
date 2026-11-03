@@ -54,6 +54,7 @@ import {
 } from "./docs.js";
 import type { JobRuntimeDeps } from "./fire.js";
 import { nextFireAt } from "./schedule.js";
+import { jobStateDir, removeJobState } from "./state-dir.js";
 import { specHash } from "./spec.js";
 import { createScheduleTask } from "./task.js";
 
@@ -174,6 +175,8 @@ export interface ReconcileDeps {
 	readonly rootId: number;
 	/** The declared sources (file specs + the loader's job bindings). */
 	readonly sources: () => ReconcileSources;
+	/** The selected record owner's persistent job-state root. */
+	readonly jobsRoot?: (owner: string | undefined) => string | undefined;
 }
 
 /**
@@ -246,6 +249,15 @@ export async function reconcileJobs(
 		if (record.source === "api") continue;
 		if (declaredIds.has(id)) continue;
 		await retireRecord(deps.harness, id, record, nowIso, ctx);
+		const root = deps.jobsRoot?.(record.owner);
+		try {
+			await removeJobState(root, id);
+		} catch (error) {
+			const path = root === undefined ? id : jobStateDir(root, id);
+			console.warn(
+				`jobs: could not remove retired job state ${path}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
 	}
 	// ── Pass 2: records → tasks ─────────────────────────────────────
 	const after = new Map<string, JobRecord>();

@@ -258,7 +258,7 @@ function makeHarness(init?: {
 			body = input.includes("/data")
 				? { rev: 1, treeRev: 1 }
 				: {
-						tree: { type: "page", id: "board", title: "Acme board", main: [] },
+						tree: { v: 1, root: { type: "page", id: "board", title: "Acme board", main: [] } },
 						data: { cards: [] },
 						rev: 1,
 						treeRev: 1,

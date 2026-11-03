@@ -28,6 +28,7 @@ import type {
 	ExtensionRouteContribution,
 	ExtensionWorker,
 	HandlerContext,
+	HostJobInfo,
 	InteractionRecord,
 	JobSpec,
 	MaintenanceBudget,
@@ -316,6 +317,7 @@ const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 			owner: "alice",
 			sharing: { scope: "private" },
 			source: "acme",
+			job: "ext:acme:nightly-prune",
 		});
 		const submitted = await host.conversations.submit(
 			created,
@@ -333,6 +335,14 @@ const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 			void viewId;
 		});
 		await stop();
+
+		const foundJob: HostJobInfo | undefined = await host.jobs.get(
+			"ext:acme:nightly-prune",
+		);
+		if (foundJob !== undefined) {
+			const jobState: HostJobInfo["state"] = foundJob.state;
+			void jobState;
+		}
 
 		const users: readonly DirectoryUserWire[] = await host.users.list();
 		void users;

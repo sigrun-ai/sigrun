@@ -55,7 +55,7 @@ import type {
 } from "@sigrun/shared/ambient";
 import type { Action, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
 import type { InteractionAnswer, InteractionRecord } from "@sigrun/shared/interactions";
-import type { JobSpec } from "@sigrun/shared/jobs";
+import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
 import type {
 	AccountLinkWire,
 	ConversationSummary,
@@ -771,6 +771,21 @@ export type RunSettledOutcome =
 	| { readonly status: "answered" }
 	| { readonly status: "unanswered"; readonly reason: string };
 
+/** One explicit notification an extension sends through `host.notify`. */
+export interface ExtensionNoticeInput {
+	/** A directory user; `undefined` only when the directory is empty. */
+	readonly user: string | undefined;
+	/** 1..200 characters. */
+	readonly title: string;
+	/** 0..2000 characters. */
+	readonly body: string;
+	/** 1..64 characters, each `[a-z0-9.-]`. */
+	readonly kind: string;
+	readonly target?:
+		| { readonly view: string; readonly params?: JsonObject }
+		| { readonly conversation: number };
+}
+
 /** Fields shared by every notification variant. */
 interface NotificationEventBase {
 	readonly conversationId?: number;
@@ -794,6 +809,13 @@ export type NotificationEvent = NotificationEventBase &
 				readonly callId?: string;
 		  }
 		| { readonly type: "job.failed" }
+		| {
+				readonly type: "extension";
+				/** The calling extension's slug. */
+				readonly extension: string;
+				/** The extension-defined notice kind. */
+				readonly kind: string;
+		  }
 		| {
 				readonly type: "run.settled";
 				/** Whether the run answered or not (model error, abort, …), with
@@ -1182,6 +1204,16 @@ export type SubmissionInputPart =
 /** How a submit behaves when a run is already live (pi-durable's `whenBusy`). */
 export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
 
+/** The extension-facing, read-only projection of one live job. */
+export interface HostJobInfo {
+	readonly id: string;
+	readonly name: string;
+	/** The effective owner (ownerless jobs resolve to the primary admin). */
+	readonly owner?: string;
+	readonly enabled: boolean;
+	readonly state: JobWire["state"];
+}
+
 /**
  * The host context sigrun hands an extension factory: the scoped
  * extension stores, the interaction/ambient seam surfaces, and the
@@ -1345,6 +1377,14 @@ export interface SigrunHost {
 			readonly name?: string;
 			readonly source?: string;
 			/**
+			 * Associate this new conversation with one live job. The requested
+			 * owner must equal the job's effective owner (including both absent).
+			 * Unknown, retired, or mismatched jobs throw `ConversationOpError`
+			 * with `{error: "invalid_field", field: "job"}` before any write.
+			 * Success stamps `jobId`; it does not create a job run or `lastRun`.
+			 */
+			readonly job?: string;
+			/**
 			 * Pin the conversation's extension/tool selection (gateway C4):
 			 * names resolved against the registry — an unknown name throws a
 			 * `ConversationOpError` naming `agent.extensions`/`agent.tools`.
@@ -1449,6 +1489,18 @@ export interface SigrunHost {
 			path: string,
 		): Promise<{ readonly bytes: Uint8Array; readonly mime?: string }>;
 	};
+
+	/** Read-only job lookup; retired and unknown ids resolve to `undefined`. */
+	readonly jobs: {
+		get(id: string): Promise<HostJobInfo | undefined>;
+	};
+
+	/**
+	 * Send one explicit notice through every registered notifier. Validation
+	 * failures throw; once accepted, delivery is enqueued on the bounded side
+	 * lane and this resolves without awaiting notifier completion.
+	 */
+	notify(input: ExtensionNoticeInput): Promise<void>;
 
 	/** The user directory (admin wire form; emails are admin material). */
 	readonly users: {

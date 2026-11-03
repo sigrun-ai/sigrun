@@ -194,6 +194,7 @@ async function bootRig(options?: {
 			now: () => clock.nowMs(),
 			defaultTz: "UTC",
 			gatewayLoaded: false,
+			effectiveOwner: (owner) => owner ?? "tester",
 		};
 		opened.registry.install({
 			name: "sigrun.jobs",

@@ -50,6 +50,7 @@ import {
 	reconcileJobs,
 	type ReconcileSources,
 } from "./reconcile.js";
+import { jobStateDir, removeJobState } from "./state-dir.js";
 import { specHash } from "./spec.js";
 import type { SettingsFile } from "../harness/settings.js";
 
@@ -91,13 +92,19 @@ function historyLimits(
 
 /** The wire row of a record (access left for the caller: the ROUTE
  *  computes it per principal; the raw row carries the neutral default).
- *  Exported for boot's `job.changed` publication (W4 Task 4). */
-export function jobWireOf(id: string, record: JobRecord): JobWire {
+ *  Exported for boot's `job.changed` publication (W4 Task 4). The
+ *  effective owner is resolved by the caller; the stored record and its
+ *  spec hash remain untouched (spec §6.5). */
+export function jobWireOf(
+	id: string,
+	record: JobRecord,
+	owner: string | undefined,
+): JobWire {
 	return {
 		id,
 		name: record.spec.name,
 		source: record.source,
-		...(record.owner === undefined ? {} : { owner: record.owner }),
+		...(owner === undefined ? {} : { owner }),
 		...(record.sharing === undefined
 			? {}
 			: { sharing: JSON.parse(JSON.stringify(record.sharing)) }),
@@ -123,10 +130,14 @@ export interface JobsServiceDeps {
 	readonly storage: Storage;
 	/** The fire deps (clock, tz, models, registry). */
 	readonly runtime: JobRuntimeDeps;
+	/** Resolve absent/orphaned owners against the live directory (§6.5). */
+	readonly effectiveOwner: (owner: string | undefined) => string | undefined;
 	/** The root conversation id — the schedule tasks' owner. */
 	readonly rootId: number;
 	/** The declared sources, read live per reconcile. */
 	readonly sources: () => ReconcileSources;
+	/** The selected record owner's persistent job-state root. */
+	readonly jobsRoot?: (owner: string | undefined) => string | undefined;
 	/** The settings store's live read (jobHistory). */
 	readonly settings: () => SettingsFile;
 	/**
@@ -151,6 +162,8 @@ export interface JobsService {
 	runs(id: string, limit: number): Promise<JobRunWire[]>;
 	revisions(id: string): Promise<JobRevisionWire[]>;
 	deleteApi(id: string, changedBy: string): Promise<void>;
+	/** Clear persistent state for any live job, without changing its record. */
+	resetState(id: string): Promise<void>;
 	runNow(id: string): Promise<{
 		outcome: "running" | "skipped" | "blocked";
 		conversationId?: number;
@@ -163,6 +176,23 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 	const ctx: Context = BACKGROUND_CONTEXT;
 	const limits = (): { runs: number; revisions: number } =>
 		historyLimits(deps.settings);
+	const wireOf = (id: string, record: JobRecord): JobWire =>
+		jobWireOf(id, record, deps.effectiveOwner(record.owner));
+	const stateRoot = (owner: string | undefined): string | undefined =>
+		deps.jobsRoot?.(owner);
+	const removeStateBestEffort = async (
+		root: string | undefined,
+		id: string,
+	): Promise<void> => {
+		try {
+			await removeJobState(root, id);
+		} catch (error) {
+			const path = root === undefined ? id : jobStateDir(root, id);
+			console.warn(
+				`jobs: could not remove job state ${path}: ${error instanceof Error ? error.message : String(error)}`,
+			);
+		}
+	};
 
 	// `job.changed` observation (W4 Task 4): ONE commit subscription over
 	// the `sigrun.job` family invokes the injected hook after EVERY record
@@ -196,6 +226,7 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 				runtime: deps.runtime,
 				rootId: deps.rootId,
 				sources: deps.sources,
+				...(deps.jobsRoot === undefined ? {} : { jobsRoot: deps.jobsRoot }),
 			},
 			ctx,
 		);
@@ -203,12 +234,12 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 	return {
 		async list(): Promise<JobWire[]> {
 			const records = await scanJobs(deps.storage, ctx);
-			return records.map(({ id, record }) => jobWireOf(id, record));
+			return records.map(({ id, record }) => wireOf(id, record));
 		},
 
 		async get(id: string): Promise<JobWire | undefined> {
 			const record = await readJob(deps.harness, id, ctx);
-			return record === undefined ? undefined : jobWireOf(id, record);
+			return record === undefined ? undefined : wireOf(id, record);
 		},
 
 		async createApi(
@@ -254,7 +285,7 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			await reconcileOne();
 			const record = await readJob(deps.harness, id, ctx);
 			if (record === undefined) throw new JobNotFoundError(id);
-			return jobWireOf(id, record);
+			return wireOf(id, record);
 		},
 
 		async updateApi(
@@ -312,7 +343,7 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			await reconcileOne();
 			const record = await readJob(deps.harness, id, ctx);
 			if (record === undefined) throw new JobNotFoundError(id);
-			return jobWireOf(id, record);
+			return wireOf(id, record);
 		},
 
 		async runs(id: string, limit: number): Promise<JobRunWire[]> {
@@ -327,6 +358,9 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			const prior = await readJob(deps.harness, id, ctx);
 			if (prior === undefined) throw new JobNotFoundError(id);
 			if (prior.source !== "api") throw new JobDeclaredError(id);
+			// Resolve against the prior owner: the retiring commit removes the
+			// record, and state cleanup must not fall back to another user.
+			const root = stateRoot(prior.owner);
 			const nowIso = new Date(deps.runtime.now()).toISOString();
 			await deps.harness.commit(
 				async (tx) => {
@@ -342,7 +376,16 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 				},
 				ctx,
 			);
+			await removeStateBestEffort(root, id);
 			await reconcileOne();
+		},
+
+		async resetState(id: string): Promise<void> {
+			const record = await readJob(deps.harness, id, ctx);
+			if (record === undefined) throw new JobNotFoundError(id);
+			// Unlike delete/transfer/reconcile, an explicit reset surfaces I/O
+			// failure to its caller; it never rewrites or retires the job.
+			await removeJobState(stateRoot(record.owner), id);
 		},
 
 		async runNow(id: string): Promise<{

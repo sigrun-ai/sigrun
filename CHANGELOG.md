@@ -32,7 +32,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   step read `.list` off a promise). A lazy store proxy now preserves the
   sync-store contract through the pre-bind window.
 
+### Added
+- `host.notify` lets extensions send validated explicit notices through
+  every declared notifier, with optional conversation or declared-view
+  deep links. Delivery is enqueued on the bounded side lane and is not
+  gated by `notifications.runSettled`.
+- Extension host job hooks: `host.jobs.get(id)` returns a read-only live-job
+  projection with its effective owner, and `host.conversations.create({job})`
+  stamps a validated job association in the session-meta creation commit.
+  Unknown, retired, and owner-mismatched jobs are rejected before storage
+  writes; creating the conversation does not create a job run or `lastRun`.
+
 ### Changed
+- Ownerless and orphaned-owner jobs now run as the primary admin; their
+  runs are no longer visible to every user. The effective owner is
+  resolved live without rewriting the declared record.
 - Reworded the `pi` manifest handling so it no longer implies pi
   extension compatibility. Sigrun reads `pi.extensions`/`pi.skills` only
   to LOCATE files and shares the SKILL.md format; it does not implement

@@ -252,10 +252,11 @@ export async function serve(
 		env.SIGRUN_DEFAULT_MODEL?.trim() || env.SIGRUN_MODEL?.trim() || undefined;
 	const settingsStore = new SettingsStore({ dir: defaultSettingsDir() });
 	settingsStore.bootstrap(envServerSection(env), {
-		extensions:
-			env.SIGRUN_EXTENSIONS?.trim() === undefined
-				? undefined
-				: envConfig!.extensions,
+		// E8 smoke: SIGRUN_EXTENSIONS without any model env crashed boot —
+		// envConfig is only resolved when a model env is set (see envHasModel
+		// above), so envConfig!.extensions dereferenced undefined here.
+		// parseExtensionList is the env-side source of truth; use it directly.
+		extensions: parseExtensionList(env.SIGRUN_EXTENSIONS),
 		defaultModel:
 			envModel === undefined
 				? undefined

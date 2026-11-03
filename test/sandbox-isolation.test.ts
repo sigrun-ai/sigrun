@@ -315,6 +315,7 @@ describe("boot refusals and fail-closed consumers", () => {
 			commandExpansion: { ...expansion, templates: { userDir: "/no-such-templates", packageRoots: () => [] } },
 			envBuilder: opened.envBuilder,
 			gatewayLoaded: false,
+			effectiveOwner: (owner: string | undefined) => owner ?? "alice",
 		};
 		await opened.harness.commit(async (tx) => {
 			const { writeJobChange } = await import("../src/jobs/docs.js");

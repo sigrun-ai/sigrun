@@ -258,6 +258,12 @@ async function bootOnDir(
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		// Hermeticity for extension stores: host.stores roots derive from
+		// the DATA dir (resolveStoreRoots — <dataDir>/escalations/<slug>/…),
+		// which without this env falls back to the DEVELOPER's real
+		// ~/.local/share/sigrun. The first real consumer (the escalations
+		// extension's per-user store) leaked across boots before this pin.
+		SIGRUN_DATA_DIR: join(dir, "data"),
 		// W1 Task 3: the naive workstation path — claimed identity below,
 		// no authenticators. The auth boot (Task 8) is the token method:
 		// every /v1 call needs the session cookie the onboarding claim

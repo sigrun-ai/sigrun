@@ -236,20 +236,21 @@ export function buildUserPolicy(
 	}
 
 	// EVERY per-user path passes the same validator before entering policy:
-	// stored workspace/grants via revalidate, and workspace/home again below.
+	// stored workspace/grants via revalidate, and workspace/home/jobs again below.
 	// An osAccount home must validate BEFORE any directory is created.
 	// tmp is the ONE sanctioned stateDir exception: it is derived only from
 	// stateDir/sandbox/<user>/tmp and never silently routed around validation.
 	const userArea = ctx.managed.userAreas(record.user);
 	const requestedWorkspace = record.workspace ?? ctx.osAccount?.home ?? join(userArea, "workspace");
 	const requestedHome = ctx.osAccount?.home ?? join(userArea, "home");
+	const requestedJobs = join(userArea, "jobs");
 	if (ctx.osAccount !== undefined) {
 		const validation = validateUserPath(requestedHome, record, ctx.managed);
 		if (!validation.ok) return invalidReason(requestedHome, validation.reason);
 	}
 	const tmp = join(ctx.managed.roots.stateDir, "sandbox", record.user, "tmp");
-	for (const path of [requestedWorkspace, requestedHome, tmp]) {
-		if (ctx.osAccount !== undefined && path === tmp) continue;
+	for (const path of [requestedWorkspace, requestedHome, tmp, requestedJobs]) {
+		if (ctx.osAccount !== undefined && (path === tmp || path === requestedJobs)) continue;
 		mkdirSync(path, { recursive: true, mode: 0o700 });
 	}
 	// Curator A3: the owner's learned skills root exists and is granted
@@ -268,12 +269,19 @@ export function buildUserPolicy(
 	}
 	const homeValidation = validateUserPath(requestedHome, record, ctx.managed);
 	if (!homeValidation.ok) return invalidReason(requestedHome, homeValidation.reason);
+	const jobsValidation = ctx.osAccount === undefined
+		? validateUserPath(requestedJobs, record, ctx.managed)
+		: undefined;
+	if (jobsValidation !== undefined && !jobsValidation.ok) {
+		return invalidReason(requestedJobs, jobsValidation.reason);
+	}
 	const realTmp = canonical(tmp) ?? (ctx.osAccount === undefined
 		? undefined
 		: resolve(tmp));
 	if (realTmp === undefined) return invalidReason(tmp, "path cannot be resolved");
 	const realWorkspace = workspaceValidation.realpath;
 	const realHome = homeValidation.realpath;
+	const realJobs = jobsValidation?.realpath;
 
 	// A source checkout that has ever been built has BOTH src/ and dist/;
 	// defaultModuleTrees picks one while the worker entry may use the other
@@ -303,9 +311,10 @@ export function buildUserPolicy(
 		...grants.flatMap((grant) => (grant.access === "rw" ? [grant.path] : [])),
 		realHome,
 		realTmp,
+		...(realJobs === undefined ? [] : [realJobs]),
 		// Device creation belongs to rw, but the selected devices' ordinary
 		// read/write I/O survives a read-only Landlock rule. rw stays empty
-		// except for workspace/home/tmp/grants so /dev/shm remains denied.
+		// except for workspace/home/jobs/tmp/grants so /dev/shm remains denied.
 	]);
 	const ro = sortedUnique([
 		"/dev",

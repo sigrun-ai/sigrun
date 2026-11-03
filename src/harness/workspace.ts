@@ -3,7 +3,7 @@
 import type { Context } from "@earendil-works/chord/context";
 import type { ConversationId, DocumentReader, HarnessOptions } from "@earendil-works/pi-durable";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
-import { isAbsolute, resolve } from "node:path";
+import { isAbsolute, join, resolve } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { LocalWorkspace } from "../config.js";
 import type { ManagedPaths } from "../sandbox/grants.js";
@@ -14,7 +14,8 @@ import { SandboxedExecutionEnv } from "../sandbox/sandboxed-env.js";
 import { UnavailableExecutionEnv } from "../sandbox/unavailable-env.js";
 import { selfPackageRoot } from "./packages.js";
 import { defaultModuleTrees } from "../sandbox/policy.js";
-import type { UserDirectory } from "./identity/users.js";
+import type { DirectoryUser, UserDirectory } from "./identity/users.js";
+import { primaryAdmin } from "./identity/primary-admin.js";
 import { AgentExecutionEnv } from "./agent-env.js";
 import type { OsUsersAvailability } from "../sandbox/availability.js";
 import { lookupOsAccount } from "../sandbox/os-account.js";
@@ -22,7 +23,17 @@ import { lookupOsAccount } from "../sandbox/os-account.js";
 export interface WorkspacePreferences { readonly defaultWorkspace: LocalWorkspace }
 export interface WorkspaceConversation { readonly id: ConversationId }
 
+/** The live owner's record, falling back to the primary admin. */
+export function selectRecord(
+	records: readonly DirectoryUser[],
+	owner: string | undefined,
+): DirectoryUser | undefined {
+	return records.find((record) => record.user === owner) ?? primaryAdmin(records);
+}
+
 export interface WorkspaceService {
+	/** The selected owner's persistent job-state root, if one can be used. */
+	jobsRoot(owner: string | undefined): string | undefined;
 	forConversation(
 		conversation: WorkspaceConversation,
 		prefs: WorkspacePreferences,
@@ -47,6 +58,25 @@ export interface WorkspaceServiceDeps {
 
 export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceService {
 	return {
+		jobsRoot(owner) {
+			if (deps === undefined) return undefined;
+			const { directory, managed } = deps;
+			const records = directory.list();
+			const record = selectRecord(records, owner);
+			if (record === undefined) return join(managed.roots.dataDir, "jobs");
+			if (record.osUser !== undefined) {
+				if (deps.osUsers?.available !== true) return undefined;
+				try {
+					const account = (deps.lookupAccount ?? lookupOsAccount)(record.osUser);
+					return account === undefined
+						? undefined
+						: join(account.home, ".local", "state", "sigrun", "jobs");
+				} catch {
+					return undefined;
+				}
+			}
+			return join(managed.userAreas(record.user), "jobs");
+		},
 		async forConversation(conversation, prefs, read, ctx) {
 			const workspace = prefs.defaultWorkspace;
 			if (workspace.type !== "local") {
@@ -58,8 +88,7 @@ export function createWorkspaceService(deps?: WorkspaceServiceDeps): WorkspaceSe
 			const owner = read === undefined
 				? undefined
 				: await deps.ownerOf(conversation.id, read, ctx ?? BACKGROUND_CONTEXT);
-			const record = records.find((candidate) => candidate.user === owner)
-				?? records.find((candidate) => candidate.admin);
+			const record = selectRecord(records, owner);
 			let osAccount: ReturnType<typeof lookupOsAccount>;
 			if (record?.osUser !== undefined) {
 				if (deps.osUsers?.available !== true) {

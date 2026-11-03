@@ -1,21 +1,29 @@
 /**
  * ExtPanelHost (UI-blocks U3 Task 5 fix round): the right-panel extension
- * surface host. The tests pin the lifecycle rule — the declared refreshMs
- * cadence runs while the panel is OPEN and STOPS when the host unmounts
- * (a closed panel keeps no cadence and registers no keepalive).
+ * surface host. The panel renders the surface's tree through the generic
+ * block renderer and keeps its lifecycle: the declared refreshMs cadence
+ * runs while the panel is OPEN and STOPS when the host unmounts.
  */
 
+(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
+	.IS_REACT_ACT_ENVIRONMENT = true;
+
 import { describe, expect, test, vi } from "vitest";
-import type { SurfaceLoad } from "@sigrun/shared/blocks";
+import type { SurfaceLoad, Tree } from "@sigrun/shared/blocks";
+
+const TREE: Tree = {
+	v: 1,
+	root: {
+		type: "page",
+		id: "stats",
+		title: "Acme stats",
+		main: [{ type: "markdown", text: "Hello **inbox**" }],
+	},
+};
 
 function stubLoad(): SurfaceLoad {
 	return {
-		tree: {
-			type: "page",
-			id: "stats",
-			title: "Acme stats",
-			main: [],
-		} as unknown as SurfaceLoad["tree"],
+		tree: TREE,
 		data: { open: 2 },
 		rev: 1,
 		treeRev: 1,
@@ -24,11 +32,37 @@ function stubLoad(): SurfaceLoad {
 }
 
 describe("ExtPanelHost", () => {
+	test("renders the tree's markdown through the block renderer", async () => {
+		const { ExtPanelHost } = await import("./ExtPanelHost");
+		const { renderAsync, textContent } = await import("../test-utils");
+		const transport = {
+			load: vi.fn(async () => stubLoad()),
+			fetchData: vi.fn(async () => ({ rev: 1, treeRev: 1 })),
+			act: vi.fn(),
+			upload: vi.fn(),
+			image: vi.fn(),
+			onChanged: vi.fn(() => () => {}),
+		};
+		const renderer = await renderAsync(
+			<ExtPanelHost
+				slug="fixture-surfaces"
+				id="stats"
+				transport={transport}
+			/>,
+		);
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("Hello");
+		expect(text).toContain("inbox");
+		expect(
+			renderer.root.findAllByProps({ className: "blk blk-markdown" }).length,
+		).toBeGreaterThan(0);
+	});
+
 	test("refreshMs refetches while mounted; unmount (the tab closing) stops it", async () => {
 		vi.useFakeTimers();
 		try {
 			const { ExtPanelHost } = await import("./ExtPanelHost");
-			const { renderAsync, textContent } = await import("../test-utils");
+			const { renderAsync } = await import("../test-utils");
 			const fetchData = vi.fn(async () => ({ rev: 1, treeRev: 1 }));
 			const transport = {
 				load: vi.fn(async () => stubLoad()),
@@ -46,15 +80,9 @@ describe("ExtPanelHost", () => {
 					refreshMs={1000}
 				/>,
 			);
-			// The load ran; the cadence ticks.
 			await vi.advanceTimersByTimeAsync(2500);
 			expect(fetchData.mock.calls.length).toBeGreaterThanOrEqual(2);
-			const text = textContent(renderer.toJSON());
-			expect(text).toContain("Acme stats");
 
-			// The tab closes → unmount → NO new fetches (the stop-when-
-			// hidden rule for panels: there is no cadence for a panel
-			// nobody is looking at).
 			renderer.unmount();
 			const atClose = fetchData.mock.calls.length;
 			await vi.advanceTimersByTimeAsync(5000);
@@ -64,36 +92,24 @@ describe("ExtPanelHost", () => {
 		}
 	});
 
-	test("an access-none panel renders the unavailable state (no cadence)", async () => {
-		vi.useFakeTimers();
-		try {
-			const { ExtPanelHost } = await import("./ExtPanelHost");
-			const { renderAsync, textContent } = await import("../test-utils");
-			const fetchData = vi.fn(async () => ({ rev: 1, treeRev: 1 }));
-			const transport = {
-				load: vi.fn(async () => ({ ...stubLoad(), access: "none" as const })),
-				fetchData,
-				act: vi.fn(),
-				upload: vi.fn(),
-				image: vi.fn(),
-				onChanged: vi.fn(() => () => {}),
-			};
-			const renderer = await renderAsync(
-				<ExtPanelHost
-					slug="fixture-surfaces"
-					id="stats"
-					transport={transport}
-					refreshMs={1000}
-				/>,
-			);
-			// The not-found render still carries NO cadence requirement —
-			// the timer ticks only while a refreshMs is declared; the
-			// access rule is the rail/panel registration's (the entry
-			// disappears). Here we pin only the unavailable render.
-			const text = textContent(renderer.toJSON());
-			expect(text).toContain("isn't available");
-		} finally {
-			vi.useRealTimers();
-		}
+	test("an access-none panel renders the unavailable state", async () => {
+		const { ExtPanelHost } = await import("./ExtPanelHost");
+		const { renderAsync, textContent } = await import("../test-utils");
+		const transport = {
+			load: vi.fn(async () => ({ ...stubLoad(), access: "none" as const })),
+			fetchData: vi.fn(async () => ({ rev: 1, treeRev: 1 })),
+			act: vi.fn(),
+			upload: vi.fn(),
+			image: vi.fn(),
+			onChanged: vi.fn(() => () => {}),
+		};
+		const renderer = await renderAsync(
+			<ExtPanelHost
+				slug="fixture-surfaces"
+				id="stats"
+				transport={transport}
+			/>,
+		);
+		expect(textContent(renderer.toJSON())).toContain("not found");
 	});
 });
