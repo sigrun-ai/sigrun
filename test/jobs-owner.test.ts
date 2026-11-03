@@ -156,7 +156,11 @@ describe("a declared job's effective owner", () => {
 			access: "write",
 		});
 		const bobRow = await call(app, "GET", `/v1/jobs/${id}`, bob);
-		expect(bobRow.json.job?.access === "read" || bobRow.status === 404).toBe(true);
+		// Pinned to the §5.9 hidden rule: a job whose effective owner moved
+		// to an admin has no sharing, so bob's access is none — 404
+		// `job_not_found`, not a read row (no 403 tell on any jobs route).
+		expect(bobRow.status).toBe(404);
+		expect(bobRow.json).toMatchObject({ error: "job_not_found" });
 
 		const fired = await call(app, "POST", `/v1/jobs/${id}/run`, rootAdmin);
 		expect(fired.status).toBe(200);
