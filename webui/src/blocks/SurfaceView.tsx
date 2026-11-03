@@ -7,7 +7,7 @@
  * inside the width-measuring container.
  */
 
-import { useEffect, useMemo, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, type ReactNode } from "react";
 import type {
 	CoreTarget,
 	JsonObject,
@@ -43,11 +43,18 @@ export function SurfaceView(props: {
 	const keepaliveMs = props.keepaliveMs;
 	const visible = props.visible;
 	const refresh = surface.refresh;
+	// The keepalive callback must be STABLE (useCallback): a new identity
+	// per render re-arms the interval effect below every time the hook
+	// re-renders (the surface's own data updates churn it), restarting
+	// the 5-minute clock and never letting a tick fire mid-edit.
+	const refreshStable = useCallback(async (): Promise<void> => {
+		await refresh();
+	}, [refresh]);
 	useEffect(() => {
 		if (keepaliveMs === undefined) return undefined;
 		const timer = setInterval(() => {
 			if (visible !== undefined && !visible()) return;
-			void refresh();
+			void refreshStable();
 		}, keepaliveMs);
 		const doc = (
 			globalThis as {
@@ -58,14 +65,14 @@ export function SurfaceView(props: {
 			}
 		).document;
 		const onVisibility = (): void => {
-			if (visible === undefined || visible()) void refresh();
+			if (visible === undefined || visible()) void refreshStable();
 		};
 		doc?.addEventListener("visibilitychange", onVisibility);
 		return () => {
 			clearInterval(timer);
 			doc?.removeEventListener("visibilitychange", onVisibility);
 		};
-	}, [keepaliveMs, visible, refresh]);
+	}, [keepaliveMs, visible, refreshStable]);
 	// The `/view/` branch (a form writing it publishes to siblings via
 	// `/view/...` bindings). `viewState` carries the view branch alone;
 	// the form strips the `/view/` prefix itself.
