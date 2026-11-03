@@ -56,11 +56,19 @@ if [ -n "${NPM_CONFIG_REGISTRY-}" ]; then
 	registry_env="--env NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}"
 fi
 
+# Opt-in docker network (e.g. SMOKE_DOCKER_NETWORK=sigrun-cleanroom for a
+# container-resolvable local registry); unset keeps the default bridge.
+network_flag=""
+if [ -n "${SMOKE_DOCKER_NETWORK-}" ]; then
+	network_flag="--network ${SMOKE_DOCKER_NETWORK}"
+fi
+
 # The container script takes the version as $1 and the slug list as $2
 # (a heredoc inside `sh -s` would eat stdin as the script — arguments
 # keep the two channels separate). Quoting note: the heredoc is
 # UNQUOTED-free — 'EOS' keeps the host shell out of it entirely.
 docker run --rm \
+	$network_flag \
 	--env SIGRUN_DEFAULT_MODEL=openai/gpt-4o \
 	--env SIGRUN_API_TOKEN=sigrun-smoke-token \
 	--env SIGRUN_PORT=3000 \
