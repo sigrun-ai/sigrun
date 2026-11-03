@@ -28,7 +28,14 @@
  *   overlay (`resolveUpstream` → `OverlayStore.put` with the upstream
  *   hash) is their only write.
  * - `restoreDeleted` refuses a reused name with "a skill named <name>
- *   exists in <root>; rename or delete it first" (Review Focus 5).
+ *   exists in <root>; rename or delete it first" (Review Focus 5) — and
+ *   a deleted selection's ONLY action is the *Restore deleted* button
+ *   that dispatches it (whole-branch review I2: Edit/Delete/restore a
+ *   version never render there). `restoreVersion` on a workspace skill
+ *   refuses the same way when the target commit predates the name's
+ *   newest delete while a live row holds the name (the reused skill's
+ *   history chain spans the old skill's commits; a plain restore would
+ *   silently overwrite it).
  */
 
 import { mkdir, rm, writeFile } from "node:fs/promises";
@@ -194,6 +201,39 @@ async function deletionShaOf(
 	return newest !== undefined && newest.summary === `delete ${name}`
 ? { deletionSha: newest.sha }
 : {};
+}
+
+/**
+ * The newest `delete <name>` commit's sha for one WORKSPACE skill, or
+ * undefined when the name was never deleted (whole-branch review I2's
+ * reused-name refusal needs the anchor independent of the newest-touch
+ * rule {@link deletionShaOf} applies).
+ */
+async function newestDeletionSha(
+	history: GitHistory,
+	name: string,
+): Promise<string | undefined> {
+	// A name's commits are few; the cap only bounds a pathological repo.
+	for (const commit of await history.log({ path: `${name}/`, limit: 1000 })) {
+		if (commit.summary === `delete ${name}`) return commit.sha;
+	}
+	return undefined;
+}
+
+/**
+ * The exact reused-name refusal text (restoreDeleted's existing message,
+ * shared with restoreVersion's workspace branch — whole-branch review I2).
+ */
+function reusedNameError(name: string, root: string): string {
+	return `a skill named ${name} exists in ${root}; rename or delete it first`;
+}
+
+/** One sha's index in a log page (-1 when absent). */
+function pathLogIndex(
+	log: readonly { sha: string }[],
+	sha: string,
+): number {
+	return log.findIndex((one) => one.sha === sha);
 }
 
 /** The newest commit's sha on one path (the learned archive's restore anchor). */
@@ -763,6 +803,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					writable,
 					historyAvailable: selection?.historyAvailable ?? false,
 					selectedExists: selection !== undefined,
+					...(selection?.deleted === true ? { deleted: true } : {}),
 				}),
 				data,
 				access: "write",
@@ -970,6 +1011,39 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					if (history === undefined) {
 						return { ok: false, error: { message: "workspace history is unavailable" } };
 					}
+					// Whole-branch review I2: the reused-name hole. When the
+					// name was deleted and then RE-created, the live skill's
+					// history chain includes the old skill's commits (same
+					// path), so a restore anchored on a PRE-DELETE commit would
+					// silently overwrite the live (reused) skill. Refuse the
+					// moment the target predates the newest delete while the
+					// live row exists — restoreDeleted's refusal, applied to
+					// the reachable path.
+					const skills = await listFor(user);
+					const live = skills.some(
+						(one) => one.name === name && one.root === "workspace",
+					);
+					if (live) {
+						const deletionSha = await newestDeletionSha(history, name);
+						if (deletionSha !== undefined) {
+							// The name's own history, newest-first: every commit
+							// listed AFTER the delete is older than it (the
+							// pre-reuse chain — restoring from it would silently
+							// overwrite the live, reused skill).
+							const pathLog = await history.log({ path: `${name}/`, limit: 10_000 });
+							const deleteAt = pathLogIndex(pathLog, deletionSha);
+							const targetAt = pathLogIndex(pathLog, sha);
+							if (
+								deleteAt !== -1 &&
+								(targetAt === -1 || targetAt > deleteAt)
+							) {
+								return {
+									ok: false,
+									error: { message: reusedNameError(name, "workspace") },
+								};
+							}
+						}
+					}
 					try {
 						await history.restore(sha, [name], {
 							actor: { kind: "user", user },
@@ -999,7 +1073,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 				if (present !== undefined) {
 					return {
 						ok: false,
-						error: { message: `a skill named ${name} exists in ${present}; rename or delete it first` },
+						error: { message: reusedNameError(name, present) },
 					};
 				}
 				const root = (fieldOf(payload, "root") ?? selectedParams(ctx).root ?? "workspace") as SkillRootKind;

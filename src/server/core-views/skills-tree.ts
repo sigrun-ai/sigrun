@@ -282,7 +282,28 @@ function historyRowButtons(rows: readonly SkillHistoryRow[]): JsonObject[] {
 }
 
 /** One selected-skill callout's action buttons (per-page literals; handlers resolve params). */
-function skillActions(params: SkillsViewParams, historyAvailable: boolean): JsonObject[] {
+function skillActions(params: SkillsViewParams, historyAvailable: boolean, deleted: boolean): JsonObject[] {
+	// A deleted selection (whole-branch review I2): NO edit/delete/restore
+	// — the dir is gone (Edit's save would error "skill not found") — only
+	// the restore-deleted affordance, anchored on the selection's commit.
+	if (deleted) {
+		if (params.commit === undefined || !historyAvailable) return [];
+		return [
+			{
+				id: "skill-restore-deleted",
+				label: "Restore deleted",
+				icon: "refresh",
+				action: {
+					type: "submit",
+					name: "restoreDeleted",
+					confirm: {
+						title: "Restore this deleted skill?",
+						body: "Bring the skill back exactly as it was before the deletion commit.",
+					},
+				},
+			},
+		];
+	}
 	const nav = (extra: Record<string, unknown>): JsonObject => {
 		const navParams: Record<string, string | true> = {};
 		if (params.skill !== undefined) navParams.skill = params.skill;
@@ -436,6 +457,9 @@ export function buildSkillsTree(
 		readonly writable: boolean;
 		readonly historyAvailable: boolean;
 		readonly selectedExists: boolean;
+		/** A Deleted-group selection (review I2): the action set is the
+		 *  restore-deleted affordance only — never Edit/Delete. */
+		readonly deleted?: boolean;
 	},
 ): Tree {
 	const editing = params.edit === true && (params.skill === undefined || opts.selectedExists);
@@ -506,7 +530,7 @@ export function buildSkillsTree(
 							id: "skill-actions",
 							tone: "neutral",
 							title: "Actions",
-							actions: skillActions(params, opts.historyAvailable),
+							actions: skillActions(params, opts.historyAvailable, opts.deleted === true),
 						},
 					]
 				: []),

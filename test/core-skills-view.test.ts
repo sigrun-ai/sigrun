@@ -460,7 +460,7 @@ describe("core/skills delete + restoreDeleted", () => {
 		expect((atPointer(rendered.json.data, "/main") as any).body).toBe("Doomed body.\n");
 	});
 
-	test("restore-deleted refuses a reused name", async () => {
+	test("restore-deleted refuses a reused name (and restoreVersion refuses its pre-delete commit)", async () => {
 		const { app, alice } = await bootServer();
 		await act(app, alice, "create", {
 			where: "workspace",
@@ -493,6 +493,79 @@ describe("core/skills delete + restoreDeleted", () => {
 		expect(refused.json.error.message).toBe(
 			"a skill named acme-recycled exists in workspace; rename or delete it first",
 		);
+		// Review I2's reachable hole: the reused skill's history chain
+		// includes the OLD skill's commits (same path), so a restore
+		// anchored PRE-delete must refuse the same way (a plain
+		// history.restore would silently overwrite the live skill).
+		const rendered = await view(app, alice, { skill: "acme-recycled", root: "workspace" });
+		const history = (atPointer(rendered.json.data, "/main/history/items") as any[]).map(
+			(one) => one.sha as string,
+		);
+		// The OLDEST commit in the chain is the ORIGINAL skill's create —
+		// strictly before the delete (the chain: replacement create →
+		// delete → original create, newest first).
+		const preDeleteSha = history[history.length - 1];
+		expect(preDeleteSha).not.toBe(deletionSha);
+		const refusedVersion = await act(app, alice, "restoreVersion", {
+			sha: preDeleteSha,
+		}, { skill: "acme-recycled", root: "workspace" });
+		expect(refusedVersion.json.ok).toBe(false);
+		expect(refusedVersion.json.error.message).toBe(
+			"a skill named acme-recycled exists in workspace; rename or delete it first",
+		);
+		// The reused skill is untouched.
+		const after = await view(app, alice, { skill: "acme-recycled", root: "workspace" });
+		expect((atPointer(after.json.data, "/main") as any).body).toBe("Replacement.\n");
+	});
+
+	test("a deleted selection renders Restore deleted (and NO Edit button); the button restores it", async () => {
+		// Review I2: the Deleted-group selection's action affordance is
+		// the restore-deleted button (restoreDeleted was dead code — no
+		// button dispatched it), and Edit must not render on a deleted
+		// selection (its save would error "skill not found").
+		const { app, alice } = await bootServer();
+		await act(app, alice, "create", {
+			where: "workspace",
+			name: "acme-restore-me",
+			description: "restore me",
+			body: "Restore me body.",
+		}, {});
+		await act(app, alice, "delete", null, { skill: "acme-restore-me", root: "workspace" });
+		// The Deleted-group row carries the deletion commit sha.
+		const rows = atPointer((await view(app, alice)).json.data, "/skills") as any[];
+		const deletedRow = rows.find(
+			(row) => row.id === "workspace:acme-restore-me" && row.group === "deleted",
+		);
+		expect(typeof deletedRow?.deletionSha).toBe("string");
+		// Select the deleted row at its deletion commit: the action set is
+		// Restore deleted ONLY.
+		const selected = await view(app, alice, {
+			skill: "acme-restore-me",
+			root: "workspace",
+			commit: deletedRow.deletionSha,
+		});
+		const callouts = findBlocks(selected.json.tree.root.main, "callout");
+		const actions = callouts.find((block) => block.id === "skill-actions");
+		const names = (actions?.actions ?? []).map((button: any) => button.id);
+		expect(names).toContain("skill-restore-deleted");
+		expect(names).not.toContain("skill-edit");
+		expect(names).not.toContain("skill-delete");
+		expect(names).not.toContain("skill-restore");
+		// The button dispatches restoreDeleted — and restores the skill.
+		const restored = await act(
+			app,
+			alice,
+			"restoreDeleted",
+			{
+				name: "acme-restore-me",
+				sha: deletedRow.deletionSha,
+				root: "workspace",
+			},
+			{},
+		);
+		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
+		const backAgain = await view(app, alice, { skill: "acme-restore-me", root: "workspace" });
+		expect((atPointer(backAgain.json.data, "/main") as any).body).toBe("Restore me body.\n");
 	});
 
 	test("learned delete archives (the skill moves to the Deleted group with its history intact)", async () => {
