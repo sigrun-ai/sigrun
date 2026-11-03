@@ -1173,6 +1173,13 @@ export async function onboardIfUnclaimed(
 	server: string,
 	prompt: (question: string, opts?: { secret?: boolean }) => Promise<string>,
 	fetchImpl: CliFetch,
+	/**
+	 * `loopbackVouch`: set by the `run` command — its companion boot is
+	 * loopback-bound, so the claim redeems on the loopback vouch even
+	 * though the (unauthenticated) methods list is the proxy-only
+	 * fail-safe shape. Unset (attach) keeps the strict guard.
+	 */
+	opts?: { loopbackVouch?: boolean },
 ): Promise<OnboardedIdentity | undefined> {
 	let state: OnboardingState | undefined;
 	try {
@@ -1217,7 +1224,7 @@ export async function onboardIfUnclaimed(
 	// identity. Its methods are [] — proxy-only by the fail-safe — and
 	// the claim then succeeds on the loopback vouch.)
 	const methods = state.methods; // the ?? [] version-skew guard lives in isProxyOnly itself (fail-safe on unknown posture)
-	if (isProxyOnly(methods) && state.proxyIdentity === undefined) {
+	if (isProxyOnly(methods) && state.proxyIdentity === undefined && opts?.loopbackVouch !== true) {
 		throw new Error(
 			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
 		);
@@ -1428,8 +1435,15 @@ export async function cliMain(
 					const server = `http://localhost:${booted.port}`;
 					// Loopback onboarding (Task 7): no code (loopback is the trust);
 					// tui.json gains ONLY the user — workstation run stays
-					// unauthenticated, so there is no token to keep.
-					const onboarded = await onboardIfUnclaimed(server, prompt, fetchImpl);
+					// unauthenticated, so there is no token to keep. The
+					// loopbackVouch exemption (fresh-eyes A5): this boot's methods
+					// are [] (unauthenticated loopback), which the dead-end guard
+					// reads as proxy-only — but the claim HERE redeems on the
+					// loopback vouch, so run mode must skip the guard or a fresh
+					// `sigrun run` dead-ends on the proxy message.
+					const onboarded = await onboardIfUnclaimed(server, prompt, fetchImpl, {
+						loopbackVouch: true,
+					});
 					if (onboarded !== undefined) {
 						await writeTuiFile({ user: onboarded.user }, env);
 					}

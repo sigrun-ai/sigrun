@@ -1689,6 +1689,43 @@ describe("cliMain run: the loopback onboarding flow (Task 7)", () => {
 		});
 	});
 
+	test("unclaimed loopback with methods [] (the REAL loopback posture) still claims — run mode exempts the proxy-only guard", async () => {
+		// Fresh-eyes A5: the loopback server reports methods [] (no auth),
+		// which isProxyOnly reads as the fail-safe proxy-only shape; before
+		// the loopbackVouch exemption this dead-ended every fresh
+		// `sigrun run` on the proxy message.
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({ codeRequired: false, methods: [] });
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain([], storeEnv(dir), deps);
+		expect(code).toBe(0);
+		expect(claims).toHaveLength(1);
+		expect(questions.join("\n")).not.toMatch(/code/i);
+		expect(calls.launchTui[0]).toEqual({
+			baseUrl: "http://localhost:4321",
+			user: "alice",
+		});
+	});
+
+	test("attach keeps the guard: an unclaimed methods-[] server without a proxy identity still dead-ends on the proxy message", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({ codeRequired: false, methods: [] });
+		const { deps } = stubDeps({ prompt, fetch });
+		const errors: string[] = [];
+		const code = await cliMain(["attach"], storeEnv(dir), deps, {
+			out: () => {},
+			error: (text) => {
+				errors.push(text);
+			},
+		});
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toMatch(/sign-in proxy/);
+		expect(claims).toEqual([]);
+		expect(questions).toEqual([]);
+	});
+
 	test("a claimed loopback server runs the old path unchanged", async () => {
 		const dir = await tmpConfigDir();
 		const { questions } = scriptedPrompt([]);

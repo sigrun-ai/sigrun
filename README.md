@@ -20,7 +20,10 @@ contracts can still evolve between minor releases. See
 [`SECURITY.md`](SECURITY.md) for the support, trust, and verification
 posture, and [`CONTRIBUTING.md`](CONTRIBUTING.md) to build and test.
 
-**Try it:** `npm i -g @sigrun/sigrun && sigrun run` — or jump to
+**Try it:** `npm i -g @sigrun/sigrun && sigrun run` (on a workstation,
+with a terminal — `sigrun run` is the interactive mode: it claims the
+install via prompts and launches the TUI; without a TTY or on a server,
+use `sigrun serve` below) — or jump to
 [Install](#install) and [Quickstart](#quickstart) for the model/credential
 setup every install needs.
 
