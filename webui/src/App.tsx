@@ -67,7 +67,6 @@ import {
 	orderExtViews,
 } from "./layout/extViews";
 import { TabMemory, tabOfRoute } from "./layout/tabs";
-import { JobsPanel } from "./jobs/JobsPanel";
 import { OutlinePanel } from "./outline/OutlinePanel";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
 import { SessionList } from "./sessions/SessionList";
@@ -109,7 +108,7 @@ function loadPanel(): PanelMode | null {
 	).localStorage;
 	try {
 		const value = stored?.getItem(PANEL_STORAGE_KEY) ?? null;
-		return value === "outline" || value === "workspace" || value === "jobs"
+		return value === "outline" || value === "workspace"
 			? value
 			: null;
 	} catch {
@@ -652,16 +651,9 @@ function AppShell(options: AppOptions = {}) {
 	// sidebar, the header title, and the transcript's fork parents. `busy`
 	// (the view's steer state) drives the post-run reloads — a name the
 	// auto-namer writes at settlement appears without a manual reload.
-	const [jobChanged, setJobChanged] = useState(0);
 	const list = useConversationList(client, {
 		busy: view?.steer.busy ?? false,
 		createEventSource: options.createEventSource,
-		// W4 Task 5: `job.changed` rides the hook's ONE shared
-		// `/v1/events` source — the bump is the JobsPanel's refetch token
-		// (never a second EventSource per app).
-		onJobChanged: useCallback(() => {
-			setJobChanged((token) => token + 1);
-		}, []),
 		// U3 Task 5: `surface.changed` rides the SAME source into the ext
 		// hub (the open surface page's transport fires its onChanged).
 		onSurfaceChanged: useCallback(
@@ -1005,11 +997,17 @@ function AppShell(options: AppOptions = {}) {
 					onSelect(target.conversation);
 					return;
 				}
-				if ("job" in target) {
-					const next: Route = { kind: "chat" };
+			if ("job" in target) {
+					// Tabs+skills Task 6: the JobsPanel is gone — a job
+					// target routes to the Jobs TAB carrying the id in the
+					// surface params (the core/jobs view's `job` selection).
+					const next: Route = {
+						kind: "ext",
+						slug: "core",
+						id: "jobs",
+						params: { job: target.job },
+					};
 					applyRoute(next, routeHash(next));
-					setPanel("jobs");
-					persistPanel("jobs");
 					return;
 				}
 				if ("settings" in target) {
@@ -1466,13 +1464,6 @@ function AppShell(options: AppOptions = {}) {
 						client={client}
 						conversationId={activeId}
 							onClose={closePanel}
-					/>
-				}
-				jobs={
-					<JobsPanel
-						client={client}
-						onNavigate={onSelect}
-						refreshToken={jobChanged}
 					/>
 				}
 			/>

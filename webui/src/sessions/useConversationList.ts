@@ -10,9 +10,7 @@
  *   `eventsSource` below): `conversation.*` events trigger a refetch
  *   (coalesced — one reload in flight); the server-side stream is
  *   already access-filtered per principal, so every event the client
- *   sees is listable state; a `job.changed` event (W4 Task 5) calls the
- *   optional `onJobChanged` callback on the SAME source — the jobs
- *   panel never opens its own EventSource;
+ *   sees is listable state;
  * - reload on every RECONNECT (a new hello streamId — the server keeps
  *   no replay, so the gap is healed by one refetch) and whenever the tab
  *   becomes visible again; reopen the source after a backoff when the
@@ -78,18 +76,16 @@ export type ListEventSourceFactory = (url: string) => EventSourceLike;
 
 /**
  * Open the ONE shared `/v1/events` source for the app (W3 Task 4):
- * conversation.* events call `onConversationEvent`; `job.changed` calls
- * `onJobChanged` (W4 Task 5 — the jobs panel rides the SAME source);
- * `hello` frames (U3 Task 4, the W3 amendment) call `onHello` with the
- * connection's streamId. Event types are an open set: unknown types are
- * IGNORED (never an error — spec §7.3). Returns the close. The
- * browser's native EventSource auto-reconnects; a malformed frame is
- * dropped (the stream only nudges — a dropped nudge is healed by the
- * next event or a busy-settle reload).
+ * conversation.* events call `onConversationEvent`; `hello` frames (U3
+ * Task 4, the W3 amendment) call `onHello` with the connection's
+ * streamId. Event types are an open set: unknown types are IGNORED
+ * (never an error — spec §7.3). Returns the close. The browser's native
+ * EventSource auto-reconnects; a malformed frame is dropped (the stream
+ * only nudges — a dropped nudge is healed by the next event or a
+ * busy-settle reload).
  */
 function subscribeHostEvents(
 	onConversationEvent: () => void,
-	onJobChanged: () => void,
 	onHello: (streamId: string) => void,
 	onSurfaceChanged?: (event: {
 		slug: string;
@@ -162,7 +158,6 @@ function subscribeHostEvents(
 		const onAny = (): void => onConversationEvent();
 		source.addEventListener("conversation.created", onAny);
 		source.addEventListener("conversation.changed", onAny);
-		source.addEventListener("job.changed", onJobChanged);
 		// surface.changed (U3 Task 5): fan into the app's ext hub. Loose-parse
 		// (the frame is server-produced; a malformed one is a dropped nudge).
 		source.addEventListener("surface.changed", (event: { data: string }) => {
@@ -240,9 +235,6 @@ export function useConversationList(
 		busy: boolean;
 		/** Test seam: inject a stub EventSource factory. */
 		createEventSource?: ListEventSourceFactory;
-		/** `job.changed` nudge (W4 Task 5): the jobs panel's refetch token,
-		 *  delivered on the SAME shared source — never a second EventSource. */
-		onJobChanged?: () => void;
 	/**
 	 * `surface.changed` dispatch (U3 Task 5): the shared events source
 	 * routes a surface event into the app-level ext hub (the transports'
@@ -390,20 +382,18 @@ export function useConversationList(
 	// the hook is mounted once (App), so the hook's effect IS the shared
 	// subscription. A conversation.* event refetches the list; bursts
 	// coalesce by fetch latency (reloads overlap harmlessly — last write
-	// wins, and the server's list is cheap). `job.changed` (W4 Task 5)
-	// rides the same source into the jobs panel's nudge callback.
+	// wins, and the server's list is cheap).
 	useEffect(() => {
 		return subscribeHostEvents(
 			() => {
 				void reload();
 			},
-			options.onJobChanged ?? (() => {}),
 			onHello,
 			options.onSurfaceChanged,
 			options.onChatChanged,
 			options.createEventSource,
 		);
-	}, [reload, onHello, options.createEventSource, options.onJobChanged, options.onSurfaceChanged, options.onChatChanged]);
+	}, [reload, onHello, options.createEventSource, options.onSurfaceChanged, options.onChatChanged]);
 
 	// The busy → idle transition: an immediate reload plus a settle reload
 	// 5 s later (auto names land at run settlement, shortly after idle).

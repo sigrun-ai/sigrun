@@ -163,7 +163,15 @@ function isObject(payload: unknown): payload is Record<string, unknown> {
 	return typeof payload === "object" && payload !== null && !Array.isArray(payload);
 }
 
-/** The `{jobId}` a runNow/resetState dispatch carries. */
+/** The `{jobId}` a runNow/resetState dispatch carries. Channel caveat
+ * (tabs+skills Task 6 e2e find): a plain callout button dispatches with
+ * a NULL payload on BOTH channels (webui ActionButtonRow and the tui's
+ * runAction pass `null` — the {itemId} convention covers only a
+ * collection ACTIVATION), so the handlers resolve the job from the
+ * instance params (`params.job`) — the surface is principal-scoped, so
+ * the params ARE the instance key and one selected job never serves
+ * another's fire. The payload `{jobId}` stays accepted (an explicit
+ * override, e.g. a future per-row button), params take the fallback. */
 function jobIdOf(payload: unknown): string | undefined {
 	if (!isObject(payload)) return undefined;
 	const jobId = payload.jobId;
@@ -743,9 +751,12 @@ export function createJobsView(deps: {
 				ctx: SurfaceContext,
 				payload: unknown,
 			): Promise<ActionResult> => {
-				const jobId = jobIdOf(payload);
+				const jobId = jobIdOf(payload) ?? paramsOf(ctx.params).job;
 				if (jobId === undefined) {
-					return { ok: false, error: { message: "runNow expects {jobId}" } };
+					return {
+						ok: false,
+						error: { message: "runNow needs a selected job (params.job)" },
+					};
 				}
 				const resolved = await actionAccess(ctx, jobId);
 				if ("error" in resolved) return resolved.error;
@@ -759,9 +770,12 @@ export function createJobsView(deps: {
 				ctx: SurfaceContext,
 				payload: unknown,
 			): Promise<ActionResult> => {
-				const jobId = jobIdOf(payload);
+				const jobId = jobIdOf(payload) ?? paramsOf(ctx.params).job;
 				if (jobId === undefined) {
-					return { ok: false, error: { message: "resetState expects {jobId}" } };
+					return {
+						ok: false,
+						error: { message: "resetState needs a selected job (params.job)" },
+					};
 				}
 				const resolved = await actionAccess(ctx, jobId);
 				if ("error" in resolved) return resolved.error;

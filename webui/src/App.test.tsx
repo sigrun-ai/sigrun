@@ -401,9 +401,8 @@ describe("App shell", () => {
 		expect(composer.findAllByProps({ className: "composer" })).toHaveLength(
 			1,
 		);
-		// The events source rides FIRST (the list hook's shared /v1/events —
-		// the jobs panel's job.changed nudge rides it too, W4 Task 5), then
-		// the boot-selected root conversation's stream.
+		// The events source rides FIRST (the list hook's shared /v1/events),
+		// then the boot-selected root conversation's stream.
 		expect(sources.map((s) => s.url)).toEqual([
 			"/v1/events",
 			"/v1/conversations/1/stream",
@@ -1349,15 +1348,44 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		});
 		expect(locationHash()).toContain(encodeURIComponent('{"board":"b1"}'));
 
-		// {job} → the chat route + the jobs panel opens (the
-		// RightPanel's data-panel is the mode's observable).
+		// {job} → the Jobs TAB route carrying the job id in its params
+		// (tabs+skills Task 6: the JobsPanel is gone; the job target
+		// deep-links the core/jobs view).
 		await act(async () => {
 			onNavigate({ target: { job: "j1" } });
 		});
-		expect(locationHash()).toBe("#/c");
+		expect(locationHash()).toBe(
+			`#/ext/core/jobs?params=${encodeURIComponent('{"job":"j1"}')}`,
+		);
+		// …and NO right panel opened for it (the panel's data-panel is the
+		// mode's observable; "jobs" is no longer a panel mode at all).
 		expect(
-			renderer.root.findAllByProps({ "aria-label": "jobs panel" }).length,
+			renderer.root.findAllByProps({ "data-panel": "jobs" }),
+		).toHaveLength(0);
+		// The fallback-hash seam is module-level: reset so the NEXT test
+		// boots on the clean chat route (this test ends on an ext route).
+		resetLocationHashForTest();
+	});
+
+	test("the chat header has no jobs panel button (tabs+skills Task 6)", async () => {
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// The panel toggles that survive are Outline + Workspace; the
+		// Jobs tab lives on the rail (meta.coreViews), not the header.
+		expect(
+			renderer.root.findAllByProps({ "aria-label": "outline" }).length,
 		).toBeGreaterThan(0);
+		expect(
+			renderer.root.findAllByProps({ "aria-label": "workspace" }).length,
+		).toBeGreaterThan(0);
+		expect(
+			renderer.root.findAllByProps({ "aria-label": "jobs" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ "data-panel": "jobs" }),
+		).toHaveLength(0);
 	});
 });
 
