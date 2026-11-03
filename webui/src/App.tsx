@@ -1085,7 +1085,7 @@ function AppShell(options: AppOptions = {}) {
 
 	// Conversation writes. Each action lands its write, then reloads the
 	// lifted list so the sidebar (and the header title) reflect it at once —
-	// the 10 s poll would also catch up, but the user just acted.
+	// the conversation.* event would also catch up, but the user just acted.
 
 	const renameConversation = useCallback(
 		async (id: number, name: string): Promise<void> => {

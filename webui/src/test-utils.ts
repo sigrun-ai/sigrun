@@ -25,6 +25,8 @@ import type { EventSourceLike, StreamMessageEvent } from "./stream.js";
 
 export class StubEventSource implements EventSourceLike {
 	closed = false;
+	/** The native EventSource's state (0 connecting, 1 open, 2 closed). */
+	readyState = 1;
 	private readonly listeners = new Map<
 		string,
 		((event: StreamMessageEvent) => void)[]

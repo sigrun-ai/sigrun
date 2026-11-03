@@ -13,6 +13,10 @@
  *   sees is listable state; a `job.changed` event (W4 Task 5) calls the
  *   optional `onJobChanged` callback on the SAME source — the jobs
  *   panel never opens its own EventSource;
+ * - reload on every RECONNECT (a new hello streamId — the server keeps
+ *   no replay, so the gap is healed by one refetch) and whenever the tab
+ *   becomes visible again; reopen the source after a backoff when the
+ *   browser gave up on it for good (readyState CLOSED);
  * - on a busy → idle transition reload IMMEDIATELY, then again after
  *   5 s, so a name the server auto-generated at run settlement appears
  *   without a manual reload (belt for the run.settled event's list
@@ -63,6 +67,12 @@ export interface UseConversationListResult {
 
 const BUSY_SETTLE_MS = 5_000;
 
+/** The native EventSource's CLOSED readyState. */
+const EVENT_SOURCE_CLOSED = 2;
+/** The reopen backoff after the browser gave up on the stream. */
+const REOPEN_MIN_MS = 5_000;
+const REOPEN_MAX_MS = 60_000;
+
 /** The EventSource factory the hook consumes (the test seam). */
 export type ListEventSourceFactory = (url: string) => EventSourceLike;
 
@@ -107,7 +117,7 @@ function subscribeHostEvents(
 	) {
 		return () => {};
 	}
-	const source: EventSourceLike =
+	const create = (): EventSourceLike =>
 		createEventSource !== undefined
 			? createEventSource("/v1/events")
 			// SAFETY: the native EventSource satisfies the structural
@@ -115,79 +125,113 @@ function subscribeHostEvents(
 			// data-carrying message event) — the same cast stream.ts's
 			// defaultFactory makes.
 			: (new EventSource("/v1/events") as unknown as EventSourceLike);
-	const onAny = (): void => onConversationEvent();
-	source.addEventListener("conversation.created", onAny);
-	source.addEventListener("conversation.changed", onAny);
-	source.addEventListener("job.changed", onJobChanged);
-	// surface.changed (U3 Task 5): fan into the app's ext hub. Loose-parse
-	// (the frame is server-produced; a malformed one is a dropped nudge).
-	source.addEventListener("surface.changed", (event: { data: string }) => {
-		try {
-			const parsed: unknown = JSON.parse(event.data);
-			// U5 Task 4: the CHAT member (spec §8.2) — conversation-scoped,
-			// named by (conversationId, entryId); fans into the chat hub.
-			if (
-				typeof parsed === "object" &&
-				parsed !== null &&
-				typeof (parsed as { conversationId?: unknown }).conversationId ===
-					"number" &&
-				typeof (parsed as { entryId?: unknown }).entryId === "string" &&
-				typeof (parsed as { rev?: unknown }).rev === "number"
-			) {
-				onChatChanged?.(
-					parsed as { conversationId: number; entryId: string; rev: number },
-				);
-				return;
+	// The browser reconnects a dropped stream on its own, but an HTTP
+	// error or a non-SSE reply on reconnect (an auth proxy's login
+	// redirect) closes it FOR GOOD. Reopen after a backoff (doubling,
+	// capped); the new stream's hello reloads the list.
+	let source: EventSourceLike | undefined;
+	let reopen: ReturnType<typeof setTimeout> | undefined;
+	let backoff = REOPEN_MIN_MS;
+	let stopped = false;
+	const open = (): void => {
+		const next = create();
+		source = next;
+		attach(next);
+		next.addEventListener("hello", () => {
+			backoff = REOPEN_MIN_MS;
+		});
+		next.addEventListener("error", () => {
+			if (stopped || next.readyState !== EVENT_SOURCE_CLOSED) return;
+			if (reopen !== undefined || source !== next) return;
+			next.close();
+			reopen = setTimeout(() => {
+				reopen = undefined;
+				if (!stopped) open();
+			}, backoff);
+			backoff = Math.min(backoff * 2, REOPEN_MAX_MS);
+		});
+	};
+	open();
+	return () => {
+		stopped = true;
+		if (reopen !== undefined) clearTimeout(reopen);
+		source?.close();
+	};
+
+	function attach(source: EventSourceLike): void {
+		const onAny = (): void => onConversationEvent();
+		source.addEventListener("conversation.created", onAny);
+		source.addEventListener("conversation.changed", onAny);
+		source.addEventListener("job.changed", onJobChanged);
+		// surface.changed (U3 Task 5): fan into the app's ext hub. Loose-parse
+		// (the frame is server-produced; a malformed one is a dropped nudge).
+		source.addEventListener("surface.changed", (event: { data: string }) => {
+			try {
+				const parsed: unknown = JSON.parse(event.data);
+				// U5 Task 4: the CHAT member (spec §8.2) — conversation-scoped,
+				// named by (conversationId, entryId); fans into the chat hub.
+				if (
+					typeof parsed === "object" &&
+					parsed !== null &&
+					typeof (parsed as { conversationId?: unknown }).conversationId ===
+						"number" &&
+					typeof (parsed as { entryId?: unknown }).entryId === "string" &&
+					typeof (parsed as { rev?: unknown }).rev === "number"
+				) {
+					onChatChanged?.(
+						parsed as { conversationId: number; entryId: string; rev: number },
+					);
+					return;
+				}
+			} catch {
+				// a malformed frame is a dropped nudge
 			}
-		} catch {
-			// a malformed frame is a dropped nudge
-		}
-		if (onSurfaceChanged === undefined) return;
-		try {
-			const parsed: unknown = JSON.parse(event.data);
-			if (
-				typeof parsed === "object" &&
-				parsed !== null &&
-				typeof (parsed as { slug?: unknown }).slug === "string" &&
-				typeof (parsed as { id?: unknown }).id === "string" &&
-				typeof (parsed as { k?: unknown }).k === "string" &&
-				typeof (parsed as { rev?: unknown }).rev === "number" &&
-				typeof (parsed as { treeRev?: unknown }).treeRev === "number"
-			) {
-				onSurfaceChanged(
-					parsed as {
-						slug: string;
-						id: string;
-						k: string;
-						rev: number;
-						treeRev: number;
-					},
-				);
+			if (onSurfaceChanged === undefined) return;
+			try {
+				const parsed: unknown = JSON.parse(event.data);
+				if (
+					typeof parsed === "object" &&
+					parsed !== null &&
+					typeof (parsed as { slug?: unknown }).slug === "string" &&
+					typeof (parsed as { id?: unknown }).id === "string" &&
+					typeof (parsed as { k?: unknown }).k === "string" &&
+					typeof (parsed as { rev?: unknown }).rev === "number" &&
+					typeof (parsed as { treeRev?: unknown }).treeRev === "number"
+				) {
+					onSurfaceChanged(
+						parsed as {
+							slug: string;
+							id: string;
+							k: string;
+							rev: number;
+							treeRev: number;
+						},
+					);
+				}
+			} catch {
+				// a malformed frame is a dropped nudge
 			}
-		} catch {
-			// a malformed frame is a dropped nudge
-		}
-	});
-	// The hello frame (U3 Task 4): each (re)connect carries a NEW
-	// streamId; the handler owns the visible-surface re-fetch.
-	source.addEventListener("hello", (event: { data: string }) => {
-		try {
-			const parsed: unknown = JSON.parse(event.data);
-			if (
-				typeof parsed === "object" &&
-				parsed !== null &&
-				typeof (parsed as { streamId?: unknown }).streamId === "string"
-			) {
-				onHello((parsed as { streamId: string }).streamId);
+		});
+		// The hello frame (U3 Task 4): each (re)connect carries a NEW
+		// streamId; the handler owns the visible-surface re-fetch.
+		source.addEventListener("hello", (event: { data: string }) => {
+			try {
+				const parsed: unknown = JSON.parse(event.data);
+				if (
+					typeof parsed === "object" &&
+					parsed !== null &&
+					typeof (parsed as { streamId?: unknown }).streamId === "string"
+				) {
+					onHello((parsed as { streamId: string }).streamId);
+				}
+			} catch {
+				// A malformed hello is a dropped nudge — the next reconnect
+				// (EventSource auto-reconnect) sends a fresh one.
 			}
-		} catch {
-			// A malformed hello is a dropped nudge — the next reconnect
-			// (EventSource auto-reconnect) sends a fresh one.
-		}
-	});
-	// Unknown event types never register a listener at all — the open-set
-	// rule (spec §7.3) is satisfied by construction.
-	return () => source.close();
+		});
+		// Unknown event types never register a listener at all — the open-set
+		// rule (spec §7.3) is satisfied by construction.
+	}
 }
 
 export function useConversationList(
@@ -293,6 +337,10 @@ export function useConversationList(
 			streamRef.current = next;
 			setStreamId(next);
 			if (previous !== undefined && previous !== next) {
+				// A reconnect: anything that happened while the stream was
+				// down sent no event (the server keeps no replay), so the
+				// list refetches once.
+				void reload();
 				for (const composite of visibleSurfaces.current) {
 					const [slug, id, key] = composite.split("\u0001");
 					let params: JsonObject | undefined;
@@ -310,11 +358,32 @@ export function useConversationList(
 				}
 			}
 		},
-		[fetchSurface],
+		[fetchSurface, reload],
 	);
 
 	useEffect(() => {
 		void reload();
+	}, [reload]);
+
+	// A tab returning to view reloads the list: mobile browsers and
+	// background-tab freezing can hold a stream that looks open while
+	// delivering nothing, so visibility is the belt to the hello's braces.
+	useEffect(() => {
+		const doc = (
+			globalThis as {
+				document?: {
+					visibilityState?: string;
+					addEventListener?: (type: string, listener: () => void) => void;
+					removeEventListener?: (type: string, listener: () => void) => void;
+				};
+			}
+		).document;
+		if (doc?.addEventListener === undefined) return undefined;
+		const onVisibility = (): void => {
+			if (doc.visibilityState === "visible") void reload();
+		};
+		doc.addEventListener("visibilitychange", onVisibility);
+		return () => doc.removeEventListener?.("visibilitychange", onVisibility);
 	}, [reload]);
 
 	// The host-events subscription (W3 Task 4): ONE EventSource per app —
