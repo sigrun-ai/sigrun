@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.0] - 2026-11-02
+
+### Added
+- **Escalations core.** Extensions send notices through `host.notify`
+  (validated targets, delivered on the bounded side lane), look jobs up
+  with `host.jobs.get`, create job-scoped conversations, and read a
+  conversation's history through the trusted `host.conversations.entries`
+  / `entry` (callers enforce access themselves).
+- **Per-job state.** Each job gets a state folder under its owner's jobs
+  root (jail-granted to the run); the run's prompt names it. State follows
+  the job through delete, transfer and retire, and resets on request
+  (`POST /v1/jobs/{id}/state/reset`, and a Reset button in the jobs tab).
+- Extension views and panels render through the block renderer (they were
+  a JSON placeholder in 0.5.0 — the curator view showed raw data).
+- The settings page gains the `builtinExtensions.gateway` toggle.
+
+### Changed
+- **Ownerless jobs belong to the primary admin** (the earliest-created
+  directory admin): run conversations, access checks, `host.jobs.get` and
+  job state all use that effective owner. A single-operator install with
+  an empty directory stays ownerless.
+- The identity prompt section is multi-user and no longer names the agent
+  (naming is persona territory, `SOUL.md`).
+- Built-in documentation says six built-ins everywhere (codemode, MCP,
+  tool search, gateway, OAuth, curator); everything else is optional.
+
+### Fixed
+- The web conversation list heals after the events stream drops: it
+  reloads on every reconnect and when the tab becomes visible again, and
+  reopens an EventSource the browser gave up on (5-60 s backoff).
+  Conversations created on another device no longer stay invisible until
+  a reload.
+- Leaving an extension view: the Chats rail entry works and picking a
+  conversation in the sidebar returns to the chat.
+- Phone layout: a long URL in a user message no longer makes the chat
+  slide sideways; tables keep readable columns and scroll inside their
+  card; the composer's controls stay on one row.
+- Extension surfaces: params-carrying action/data URLs, zero-width surface
+  pages, and cadence refreshes.
+- `SIGRUN_EXTENSIONS` without a model env no longer crashes boot.
+
 ## [0.5.0] - 2026-11-02
 
 ### Added
