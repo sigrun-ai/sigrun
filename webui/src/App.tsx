@@ -993,14 +993,26 @@ function AppShell(options: AppOptions = {}) {
 		(id: number): void => {
 			writeHash(`#/c/${id}`);
 			setRoute({ kind: "chat" });
+			settingsEnteredInApp.current = false;
+			preSettingsHash.current = null;
+			setSectionTick((tick) => tick + 1);
 			onSelect(id);
 		},
 		[onSelect],
 	);
+	// The rail's Chats entry: back to the chat route from any view (the
+	// selected conversation is kept — the chat tab remembers it).
+	const onOpenChats = useCallback((): void => {
+		if (readHash() !== "#/c") writeHash("#/c");
+		setRoute({ kind: "chat" });
+		settingsEnteredInApp.current = false;
+		preSettingsHash.current = null;
+		setSectionTick((tick) => tick + 1);
+		setDrawerOpen(false);
+	}, []);
 	// The conversation sidebar's select routes through the hash writer
 	// (browser back returns to a surface the user came from); the
 	// SessionList + transcript navigate callbacks use the SAME seam.
-	void onSelectWithRoute;
 
 	// Boot-time default: select the root conversation (the §5 default session)
 	// once the schema gate passes and the lifted list has rows, so the
@@ -1073,7 +1085,7 @@ function AppShell(options: AppOptions = {}) {
 
 	// Conversation writes. Each action lands its write, then reloads the
 	// lifted list so the sidebar (and the header title) reflect it at once —
-	// the 10 s poll would also catch up, but the user just acted.
+	// the conversation.* event would also catch up, but the user just acted.
 
 	const renameConversation = useCallback(
 		async (id: number, name: string): Promise<void> => {
@@ -1213,6 +1225,11 @@ function AppShell(options: AppOptions = {}) {
 					meta={boot.meta}
 					onOpenSettings={onOpenSettings}
 					settingsActive={route.kind === "settings"}
+					onOpenChats={onOpenChats}
+					chatsActive={route.kind === "chat" && section !== "blocks"}
+					{...(extRoute === null
+						? {}
+						: { activeExtView: `${extRoute.slug}/${extRoute.id}` })}
 					onOpenGallery={
 						boot.meta.dev
 							? () => {
@@ -1252,7 +1269,7 @@ function AppShell(options: AppOptions = {}) {
 				<SessionList
 					rows={list.rows}
 					activeId={activeId}
-					onSelect={onSelect}
+					onSelect={onSelectWithRoute}
 					onNew={onNew}
 					onRename={renameConversation}
 					onArchive={archiveConversation}

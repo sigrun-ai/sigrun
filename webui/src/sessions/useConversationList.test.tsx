@@ -66,7 +66,9 @@ function makeHarness(init?: { readonly listFails?: boolean }) {
 			text: () => Promise.resolve(""),
 		});
 	};
-	const events = new StubEventSource();
+	// Every EventSource the hook opens, oldest first (a reopen after a
+	// permanent failure appends); `events` is always the newest.
+	const sources: StubEventSource[] = [];
 	// U3 Task 4 seam: surface fetches the hook issues (X-Sigrun-Stream +
 	// the reconnect re-fetch fan-out) are recorded here.
 	const surfaceRequests: { url: string; headers: Record<string, string> }[] = [];
@@ -88,9 +90,18 @@ function makeHarness(init?: { readonly listFails?: boolean }) {
 	return {
 		client: createClient({ fetch: fetchImpl }),
 		conversations,
-		events,
+		get events(): StubEventSource {
+			const latest = sources[sources.length - 1];
+			if (latest === undefined) throw new Error("no EventSource opened");
+			return latest;
+		},
+		sources,
 		calls: () => listCalls,
-		createEventSource: () => events,
+		createEventSource: () => {
+			const source = new StubEventSource();
+			sources.push(source);
+			return source;
+		},
 		fetchSurfaceImpl,
 		surfaceFetches: () => surfaceRequests.length,
 		lastSurfaceRequest: () => surfaceRequests[surfaceRequests.length - 1],
@@ -217,6 +228,59 @@ describe("useConversationList", () => {
 		expect(harness.calls()).toBe(1);
 		await emit("conversation.created");
 		expect(harness.calls()).toBe(2);
+	});
+
+	test("a reconnect (new streamId) reloads the list: events missed in the gap heal", async () => {
+		const harness = makeHarness();
+		const { emit, text } = await renderHost(harness, false);
+		await emit("hello", JSON.stringify({ streamId: "stream-one" }));
+		expect(harness.calls()).toBe(1); // the FIRST hello is not a reconnect
+		// Created on another device while this stream was down: no event.
+		harness.conversations.push(summary({ id: 3, name: "Made on the phone" }));
+		await emit("hello", JSON.stringify({ streamId: "stream-two" }));
+		expect(harness.calls()).toBe(2);
+		expect(text()).toContain("Made on the phone");
+	});
+
+	test("the tab becoming visible again reloads the list", async () => {
+		const listeners = new Map<string, () => void>();
+		const doc = {
+			visibilityState: "visible",
+			addEventListener: (type: string, listener: () => void) => listeners.set(type, listener),
+			removeEventListener: (type: string) => listeners.delete(type),
+		};
+		vi.stubGlobal("document", doc);
+		const harness = makeHarness();
+		await renderHost(harness, false);
+		expect(harness.calls()).toBe(1);
+		doc.visibilityState = "hidden";
+		await act(async () => listeners.get("visibilitychange")?.());
+		expect(harness.calls()).toBe(1); // hiding does not reload
+		doc.visibilityState = "visible";
+		await act(async () => {
+			listeners.get("visibilitychange")?.();
+			await Promise.resolve();
+		});
+		expect(harness.calls()).toBe(2);
+	});
+
+	test("a permanently closed stream reopens after a backoff", async () => {
+		const harness = makeHarness();
+		const { advance, emit } = await renderHost(harness, false);
+		expect(harness.sources).toHaveLength(1);
+		const first = harness.events;
+		// The browser gave up (an HTTP error or a non-SSE reply on reconnect).
+		first.readyState = 2;
+		await emit("error");
+		expect(harness.sources).toHaveLength(1);
+		await advance(5_000);
+		expect(harness.sources).toHaveLength(2);
+		expect(first.closed).toBe(true);
+		// A transient error (the browser still reconnecting) opens nothing.
+		harness.events.readyState = 0;
+		await emit("error");
+		await advance(60_000);
+		expect(harness.sources).toHaveLength(2);
 	});
 
 	test("busy → idle reloads immediately, then again after 5 s", async () => {

@@ -575,7 +575,7 @@ non-function `begin`/`complete` quarantines that extension. Boot continues
 without its login providers.
 
 The `@sigrun/oauth` package implements this contract for OIDC and OAuth 2.
-It is the fourth built-in extension: bundled and loaded by default.
+It is one of the six built-in extensions: bundled and loaded by default.
 `builtinExtensions.oauth: false` disables it (restart-required), and a
 configured extension with the same package name replaces it. An unresolvable
 or failed built-in is quarantined rather than aborting boot. The package
@@ -1630,8 +1630,8 @@ wins; a later extension declaring `gateway` quarantines at load with
 `gateway engine already declared by "<first slug>"` (an engine owns
 supervision over the whole channel set — never last-wins). Core ships
 no engine of its own in the loader, but the **built-in `gateway`
-extension** (`@sigrun/ext-gateway`, the fourth built-in alongside
-codemode, MCP, and tool search) is exactly that engine: installed as a
+extension** (`@sigrun/ext-gateway`, one of the six built-ins alongside
+codemode, MCP, tool search, OAuth and the curator) is exactly that engine: installed as a
 core dependency, enabled by default, disableable with
 `"builtinExtensions": {"gateway": false}`. With the built-in disabled
 (or replaced), adapters without a loaded engine are inert (below).

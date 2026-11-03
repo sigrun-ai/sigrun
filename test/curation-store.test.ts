@@ -187,7 +187,9 @@ describe("SkillStore", () => {
 		expect(redone[0]).toMatchObject({ action: "undo" });
 	});
 
-	test("retention keeps 10 versions and 500 feed entries", async () => {
+	// 510 sequential versioned writes: ~1-2 s locally, past the 5 s default
+	// on a loaded CI runner (it timed out there once).
+	test("retention keeps 10 versions and 500 feed entries", { timeout: 60_000 }, async () => {
 		const { userArea, store } = await setup();
 		await create(store);
 		for (let i = 0; i < 510; i++) {

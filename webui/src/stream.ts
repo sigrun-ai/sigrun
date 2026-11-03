@@ -46,6 +46,9 @@ export interface StreamMessageEvent {
  * `EventSource` satisfies this structurally; tests inject a stub.
  */
 export interface EventSourceLike {
+	/** The native EventSource's state (2 = CLOSED: the browser gave up
+	 *  reconnecting). Optional — stubs may omit it. */
+	readonly readyState?: number;
 	close(): void;
 	addEventListener(
 		type: string,

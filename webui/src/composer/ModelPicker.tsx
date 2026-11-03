@@ -103,7 +103,7 @@ export function ModelPicker(props: {
 	}
 
 	return (
-		<span className="composer-picker" ref={pickerSlot}>
+		<span className="composer-picker composer-picker-model" ref={pickerSlot}>
 			<button
 				type="button"
 				className="composer-pill"
@@ -118,7 +118,7 @@ export function ModelPicker(props: {
 				onClick={() => (open ? setOpen(false) : openMenu())}
 				onKeyDown={onKeyDown}
 			>
-				{currentName}
+				<span className="composer-pill-label">{currentName}</span>
 				<span className="composer-pill-caret" aria-hidden="true">
 					▾
 				</span>

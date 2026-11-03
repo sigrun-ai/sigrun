@@ -8,7 +8,7 @@
 import { act } from "react";
 import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
-import { render } from "../test-utils";
+import { instanceText, render } from "../test-utils";
 import { THINKING_LEVELS, ThinkingPicker } from "./ThinkingPicker";
 
 function toggleOf(renderer: TestRenderer.ReactTestRenderer) {
@@ -26,14 +26,14 @@ describe("ThinkingPicker", () => {
 		);
 		const toggle = toggleOf(renderer);
 		expect(toggle.props["aria-haspopup"]).toBe("listbox");
-		expect(toggle.children.join("")).toContain("Thinking: default");
+		expect(instanceText(toggle)).toContain("Thinking: default");
 	});
 
 	test("the popover lists the levels /thinking accepts, in order, with the current marked", () => {
 		const renderer = render(
 			<ThinkingPicker current="high" onPick={() => Promise.resolve()} />,
 		);
-		expect(toggleOf(renderer).children.join("")).toContain("Thinking: high");
+		expect(instanceText(toggleOf(renderer))).toContain("Thinking: high");
 		act(() => {
 			toggleOf(renderer).props.onClick();
 		});

@@ -10,7 +10,7 @@
 	.IS_REACT_ACT_ENVIRONMENT = true;
 
 import { act, createElement as h, type ReactElement, type ReactNode } from "react";
-import { afterEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { CollectionBlock, JsonObject } from "@sigrun/shared/blocks";
 import { render, textContent } from "../../test-utils";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
@@ -100,6 +100,17 @@ function events(...rows: readonly [string, string, string][]): JsonObject {
 const OCT = "2026-10";
 
 describe("calendar display (spec §5.5/§12.3/§12.4)", () => {
+	// The month view opens on TODAY's month: pin the clock inside the
+	// fixture month, or every test breaks once the real date leaves it.
+	// Only Date is faked; act/render timers stay real.
+	beforeEach(() => {
+		vi.useFakeTimers({ toFake: ["Date"] });
+		vi.setSystemTime(new Date(`${OCT}-15T12:00:00Z`));
+	});
+	afterEach(() => {
+		vi.useRealTimers();
+	});
+
 	test("month view places items by time.start on their day cell", () => {
 		const { renderer } = renderCalendar(
 			calendarBlock(),

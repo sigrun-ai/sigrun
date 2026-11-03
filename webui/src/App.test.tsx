@@ -1000,6 +1000,52 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		expect(locationHash()).toContain("/ext/fixture-surfaces/board");
 	});
 
+	test("the Chats rail button leaves an extension view for the chat route", async () => {
+		const { client, createEventSource } = makeHarness({ meta: extMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		expect(locationHash()).toContain("/ext/fixture-surfaces/board");
+		const { SurfacePage } = await import("./blocks/SurfacePage");
+		await vi.waitFor(() => renderer.root.findByType(SurfacePage));
+		const chats = renderer.root.findByProps({ "data-rail-section": "chats" });
+		await act(async () => {
+			(chats.props as { onClick: () => void }).onClick();
+		});
+		expect(locationHash()).toBe("#/c");
+		expect(renderer.root.findAllByType(SurfacePage)).toHaveLength(0);
+		resetLocationHashForTest();
+	});
+
+	test("picking a conversation in the sidebar leaves an extension view", async () => {
+		const { client, createEventSource } = makeHarness({ meta: extMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		const { SurfacePage } = await import("./blocks/SurfacePage");
+		await vi.waitFor(() => renderer.root.findByType(SurfacePage));
+		const { SessionList } = await import("./sessions/SessionList");
+		const list = renderer.root.findByType(SessionList);
+		await act(async () => {
+			(list.props.onSelect as (id: number) => void)(2);
+		});
+		expect(locationHash()).toBe("#/c/2");
+		expect(renderer.root.findAllByType(SurfacePage)).toHaveLength(0);
+		resetLocationHashForTest();
+	});
+
 	test("an access-none surface renders the not-found state and loses its rail entry", async () => {
 		const { client, createEventSource } = makeHarness({ meta: extMeta() });
 		const renderer = await renderAsync(
@@ -1029,7 +1075,8 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		// SurfacePage and drive the prop directly (the transport act
 		// delivery is SurfacePage's own unit test).
 		const { SurfacePage } = await import("./blocks/SurfacePage");
-		const page = renderer.root.findByType(SurfacePage);
+		// The page mounts once the async event-key hash resolves.
+		const page = await vi.waitFor(() => renderer.root.findByType(SurfacePage));
 		const onNavigate = page.props.onNavigate as (action: {
 			params?: Record<string, unknown>;
 			target?: unknown;

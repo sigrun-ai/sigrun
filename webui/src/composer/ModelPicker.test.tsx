@@ -10,7 +10,7 @@ import { act } from "react";
 import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
 import type { ModelEntry } from "../api";
-import { render } from "../test-utils";
+import { instanceText, render } from "../test-utils";
 import { ModelPicker } from "./ModelPicker";
 
 const MODELS: readonly ModelEntry[] = [
@@ -73,7 +73,7 @@ describe("ModelPicker", () => {
 		const toggle = toggleOf(renderer);
 		expect(toggle.props["aria-haspopup"]).toBe("listbox");
 		expect(toggle.props["aria-expanded"]).toBe(false);
-		expect(toggle.children.join("")).toContain("Faux One");
+		expect(instanceText(toggle)).toContain("Faux One");
 		expect(renderer.root.findAllByProps({ role: "option" })).toEqual([]);
 		act(() => {
 			toggle.props.onClick();

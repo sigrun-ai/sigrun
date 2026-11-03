@@ -705,6 +705,11 @@ body {
 .chat-center {
 	flex: 1;
 	overflow-y: auto;
+	/* The transcript scrolls vertically only: wide content (code, tables)
+	   scrolls inside its own box, so anything still too wide is clipped
+	   rather than letting the column drift sideways under a finger. */
+	overflow-x: hidden;
+	overscroll-behavior-x: none;
 	padding: 28px 24px 8rem;
 	min-height: 0;
 }
@@ -799,12 +804,15 @@ body {
 }
 
 .entry-user-message {
-	/* Capped in ABSOLUTE ch units, never a percentage: the bubble lives
-	   inside shrink-wrapped flex-end columns (turn-user → entry-user),
-	   where a percentage max-width resolved against ~200px of actions
-	   width and wrapped a 24-char sentence after three words. 60ch is
-	   the readable cap; alignment comes from the flex-end ancestors. */
-	max-width: 60ch;
+	/* Capped at 60ch (the readable width) AND the column: 100% resolves
+	   against .entry-user, which STRETCHES to the turn width (a shrink-
+	   wrapped flex-end column once made a percentage cap resolve against
+	   ~200px of actions; see .entry-user). On a phone 60ch is wider than
+	   the screen, so the 100% bound is the one that holds. */
+	max-width: min(60ch, 100%);
+	/* A long URL or token wraps inside the bubble: unbroken, it widened the
+	   bubble past the column and the whole chat slid sideways on phones. */
+	overflow-wrap: anywhere;
 	padding: 9px 14px;
 	border-radius: 14px 14px 4px 14px;
 	background: var(--surface-2);
@@ -1052,9 +1060,26 @@ body {
 	white-space: nowrap;
 }
 
+.md-tbl-scroll {
+	overflow-x: auto;
+	/* A sideways swipe that reaches the table's edge stops there instead of
+	   carrying on into the page (or the browser's back gesture). */
+	overscroll-behavior-x: contain;
+}
+
 .md-tbl table {
 	width: 100%;
 	border-collapse: collapse;
+}
+
+/* Cells break only at word boundaries. The prose wrapper's
+   word-break: break-word would otherwise let columns shrink to one
+   character wide (“inf/er/hu/b” on a phone); a table too wide for its card
+   scrolls inside .md-tbl-scroll instead. */
+.md-tbl th,
+.md-tbl td {
+	word-break: normal;
+	overflow-wrap: normal;
 }
 
 .md-tbl th {
@@ -1563,11 +1588,42 @@ body {
    quiet text buttons that surface on hover (no shadows on routine
    controls — shadows are reserved for popovers). */
 
+/* ONE row at every width: wrapping put a variable set of controls on a
+   second line. The model label shrinks first (ellipsis), the thinking
+   prefix drops on phones; attach, the ring and send never shrink. */
 .composer-toolbar {
 	display: flex;
 	align-items: center;
 	gap: 4px;
-	flex-wrap: wrap;
+	flex-wrap: nowrap;
+	min-width: 0;
+}
+
+.composer-toolbar > * {
+	flex-shrink: 0;
+}
+
+.composer-toolbar > .composer-picker-model {
+	flex-shrink: 1;
+	min-width: 0;
+}
+
+.composer-picker-model .composer-pill {
+	max-width: 100%;
+	min-width: 0;
+}
+
+.composer-pill-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+	.composer-pill-prefix {
+		display: none;
+	}
 }
 
 .composer-toolbar-spacer {
@@ -1615,6 +1671,7 @@ body {
 .composer-picker {
 	position: relative;
 	display: inline-flex;
+	min-width: 0;
 }
 
 .composer-picker-menu {
@@ -2156,11 +2213,13 @@ body {
 		z-index: 90;
 		transform: translateX(-100%);
 		transition: transform 0.18s ease;
-		box-shadow: 0 0 32px rgb(0 0 0 / 35%);
 	}
 
+	/* The shadow only while open: a closed drawer's shadow bled a grey band
+	   onto the left edge of the screen. */
 	.side-drawer[data-open] {
 		transform: translateX(0);
+		box-shadow: 0 0 32px rgb(0 0 0 / 35%);
 	}
 
 	.chat-menu-toggle {

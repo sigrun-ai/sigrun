@@ -25,6 +25,8 @@ import type { EventSourceLike, StreamMessageEvent } from "./stream.js";
 
 export class StubEventSource implements EventSourceLike {
 	closed = false;
+	/** The native EventSource's state (0 connecting, 1 open, 2 closed). */
+	readyState = 1;
 	private readonly listeners = new Map<
 		string,
 		((event: StreamMessageEvent) => void)[]
@@ -74,6 +76,14 @@ export function render(element: ReactElement): TestRenderer.ReactTestRenderer {
 	});
 	if (renderer === undefined) throw new Error("test renderer not created");
 	return renderer;
+}
+
+/** All text under a test INSTANCE, concatenated (a button whose label
+ *  is split across spans reads as one string). */
+export function instanceText(node: TestRenderer.ReactTestInstance): string {
+	return node.children
+		.map((child) => (typeof child === "string" ? child : instanceText(child)))
+		.join("");
 }
 
 /** All text under a rendered JSON tree, concatenated (assertion helper). */

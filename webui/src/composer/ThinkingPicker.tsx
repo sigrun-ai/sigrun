@@ -127,7 +127,9 @@ export function ThinkingPicker(props: {
 				onClick={() => (open ? setOpen(false) : openMenu())}
 				onKeyDown={onKeyDown}
 			>
-				{`Thinking: ${label}`}
+				{/* The prefix drops on phones (CSS) so the toolbar stays one row. */}
+				<span className="composer-pill-prefix">Thinking: </span>
+				<span className="composer-pill-label">{label}</span>
 				<span className="composer-pill-caret" aria-hidden="true">
 					▾
 				</span>
