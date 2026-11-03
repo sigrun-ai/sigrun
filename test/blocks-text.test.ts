@@ -353,6 +353,37 @@ describe("toText unknown blocks", () => {
 	});
 });
 
+// ─── toText: page.selection is presentation-only ────────────────────────────
+
+describe("toText page selection (presentation-only)", () => {
+	/** A list+detail page; the sidebar rows and main text are the pinned content. */
+	const plain: Tree = treeOf({
+		type: "page",
+		title: "Jobs",
+		sidebar: [
+			{ type: "markdown", text: "- acme one" },
+			{ type: "markdown", text: "- acme two" },
+		],
+		main: [{ type: "markdown", text: "acme job detail" }],
+	});
+
+	it("selection changes nothing: output equals the same page without selection", () => {
+		const withSelection: Tree = treeOf({
+			type: "page",
+			title: "Jobs",
+			sidebar: [
+				{ type: "markdown", text: "- acme one" },
+				{ type: "markdown", text: "- acme two" },
+			],
+			main: [{ type: "markdown", text: "acme job detail" }],
+			selection: { selected: false, back: {} },
+		});
+		expect(toText(withSelection, {}, W80)).toBe(toText(plain, {}, W80));
+		expect(toText(withSelection, {}, W80)).toContain("acme one");
+		expect(toText(withSelection, {}, W80)).toContain("acme job detail");
+	});
+});
+
 // ─── toText: determinism (spec §14.3) ─────────────────────────────────────────
 
 describe("toText determinism", () => {
@@ -437,6 +468,29 @@ describe("toText page empty state", () => {
 		const text = toText(emptyPage(), { jobs: [{ id: "1", title: "Run the pump" }] }, W80);
 		expect(text).toContain("Run the pump");
 		expect(text).not.toContain("All done");
+	});
+
+	it("page.selection is presentation-only: toText output equals the same page without selection", () => {
+		const withSelection = treeOf({
+			type: "page",
+			id: "page",
+			title: "Jobs",
+			sidebar: [{ type: "markdown", text: "the list" }],
+			main: [{ type: "markdown", text: "the detail" }],
+			selection: { selected: false, back: {} },
+		});
+		const without = treeOf({
+			type: "page",
+			id: "page",
+			title: "Jobs",
+			sidebar: [{ type: "markdown", text: "the list" }],
+			main: [{ type: "markdown", text: "the detail" }],
+		});
+		// Sidebar rows then main, unchanged, at both gallery widths.
+		expect(toText(withSelection, {}, W80)).toBe(toText(without, {}, W80));
+		expect(toText(withSelection, {}, W160)).toBe(toText(without, {}, W160));
+		expect(toText(withSelection, {}, W80)).toContain("the list");
+		expect(toText(withSelection, {}, W80)).toContain("the detail");
 	});
 
 	it("the empty state replaces main only — sidebar and detail still render", () => {

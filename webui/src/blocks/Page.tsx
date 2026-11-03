@@ -9,7 +9,11 @@
  *   the sidebar and detail slots keep rendering.
  * - Compact (spec §12.3): the sidebar becomes a drawer (hidden until
  *   the header toggle opens it); the detail becomes a pushed page with
- *   a back button.
+ *   a back button. With `selection` declared, compact instead shows
+ *   the list first: `selected: false` renders the sidebar full width
+ *   (main hidden), `selected: true` renders main with a back arrow
+ *   whose click navigates with `selection.back` as params; the detail
+ *   stays a pushed page above main. Wide widths are unchanged.
  * - The header `switcher` is a `choice` field; selecting dispatches a
  *   `navigate` action carrying `{<field name>: id}` as params.
  */
@@ -133,6 +137,7 @@ function HeaderAction(props: { button: ActionButton }): ReactNode {
 export function PageBlockView(props: { block: PageBlock }): ReactNode {
 	const block = props.block;
 	const data = useSurfaceData();
+	const actions = useSurfaceActions();
 	const widthClass = useWidthClass();
 	const compact = widthClass === "compact";
 	const [drawerOpen, setDrawerOpen] = useState(false);
@@ -143,6 +148,13 @@ export function PageBlockView(props: { block: PageBlock }): ReactNode {
 	const empty = isMainEmpty(block, data.data);
 	const hasSidebar = block.sidebar !== undefined && block.sidebar.length > 0;
 	const hasDetail = block.detail !== undefined && block.detail.length > 0;
+	const selection = block.selection;
+	// Compact drill-in (spec §12.3): selection supersedes the sidebar
+	// drawer — list first, drill into main, back navigates with
+	// `selection.back`. Detail stays a pushed page above main.
+	const listView = compact && selection !== undefined && hasSidebar && !selection.selected;
+	const detailView = compact && selection !== undefined && hasSidebar && selection.selected;
+	const showDrawerToggle = compact && hasSidebar && selection === undefined;
 
 	return (
 		<div className="blk blk-page" data-block="page" id={block.id}>
@@ -161,7 +173,7 @@ export function PageBlockView(props: { block: PageBlock }): ReactNode {
 				{(block.actions ?? []).map((button) => (
 					<HeaderAction key={button.id} button={button} />
 				))}
-				{compact && hasSidebar && (
+				{showDrawerToggle && (
 					<button
 						type="button"
 						className="blk-page-toggle"
@@ -185,18 +197,40 @@ export function PageBlockView(props: { block: PageBlock }): ReactNode {
 				)}
 			</header>
 			<div className="blk-page-body">
-				{hasSidebar && (
+				{hasSidebar && !detailView && (
 					<aside
 						className="blk-page-sidebar"
 						data-page-region="sidebar"
 						data-open={
-							compact ? (drawerOpen ? "" : undefined) : undefined
+							compact && selection === undefined
+								? drawerOpen
+									? ""
+									: undefined
+								: undefined
 						}
+						data-selection={listView ? "list" : undefined}
 					>
 						{slot(block.sidebar ?? [])}
 					</aside>
 				)}
+				{!listView && (
 				<main className="blk-page-main" data-page-region="main">
+					{detailView && selection !== undefined && (
+						<button
+							type="button"
+							className="blk-page-toggle"
+							data-page-back=""
+							aria-label="back to list"
+							onClick={() =>
+								actions.dispatch(
+									{ type: "navigate", params: selection.back },
+									{},
+								)
+							}
+						>
+							‹ back
+						</button>
+					)}
 					{empty && block.empty !== undefined ? (
 						<div className="blk-page-empty" data-page-empty="">
 							<Icon name={block.empty.icon} size={24} />
@@ -210,6 +244,7 @@ export function PageBlockView(props: { block: PageBlock }): ReactNode {
 						slot(block.main)
 					)}
 				</main>
+				)}
 				{hasDetail && (
 					<aside
 						className="blk-page-detail"

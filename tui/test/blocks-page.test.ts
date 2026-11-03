@@ -232,6 +232,61 @@ describe("page empty state (§5.1)", () => {
 	});
 });
 
+describe("page selection (server-declared compact drill-in)", () => {
+	const selectionPage = (selected: boolean): PageBlock => ({
+		type: "page",
+		title: "Board",
+		sidebar: [textBlock("SIDEBAR-CONTENT")],
+		main: [textBlock("MAIN-CONTENT")],
+		selection: { selected, back: { item: null } },
+	});
+
+	test("at 80 columns, selected=false renders the sidebar lines and no main lines", () => {
+		const { ctx } = makeCtx({});
+		const page = pageOf(selectionPage(false), ctx);
+		const text = page.render(80).join("\n");
+		expect(text).toContain("SIDEBAR-CONTENT");
+		expect(text).not.toContain("MAIN-CONTENT");
+	});
+
+	test("at 80 columns, selected=true renders main with the `Esc back to list` hint", () => {
+		const { ctx } = makeCtx({});
+		const page = pageOf(selectionPage(true), ctx);
+		const lines = page.render(80);
+		const text = lines.join("\n");
+		expect(text).toContain("MAIN-CONTENT");
+		expect(text).not.toContain("SIDEBAR-CONTENT");
+		// Distinct from the detail push hint `Esc back`.
+		expect(lines.some((line) => line.trim() === "Esc back to list")).toBe(true);
+		expect(lines.some((line) => line.trim() === "Esc back")).toBe(false);
+	});
+
+	test("at 80 columns with selected=true, Esc dispatches navigate with the back params", () => {
+		const { ctx, captured } = makeCtx({});
+		const page = pageOf(selectionPage(true), ctx);
+		// The host reports the compact layout (input can arrive between renders).
+		page.setSideBySide(false);
+		page.render(80);
+		page.handleInput(ESC);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.action).toEqual({
+			type: "navigate",
+			params: { item: null },
+		});
+	});
+
+	test("at ≥ 100 columns selection changes nothing: sidebar and main side by side", () => {
+		const { ctx, captured } = makeCtx({});
+		const page = pageOf(selectionPage(true), ctx);
+		const text = page.render(120).join("\n");
+		expect(text).toContain("SIDEBAR-CONTENT");
+		expect(text).toContain("MAIN-CONTENT");
+		expect(text).not.toContain("Esc back to list");
+		page.handleInput(ESC);
+		expect(captured).toHaveLength(0);
+	});
+});
+
 describe("page detail (§5.1/§12.3)", () => {
 	const detailPage: PageBlock = {
 		type: "page",

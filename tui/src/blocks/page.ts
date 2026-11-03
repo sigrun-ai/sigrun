@@ -15,6 +15,12 @@
  *   action, Esc closes. (Access `read` hides edit/answer actions.)
  * - The detail region is a pushed view: Enter on main pushes it, Esc
  *   pops back. At ≥ 100 columns it renders beside main once pushed.
+ * - `selection` (server-declared, presentation-only): below 100 columns
+ *   the list+detail view shows list first — `selected: false` renders
+ *   the sidebar lines only; `selected: true` renders main with the dim
+ *   hint `Esc back to list`, and Esc dispatches a `navigate` action
+ *   with `selection.back` as params. At ≥ 100 columns nothing changes
+ *   (sidebar and main stay side by side regardless of `selected`).
  * - Esc with nothing open resolves at THIS layer (Task 4's host note:
  *   the app-level Esc handling for a surface with no pick-up and no
  *   open menu is the page's "unfocus" — the host routes it; the page
@@ -220,6 +226,23 @@ export class PageComponent implements Component {
 			}
 			return lines;
 		}
+		// The server-declared compact drill-in: list first, drill into
+		// main, Esc back (dispatches navigate with `selection.back`).
+		const selection = this.#block.selection;
+		if (width < SIDEBAR_PANE_MIN && this.#hasSidebar && selection !== undefined) {
+			if (!selection.selected) {
+				for (const component of this.#sidebar) {
+					lines.push(...component.render(width));
+				}
+				return lines;
+			}
+			lines.push(truncate(this.#ctx.theme.dim("Esc back to list"), width));
+			const emptyDrilled = isMainEmpty(this.#block, this.#ctx.data);
+			const drilled = emptyDrilled
+				? this.#emptyLines(width)
+				: this.#main.flatMap((component) => component.render(width));
+			return [...lines, ...drilled];
+		}
 		const empty = isMainEmpty(this.#block, this.#ctx.data);
 		const mainLines: string[] = empty
 			? this.#emptyLines(width)
@@ -313,6 +336,17 @@ export class PageComponent implements Component {
 				return;
 			}
 			for (const component of this.#detail) component.handleInput?.(data);
+			return;
+		}
+		// The compact selection drill-in owns Esc: back to the list (a
+		// navigate with `selection.back` as params).
+		if (
+			data === "\x1b" &&
+			this.#sideBySideKnown === false &&
+			this.#hasSidebar &&
+			this.#block.selection?.selected === true
+		) {
+			this.#ctx.dispatch({ type: "navigate", params: this.#block.selection.back }, {});
 			return;
 		}
 		// The compact sidebar overlay owns Esc (close).

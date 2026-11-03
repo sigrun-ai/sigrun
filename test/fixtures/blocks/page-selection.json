@@ -1,0 +1,26 @@
+{
+	"v": 1,
+	"root": {
+		"type": "page",
+		"id": "page",
+		"title": "Jobs",
+		"subtitle": "acme queue",
+		"sidebar": [
+			{
+				"type": "collection",
+				"id": "jobs",
+				"items": [
+					{ "id": "job-1", "title": "acme provision" },
+					{ "id": "job-2", "title": "acme build" },
+					{ "id": "job-3", "title": "acme deploy" }
+				],
+				"display": "list",
+				"item": { "title": { "$": "./title" } }
+			}
+		],
+		"main": [
+			{ "type": "markdown", "text": "acme build — the selected job's detail" }
+		],
+		"selection": { "selected": true, "back": {} }
+	}
+}

@@ -81,6 +81,7 @@ export type {
 	NumberField,
 	PageBlock,
 	PageEmpty,
+	PageSelection,
 	Placement,
 	SectionBlock,
 	SecretField,

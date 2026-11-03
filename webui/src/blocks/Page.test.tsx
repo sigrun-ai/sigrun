@@ -244,6 +244,150 @@ describe("page shell (spec §5.1)", () => {
 		expect(textContent(r.toJSON())).toContain("acme jobs run");
 	});
 
+	test("compact + selection, selected=false: the sidebar shows full width and main hides", async () => {
+		const r = await renderPage(
+			pageBlock({
+				sidebar: [{ type: "markdown", text: "the list" }],
+				main: [{ type: "markdown", text: "the detail" }],
+				selection: { selected: false, back: {} },
+			}),
+			{},
+			"compact",
+		);
+		const [sidebar] = find(r, "data-page-region", "sidebar");
+		// In-flow, full width (not the drawer overlay).
+		expect(
+			(sidebar as { props: Record<string, unknown> }).props[
+				"data-selection"
+			],
+		).toBe("list");
+		expect(textContent(r.toJSON())).toContain("the list");
+		expect(find(r, "data-page-region", "main")).toHaveLength(0);
+		expect(textContent(r.toJSON())).not.toContain("the detail");
+		// The selection list is not a drawer: no toggle.
+		expect(find(r, "data-page-drawer-toggle")).toHaveLength(0);
+	});
+
+	test("compact + selection, selected=true: main shows with a back arrow and the sidebar hides", async () => {
+		const r = await renderPage(
+			pageBlock({
+				sidebar: [{ type: "markdown", text: "the list" }],
+				main: [{ type: "markdown", text: "the detail" }],
+				selection: { selected: true, back: {} },
+			}),
+			{},
+			"compact",
+		);
+		expect(find(r, "data-page-region", "sidebar")).toHaveLength(0);
+		expect(textContent(r.toJSON())).not.toContain("the list");
+		expect(find(r, "data-page-region", "main")).toHaveLength(1);
+		expect(textContent(r.toJSON())).toContain("the detail");
+		expect(find(r, "data-page-back")).toHaveLength(1);
+	});
+
+	test("compact + selection: the back arrow dispatches navigate with the back params", async () => {
+		let dispatched: { type?: string; params?: unknown } | null = null;
+		const block = pageBlock({
+			sidebar: [{ type: "markdown", text: "the list" }],
+			main: [{ type: "markdown", text: "the detail" }],
+			selection: { selected: true, back: { item: null } },
+		});
+		const r = await renderAsync(
+			h(
+				WidthContext.Provider,
+				{ value: { widthClass: "compact" as const, rem: 30 } },
+				h(
+					SurfaceActionsContext.Provider,
+					{
+						value: {
+							dispatch: (action): void => {
+								dispatched = action;
+							},
+							access: "write" as const,
+							viewState: {},
+						},
+					},
+					h(PageBlockView, { block }),
+				),
+			),
+		);
+		const [back] = find(r, "data-page-back");
+		act(() => {
+			(back as unknown as { props: { onClick(): void } }).props.onClick();
+		});
+		expect(dispatched).toEqual({
+			type: "navigate",
+			params: { item: null },
+		});
+	});
+
+	test("compact + selection + detail: the detail stays a pushed page above main", async () => {
+		const r = await renderPage(
+			pageBlock({
+				sidebar: [{ type: "markdown", text: "the list" }],
+				main: [{ type: "markdown", text: "the detail" }],
+				detail: [{ type: "markdown", text: "the panel" }],
+				selection: { selected: true, back: {} },
+			}),
+			{},
+			"compact",
+		);
+		// Detail hidden until pushed (its own toggle), main visible.
+		const [detail] = find(r, "data-page-region", "detail");
+		expect(
+			(detail as { props: Record<string, unknown> }).props["data-open"],
+		).toBeUndefined();
+		expect(find(r, "data-page-region", "main")).toHaveLength(1);
+		const [detailToggle] = r.root.findAllByProps({
+			"data-page-detail-toggle": "",
+		});
+		act(() => {
+			(detailToggle as unknown as { props: { onClick(): void } }).props.onClick();
+		});
+		const [pushed] = find(r, "data-page-region", "detail");
+		expect(
+			(pushed as { props: Record<string, unknown> }).props["data-open"],
+		).toBe("");
+		expect(textContent(r.toJSON())).toContain("the panel");
+	});
+
+	test("wide: sidebar and main side by side regardless of selected", async () => {
+		for (const selected of [false, true]) {
+			const r = await renderPage(
+				pageBlock({
+					sidebar: [{ type: "markdown", text: "the list" }],
+					main: [{ type: "markdown", text: "the detail" }],
+					selection: { selected, back: {} },
+				}),
+				{},
+				"regular",
+			);
+			expect(find(r, "data-page-region", "sidebar")).toHaveLength(1);
+			expect(find(r, "data-page-region", "main")).toHaveLength(1);
+			expect(textContent(r.toJSON())).toContain("the list");
+			expect(textContent(r.toJSON())).toContain("the detail");
+			expect(find(r, "data-page-back")).toHaveLength(0);
+		}
+	});
+
+	test("compact, no selection: today's drawer toggle, unchanged", async () => {
+		const r = await renderPage(
+			pageBlock({
+				sidebar: [{ type: "markdown", text: "the list" }],
+				main: [{ type: "markdown", text: "the detail" }],
+			}),
+			{},
+			"compact",
+		);
+		const [sidebar] = find(r, "data-page-region", "sidebar");
+		expect(
+			(sidebar as { props: Record<string, unknown> }).props["data-open"],
+		).toBeUndefined();
+		expect(find(r, "data-page-region", "main")).toHaveLength(1);
+		expect(find(r, "data-page-drawer-toggle")).toHaveLength(1);
+		expect(find(r, "data-page-back")).toHaveLength(0);
+	});
+
 	test("compact: the sidebar becomes a drawer (hidden until opened)", async () => {
 		const r = await renderPage(
 			pageBlock({ sidebar: [{ type: "markdown", text: "side" }] }),
