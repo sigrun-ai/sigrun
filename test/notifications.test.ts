@@ -130,6 +130,8 @@ async function bootServer(options?: {
 	readonly notifications?: Record<string, unknown>;
 	/** Override the extension specifiers (defaults: notifier + seam fixtures). */
 	readonly extensionSpecifiers?: readonly string[];
+	/** Skip the built-in extensions (the zero-notifiers boot). */
+	readonly builtins?: false;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-notif-"));
 	const faux = fauxProvider({
@@ -174,6 +176,7 @@ async function bootServer(options?: {
 		...(options?.extensionSpecifiers === undefined
 			? { extensionSpecifiers: [NOTIFIER_SPECIFIER, SEAM_SPECIFIER] }
 			: { extensionSpecifiers: options.extensionSpecifiers }),
+		...(options?.builtins === false ? { builtins: false } : {}),
 		env,
 		identity,
 		settingsDir: dir,
@@ -907,6 +910,7 @@ describe("host.notify extension notices (A6)", () => {
 		];
 		for (const target of invalidTargets) {
 			await expect(
+				// Deliberately invalid shapes (the cast bypasses the TS union).
 				notifyHost(server).notify({ ...base, target } as never),
 			).rejects.toThrow("notification target");
 		}
@@ -1015,21 +1019,22 @@ describe("delivery isolation (best-effort, logged)", () => {
 });
 
 describe("zero notifier contributions (A6)", () => {
-		test("no subscribes at all: interactions and settle notifications are dropped quietly", { timeout: 30_000 }, async () => {
-			const server = await bootServer({ extensionSpecifiers: [SEAM_SPECIFIER] });
-			// fixture-notifier is absent; only the gateway built-in's engine
-			// notifier (dead without an engine) remains — no recorder notifier.
-			expect(
-				server.opened.notifierBindings.every(
-					(binding) => binding.extension !== "sigrun-fixture-notifier",
-				),
-			).toBe(true);
+	test("with zero bindings the surface subscribes nothing; events drop quietly", { timeout: 30_000 }, async () => {
+		// builtins: false keeps the gateway built-in's engine notifier out,
+		// so startNotifications really hits its zero-targets no-op return.
+		const server = await bootServer({
+			extensionSpecifiers: [SEAM_SPECIFIER],
+			builtins: false,
+		});
+		expect(server.opened.notifierBindings).toHaveLength(0);
 		const conv = await createConversation(server.app, server.bob);
 		resetNotifierEvents();
 		await seedInteraction(server.opened, conv, "notif-zero");
 		// The hub publish itself completes; nothing delivers. A settle on
 		// top exercises the second drop path.
 		await submit(server.app, server.bob, conv, "zero-notifier turn");
+		// Absence-assertion wait: no condition can be awaited, so allow the
+		// side lanes time before asserting nothing was delivered.
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(notifierEvents()).toHaveLength(0);
 	});

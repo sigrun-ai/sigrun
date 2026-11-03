@@ -5,7 +5,8 @@ import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
-import type { DirectoryUser, UserDirectory } from "../src/harness/identity/users.js";
+import type { DirectoryUser } from "../src/harness/identity/users.js";
+import { UserDirectory } from "../src/harness/identity/users.js";
 import { createWorkspaceService } from "../src/harness/workspace.js";
 import { jobStateDir, removeJobState } from "../src/jobs/state-dir.js";
 import { IsolationState } from "../src/sandbox/isolation.js";
@@ -27,7 +28,9 @@ function record(user: string, init: Partial<DirectoryUser> = {}): DirectoryUser 
 	return { user, admin: false, createdAt: 1, source: "cli", ...init };
 }
 
-function serviceFor(
+let directoryCounter = 0;
+
+async function serviceFor(
 	dataDir: string,
 	records: readonly DirectoryUser[],
 	options: {
@@ -46,13 +49,21 @@ function serviceFor(
 		coreRoot: join(dataDir, "core"),
 		userAreas: (user) => join(dataDir, "users", user),
 	};
+	// A REAL directory (never a cast): jobsRoot reads list() and the seam
+	// must break loudly if UserDirectory's list contract ever changes. add
+	// stamps createdAt itself, so only the other record fields seed. The
+	// file is unique per fixture (one test seeds two fixtures over the
+	// same dataDir).
+	directoryCounter += 1;
+	const directory = new UserDirectory(join(dataDir, `users-${directoryCounter}.json`));
+	for (const { createdAt: _stamped, ...user } of records) await directory.add(user);
 	return createWorkspaceService({
 		// The jobsRoot path never touches isolation or the worker pool (both
 		// serve forConversation only) — the real constructors, not casts.
 		isolation: new IsolationState({
 			mode: "off",
 			availability: { available: false, abi: 0, reason: "unavailable" },
-			userCount: () => records.length,
+			userCount: () => directory.list().length,
 			log: () => undefined,
 		}),
 		pool: new WorkerPool({
@@ -63,30 +74,29 @@ function serviceFor(
 			log: () => undefined,
 			workerEntry: { command: process.execPath, args: [] },
 		}),
-		directory: { list: () => [...records] } as UserDirectory,
+		directory,
 		managed,
 		ownerOf: async () => undefined,
 		...options,
-		// The partial-implementation cast: jobsRoot reads only list().
 	});
 }
 
 describe("WorkspaceService.jobsRoot", () => {
 	test("uses the named user's managed area", async () => {
 		const dataDir = await tempDir();
-		const service = serviceFor(dataDir, [record("alice")]);
+		const service = await serviceFor(dataDir, [record("alice")]);
 		expect(service.jobsRoot("alice")).toBe(join(dataDir, "users", "alice", "jobs"));
 	});
 
 	test("an ownerless job uses the primary admin's managed area", async () => {
 		const dataDir = await tempDir();
-		const service = serviceFor(dataDir, [record("root-admin", { admin: true })]);
+		const service = await serviceFor(dataDir, [record("root-admin", { admin: true })]);
 		expect(service.jobsRoot(undefined)).toBe(join(dataDir, "users", "root-admin", "jobs"));
 	});
 
 	test("an orphaned owner falls back to the first admin", async () => {
 		const dataDir = await tempDir();
-		const service = serviceFor(dataDir, [
+		const service = await serviceFor(dataDir, [
 			record("alice"),
 			record("root-admin", { admin: true }),
 		]);
@@ -95,13 +105,13 @@ describe("WorkspaceService.jobsRoot", () => {
 
 	test("an empty directory, or one with no selected record, uses the data root", async () => {
 		const dataDir = await tempDir();
-		expect(serviceFor(dataDir, []).jobsRoot("alice")).toBe(join(dataDir, "jobs"));
-		expect(serviceFor(dataDir, [record("alice")]).jobsRoot("ghost")).toBe(join(dataDir, "jobs"));
+		expect((await serviceFor(dataDir, [])).jobsRoot("alice")).toBe(join(dataDir, "jobs"));
+		expect((await serviceFor(dataDir, [record("alice")])).jobsRoot("ghost")).toBe(join(dataDir, "jobs"));
 	});
 
 	test("an osUser's jobs live under the XDG state default in the account home", async () => {
 		const dataDir = await tempDir();
-		const service = serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
+		const service = await serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
 			osUsers: { available: true, status: "available" },
 			lookupAccount: () => ({
 				uid: 1001,
@@ -115,7 +125,7 @@ describe("WorkspaceService.jobsRoot", () => {
 
 	test("an osUser with unavailable account switching has no jobs root", async () => {
 		const dataDir = await tempDir();
-		const service = serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
+		const service = await serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
 			osUsers: { available: false, status: "off" },
 			lookupAccount: () => { throw new Error("must not be called"); },
 		});
@@ -125,12 +135,12 @@ describe("WorkspaceService.jobsRoot", () => {
 	test("a failed or missing osAccount lookup has no jobs root", async () => {
 		const dataDir = await tempDir();
 		const options = { osUsers: { available: true, status: "available" } as const };
-		const throwing = serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
+		const throwing = await serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
 			...options,
 			lookupAccount: () => { throw new Error("account database unavailable"); },
 		});
 		expect(throwing.jobsRoot("alice")).toBeUndefined();
-		const missing = serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
+		const missing = await serviceFor(dataDir, [record("alice", { osUser: "alice-os" })], {
 			...options,
 			lookupAccount: () => undefined,
 		});
