@@ -339,8 +339,9 @@ describe("core/jobs list (the caller-visible rows)", () => {
 		expect(ownRow.scheduleSummary).toBe("every 3600s");
 		expect("nextRun" in ownRow).toBe(true);
 		expect("lastOutcome" in ownRow).toBe(true);
-		// The drill-in rides navigate params (Task 3's selection).
-		expect(sidebar?.onActivate).toMatchObject({ type: "navigate" });
+		// The drill-in rides the edit+itemId handler (review Critical 2:
+		// navigate params are static and can never carry the row's id).
+		expect(sidebar?.onActivate).toEqual({ type: "edit", name: "openJob" });
 		expect(root.selection).toEqual({ selected: false, back: {} });
 	});
 
@@ -643,6 +644,46 @@ describe("core/jobs actions", () => {
 		expect(reset.status).toBe(200);
 		expect(reset.json).toMatchObject({ ok: true });
 		expect(existsSync(state)).toBe(false);
+	});
+});
+
+// ─── per-row drill-in (review Critical 2) ───────────────────────────────
+
+describe("core/jobs per-row drill-in (openJob)", () => {
+	test("activating a sidebar row navigates to THAT row's job (edit+itemId handler)", async () => {
+		const { app, alice } = await bootServer();
+		const first = await createJob(app, alice, promptSpec("acme-first"));
+		const second = await createJob(app, alice, promptSpec("acme-second"));
+		// Render first (the action route's access gate needs the instance).
+		expect((await view(app, alice)).status).toBe(200);
+
+		// The emitted navigation names the ACTIVATED row's job — never the
+		// currently-selected one (a static navigate param could only do the
+		// latter, which was the Critical 2 defect).
+		const activated = await act(app, alice, "openJob", { itemId: second.id }, {});
+		expect(activated.status).toBe(200);
+		expect(activated.json.ok).toBe(true);
+		expect(activated.json.navigate).toEqual({
+			type: "navigate",
+			params: { job: second.id },
+		});
+		const activatedFirst = await act(app, alice, "openJob", { itemId: first.id }, {});
+		expect(activatedFirst.json.navigate).toEqual({
+			type: "navigate",
+			params: { job: first.id },
+		});
+
+		// A missing/empty itemId is a clean action error.
+		const missing = await act(app, alice, "openJob", {}, {});
+		expect(missing.json).toEqual({
+			ok: false,
+			error: { message: "openJob expects {itemId}" },
+		});
+		const empty = await act(app, alice, "openJob", { itemId: "" }, {});
+		expect(empty.json).toEqual({
+			ok: false,
+			error: { message: "openJob expects {itemId}" },
+		});
 	});
 });
 

@@ -170,6 +170,13 @@ function jobIdOf(payload: unknown): string | undefined {
 	return typeof jobId === "string" && jobId !== "" ? jobId : undefined;
 }
 
+/** The `{itemId}` an `onActivate` (collection row activation) dispatch carries. */
+function itemIdOf(payload: unknown): string | undefined {
+	if (!isObject(payload)) return undefined;
+	const itemId = payload.itemId;
+	return typeof itemId === "string" && itemId !== "" ? itemId : undefined;
+}
+
 /** Parse the instance params (loose JSON → the typed shape; bad types drop). */
 function paramsOf(params: JsonObject): JobsViewParams {
 	const out: {
@@ -354,7 +361,19 @@ export function createJobsView(deps: {
 					id: "jobs",
 					display: "list",
 					items: { $: "/jobs" },
-					onActivate: { type: "navigate", params: {} },
+					// Per-row drill-in (review Critical 2): a `navigate`
+					// onActivate could never carry the ACTIVATED row's id
+					// (navigate params are static literals; the {itemId}
+					// payload is shell-dropped for view-only actions). An
+					// `edit` activation instead dispatches {itemId} to the
+					// `openJob` handler — the curator view's shape — whose
+					// accepted result carries `navigate` back through the
+					// wire (§6.3). Gate note: `edit` is not view-only, so the
+					// channels require surface access "write" to dispatch it
+					// (webui rows.tsx useActivate) — this view always returns
+					// "write" for an identified caller (the action rule is
+					// per-job, enforced in the handlers), so the gate passes.
+					onActivate: { type: "edit", name: "openJob" },
 					item: {
 						title: { $: "./name" },
 						subtitle: { $: "./scheduleSummary" },
@@ -399,11 +418,6 @@ export function createJobsView(deps: {
 		diff: SelectedDiff | undefined,
 	): Tree => {
 		const tree = baseTree();
-		const sidebarCollection = tree.root.sidebar[0] as Record<string, unknown>;
-		sidebarCollection.onActivate = {
-			type: "navigate",
-			...(params.job === undefined ? {} : { params: { job: params.job } }),
-		};
 		// Blocks are built as loose JSON objects (the validator owns the
 		// wire shape; the service validates every tree before serving).
 		const main: Record<string, unknown>[] = [];
@@ -699,6 +713,32 @@ export function createJobsView(deps: {
 			};
 		},
 		actions: {
+			// The sidebar row's drill-in (review Critical 2): the `edit`
+			// activation carries {itemId} = the row's id — the JOB id, the
+			// collection rows' own `id` field (the channels derive item ids
+			// from it, spec §5.5) — and the accepted result carries the
+			// navigate back (§6.3: SurfaceActOk.navigate passes the wire
+			// unchanged). The webui applies it (useSurface routes
+			// result.navigate through onNavigate); the TUI does NOT apply
+			// result.navigate yet — a PRE-EXISTING channel gap for every
+			// ext view's action-result navigation, out of scope here
+			// (whole-branch review ledger).
+			openJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				if (ctx.principal.user === undefined) {
+					return { ok: false, error: { message: "forbidden" } };
+				}
+				const jobId = itemIdOf(payload);
+				if (jobId === undefined) {
+					return { ok: false, error: { message: "openJob expects {itemId}" } };
+				}
+				return {
+					ok: true,
+					navigate: { type: "navigate", params: { job: jobId } },
+				};
+			},
 			runNow: async (
 				ctx: SurfaceContext,
 				payload: unknown,
