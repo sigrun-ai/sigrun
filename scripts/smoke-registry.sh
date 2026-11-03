@@ -71,7 +71,10 @@ fi
 # (a heredoc inside `sh -s` would eat stdin as the script — arguments
 # keep the two channels separate). Quoting note: the heredoc is
 # UNQUOTED-free — 'EOS' keeps the host shell out of it entirely.
-docker run --rm \
+# `-i` is LOAD-BEARING: without it docker closes stdin, `sh -s` reads an
+# empty script, and the whole run exits 0 having done NOTHING — the
+# silent false-green this flag fixes (Task 21 F1).
+docker run --rm -i \
 	$network_flag \
 	--env SIGRUN_DEFAULT_MODEL=openai/gpt-4o \
 	--env SIGRUN_API_TOKEN=sigrun-smoke-token \
