@@ -1326,10 +1326,11 @@ On the wire:
   the change's own commit; `before`/`after` its parents where they
   exist) — feed pagination and undo both key off them.
 - **`actor` includes `"outside"`** in addition to `"curator"`,
-  `"agent"`, and `"user"`: catch-up commits the store itself did not
-  author (files edited outside the store, folded in when the Skills tab
-  opens or a run settles) record `outside` so the audit trail admits
-  what it cannot attribute.
+  `"agent"`, and `"user"`: catch-up commits record who folded the
+  outside change in — the Skills tab's open-time catch-up records
+  `outside`; the workspace repo's settle-time catch-up records `agent`
+  with the conversation id. Either way the audit trail admits what it
+  cannot attribute to a store write.
 
 The Skills tab renders this history per skill — 25 entries per page,
 per-file diffs, and one-action restore.

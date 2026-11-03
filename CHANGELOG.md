@@ -28,8 +28,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and per-row navigation into a run's conversation. The Jobs panel is
   gone.
 - **The Skills tab** (`core/skills`): every skill root the deployment
-  serves — Workspace / Learned / Config dir / Packages · <pkg> /
-  Deleted — with shadowing visible, owned-skill CRUD, per-skill git
+  serves — Workspace / Learned / User dir (the deployment-wide
+  `<config-dir>/skills/`) / Config dir (package skills, with a per-row
+  package badge) / Deleted — with shadowing visible, owned-skill CRUD, per-skill git
   history (25 entries per page, per-file diffs, restore), deleted-skill
   restore, and per-user overlays as the only write to the read-only
   shared roots. Some surface actions return `navigate`; the webui

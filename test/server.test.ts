@@ -267,6 +267,12 @@ describe("GET /v1/meta", () => {
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [], commands: [] },
+			// tabs+skills Task 4: the reserved `core` slug's views ride meta
+			// (positively pinned in core-views.test.ts too).
+			coreViews: [
+				{ id: "jobs", title: "Jobs", icon: "clock" },
+				{ id: "skills", title: "Skills", icon: "book" },
+			],
 			dev: false,
 			supervised: false,
 			isolation: {

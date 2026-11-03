@@ -1208,18 +1208,19 @@ model receives the expanded text.
 
 **The Skills tab.** The core Skills view (`#/ext/core/skills`) is the
 management surface for all of this: every skill root the deployment
-serves, grouped — **Workspace**, **Learned**, **Config dir**, one group
-per **package**, and **Deleted** — with shadowing made visible (a
-lower-precedence skill that never wins says so). Skills you own are
-editable in place; the deployment's shared roots (the config dir and
-packages) are read-only here, and a per-user **overlay** is their only
-write (your overlay, your precedence — other users are unaffected).
-Each history-backed skill keeps its full **git history**: page through
-it 25 entries at a time, read the per-file diffs of any change, and
-restore an old state. Some surface actions hand the channel a
-navigation to apply (a surface action returning `navigate`): the webui
-applies it; the TUI does not yet apply `ActionResult.navigate` — a
-known channel gap.
+serves, grouped — **Workspace**, **Learned**, **User dir** (the
+deployment-wide `<config-dir>/skills/`), **Config dir** (package
+skills, each row carrying a package badge), and **Deleted** — with
+shadowing made visible (a lower-precedence skill that never wins says
+so). Skills you own are editable in place; the deployment's shared
+roots (the config dir and packages) are read-only here, and a per-user
+**overlay** is their only write (your overlay, your precedence — other
+users are unaffected). Each history-backed skill keeps its full **git
+history**: page through it 25 entries at a time, read the per-file
+diffs of any change, and restore an old state. Some surface actions
+hand the channel a navigation to apply (a surface action returning
+`navigate`): the webui applies it; the TUI does not yet apply
+`ActionResult.navigate` — a known channel gap.
 
 **The curator and learned skills.** Beyond the three roots above, every
 user has a private fourth root — learned skills the curator records for
@@ -1242,9 +1243,11 @@ their history in a private per-user git repository under the user's
 curation history dir — the learned skills, overlays, and curator state
 in one repo, the workspace's `skills/` tree in a second repo whose git
 dir lives outside the work tree. There is no remote and no upstream:
-the history is a local audit trail (agent edits to the workspace skills
-tree are caught up as `outside` commits when the tab opens or a run
-settles), not a bounded version count. History writes for the
+the history is a local audit trail, not a bounded version count. Edits
+made outside the store are folded in as catch-up commits: when the tab
+opens they record actor `outside`; when a run settles, the workspace
+repo catches up with actor `agent` carrying the conversation id (only
+the workspace repo has a settle hook). History writes for the
 workspace root are keyed to the conversation's owner — ownerless
 conversations skip it. The history's tamper-resistance holds under
 active sandbox isolation (the agent's jail never grants the curation

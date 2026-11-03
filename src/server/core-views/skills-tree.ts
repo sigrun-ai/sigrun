@@ -33,7 +33,9 @@ export const SKILL_GROUPS = [
 
 export type SkillGroupId = (typeof SKILL_GROUPS)[number];
 
-/** The group titles (a `package` root's group is `Packages · <pkg>`). */
+/** The group titles. A `package` root lands in "config-dir" with a
+ *  per-row pkg badge (no per-package groups) — see groupOfRow's
+ *  label↔root naming note. */
 export const GROUP_TITLES: Record<SkillGroupId, string> = {
 	workspace: "Workspace",
 	learned: "Learned",
@@ -178,6 +180,10 @@ export function groupOfRow(skill: RootSkill, deleted: boolean): SkillGroupId {
 			return "workspace";
 		case "learned":
 			return "learned";
+		// Label↔root naming swap (vs the spec's labels): the UI shows the
+		// `<configDir>/skills` root as "User dir" and package roots land
+		// under "Config dir" with a per-row pkg badge (no per-package
+		// groups).
 		case "user dir":
 			return "user-dir";
 		case "package":

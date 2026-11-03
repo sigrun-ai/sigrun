@@ -194,6 +194,13 @@ describe("GET /v1/extensions", () => {
 					routes: [],
 				},
 			],
+			// tabs+skills Task 4: core views are never extensions[] rows;
+			// they list under coreViews (positively pinned in
+			// core-views.test.ts too).
+			coreViews: [
+				{ id: "jobs", title: "Jobs", icon: "clock" },
+				{ id: "skills", title: "Skills", icon: "book" },
+			],
 		});
 	});
 });
