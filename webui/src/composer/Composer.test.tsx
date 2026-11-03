@@ -1294,17 +1294,22 @@ describe("Composer empty state (no conversation)", () => {
 			await options[0]!.props.onClick();
 		});
 		// The thinking picker has NO disabled prop (always rendered, B6) —
-		// its unavailability is the GUARD: force it open too and pick a level;
-		// still no configure POST.
+		// its unavailability is the GUARD: force it open too and pick a
+		// level; still no configure POST. The menu must actually OPEN (one
+		// option per THINKING_LEVELS entry) — a broken toggle must not let
+		// this pass vacuously.
 		const thinkingToggle = renderer.root.findByProps({
 			"data-picker": "thinking",
 		});
 		act(() => {
 			thinkingToggle.props.onClick();
 		});
+		const thinkingOptions = renderer.root.findAllByProps({
+			"data-thinking-level": "high",
+		});
+		expect(thinkingOptions).toHaveLength(1);
 		await act(async () => {
-			await renderer.root.findByProps({ "data-thinking-level": "high" })
-				.props.onClick();
+			await thinkingOptions[0]!.props.onClick();
 		});
 		expect(
 			calls.filter((c) => c.input.endsWith("/configure")),
