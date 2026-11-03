@@ -16,3 +16,20 @@ export async function removeJobState(root: string | undefined, jobId: string): P
 	if (root === undefined) return;
 	await rm(jobStateDir(root, jobId), { recursive: true, force: true });
 }
+
+/**
+ * The one best-effort removal warning (index delete, reconcile retire,
+ * transfer catch-path): the path the caller actually resolved, or the
+ * bare id when the selected owner has no jobs root.
+ */
+export function warnJobStateRemoval(
+	what: string,
+	root: string | undefined,
+	jobId: string,
+	error: unknown,
+): void {
+	const path = root === undefined ? jobId : jobStateDir(root, jobId);
+	console.warn(
+		`jobs: could not remove ${what} ${path}: ${error instanceof Error ? error.message : String(error)}`,
+	);
+}

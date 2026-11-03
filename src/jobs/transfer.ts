@@ -18,11 +18,10 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import { join } from "node:path";
 import { registerOwnershipParticipant, type OwnershipParticipant } from "../server/ownership.js";
 import type { ServerContext } from "../server/context.js";
 import { scanJobs, writeJobChange, type JobRecord } from "./docs.js";
-import { jobStateDir } from "./state-dir.js";
+import { warnJobStateRemoval } from "./state-dir.js";
 import { specHash } from "./spec.js";
 
 /**
@@ -44,13 +43,12 @@ export function registerJobsOwnershipParticipant(ctx: ServerContext): void {
 				// root. The recipient's folder is deliberately never created.
 				await jobs.resetState(id);
 			} catch (error) {
-				// Directory-user api jobs use their managed user area. (OS-user
-				// jobs cannot enter this transfer path — user deletion refuses
+				// Name the root resetState actually resolved (the workspace
+				// service's selection), never a guessed layout. (OS-user jobs
+				// cannot enter this transfer path — user deletion refuses
 				// osUser workspaces before any participant runs.)
-				const root = join(ctx.managedPaths.userAreas(from), "jobs");
-				console.warn(
-					`jobs: could not remove transferred job state ${jobStateDir(root, id)}: ${error instanceof Error ? error.message : String(error)}`,
-				);
+				const root = jobs.jobStateRoot(from);
+				warnJobStateRemoval("transferred job state", root, id, error);
 			}
 			const spec = { ...record.spec, owner: to };
 			const next: Omit<JobRecord, "version" | "updatedAt"> = {

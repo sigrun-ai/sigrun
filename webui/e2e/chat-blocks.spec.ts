@@ -99,8 +99,10 @@ test("drag in one tab updates the second tab within 2 s; the order submit produc
 	alice.on("pageerror", (cause) => aliceErrors.push(String(cause)));
 	bob.on("pageerror", (cause) => bobErrors.push(String(cause)));
 
-	// Alice runs the show_blocks turn.
+	// Alice runs the show_blocks turn. Settle the boot default selection
+	// before the first send (the fill-into-root-draft race).
 	await alice.goto(server.url);
+	await expect(alice.locator("li.session-item-active")).toHaveCount(1);
 	await expect(alice.locator(".composer-input")).toBeEnabled();
 	await alice.locator(".composer-input").fill("show the ranking");
 	await alice.locator(".composer-send").click();

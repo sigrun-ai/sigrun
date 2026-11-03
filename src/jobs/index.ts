@@ -50,7 +50,7 @@ import {
 	reconcileJobs,
 	type ReconcileSources,
 } from "./reconcile.js";
-import { jobStateDir, removeJobState } from "./state-dir.js";
+import { removeJobState, warnJobStateRemoval } from "./state-dir.js";
 import { specHash } from "./spec.js";
 import type { SettingsFile } from "../harness/settings.js";
 
@@ -164,6 +164,13 @@ export interface JobsService {
 	deleteApi(id: string, changedBy: string): Promise<void>;
 	/** Clear persistent state for any live job, without changing its record. */
 	resetState(id: string): Promise<void>;
+	/**
+	 * The resolved job-state root for one owner (the same resolution
+	 * `resetState`/delete/reconcile use before removal) — exposed so the
+	 * transfer catch-path warning names the REAL root, never a guessed
+	 * layout.
+	 */
+	jobStateRoot(owner: string | undefined): string | undefined;
 	runNow(id: string): Promise<{
 		outcome: "running" | "skipped" | "blocked";
 		conversationId?: number;
@@ -187,10 +194,7 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 		try {
 			await removeJobState(root, id);
 		} catch (error) {
-			const path = root === undefined ? id : jobStateDir(root, id);
-			console.warn(
-				`jobs: could not remove job state ${path}: ${error instanceof Error ? error.message : String(error)}`,
-			);
+			warnJobStateRemoval("job state", root, id, error);
 		}
 	};
 
@@ -386,6 +390,10 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			// Unlike delete/transfer/reconcile, an explicit reset surfaces I/O
 			// failure to its caller; it never rewrites or retires the job.
 			await removeJobState(stateRoot(record.owner), id);
+		},
+
+		jobStateRoot(owner: string | undefined): string | undefined {
+			return stateRoot(owner);
 		},
 
 		async runNow(id: string): Promise<{

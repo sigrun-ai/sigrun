@@ -13,9 +13,19 @@
  * extension's unlisted direct write tools (a "remember this" path the
  * extension owns itself) are never intercepted, never gated, never
  * undone by the curator.
+ *
+ * `SKILL_MANAGE_READ_ACTIONS` (exported for the A8 wrap and the tool
+ * itself — ONE literal, the A7 dedupe): the `skill_manage` actions that
+ * are safe anywhere (`list`/`view` pass through outside a curator run).
  */
 
 import type { CurationTarget } from "../extension.js";
+
+/** `skill_manage`'s read actions — safe anywhere, never intercepted. */
+export const SKILL_MANAGE_READ_ACTIONS: ReadonlySet<string> = new Set([
+	"list",
+	"view",
+]);
 
 /**
  * A target attributed to its extension: the qualified id
@@ -88,6 +98,7 @@ export function buildCurationRegistry(
 ): CurationRegistry {
 	const targets: QualifiedTarget[] = [];
 	const seen = new Set<string>();
+	const toolOwner = new Map<string, string>();
 	for (const binding of bindings) {
 		for (const target of binding.targets) {
 			const id = `${binding.extension}:${target.name}`;
@@ -97,6 +108,19 @@ export function buildCurationRegistry(
 				);
 			}
 			seen.add(id);
+			// A tool names ONE target (A8): two targets listing the same
+			// tool make `byTool` first-wins arbitrary and an undoReview
+			// silently un-actionable for the shadowed target. Fail loud
+			// at boot, the same discipline as the duplicate-id check.
+			for (const tool of target.tools) {
+				const owner = toolOwner.get(tool);
+				if (owner !== undefined) {
+					throw new Error(
+						`curation tool "${tool}" is listed by both ${owner} and ${id} — a tool names one curation target`,
+					);
+				}
+				toolOwner.set(tool, id);
+			}
 			targets.push({ ...target, id, extension: binding.extension });
 		}
 	}

@@ -95,6 +95,9 @@ test("boots token-only, onboards with the setup code, and renders the SSE stream
 	// browser's EventSource sends same-origin cookies; it cannot carry a
 	// header) — if the cookie did not ride it, the transcript would stay
 	// empty and the stream would reconnect-loop on 401s.
+	// The boot default selection must land before the first send: a fill
+	// that races the selection can land in the root draft and be wiped.
+	await expect(page.locator("li.session-item-active")).toHaveCount(1);
 	await expect(page.locator(".composer-input")).toBeEnabled();
 	await page.locator(".composer-input").fill("hello from the authed boot");
 	await page.locator(".composer-send").click();

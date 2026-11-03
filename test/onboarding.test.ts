@@ -150,6 +150,42 @@ describe("GET /v1/onboarding", () => {
 		});
 	});
 
+	test("the codeRequired derivation, directly: loopback or a vouch drops it; everything else requires it", async () => {
+		// The derivation is `!isLoopbackHost(listenHost) && proxyIdentity
+		// === undefined` — exercised here against every loopback spelling
+		// and every trust combination, not only inside the proxy-only
+		// claim scenarios.
+		for (const c of [
+			{ listenHost: "127.0.0.1", expectCodeRequired: false },
+			{ listenHost: "::1", expectCodeRequired: false },
+			{ listenHost: "localhost", expectCodeRequired: false },
+			{ listenHost: "0.0.0.0", expectCodeRequired: true },
+			{ listenHost: "::", expectCodeRequired: true },
+		]) {
+			const { app } = await bootServer({ listenHost: c.listenHost });
+			const response = await app.inject({ method: "GET", url: "/v1/onboarding" });
+			expect(response.statusCode).toBe(200);
+			expect(response.json().codeRequired).toBe(c.expectCodeRequired);
+		}
+		// A vouched proxy request on a non-loopback bind is trust enough —
+		// no code. (bootServer's teardown is registered per boot.)
+		const vouched = await bootServer({
+			env: {
+				SIGRUN_AUTH: "proxy",
+				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+			},
+			listenHost: "0.0.0.0",
+		});
+		const vouchedResponse = await vouched.app.inject({
+			method: "GET",
+			url: "/v1/onboarding",
+			remoteAddress: "10.42.3.4",
+			headers: { "remote-user": "alice" },
+		});
+		expect(vouchedResponse.json().codeRequired).toBe(false);
+		expect(vouchedResponse.json().proxyIdentity?.user).toBe("alice");
+	});
+
 	test("a trusted proxy identity → codeRequired false + proxyIdentity", async () => {
 		const { app } = await bootServer({
 			env: {

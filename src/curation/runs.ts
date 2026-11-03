@@ -50,6 +50,7 @@ import type {
 	CommitPublication,
 	Conversation,
 	ConversationId,
+	Cursor,
 	EntryId,
 	EntryRecord,
 	Harness,
@@ -535,6 +536,8 @@ export async function driveRun(
 }
 
 /** Collect the run's `details.curation` changes, in entry order. */
+/** Scan bound for collectChanges' cursor walk (a broken cursor loops, a count does not). */
+const COLLECT_SCAN_LIMIT = 10_000;
 async function collectChanges(
 	conversation: Conversation,
 ): Promise<
@@ -544,38 +547,54 @@ async function collectChanges(
 		readonly target: string;
 	}[]
 > {
-	const page = await conversation.entries(
-		{ order: "ascending" },
-		500,
-		undefined,
-		BACKGROUND_CONTEXT,
-	);
 	const changes: {
 		changeId: string;
 		summary: string;
 		target: string;
 	}[] = [];
-	for (const entry of page.items) {
-		if (entry.kind !== ToolResultEntry.kind) continue;
-		for (const message of entry.model ?? []) {
-			if (message.role !== "toolResult") continue;
-			const details = message.details as
-				| { readonly curation?: { changeId?: unknown; summary?: unknown } }
-				| undefined;
-			const curation = details?.curation;
-			if (
-				curation === undefined ||
-				typeof curation.changeId !== "string" ||
-				typeof curation.summary !== "string"
-			) {
-				continue;
+	// Cursor-complete walk (the A9 ruling): a run with more tool results
+	// than one page loses nothing — pages until exhaustion, bounded so
+	// a cursor bug cannot loop forever.
+	let cursor: Cursor | undefined;
+	let scanned = 0;
+	for (;;) {
+		const page = await conversation.entries(
+			{ order: "ascending" },
+			500,
+			cursor,
+			BACKGROUND_CONTEXT,
+		);
+		for (const entry of page.items) {
+			scanned += 1;
+			if (entry.kind !== ToolResultEntry.kind) continue;
+			for (const message of entry.model ?? []) {
+				if (message.role !== "toolResult") continue;
+				const details = message.details as
+					| { readonly curation?: { changeId?: unknown; summary?: unknown } }
+					| undefined;
+				const curation = details?.curation;
+				if (
+					curation === undefined ||
+					typeof curation.changeId !== "string" ||
+					typeof curation.summary !== "string"
+				) {
+					continue;
+				}
+				changes.push({
+					changeId: curation.changeId,
+					summary: curation.summary,
+					target: targetOfTool(message.toolName),
+				});
 			}
-			changes.push({
-				changeId: curation.changeId,
-				summary: curation.summary,
-				target: targetOfTool(message.toolName),
-			});
 		}
+		if (page.next === undefined || page.items.length === 0) break;
+		if (scanned >= COLLECT_SCAN_LIMIT) {
+			console.warn(
+				`curation: collectChanges hit the ${COLLECT_SCAN_LIMIT}-entry scan guard — the run's change list is a PREFIX (later changes are unreported)`,
+			);
+			break;
+		}
+		cursor = page.next;
 	}
 	return changes;
 }

@@ -16,7 +16,7 @@
 
 import { useState } from "react";
 import type { ConversationSummary, Sharing, SigrunClient } from "../api";
-import { messageOf } from "../auth/Onboarding";
+import { messageOf } from "../auth/errors";
 
 /** Parse the people input: commas or whitespace separate usernames. */
 function parseUsers(raw: string): string[] {

@@ -174,20 +174,8 @@ export function Onboarding(props: {
 	);
 }
 
-/** The user-facing spelling of a rejection: known wire codes get fixed copy;
- *  other errors retain their existing message. These codes are never raw. */
-export function messageOf(cause: unknown): string {
-	if (cause instanceof ApiError) {
-		const copy: Record<string, string> = {
-			proxy_identity_required:
-				"This sigrun signs people in through its sign-in proxy. Open it through the proxy.",
-			username_taken: "That username is taken. Choose another.",
-			invalid_username:
-				"That name has no usable characters — use at least one letter or digit.",
-		};
-		const key = cause.error ?? "";
-		if (Object.hasOwn(copy, key)) return copy[key];
-		if (cause.error !== undefined) return cause.error;
-	}
-	return cause instanceof Error ? cause.message : String(cause);
-}
+// The copy helper lives in ./errors (polish task 12 — shared by Login,
+// ShareMenu, and AccountLinksSection); re-exported here for the AuthGate
+// test's existing import path.
+export { messageOf } from "./errors";
+import { messageOf } from "./errors";

@@ -254,6 +254,42 @@ describe("createAutoNamer (stub deps)", () => {
 		expect(calls).toEqual([{ provider: "acme", id: "model-1" }]);
 	});
 
+	test("the unserved skip log dedupes per key: a second unserved model logs its own once", async () => {
+		const { models, calls } = stubModels(["acme/model-1"]);
+		let settings: { namingModel?: string } = { namingModel: "acme/missing" };
+		const logs: string[] = [];
+		const stub = stubHarness(undefined, { provider: "acme", modelId: "model-1" });
+		const namer = createAutoNamer({
+			harness: stub.harness,
+			models,
+			readSettings: () => settings,
+			isTaskOwned: async () => false,
+			log: (message) => logs.push(message),
+		});
+		// First key twice, second key twice, first key again: the Set is
+		// keyed per provider/modelId, so each key logs exactly once and the
+		// repeat of the first key stays silent.
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		settings = { namingModel: "acme/missing" };
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		settings = { namingModel: "acme/absent" };
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		settings = { namingModel: "acme/missing" };
+		await namer.runSettled(answeredEvent(), stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		expect(calls).toHaveLength(0);
+		expect(stub.read()?.autoNameAttempts).toBeUndefined();
+		expect(logs).toEqual([
+			"auto-name: model acme/missing is not served — naming skipped (fix namingModel or the conversation's model)",
+			"auto-name: model acme/absent is not served — naming skipped (fix namingModel or the conversation's model)",
+		]);
+	});
+
 	test("no agent model and no namingModel: skip without an attempt", async () => {
 		const { models, calls } = stubModels(["acme/model-1"]);
 		const logs: string[] = [];

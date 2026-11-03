@@ -400,6 +400,32 @@ describe("owner writes rewrite selections in the same commits", () => {
 		}, BACKGROUND_CONTEXT);
 		expect(await storedSelection(opened, root.id)).toEqual(["keep"]);
 	});
+
+	test("rewriteSelection with both owners absent adds no entries", async () => {
+		// A5: the same-owner no-op guard deliberately keys on a DEFINED
+		// from (`from !== undefined && from === to`) — an undefined →
+		// undefined pass-through would return before undefined entries could
+		// be appended, but the guard skips it: `to: undefined` makes the
+		// additions list empty, so the selection is left untouched by
+		// identity, not by the guard.
+		const { opened } = await boot();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT);
+		const before = await storedSelection(opened, root.id);
+		await root.commit(async (tx) => {
+			await rewriteSelection(tx, root.id, undefined, undefined, ["acme"]);
+		}, BACKGROUND_CONTEXT);
+		expect(await storedSelection(opened, root.id)).toEqual(before);
+		// A stored object selection gains nothing either.
+		await root.commit(async (tx) => {
+			(await tx.doc(AgentDoc, root.id)).extensions = {
+				add: ["keep"],
+			};
+		}, BACKGROUND_CONTEXT);
+		await root.commit(async (tx) => {
+			await rewriteSelection(tx, root.id, undefined, undefined, ["acme"]);
+		}, BACKGROUND_CONTEXT);
+		expect(await storedSelection(opened, root.id)).toEqual({ add: ["keep"] });
+	});
 });
 
 describe("configure and boot sweep", () => {

@@ -1499,3 +1499,55 @@ describe("supervised posture (UI-blocks U4 Task 2, spec §13.3)", () => {
 		expect(dockerfile).not.toContain("SIGRUN_SUPERVISED");
 	});
 });
+
+describe("Dockerfile agent-toolchain pins (release-era deferred)", () => {
+	// The runtime image's agent userland (python + uv) is pinned exactly
+	// and the smoke script asserts the same literals — a Dockerfile bump
+	// that forgets the smoke (or vice versa) fails here instead of at
+	// smoke time against a built image.
+
+	const DOCKERFILE = join(import.meta.dirname, "..", "Dockerfile");
+	const SMOKE_IMAGE = join(import.meta.dirname, "..", "scripts", "smoke-image.sh");
+
+	test("the uv COPY is pinned and the smoke asserts the same version", async () => {
+		const dockerfile = await readFile(DOCKERFILE, "utf8");
+		const copy =
+			/COPY --from=ghcr\.io\/astral-sh\/uv:(\d+\.\d+\.\d+) \/uv \/uvx \/usr\/local\/bin\//.exec(
+				dockerfile,
+			);
+		expect(copy, "the Dockerfile carries the pinned uv COPY line").not.toBeNull();
+		const smoke = await readFile(SMOKE_IMAGE, "utf8");
+		expect(
+			smoke,
+			"smoke-image.sh asserts the uv version the Dockerfile pins",
+		).toContain(`uv ${copy![1]}`);
+	});
+
+	test("the runtime apt install pins the package list the smoke's python/uv checks need", async () => {
+		const dockerfile = await readFile(DOCKERFILE, "utf8");
+		const install = /apt-get install -y --no-install-recommends \\\n\s+([^\n]+)/.exec(
+			dockerfile,
+		);
+		expect(install, "the Dockerfile carries the apt-get install list").not.toBeNull();
+		// Strip the line-continuation backslash, then split the list.
+		const packages = install![1]!.replace(/\\$/, "").trim().split(/\s+/);
+		// The smoke's python/venv/uv checks and the entrypoint (tini) run
+		// against exactly these; a removed package fails the smoke.
+		expect(packages).toEqual([
+			"ca-certificates",
+			"curl",
+			"fd-find",
+			"git",
+			"jq",
+			"procps",
+			"python3",
+			"python3-pip",
+			"python3-venv",
+			"ripgrep",
+			"sqlite3",
+			"tini",
+			"unzip",
+			"zip",
+		]);
+	});
+});

@@ -61,6 +61,16 @@ const TWIN_SPECIFIER = pathToFileURL(
 	),
 ).href;
 
+/** The shared-tool fixture (contract: a tool names ONE curation target). */
+const SHARED_TOOL_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-curation-target-shared-tool",
+		"index.js",
+	),
+).href;
+
 /** The fixture module's exports (the module-side records + reset). */
 type FixtureModule = {
 	readonly writes: readonly { text: string }[];
@@ -213,6 +223,24 @@ describe("curation targets (curator P7)", () => {
 					) as unknown as string,
 				},
 			]);
+			expect(opened.curation.targets()).toHaveLength(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("two targets sharing one tool quarantine the declaring extension", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			// A tool names ONE curation target (A8): the overlap would make
+			// byTool first-wins arbitrary and leave the shadowed target's
+			// undos un-actionable — the loader rejects the declaration.
+			const { opened } = await boot([entry(SHARED_TOOL_SPECIFIER, "fixture-curation-target-shared-tool")]);
+			const [outcome] = opened.extensionOutcomes;
+			expect(outcome?.status).toBe("quarantined");
+			expect(outcome?.error).toContain('curation tool "notes_write"');
+			expect(outcome?.error).toContain("fixture-curation-target-shared-tool:notes");
+			expect(outcome?.error).toContain("fixture-curation-target-shared-tool:archive");
 			expect(opened.curation.targets()).toHaveLength(0);
 		} finally {
 			warn.mockRestore();

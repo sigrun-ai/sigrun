@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import type { AccountLinkWire, LoginProviderWire, SigrunClient } from "../api";
-import { messageOf } from "../auth/Onboarding";
+import { messageOf } from "../auth/errors";
 
 export function AccountLinksSection(props: { readonly client: SigrunClient }) {
 	const { client } = props;

@@ -47,9 +47,17 @@ import { seededIdentity } from "./helpers/identity.js";
 
 // Lifecycle cases use the real removal by default. Individual failure cases
 // reject one call to pin the reset (surface) versus delete (best-effort) policy.
+// The mock wraps BOTH the removal and the shared warn helper (one module
+// namespace) so the wrapper in src/jobs/index.ts observes the injected
+// failure. This mock is module-level for this FILE only — vitest module
+// mocks are per test module, so nothing leaks into sibling suites.
 vi.mock("../src/jobs/state-dir.js", async (importOriginal) => {
 	const actual = await importOriginal<typeof import("../src/jobs/state-dir.js")>();
-	return { ...actual, removeJobState: vi.fn(actual.removeJobState) };
+	return {
+		...actual,
+		removeJobState: vi.fn(actual.removeJobState),
+		warnJobStateRemoval: vi.fn(actual.warnJobStateRemoval),
+	};
 });
 
 interface TestServer {

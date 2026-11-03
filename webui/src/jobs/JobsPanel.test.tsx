@@ -347,6 +347,26 @@ describe("JobsPanel", () => {
 		);
 	});
 
+	test("a list refresh clears the stale 'State reset' notice (the runOutcome idiom)", async () => {
+		const harness = makeHarness();
+		const renderer = await renderPanel(harness);
+		await act(async () => {
+			await findButton(renderer, "Reset state").props.onClick();
+		});
+		await act(async () => {
+			await findButton(renderer, "Confirm reset").props.onClick();
+		});
+		expect(textContent(renderer.toJSON())).toContain("State reset");
+		// A list refresh (the job.changed token bump) refetches — the
+		// one-shot notice must not survive it.
+		await act(async () => {
+			renderer.update(
+				<JobsPanel client={harness.client} refreshToken={1} />,
+			);
+		});
+		expect(textContent(renderer.toJSON())).not.toContain("State reset");
+	});
+
 	test("a rejected reset shows the error text in the job row", async () => {
 		const harness = makeHarness({ resetStateError: "state_delete_failed" });
 		const renderer = await renderPanel(harness);

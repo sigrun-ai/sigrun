@@ -133,6 +133,51 @@ test("a late bind still wins: the same member resolves once the bridge lands", a
 	await expect(host.users.list()).resolves.toEqual([]);
 });
 
+test("the deadline is injectable: a small bound rejects at the small bound", async () => {
+	const host = createSeamHost(
+		{ name: "fixture.deadline" },
+		{},
+		{
+			bindHarness: () => {},
+			harness: () => Promise.resolve({} as unknown as Harness),
+		},
+		sharedExtensionStores(ROOTS),
+		undefined,
+		undefined,
+		{ bridgeDeadlineMs: 250 },
+	);
+	host.expectBridge();
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const pending = host.users.list();
+		const assertion = expect(pending).rejects.toThrow(/bridge never bound/);
+		await vi.advanceTimersByTimeAsync(250);
+		await assertion;
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
+test("a successful bind clears the deadline timer (no live timer remains)", async () => {
+	const host = neverBoundHost({ expected: true });
+	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+	try {
+		const pending = host.users.list();
+		const bridge = {
+			users: { list: () => Promise.resolve([]) },
+		} as unknown as HostBridge;
+		host.bindBridge(bridge);
+		await expect(pending).resolves.toEqual([]);
+		// The race's rejection lane was cancelled: advancing past the
+		// deadline fires NOTHING (a leaked timer would reject nothing
+		// here — the settled promise ignores it — but the timer count
+		// proves the clear).
+		expect(vi.getTimerCount()).toBe(0);
+	} finally {
+		vi.useRealTimers();
+	}
+});
+
 afterAll(() => {
 	vi.useRealTimers();
 });

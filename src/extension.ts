@@ -794,7 +794,14 @@ interface NotificationEventBase {
 	readonly user: string | undefined;
 	readonly title: string;
 	readonly body: string;
-	/** `${server.publicUrl}/#/c/<conversationId>` when `server.publicUrl` is set; absent otherwise. */
+	/**
+	 * A deep link into the webui, only ever set when `server.publicUrl` is
+	 * configured: `${server.publicUrl}/#/c/<conversationId>` for
+	 * conversation-carrying events, or the
+	 * `${server.publicUrl}/#/ext/<slug>/<view>` link for an extension
+	 * notice whose target is a declared view (with `?params=` when the
+	 * target carries params). Absent otherwise.
+	 */
 	readonly url?: string;
 }
 

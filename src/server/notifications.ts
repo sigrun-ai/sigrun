@@ -65,19 +65,38 @@ export interface DeliveryTarget {
 
 /**
  * The event fields every recipient of one occurrence shares; `user` is
- * stamped per recipient at delivery.
+ * stamped per recipient at delivery. A discriminated union over the
+ * per-variant required fields (`outcome` only on `run.settled`), so the
+ * per-recipient event builds WITHOUT a widening cast.
  */
-interface EventBase {
-	readonly type: NotificationEvent["type"];
-	readonly conversationId: number | undefined;
-	readonly jobId: string | undefined;
-	/** Gateway C6: the pending record's id — set on `interaction.pending` only. */
-	readonly callId: string | undefined;
-	readonly title: string;
-	readonly body: string;
-	/** The settled run's outcome — set on `run.settled` only. */
-	readonly outcome?: RunSettledOutcome;
-}
+type EventBase =
+	| {
+			readonly type: "interaction.pending";
+			readonly conversationId: number | undefined;
+			readonly jobId: string | undefined;
+			/** Gateway C6: the pending record's id — set on `interaction.pending` only. */
+			readonly callId: string | undefined;
+			readonly title: string;
+			readonly body: string;
+	  }
+	| {
+			readonly type: "job.failed";
+			readonly conversationId: number | undefined;
+			readonly jobId: string | undefined;
+			readonly callId: string | undefined;
+			readonly title: string;
+			readonly body: string;
+	  }
+	| {
+			readonly type: "run.settled";
+			readonly conversationId: number | undefined;
+			readonly jobId: string | undefined;
+			readonly callId: string | undefined;
+			readonly title: string;
+			readonly body: string;
+			/** The settled run's outcome — `run.settled` only. */
+			readonly outcome: RunSettledOutcome;
+	  };
 
 /** The conversation's display name (spec §9.6): name ?? autoName ?? fallback. */
 function displayName(meta: SessionMeta | undefined, id: number): string {
@@ -142,20 +161,33 @@ export function startNotifications(ctx: ServerContext): () => void {
 				? `${config.publicUrl}/#/c/${base.conversationId}`
 				: undefined;
 		for (const user of recipients) {
-			const event: NotificationEvent = {
-				type: base.type,
-				conversationId: base.conversationId,
-				jobId: base.jobId,
-				...(base.callId === undefined ? {} : { callId: base.callId }),
+			// Absent optional fields are OMITTED, never null/undefined —
+			// the conditional spreads keep the wire shape exact (callId
+			// rides ONLY interaction.pending; outcome ONLY run.settled).
+			// Build per-variant so the per-recipient event is a complete
+			// NotificationEvent with NO widening cast.
+			const shared = {
+				...(base.conversationId === undefined
+					? {}
+					: { conversationId: base.conversationId }),
+				...(base.jobId === undefined ? {} : { jobId: base.jobId }),
 				user,
 				title: base.title,
 				body: base.body,
 				...(url === undefined ? {} : { url }),
-				// The settled outcome rides ONLY run.settled events — the
-				// other variants never gain the field (the type is the union;
-				// the conditional spread keeps the wire shape exact).
-				...(base.outcome === undefined ? {} : { outcome: base.outcome }),
-			} as NotificationEvent;
+			};
+			const event: NotificationEvent =
+				base.type === "interaction.pending"
+					? {
+						type: "interaction.pending",
+						...shared,
+						...(base.callId === undefined
+							? {}
+							: { callId: base.callId }),
+					}
+					: base.type === "job.failed"
+						? { type: "job.failed", ...shared }
+						: { type: "run.settled", ...shared, outcome: base.outcome };
 			deliverEvent(ctx, targets, event);
 		}
 	};
@@ -235,11 +267,11 @@ export function startNotifications(ctx: ServerContext): () => void {
 		// second answer read, no inferred status). An unanswered run never
 		// titles itself "Reply ready": the reason is the run's own, with
 		// the bare status as the fallback for a reason-less settle.
+		const reason_ = reason ?? "unanswered";
 		const settledOutcome: RunSettledOutcome =
 			outcome === "answered"
 				? { status: "answered" }
-				: { status: "unanswered", reason: reason ?? "unanswered" };
-		const settledReason = reason ?? "unanswered";
+				: { status: "unanswered", reason: reason_ };
 		deliver(
 			{
 				type: "run.settled",
@@ -253,7 +285,7 @@ export function startNotifications(ctx: ServerContext): () => void {
 				body:
 					outcome === "answered"
 						? displayName(meta, conversationId)
-						: `${displayName(meta, conversationId)} — ${settledReason}`,
+						: `${displayName(meta, conversationId)} — ${reason_}`,
 				outcome: settledOutcome,
 			},
 			[meta?.owner],

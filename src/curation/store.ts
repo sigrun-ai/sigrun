@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
+import { join, dirname, basename } from "node:path";
 import { curationDir, learnedSkillsDir } from "./paths.js";
 import { validSkillName } from "./names.js";
 import { scanContent } from "./scan.js";
@@ -149,6 +149,28 @@ async function writeFileAtomic(path: string, text: string): Promise<void> {
 	const temp = `${path}.${randomUUID()}.tmp`;
 	await writeFile(temp, text);
 	await rename(temp, path);
+	// Sweep crash residue: a process killed between the write and the
+	// rename leaves a `<target>.<uuid>.tmp` orphan beside the target. The
+	// next successful write of that target sweeps every sibling orphan —
+	// a live writer's own temp can never match (its uuid is fresh, and
+	// the sweep runs only after OUR rename landed).
+	sweepTempSiblings(path).catch(() => undefined);
+}
+
+/** Remove orphaned `<path>.<uuid>.tmp` siblings (crash residue). */
+async function sweepTempSiblings(path: string): Promise<void> {
+	const dir = dirname(path);
+	const base = `${basename(path)}.`;
+	let entries: string[];
+	try {
+		entries = await readdir(dir);
+	} catch {
+		return; // the directory is the caller's problem, not the sweep's
+	}
+	for (const entry of entries) {
+		if (!entry.startsWith(base) || !entry.endsWith(".tmp")) continue;
+		await rm(join(dir, entry), { force: true }).catch(() => undefined);
+	}
 }
 
 async function readFeed(dir: string): Promise<FeedEntry[]> {
@@ -266,6 +288,9 @@ export class SkillStore {
 				} else if (change.kind === "write_file") {
 					const file = supportFile(change.file);
 					await assertNoSymlinks(root, file);
+					// An empty body is a phantom write (the tool layer refuses
+					// it too — this is the belt for direct store callers).
+					if (change.content === "") throw new Error(`write_file ${name}: empty content`);
 					checkContent(change.content);
 					await mkdir(join(root, file, ".."), { recursive: true });
 					await writeFile(join(root, file), change.content);
@@ -320,6 +345,7 @@ export class SkillStore {
 				if (!earliest.has(entry.skill)) earliest.set(entry.skill, entry);
 			}
 			const result: FeedEntry[] = [];
+			const skipped: string[] = [];
 			const state = await readState(this.root);
 			for (const entry of earliest.values()) {
 				if (entry.before === undefined) {
@@ -334,13 +360,27 @@ export class SkillStore {
 				}
 				const current = join(state.archived.includes(entry.skill) ? this.archive : this.skills, entry.skill);
 				const previous = join(this.root, "versions", entry.skill, entry.before!);
-				if (!(await exists(previous)) || !(await exists(current))) continue;
+				// A pruned snapshot (retention removed the version while its
+				// feed entry survives) or a vanished current is a REPORTED
+				// skip, never a silent zero-revert AND never a batch abort:
+				// the siblings that CAN revert still do, and the throw below
+				// reports exactly which entries were skipped.
+				if (!(await exists(previous)) || !(await exists(current))) {
+					skipped.push(
+						`cannot undo ${entry.action} ${entry.skill}: the version snapshot ${entry.before} was pruned — the change is no longer revertible`,
+					);
+					continue;
+				}
 				const location = await versionLocation(previous);
 				if (location === undefined) throw new Error(`unknown version location: ${entry.before}`);
 				const destination = join(location === "archive" ? this.archive : this.skills, entry.skill);
 				const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, current, destination, undefined, previous);
 				result.push(next);
 			}
+			// Report-and-continue settles HERE: every revertible entry has
+			// reverted; the skips are the throw's message (the caller's
+			// toast names what could not revert).
+			if (skipped.length > 0) throw new Error(skipped.join("; "));
 			return result;
 		});
 	}

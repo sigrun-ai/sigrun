@@ -387,7 +387,7 @@ or a `/32` / `/128` entry) does vouch, as an explicit operator
 decision, and boot logs a warning for each such entry when no shared
 secret is configured.
 
-**Rejection diagnostics.** Each rejection logs one sanitized line
+**Rejection diagnostics.** A rejection logs one sanitized line
 (subject to the throttle below) naming the socket peer, the method, a
 short reason, and the route, when known — never tokens, cookies, or
 identity-header values. The throttle emits one line per reason per 60 s,

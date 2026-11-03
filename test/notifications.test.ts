@@ -108,8 +108,12 @@ interface TestServer {
 	 * `finish`, where the watcher count decrements) before proceeding.
 	 */
 	watches: ConversationWatch[];
-	/** The fixture extension's captured host (A6 host.notify tests). */
-	extensionHost: SeamHost;
+	/**
+	 * The fixture extension's captured host (A6 host.notify tests) —
+	 * `undefined` when the boot skipped the seam fixture (the
+	 * zero-notifiers case never calls notify).
+	 */
+	extensionHost: SeamHost | undefined;
 	close: () => Promise<void>;
 }
 
@@ -124,6 +128,10 @@ async function bootServer(options?: {
 	readonly publicUrl?: string;
 	/** The `notifications` settings section, written before boot. */
 	readonly notifications?: Record<string, unknown>;
+	/** Override the extension specifiers (defaults: notifier + seam fixtures). */
+	readonly extensionSpecifiers?: readonly string[];
+	/** Skip the built-in extensions (the zero-notifiers boot). */
+	readonly builtins?: false;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-notif-"));
 	const faux = fauxProvider({
@@ -165,10 +173,13 @@ async function bootServer(options?: {
 	}
 	const opened = await openHarness(config, {
 		extensions: [contributor],
+		...(options?.extensionSpecifiers === undefined
+			? { extensionSpecifiers: [NOTIFIER_SPECIFIER, SEAM_SPECIFIER] }
+			: { extensionSpecifiers: options.extensionSpecifiers }),
+		...(options?.builtins === false ? { builtins: false } : {}),
 		env,
 		identity,
 		settingsDir: dir,
-		extensionSpecifiers: [NOTIFIER_SPECIFIER, SEAM_SPECIFIER],
 	});
 	const app = await createServer(opened, config);
 	// The watch capture (see TestServer.watches).
@@ -224,7 +235,10 @@ async function bootServer(options?: {
 		__fixtureSeamHost?: SeamHost;
 	};
 	const extensionHost = seamFixture.__fixtureSeamHost;
-	if (extensionHost === undefined) {
+	const wantsSeamHost =
+		options?.extensionSpecifiers === undefined ||
+		options.extensionSpecifiers.includes(SEAM_SPECIFIER);
+	if (wantsSeamHost && extensionHost === undefined) {
 		throw new Error("fixture-seam did not capture its host");
 	}
 	return {
@@ -244,6 +258,14 @@ async function bootServer(options?: {
 /** The Bearer header set for one token. */
 function auth(token: string): Record<string, string> {
 	return { authorization: `Bearer ${token}` };
+}
+
+/** The fixture seam host — present unless the boot skipped the seam fixture. */
+function notifyHost(server: TestServer): SeamHost {
+	if (server.extensionHost === undefined) {
+		throw new Error("this boot skipped fixture-seam; notify is unavailable");
+	}
+	return server.extensionHost;
 }
 
 /** Create a conversation as `token`'s user; returns its id. */
@@ -771,7 +793,7 @@ describe("host.notify extension notices (A6)", () => {
 			publicUrl: "https://example.invalid",
 		});
 		resetNotifierEvents();
-		await server.extensionHost.notify({
+		await notifyHost(server).notify({
 			user: "bob",
 			title: "T",
 			body: "B",
@@ -802,7 +824,7 @@ describe("host.notify extension notices (A6)", () => {
 			notifications: { runSettled: "never" },
 		});
 		resetNotifierEvents();
-		await server.extensionHost.notify({
+		await notifyHost(server).notify({
 			user: "bob",
 			title: "T",
 			body: "B",
@@ -824,25 +846,25 @@ describe("host.notify extension notices (A6)", () => {
 			kind: "escalation.raised",
 		} as const;
 		await expect(
-			server.extensionHost.notify({ ...base, user: "alice" }),
+			notifyHost(server).notify({ ...base, user: "alice" }),
 		).rejects.toThrow('unknown user "alice"');
 		await expect(
-			server.extensionHost.notify({ ...base, user: undefined }),
+			notifyHost(server).notify({ ...base, user: undefined }),
 		).rejects.toThrow("user is required");
 		await expect(
-			server.extensionHost.notify({ ...base, title: "" }),
+			notifyHost(server).notify({ ...base, title: "" }),
 		).rejects.toThrow("title");
 		await expect(
-			server.extensionHost.notify({ ...base, title: "t".repeat(201) }),
+			notifyHost(server).notify({ ...base, title: "t".repeat(201) }),
 		).rejects.toThrow("title");
 		await expect(
-			server.extensionHost.notify({ ...base, body: "b".repeat(2001) }),
+			notifyHost(server).notify({ ...base, body: "b".repeat(2001) }),
 		).rejects.toThrow("body");
 		await expect(
-			server.extensionHost.notify({ ...base, kind: "" }),
+			notifyHost(server).notify({ ...base, kind: "" }),
 		).rejects.toThrow("kind");
 		await expect(
-			server.extensionHost.notify({ ...base, kind: "k".repeat(65) }),
+			notifyHost(server).notify({ ...base, kind: "k".repeat(65) }),
 		).rejects.toThrow("kind");
 		expect(ofType("extension")).toHaveLength(0);
 	});
@@ -856,13 +878,13 @@ describe("host.notify extension notices (A6)", () => {
 			kind: "escalation.raised",
 		} as const;
 		await expect(
-			server.extensionHost.notify({
+			notifyHost(server).notify({
 				...base,
 				target: { view: "undeclared" },
 			}),
 		).rejects.toThrow('view "undeclared"');
 		await expect(
-			server.extensionHost.notify({ ...base, kind: "Bad Kind" }),
+			notifyHost(server).notify({ ...base, kind: "Bad Kind" }),
 		).rejects.toThrow("kind");
 		expect(ofType("extension")).toHaveLength(0);
 	});
@@ -888,7 +910,8 @@ describe("host.notify extension notices (A6)", () => {
 		];
 		for (const target of invalidTargets) {
 			await expect(
-				server.extensionHost.notify({ ...base, target } as never),
+				// Deliberately invalid shapes (the cast bypasses the TS union).
+				notifyHost(server).notify({ ...base, target } as never),
 			).rejects.toThrow("notification target");
 		}
 		expect(ofType("extension")).toHaveLength(0);
@@ -899,7 +922,7 @@ describe("host.notify extension notices (A6)", () => {
 			publicUrl: "https://example.invalid",
 		});
 		resetNotifierEvents();
-		await server.extensionHost.notify({
+		await notifyHost(server).notify({
 			user: "bob",
 			title: "T",
 			body: "B",
@@ -923,7 +946,7 @@ describe("host.notify extension notices (A6)", () => {
 			.spyOn(console, "error")
 			.mockImplementation(() => {});
 		try {
-			await server.extensionHost.notify({
+			await notifyHost(server).notify({
 				user: "bob",
 				title: "T",
 				body: "B",
@@ -992,5 +1015,27 @@ describe("delivery isolation (best-effort, logged)", () => {
 		} finally {
 			errors.mockRestore();
 		}
+	});
+});
+
+describe("zero notifier contributions (A6)", () => {
+	test("with zero bindings the surface subscribes nothing; events drop quietly", { timeout: 30_000 }, async () => {
+		// builtins: false keeps the gateway built-in's engine notifier out,
+		// so startNotifications really hits its zero-targets no-op return.
+		const server = await bootServer({
+			extensionSpecifiers: [SEAM_SPECIFIER],
+			builtins: false,
+		});
+		expect(server.opened.notifierBindings).toHaveLength(0);
+		const conv = await createConversation(server.app, server.bob);
+		resetNotifierEvents();
+		await seedInteraction(server.opened, conv, "notif-zero");
+		// The hub publish itself completes; nothing delivers. A settle on
+		// top exercises the second drop path.
+		await submit(server.app, server.bob, conv, "zero-notifier turn");
+		// Absence-assertion wait: no condition can be awaited, so allow the
+		// side lanes time before asserting nothing was delivered.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(notifierEvents()).toHaveLength(0);
 	});
 });

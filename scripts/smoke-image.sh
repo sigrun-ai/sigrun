@@ -4,9 +4,9 @@
 # quarantines them, and only a real boot + /v1/meta proves they loaded),
 # then run the static layout/resolve checks. Built-ins resolve through
 # core's own node_modules, so a container CAN resolve them with no
-# sibling checkouts — the resolve list still comes from the host's
-# `publish-deps.mjs list` (the single enumeration; the list is a comment
-# input inside the container, not a build input).
+# sibling checkouts — the built-in SLUG list for the boot assertion still
+# comes from the host's `publish-deps.mjs slugs` (the single enumeration;
+# the list is a comment input inside the container, not a build input).
 set -eu
 
 image="${1-}"
@@ -131,8 +131,11 @@ if [ "$#" -eq 1 ]; then
 	# /tmp/sg managed tree — the buildOsUserPolicy shape from
 	# test/sandbox-it/helpers.ts (store roots + storagePath + coreRoot +
 	# userAreas) — then the sandbox helper runs the python/uv pair under
-	# that policy. HOME comes from the policy itself (the helper execs
-	# the child with the policy env). Expect exit 0 and a 3 on stdout.
+	# that policy, launched through launchInJail (the same policy
+	# serialization core's worker/service launches use — one writer for
+	# the wire shape). HOME comes from the policy itself (the helper
+	# execs the child with the policy env). Expect exit 0 and a 3 on
+	# stdout.
 	# The Landlock gate is INSIDE this container: a probe below ABI 6 here
 	# means the host kernel predates it or the docker seccomp profile
 	# blocks the landlock_* syscalls — fail loud naming that cause (never
@@ -142,6 +145,7 @@ if [ "$#" -eq 1 ]; then
 		import { spawnSync } from "node:child_process";
 		import { mkdirSync } from "node:fs";
 		import { join } from "node:path";
+		import { launchInJail, serializePolicy } from "/app/dist/sandbox/launch.js";
 		import { buildUserPolicy, defaultModuleTrees } from "/app/dist/sandbox/policy.js";
 
 		const helper = "/usr/local/lib/sigrun/sigrun-sandbox";
@@ -182,29 +186,29 @@ if [ "$#" -eq 1 ]; then
 			process.exit(1);
 		}
 		const policy = built.policy;
-		const serialized = JSON.stringify({
-			ro: policy.ro,
-			rw: policy.rw,
-			ensureDirs: policy.ensureDirs,
-			minAbi: 6,
-			...(policy.uid === undefined ? {} : { uid: policy.uid }),
-			...(policy.gid === undefined ? {} : { gid: policy.gid }),
-			...(policy.groups === undefined ? {} : { groups: policy.groups }),
-		});
+		// The policy payload comes from launchInJail — the one writer of
+		// the wire shape — never a hand-built copy.
 		const command =
 			"python3 -m venv \"$HOME/v\" && \"$HOME/v/bin/python\" -c \"print(3)\" && " +
 			"uv --version && UV_CACHE_DIR=\"$HOME/.cache/uv\" uv venv -q \"$HOME/u\"";
-		const run = spawnSync(
-			"/usr/local/lib/sigrun/sigrun-sandbox",
-			["run", "--", "sh", "-c", command],
-			{ encoding: "utf8", env: { ...policy.env, SIGRUN_SANDBOX_POLICY: serialized } },
-		);
+		const jail = launchInJail(helper, policy, "sh", ["-c", command], policy.env);
+		const run = spawnSync(jail.command, jail.args, {
+			encoding: "utf8",
+			env: { ...process.env, ...jail.env },
+		});
 		if (run.error !== undefined) {
 			console.error(`jailed check: cannot spawn the sandbox helper: ${run.error.message}`);
 			process.exit(1);
 		}
 		if (run.status !== 0) {
-			console.error(`jailed python/uv check failed (exit ${run.status}):\n${run.stdout ?? ""}${run.stderr ?? ""}`);
+			// spawnSync reports status null when the child DIED BY SIGNAL
+			// (the kernel never gave it an exit code) — say so instead of
+			// printing the misleading "exit null".
+			const how =
+				run.status === null
+					? `killed by signal ${run.signal ?? "unknown"}`
+					: `exit ${run.status}`;
+			console.error(`jailed python/uv check failed (${how}):\n${run.stdout ?? ""}${run.stderr ?? ""}`);
 			process.exit(1);
 		}
 		if (!(run.stdout ?? "").split("\n").includes("3")) {

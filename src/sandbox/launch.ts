@@ -15,6 +15,25 @@ export interface JailLaunch {
 	env: Record<string, string>;
 }
 
+/**
+ * Serialize a built policy into the `SIGRUN_SANDBOX_POLICY` env payload
+ * the sandbox helper parses (sandbox/src/policy.rs — `deny_unknown_fields`,
+ * so the field set here IS the wire contract). The single writer: every
+ * producer of a policy payload — `launchInJail`, the smoke-image jailed
+ * check — must build it here so the shapes cannot drift.
+ */
+export function serializePolicy(policy: UserPolicy): string {
+	return JSON.stringify({
+		ro: policy.ro,
+		rw: policy.rw,
+		ensureDirs: policy.ensureDirs,
+		minAbi: 6,
+		...(policy.uid === undefined ? {} : { uid: policy.uid }),
+		...(policy.gid === undefined ? {} : { gid: policy.gid }),
+		...(policy.groups === undefined ? {} : { groups: policy.groups }),
+	});
+}
+
 /** Apply a complete policy in the helper, then exec the requested sibling process. */
 export function launchInJail(
 	helper: string,
@@ -39,15 +58,7 @@ export function launchInJail(
 			// is not granted inside the jail, so honoring it would be the
 			// same fatal startup error.
 			OPENSSL_CONF: `${policy.tmp}/openssl.cnf`,
-			SIGRUN_SANDBOX_POLICY: JSON.stringify({
-				ro: policy.ro,
-				rw: policy.rw,
-				ensureDirs: policy.ensureDirs,
-				minAbi: 6,
-				...(policy.uid === undefined ? {} : { uid: policy.uid }),
-				...(policy.gid === undefined ? {} : { gid: policy.gid }),
-				...(policy.groups === undefined ? {} : { groups: policy.groups }),
-			}),
+			SIGRUN_SANDBOX_POLICY: serializePolicy(policy),
 		},
 	};
 }

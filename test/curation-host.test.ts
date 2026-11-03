@@ -15,7 +15,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -45,9 +45,27 @@ const TARGET_SPECIFIER = pathToFileURL(
 
 // Every bootServer loads the built-in extensions, and the MCP one
 // registers a process-exit listener per boot — this file's per-test
-// boots cross Node's default 10-listener leak warning. Bounded bump,
-// not a leak: each server closes in the afterAll below.
-process.setMaxListeners(20);
+// boots cross Node's default 10-listener leak warning. Scoped bump,
+// not a leak: an isolated emitter raises ONLY this file's `process`
+// ceiling (never the global EventEmitter default every other emitter
+// inherits), and the afterEach restores the previous ceiling so a
+// neighbouring file's leak detection is untouched. (Node's two-arg
+// setMaxListeners targets the emitter passed; the DOM typings lack
+// the overload, hence the cast.)
+import { EventEmitter } from "node:events";
+const processListeners = new EventEmitter();
+let previousMax: number | undefined;
+beforeEach(() => {
+	previousMax = process.getMaxListeners();
+	(processListeners.setMaxListeners as (n: number, target: NodeJS.EventEmitter) => void).call(
+		processListeners,
+		20,
+		process,
+	);
+});
+afterEach(() => {
+	if (previousMax !== undefined) process.setMaxListeners(previousMax);
+});
 
 
 const cleanups: Array<() => Promise<void>> = [];

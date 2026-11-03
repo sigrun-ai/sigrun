@@ -14,12 +14,13 @@
  * and loopback binds keep them too (loopback is its own trust).
  */
 
+import { isProxyOnly } from "@sigrun/shared/auth";
 import { isLoopbackHost } from "./loopback.js";
 
-/** Whether the configured auth methods are exactly proxy-only. */
-export function isProxyOnly(methods: readonly string[]): boolean {
-	return methods.includes("proxy") && !methods.includes("token");
-}
+// Re-export: the predicate lives in @sigrun/shared (polish task 12 —
+// one definition for the server, the webui, and the CLI); this module
+// keeps the server's import path stable for its existing callers.
+export { isProxyOnly };
 
 /**
  * Whether this boot requires a proxy vouch for account creation:

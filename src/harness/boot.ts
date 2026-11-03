@@ -2038,15 +2038,17 @@ export async function openHarness(
 				BACKGROUND_CONTEXT,
 			);
 			if (newest === undefined) return;
+			// Resolve once: the primary admin can move between the two reads
+			// (a live directory), so a single snapshot keeps the row
+			// self-consistent.
+			const effectiveOwner = jobEffectiveOwner(newest.owner);
 			events.publish({
 				type: "job.changed",
 				job: {
 					id: jobId,
 					name: newest.spec.name,
 					source: newest.source,
-					...(jobEffectiveOwner(newest.owner) === undefined
-						? {}
-						: { owner: jobEffectiveOwner(newest.owner) }),
+					...(effectiveOwner === undefined ? {} : { owner: effectiveOwner }),
 					...(newest.sharing === undefined ? {} : { sharing: newest.sharing }),
 					schedule: newest.spec.schedule,
 					action: newest.spec.action,

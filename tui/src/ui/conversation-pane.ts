@@ -59,7 +59,7 @@ import {
 } from "@sigrun/shared/turns";
 import type { SurfaceTransport } from "@sigrun/shared/blocks";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
-import type { ConversationViewWire } from "../api.js";
+import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "../api.js";
 import { SurfaceState } from "../blocks/surface.js";
 import { SurfaceView } from "../blocks/surface-view.js";
 
@@ -411,25 +411,77 @@ export class ConversationPane implements Component {
 	/**
 	 * Discard all composer-surfaced lines (fix wave F4): the shell calls
 	 * this on every conversation swap so a stale error never renders in
-	 * the new conversation.
+	 * the new conversation. The AUTH FAILURE notice is exempt (polish
+	 * task 12): a revoked credential is process state, not conversation
+	 * state — the swap must not silently drop the one line that explains
+	 * why everything is failing.
 	 */
 	clearNotices(): void {
 		if (this.#notices.length === 0) return;
-		this.#notices.length = 0;
-		for (const component of this.#noticeComponents.splice(0)) {
-			this.#container.removeChild(component);
+		const kept: PaneNotice[] = [];
+		const keptComponents: Component[] = [];
+		for (let index = 0; index < this.#notices.length; index++) {
+			const notice = this.#notices[index];
+			if (notice === undefined) continue;
+			if (notice.text === AUTH_FAILURE_MESSAGE) {
+				kept.push(notice);
+				const component = this.#noticeComponents[index];
+				if (component !== undefined) keptComponents.push(component);
+				continue;
+			}
+			const component = this.#noticeComponents[index];
+			if (component !== undefined) this.#container.removeChild(component);
 		}
+		this.#notices.length = 0;
+		this.#notices.push(...kept);
+		this.#noticeComponents.length = 0;
+		this.#noticeComponents.push(...keptComponents);
 		this.#container.invalidate();
 	}
 
 	#appendNotice(notice: PaneNotice): void {
+		// The auth failure is process-wide (a revoked token makes EVERY
+		// stream 401 at once): dedupe it to one line regardless of kind,
+		// and never let the backlog cap evict it — it is the only notice
+		// that tells the operator why everything stopped working.
+		if (notice.text === AUTH_FAILURE_MESSAGE) {
+			const index = this.#notices.findIndex(
+				(existing) => existing.text === AUTH_FAILURE_MESSAGE,
+			);
+			if (index >= 0) {
+				// Not a plain no-op skip: the splice-and-remount REPLACES the
+				// stored notice and its component so the rendered kind
+				// refreshes when the dup arrives via the other channel
+				// (notice vs error — e.g. the events watcher after the
+				// conversation watch already posted).
+				this.#notices.splice(index, 1, notice);
+				const component = this.#noticeComponents.splice(
+					index,
+					1,
+					noticeComponent(notice),
+				)[0];
+				if (component !== undefined) {
+					this.#container.removeChild(component);
+					// Re-append: the dup is rare and the auth line is the last
+					// thing added on both failure paths anyway — position drift
+					// is cosmetic and the #rebuild path re-mounts in order.
+					this.#container.addChild(this.#noticeComponents[index]!);
+				}
+				this.#container.invalidate();
+				return;
+			}
+		}
 		this.#notices.push(notice);
 		const component = noticeComponent(notice);
 		this.#noticeComponents.push(component);
 		this.#container.addChild(component);
 		while (this.#notices.length > MAX_NOTICES) {
-			this.#notices.shift();
-			const oldest = this.#noticeComponents.shift();
+			const evictIndex = this.#notices.findIndex(
+				(existing) => existing.text !== AUTH_FAILURE_MESSAGE,
+			);
+			if (evictIndex < 0) break;
+			this.#notices.splice(evictIndex, 1);
+			const oldest = this.#noticeComponents.splice(evictIndex, 1)[0];
 			if (oldest === undefined) break;
 			this.#container.removeChild(oldest);
 		}

@@ -217,6 +217,100 @@ describe("SkillStore", () => {
 		expect(await store.view("acme-deploy", "templates/deploy.txt")).toBe("safe deploy");
 	});
 
+	test("undoing an edit restores its content to the snapshot's recorded location (the archived flag is preserved)", async () => {
+		const { store } = await setup();
+		await create(store);
+		await store.apply("acme-deploy", { kind: "archive" }, { actor: "user" });
+		// Restore, edit, re-archive: the edit's before-snapshot was taken
+		// while the skill was LIVE (its .location is "skills").
+		await store.apply("acme-deploy", { kind: "restore" }, { actor: "user" });
+		const edited = await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely" }, { actor: "agent" });
+		await store.apply("acme-deploy", { kind: "archive" }, { actor: "user" });
+		// Undo the archive (its snapshot's .location is "skills" — the
+		// skill was live before the archive): the skill is live again,
+		// edited content intact (never the pre-edit body).
+		const feed = await store.feed(10);
+		const latestArchive = feed.find(
+			(entry) => entry.action === "archive" && entry.skill === "acme-deploy",
+		);
+		expect(latestArchive).toBeDefined();
+		await store.undo([latestArchive!.id]);
+		expect((await store.list()).find((row) => row.name === "acme-deploy")?.archived).toBe(false);
+		expect(await store.view("acme-deploy")).toContain("safely");
+		// Undo the edit itself: the before-snapshot's location is "skills"
+		// (the skill was live when the edit was made), so the content is
+		// restored and the skill STAYS live — the undo never re-archives
+		// a skill whose edit predates the archive.
+		await store.undo([edited.id]);
+		expect((await store.list()).find((row) => row.name === "acme-deploy")?.archived).toBe(false);
+		expect(await store.view("acme-deploy")).toBe(content());
+	});
+
+	test("a crashed atomic write leaves no .tmp residue that poisons the next read", async () => {
+		const { store, userArea } = await setup();
+		await create(store);
+		// Simulate the crash residue: a half-written temp file beside the
+		// real feed and state files (writeFileAtomic's pattern).
+		const feedTmp = join(curationDir(userArea), "feed.jsonl.deadbeef.tmp");
+		await writeFile(feedTmp, "{not-json\n");
+		const stateTmp = join(curationDir(userArea), "state.json.deadbeef.tmp");
+		await writeFile(stateTmp, "{");
+		// Reads and writes must be unaffected: .tmp files are invisible
+		// to the store (they never match its read patterns).
+		expect(await store.feed(1)).toHaveLength(1);
+		expect((await store.list())[0]?.name).toBe("acme-deploy");
+		await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely" }, { actor: "agent" });
+		expect(await store.view("acme-deploy")).toContain("safely");
+		// The residue itself is cleaned up: stray .tmp files beside a
+		// successfully written target are swept on write (the sweep is
+		// fire-and-forget so a write never blocks on it — poll for the
+		// settled state).
+		await expect
+			.poll(
+				async () =>
+					(await readdir(curationDir(userArea))).filter((entry) =>
+						entry.endsWith(".tmp"),
+					),
+				{ timeout: 5_000 },
+			)
+			.toEqual([]);
+	});
+
+	test("undoing an entry whose version snapshot was pruned reports the skip", async () => {
+		const { store, userArea } = await setup();
+		await create(store);
+		const first = await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely 1" }, { actor: "agent" });
+		// Prune the first edit's before-snapshot by hand (retention's
+		// shape: the version directory is gone, the feed entry survives).
+		await rm(join(curationDir(userArea), "versions", "acme-deploy", first.before!), { recursive: true, force: true });
+		// The undo must not silently succeed with zero reverts: a
+		// pruned snapshot is reported, never skipped quiet.
+		await expect(store.undo([first.id])).rejects.toThrow(/pruned|missing|snapshot/i);
+	});
+
+	test("a mixed undo batch reverts what it can and reports the pruned entries (never aborts the batch)", async () => {
+		const { store, userArea } = await setup();
+		await create(store, "acme-deploy", content("acme-deploy"));
+		await create(store, "acme-release", content("acme-release", "Release acme"));
+		// The PRUNED entry is the NEWER one (feed order is newest-first,
+		// so the undo loop meets it FIRST): a mid-loop abort would leave
+		// its older sibling unreverted.
+		const revertible = await store.apply("acme-deploy", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, safely." }, { actor: "agent" });
+		const pruned = await store.apply("acme-release", { kind: "patch", old: "Deploy the acme way.", new: "Deploy the acme way, calmly." }, { actor: "agent" });
+		// Prune only the newer edit's snapshot; the older sibling's survives.
+		await rm(join(curationDir(userArea), "versions", "acme-release", pruned.before!), { recursive: true, force: true });
+		// The batch reports the pruned entry AND reverts the sibling —
+		// never a full abort.
+		await expect(store.undo([pruned.id, revertible.id])).rejects.toThrow(/pruned/);
+		// The revertible sibling DID revert (the throw named the skip,
+		// it did not abort the batch).
+		expect(await store.view("acme-deploy")).toContain("Deploy the acme way.");
+		expect(await store.view("acme-deploy")).not.toContain("safely");
+		// The pruned entry's skill is untouched (nothing to revert to).
+		expect(await store.view("acme-release")).toContain("calmly");
+	});
+
+
 	test("userExists false -> every op throws user removed and no directory is created", async () => {
 		let exists = true;
 		const { userArea, store } = await setup(() => exists);

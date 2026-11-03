@@ -389,6 +389,53 @@ describe("SurfacePage", () => {
 		}
 	});
 
+	test("a data update does NOT re-arm the keepalive interval (refresh identity is stable)", async () => {
+		vi.useFakeTimers();
+		const intervalSpy = vi.spyOn(globalThis, "setInterval");
+		const clearSpy = vi.spyOn(globalThis, "clearInterval");
+		try {
+			const { SurfacePage } = await import("./SurfacePage");
+			const { renderAsync } = await import("../test-utils");
+			const transport = makeTransport();
+			const changeListeners: ((event: { rev: number; treeRev: number }) => void)[] = [];
+			transport.onChanged = vi.fn((listener) => {
+				changeListeners.push(listener);
+				return () => undefined;
+			});
+			transport.fetchData = vi.fn(async () => ({
+				rev: 2,
+				treeRev: 1,
+				data: { items: [{ id: "i1", title: "Updated item" }] },
+			}));
+			await renderAsync(
+				<SurfacePage
+					slug="fixture-surfaces"
+					id="inbox"
+					transport={transport}
+					hub={new ExtSurfaceHub()}
+				/>,
+			);
+			const intervalsAfterMount = intervalSpy.mock.calls.length;
+			expect(intervalsAfterMount).toBeGreaterThanOrEqual(1);
+			// A surface.changed → since-fetch → data apply re-renders the
+			// page. The keepalive interval must SURVIVE the churn — a
+			// re-arm (clearInterval + fresh setInterval) restarts the
+			// 5-minute clock and never lets a tick land under activity.
+			await act(async () => {
+				for (const listener of changeListeners) {
+					listener({ rev: 2, treeRev: 1 });
+				}
+				await vi.advanceTimersByTimeAsync(10);
+			});
+			expect(clearSpy).not.toHaveBeenCalled();
+			expect(intervalSpy.mock.calls.length).toBe(intervalsAfterMount);
+		} finally {
+			clearSpy.mockRestore();
+			intervalSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
 	test("a 5-minute keepalive `since` fetch runs while visible", async () => {
 		vi.useFakeTimers();
 		try {

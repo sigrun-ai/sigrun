@@ -449,65 +449,78 @@ describe("App shell", () => {
 
 	test("selecting a conversation drives the view hook and renders the transcript; the Workspace panel lists that conversation's files", async () => {
 		const { calls, client, createEventSource, sources } = makeHarness();
-		const renderer = await renderAsync(
-			<App client={client} createEventSource={createEventSource} />,
-		);
-		// The boot default selected the root (id 1) and opened its stream
-		// (sources[0] is the shared /v1/events source).
-		expect(sources.map((s) => s.url)).toEqual([
-			"/v1/events",
-			"/v1/conversations/1/stream",
-		]);
-		await clickConversation(renderer, "Moor line inspection");
-		expect(sources.map((s) => s.url)).toEqual([
-			"/v1/events",
-			"/v1/conversations/1/stream",
-			"/v1/conversations/2/stream",
-		]);
-		// sources[2] is conversation 2's stream.
-		act(() => {
-			sources[2]?.source.emit(
-				"snapshot",
-				JSON.stringify(
-					makeView({
-						id: 2,
-						entries: [
-							makeEntry(
-								"pi.user",
-								[textMessage("user", "hello from conversation two")],
-								{ id: 10, conversationId: 2 },
-							),
-						],
-					}),
-				),
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
 			);
-		});
-		const text = textContent(renderer.toJSON());
-		expect(text).toContain("hello from conversation two");
-		// Opening the Workspace panel lists conversation 2's workspace root.
-		expect(calls.map((c) => c.input)).not.toContain(
-			"/v1/conversations/2/files?path=.",
-		);
-		await clickPanel(renderer, "workspace");
-		expect(calls.map((c) => c.input)).toContain(
-			"/v1/conversations/2/files?path=.",
-		);
+			// The boot default selected the root (id 1) and opened its stream
+			// (sources[0] is the shared /v1/events source).
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/1/stream",
+			]);
+			await clickConversation(renderer, "Moor line inspection");
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/1/stream",
+				"/v1/conversations/2/stream",
+			]);
+			// sources[2] is conversation 2's stream.
+			act(() => {
+				sources[2]?.source.emit(
+					"snapshot",
+					JSON.stringify(
+						makeView({
+							id: 2,
+							entries: [
+								makeEntry(
+									"pi.user",
+									[textMessage("user", "hello from conversation two")],
+									{ id: 10, conversationId: 2 },
+								),
+							],
+						}),
+					),
+				);
+			});
+			const text = textContent(renderer.toJSON());
+			expect(text).toContain("hello from conversation two");
+			// Opening the Workspace panel lists conversation 2's workspace root.
+			expect(calls.map((c) => c.input)).not.toContain(
+				"/v1/conversations/2/files?path=.",
+			);
+			await clickPanel(renderer, "workspace");
+			expect(calls.map((c) => c.input)).toContain(
+				"/v1/conversations/2/files?path=.",
+			);
+		} finally {
+			// The selection wrote the deep-link hash (sidebar selects ride the
+			// hash writer); the seam must land back on the chat default so the
+			// NEXT test boots on the root conversation, not this leftover id.
+			resetLocationHashForTest();
+		}
 	});
 
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {
 		const { client, createEventSource, sources } = makeHarness();
-		const renderer = await renderAsync(
-			<App client={client} createEventSource={createEventSource} />,
-		);
-		await clickConversation(renderer, "Tide table rewrite");
-		await clickConversation(renderer, "Moor line inspection");
-		expect(sources.map((s) => s.url)).toEqual([
-			"/v1/events",
-			"/v1/conversations/1/stream",
-			"/v1/conversations/2/stream",
-		]);
-		expect(sources[1]?.source.closed).toBe(true);
-		expect(sources[2]?.source.closed).toBe(false);
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await clickConversation(renderer, "Tide table rewrite");
+			await clickConversation(renderer, "Moor line inspection");
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/1/stream",
+				"/v1/conversations/2/stream",
+			]);
+			expect(sources[1]?.source.closed).toBe(true);
+			expect(sources[2]?.source.closed).toBe(false);
+		} finally {
+			// Same seam reset: the clicks above left `#/c/2` in the module
+			// fallback — the next test must boot on the chat default.
+			resetLocationHashForTest();
+		}
 	});
 
 	test("renaming from the header persists the name and updates the title", async () => {
@@ -753,6 +766,22 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 		expect(parseHash("#/settings/")).toEqual({ kind: "settings" });
 	});
 
+	test("#/c/<id> parses to a chat route carrying the conversation id; routeHash round-trips", () => {
+		expect(parseHash("#/c")).toEqual({ kind: "chat" });
+		expect(parseHash("#/c/")).toEqual({ kind: "chat" });
+		expect(parseHash("#/c/2")).toEqual({ kind: "chat", conversationId: 2 });
+		expect(routeHash({ kind: "chat" })).toBe("#/c");
+		expect(routeHash({ kind: "chat", conversationId: 2 })).toBe("#/c/2");
+		// The inverse both ways: parse(route(x)) = x for every shape.
+		expect(parseHash(routeHash({ kind: "chat", conversationId: 42 }))).toEqual({
+			kind: "chat",
+			conversationId: 42,
+		});
+		// A non-numeric id segment is garbage → the plain chat default.
+		expect(parseHash("#/c/abc")).toEqual({ kind: "chat" });
+		expect(parseHash("#/c/2/extra")).toEqual({ kind: "chat" });
+	});
+
 	test("a malformed percent-escape in a segment is garbage → the chat default (both route kinds)", () => {
 		// `%E0%A4%A` is a truncated UTF-8 sequence — decodeURIComponent
 		// throws; the router must fall to chat, never crash the boot.
@@ -822,6 +851,217 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 			// `#/settings/accounts` into it — the next test must boot on
 			// the chat default, not inherit this route.
 			resetLocationHashForTest("#/c");
+		}
+	});
+
+	test("booting on a /settings hash selects NO conversation (the boot default is chat-route-only)", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		resetLocationHashForTest("#/settings");
+		let renderer: Awaited<ReturnType<typeof renderAsync>> | undefined;
+		try {
+			renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// The settings page renders; the boot-default effect must NOT
+			// select a conversation behind it — no stream opens, and the
+			// transcript stays unselected.
+			expect(
+				renderer.root.findAllByProps({ className: "settings-page" }),
+			).toHaveLength(1);
+			expect(sources.map((s) => s.url)).toEqual(["/v1/events"]);
+			expect(textContent(renderer.toJSON())).not.toContain(
+				"Select or create a conversation",
+			);
+		} finally {
+			// Restore the CHAT hash so the app's writeHash bookkeeping
+			// (dedup against the last write) stays consistent for the
+			// tests after this one — the fallback seam must also land on
+			// the chat default.
+			resetLocationHashForTest("#/c");
+		}
+	});
+
+	test("typing with no conversation active, then reloading onto /settings, does NOT carry the unanchored draft into the root", async () => {
+		// The unanchored draft (typed with no conversation selected) is
+		// session-local (Task 6). Boot 1: type while no conversation is
+		// selected — the draft stays UNANCHORED in the composer's memory
+		// and dies with the page (nothing to persist it under).
+		const { client, createEventSource, calls, sources } = makeHarness();
+		const first = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		await vi.waitFor(() => {
+			expect(
+				first.root.findAllByProps({ className: "composer" }).length,
+			).toBeGreaterThan(0);
+		});
+		const input = first.root.findByProps({ className: "composer-input" });
+		await act(async () => {
+			input.props.onChange({
+				target: { value: "unanchored words" },
+			});
+		});
+		// The reload: a FRESH App instance boots on the hash the browser
+		// was left at — /settings here. A boot-default that ignores the
+		// settings route selects the root conversation behind the page,
+		// which is exactly where the unanchored draft would be carried
+		// (the composer's carry rule fires on the next selection). The
+		// fixed shell stays unselected, so nothing carries anywhere.
+		// Boot 1's composer mount: the boot-default selected the root
+		// conversation, so its stream is expected — record the count and
+		// verify the RELOAD opened none (nothing new carried anywhere).
+		const streamsBeforeReload = sources.filter((s) =>
+			s.url.includes("/conversations/"),
+		).length;
+		resetLocationHashForTest("#/settings");
+		let second: Awaited<ReturnType<typeof renderAsync>> | undefined;
+		try {
+			second = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			expect(
+				second.root.findAllByProps({ className: "settings-page" }),
+			).toHaveLength(1);
+			// Correct behaviour: NO conversation was selected on a
+			// settings-route boot — no conversation stream opened at all.
+			expect(
+				sources.filter((s) => s.url.includes("/conversations/")),
+			).toHaveLength(streamsBeforeReload);
+			expect(textContent(second.toJSON())).not.toContain(
+				"Select or create a conversation",
+			);
+			// And no PATCH ever wrote a draft into any conversation's meta.
+			expect(
+				calls.filter(
+					(call) =>
+						/^\/v1\/conversations\/\d+\/meta$/.test(call.input) &&
+						call.method === "PATCH" &&
+						typeof call.body === "string" &&
+						call.body.includes("draft"),
+				),
+			).toEqual([]);
+		} finally {
+			resetLocationHashForTest();
+		}
+	});
+
+	test("a #/c/<id> deep link on load selects that conversation (the hash owns the id)", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		resetLocationHashForTest("#/c/2");
+		let renderer: Awaited<ReturnType<typeof renderAsync>> | undefined;
+		try {
+			renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await vi.waitFor(() => {
+				expect(
+					sources.some(
+						(s) => s.url === "/v1/conversations/2/stream",
+					),
+				).toBe(true);
+			});
+			// The deep link wins over the root-conversation boot default.
+			expect(
+				sources.some(
+					(s) => s.url === "/v1/conversations/1/stream",
+				),
+			).toBe(false);
+			expect(textContent(renderer.toJSON())).toContain(
+				"Moor line inspection",
+			);
+		} finally {
+			resetLocationHashForTest();
+		}
+	});
+
+	test("browser back/forward between #/c/<a> and #/c/<b> swaps the transcript (popstate reconciles the id)", async () => {
+		const listeners: (() => void)[] = [];
+		const win = globalThis as unknown as {
+			location?: { hash: string };
+			addEventListener?: (type: string, listener: () => void) => void;
+			removeEventListener?: (type: string, listener: () => void) => void;
+		};
+		const originalLocation = win.location;
+		const originalAdd = win.addEventListener;
+		const originalRemove = win.removeEventListener;
+		win.addEventListener = ((_type: string, listener: () => void) => {
+			listeners.push(listener);
+		}) as typeof win.addEventListener;
+		win.removeEventListener = (() => undefined) as typeof win.removeEventListener;
+		const { client, createEventSource, sources } = makeHarness();
+		let renderer: Awaited<ReturnType<typeof renderAsync>> | undefined;
+		try {
+			renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// Boot selected the root (1); clicking 2 writes #/c/2.
+			await clickConversation(renderer, "Moor line inspection");
+			expect(locationHash()).toBe("#/c/2");
+			await vi.waitFor(() => {
+				expect(
+					sources.some(
+						(s) => s.url === "/v1/conversations/2/stream",
+					),
+				).toBe(true);
+			});
+			// Browser back to #/c/1: the popped hash's conversation id
+			// reconciles the selection (the transcript swaps back).
+			win.location = { hash: "#/c/1" };
+			await act(async () => {
+				for (const listener of listeners) listener();
+			});
+			await vi.waitFor(() => {
+				expect(
+					sources.some(
+						(s) => s.url === "/v1/conversations/1/stream",
+					),
+				).toBe(true);
+			});
+			// And forward to #/c/2 again.
+			win.location = { hash: "#/c/2" };
+			await act(async () => {
+				for (const listener of listeners) listener();
+			});
+			await vi.waitFor(() => {
+				expect(
+					sources.filter(
+						(s) => s.url === "/v1/conversations/2/stream",
+					).length,
+				).toBeGreaterThanOrEqual(2);
+			});
+		} finally {
+			win.location = originalLocation;
+			win.addEventListener = originalAdd;
+			win.removeEventListener = originalRemove;
+			// Restore the CHAT hash (the harness pattern): the app's
+			// writeHash dedup reads the LAST write — after this test drove
+			// '#/c/2' the seam must land back on the chat default so the
+			// NEXT test's writes dedupe correctly.
+			resetLocationHashForTest("#/c");
+		}
+	});
+
+	test("a stale #/c/<id> deep link (unlisted conversation) falls back to the boot default", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		resetLocationHashForTest("#/c/999");
+		try {
+			await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await vi.waitFor(() => {
+				expect(
+					sources.some(
+						(s) => s.url === "/v1/conversations/1/stream",
+					),
+				).toBe(true);
+			});
+			expect(
+				sources.some(
+					(s) => s.url === "/v1/conversations/999/stream",
+				),
+			).toBe(false);
+		} finally {
+			resetLocationHashForTest();
 		}
 	});
 

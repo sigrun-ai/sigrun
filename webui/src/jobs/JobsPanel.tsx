@@ -87,6 +87,10 @@ export function JobsPanel(props: {
 				if (cancelled) return;
 				setJobs(response.jobs);
 				setError(null);
+				// The one-shot reset notices clear on refresh (the same
+				// idiom as the run outcome in the row — a stale "State reset"
+				// must not outlive the refresh that replaced the job list).
+				setResetMessage({});
 			})
 			.catch((cause: unknown) => {
 				if (cancelled) return;
