@@ -100,8 +100,16 @@ for (const name of SAMPLES) {
 				await expect(sample).toBeVisible();
 				// Let the surface load + first measure settle.
 				await expect(sample.locator('[data-surface="ready"]')).toBeAttached();
-				// Let the surface paint + the width host measure before the shot.
-				await page.waitForTimeout(300);
+				// Let the width host measure + paint: two stable rAFs mean the
+				// frame after ready has committed (the fixed sleep's settle role).
+				await page.evaluate(
+					() =>
+						new Promise<void>((resolve) => {
+							requestAnimationFrame(() =>
+								requestAnimationFrame(() => resolve()),
+							);
+						}),
+				);
 				await expect(sample).toHaveScreenshot(
 					`blocks-${name}-${width.rem}rem.png`,
 				);

@@ -351,6 +351,32 @@ export function Composer(props: {
 	// refreshed per view frame (a fresh immutable object per accepted frame
 	// is the refetch cadence). Ambient is conversation-scoped, so a new
 	// conversation id also refetches; both clear with the conversation.
+	//
+	// The onAnswered imperative refetch below must NOT capture the
+	// conversation id: it rides through InteractionCard's stable transport
+	// memo, so a captured id would freeze at the conversation the card
+	// first rendered under — the refetch would hit a stale conversation's
+	// list (its pending records never change) and the answered card would
+	// never drain (found as the seam-visual e2e's persistent confirm card).
+	// A ref keeps the imperative path reading the CURRENT scope.
+	const refreshScopeRef = useRef<{ client: SigrunClient; id: number | null }>(
+		{ client, id: conversationId },
+	);
+	refreshScopeRef.current = { client, id: conversationId };
+	const refreshInteractions = (): void => {
+		const scope = refreshScopeRef.current;
+		if (scope.id === null) return;
+		scope.client
+			.listInteractions(scope.id)
+			.then((response) =>
+				setInteractions(
+					(response.interactions ?? []).filter(
+						(i) => i.status === "pending",
+					),
+				),
+			)
+			.catch(() => undefined);
+	};
 	useEffect(() => {
 		if (conversationId === null) {
 			setInteractions([]);
@@ -812,17 +838,7 @@ export function Composer(props: {
 						// Optimistic immediate refetch — the view-frame cadence
 						// only fires while a stream runs; an answer must clear
 						// its card now, not on the next frame.
-						if (conversationId === null) return;
-						client
-							.listInteractions(conversationId)
-							.then((response) =>
-								setInteractions(
-									(response.interactions ?? []).filter(
-										(i) => i.status === "pending",
-									),
-								),
-							)
-							.catch(() => undefined);
+						refreshInteractions();
 					}}
 				/>
 				{error !== null && <p role="alert">{error}</p>}

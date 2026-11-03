@@ -93,6 +93,7 @@ test.describe("item 2: send text + image", () => {
 		await page.goto(server.url);
 		// Wait for the boot-time default selection + the draft restore to
 		// settle (the composer goes live once a conversation is active).
+		await expect(page.locator("li.session-item-active")).toHaveCount(1);
 		await expect(page.locator(".composer-input")).toBeEnabled();
 		// Text message.
 		await page.locator(".composer-input").fill("hello");
@@ -219,6 +220,10 @@ test.describe("item 6: tool card", () => {
 				localStorage.setItem("sigrun.timeline", timeline);
 			}, mode === "timeline" ? "1" : "0");
 			await page.goto(server.url);
+			// Settle the boot default selection before the first send.
+			await expect(
+				page.locator("li.session-item-active"),
+			).toHaveCount(1);
 			const timelineToggle = page.locator(
 				'button[aria-label="chronological view"]',
 			);

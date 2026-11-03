@@ -265,10 +265,29 @@ test.describe("seam visual verification", () => {
 		await page.waitForSelector(".interaction-card", { timeout: 30_000 });
 		// Answer the confirm card: pick the first option's radio (the tree
 		// form submits through `blk-form-submit` — the Task 3 rewrite).
-		const card = page.locator('[data-kind="gating.confirm"]').first();
+		// Two gating.confirm cards are seeded (the plain confirm + the diff
+		// gate): answer the CONFIRM card (the one with 3 radio options).
+		const card = page
+			.locator('.interaction-card[data-kind="gating.confirm"]')
+			.filter({ has: page.locator('input[type="radio"]', { hasNot: page.locator('[type="radio"][disabled]') }) })
+			.filter({ hasNot: page.locator('.blk-diff') })
+			.first();
 		await card.locator('input[type="radio"]').first().check();
+		// The answer POST + the refetch the card drains on: wait for the
+		// network settles, then the card itself is gone from the DOM.
+		const answer = page.waitForResponse((response) =>
+			/\/v1\/conversations\/\d+\/interactions\/[^/]+\/answer$/.test(
+				response.url(),
+			) && response.status() === 200,
+		);
+		const refetch = page.waitForResponse((response) =>
+			/\/v1\/conversations\/\d+\/interactions$/.test(response.url()) &&
+			response.status() === 200,
+		);
 		await card.locator("button.blk-form-submit").click();
-		await page.waitForTimeout(500);
+		await answer;
+		await refetch;
+		await expect(card).toHaveCount(0);
 		await page.screenshot({ path: join(SHOT_DIR, "seam-after-answer.png"), fullPage: true });
 	});
 

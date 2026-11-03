@@ -77,9 +77,10 @@ test("round 2: in-place live render, autoscroll, token meta, one-line bubble", a
 	if (bubbleH > 55) {
 		throw new Error(`user bubble wraps: height=${bubbleH}`);
 	}
-	await page.waitForTimeout(900);
-
 	// The meta label splits tokens (the faux usage has in/out legs).
+	await expect(
+		page.locator(".message-meta").first(),
+	).toHaveText(/in \d+.*· out \d+$/);
 	const meta = await page.locator(".message-meta").first().textContent();
 	if (meta !== null && !/in \d+.*· out \d+$/.test(meta)) {
 		throw new Error(`meta label not split: ${meta}`);
@@ -151,7 +152,10 @@ test("composer starts one row tall and grows; timeline toggle interleaves", asyn
 
 	// 2. Send a message; the faux provider answers. Then toggle timeline.
 	await composer.press("Control+Enter");
-	await page.waitForTimeout(800);
+	// The shot captures the settled turn: wait for the answer's prose.
+	await expect(
+		page.locator('[data-turn-kind="assistant"] .turn-prose').first(),
+	).toBeVisible({ timeout: 15_000 });
 	await page.screenshot({ path: join(SHOT_DIR, "03-answer-grouped.png"), fullPage: true });
 
 	const timelineToggle = page.getByRole("button", { name: /chronological view/i });
@@ -160,16 +164,9 @@ test("composer starts one row tall and grows; timeline toggle interleaves", asyn
 		throw new Error("timeline not the default");
 	}
 	await timelineToggle.click();
-	await page.waitForTimeout(200);
-	const pressed = await timelineToggle.getAttribute("aria-pressed");
-	if (pressed !== "false") {
-		throw new Error("timeline toggle did not flip off");
-	}
+	await expect(timelineToggle).toHaveAttribute("aria-pressed", "false");
 	await timelineToggle.click();
-	await page.waitForTimeout(200);
-	if ((await timelineToggle.getAttribute("aria-pressed")) !== "true") {
-		throw new Error("timeline toggle did not flip back on");
-	}
+	await expect(timelineToggle).toHaveAttribute("aria-pressed", "true");
 	await page.screenshot({ path: join(SHOT_DIR, "04-answer-timeline.png"), fullPage: true });
 	// The timeline actually re-rendered: at least one chronological
 	// container with prose segments inside (the faux answer has no

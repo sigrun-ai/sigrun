@@ -65,6 +65,8 @@ test.describe("item 3: steer", () => {
 		page,
 	}) => {
 		await page.goto(server.url);
+		// Settle the boot default selection before the first send.
+		await expect(page.locator("li.session-item-active")).toHaveCount(1);
 		await expect(page.locator(".composer-input")).toBeEnabled();
 		await page.locator(".composer-input").fill("first");
 		await expect(page.locator(".composer-send")).toBeEnabled();
@@ -251,6 +253,8 @@ test.describe("item 7: compaction recall", () => {
 			localStorage.setItem("sigrun.timeline", "0");
 		});
 		await page.goto(server.url);
+		// Settle the boot default selection before the first send.
+		await expect(page.locator("li.session-item-active")).toHaveCount(1);
 		// This case deliberately exercises the grouped transcript's activity line.
 		const timelineToggle = page.locator('button[aria-label="chronological view"]');
 		await expect(timelineToggle).toHaveAttribute("aria-pressed", "false");
@@ -309,6 +313,10 @@ test.describe("item 10: restart resume", () => {
 		});
 		try {
 			await initialPage.goto(server.url);
+			// Settle the boot default selection before the first send.
+			await expect(
+				initialPage.locator("li.session-item-active"),
+			).toHaveCount(1);
 			await expect(initialPage.locator(".composer-input")).toBeEnabled();
 			await initialPage.locator(".composer-input").fill("before the restart");
 			await initialPage.locator(".composer-send").click();
@@ -340,6 +348,8 @@ test.describe("item 10: restart resume", () => {
 			// A new submit works post-restart. Type with real keystrokes
 			// (pressSequentially) — a fill() sets the DOM value without firing
 			// the controlled input's onChange, leaving the send button disabled.
+			// Settle the boot default selection before the first post-restart send.
+			await expect(page.locator("li.session-item-active")).toHaveCount(1);
 			await expect(page.locator(".composer-input")).toBeEnabled();
 			await page.locator(".composer-input").pressSequentially("after the restart");
 			await expect(page.locator(".composer-send")).toBeEnabled();

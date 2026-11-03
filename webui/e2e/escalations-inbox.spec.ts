@@ -95,8 +95,17 @@ test("the inbox: raise via tool, answer in the browser, item moves to In progres
 	expect(runBody.outcome).toBe("running");
 	const runConversation = runBody.conversationId as number;
 
-	// The run settles (faux answers immediately; give the settle a beat).
-	await page.waitForTimeout(1500);
+	// The run settles: the job's run row carries a terminal outcome (the
+	// settle commits through the same ledger the jobs route serves).
+	await expect
+		.poll(async () => {
+			const res = await fetch(
+				`${server.url}/v1/jobs/${encodeURIComponent(jobId)}/runs`,
+			);
+			const body = (await res.json()) as { runs: { outcome: string }[] };
+			return body.runs[0]?.outcome;
+		})
+		.toBe("succeeded");
 
 	// 2. Open the Inbox from the rail (the ext view route renders through
 	// the generic block renderer — A0).
@@ -107,22 +116,6 @@ test("the inbox: raise via tool, answer in the browser, item moves to In progres
 	// header) — expand the group first, then the card is visible.
 	const group = page.getByText("Job demo-job", { exact: true }).first();
 	await expect.poll(async () => group.count(), { timeout: 10_000 }).toBeGreaterThan(0);
-	const box = await group.boundingBox();
-	const style = await group.evaluate((el) => {
-		const cs = getComputedStyle(el);
-		const r = el.getBoundingClientRect();
-		return {
-			display: cs.display, visibility: cs.visibility,
-			opacity: cs.opacity, rect: { w: r.width, h: r.height, x: r.x, y: r.y },
-			parentChain: (() => {
-				const out: string[] = [];
-				let n: HTMLElement | null = el.parentElement;
-				for (let i = 0; n && i < 10; i++) { out.push(`${n.tagName}.${n.className}|w=${n.getBoundingClientRect().width}|h=${n.getBoundingClientRect().height}|disp=${getComputedStyle(n).display}`); n = n.parentElement; }
-				return out.join(" ;; ");
-			})(),
-		};
-	});
-	console.log("DIAG group box:", JSON.stringify(box), "style:", JSON.stringify(style));
 	await group.click();
 	const item = page.locator(".blk-list-card").filter({ hasText: "Demo" }).first();
 	await expect(item).toBeVisible({ timeout: 10_000 });
@@ -132,18 +125,10 @@ test("the inbox: raise via tool, answer in the browser, item moves to In progres
 	const choice = page.getByRole("radio", { name: /Go/ });
 	await expect(choice).toBeVisible({ timeout: 10_000 });
 	await choice.check();
-	const actionResults: string[] = [];
-	page.on("response", async (response) => {
-		if (response.url().includes("/v1/ext/")) {
-			actionResults.push(`${response.request().method()} ${response.url().slice(-60)} -> ${response.status()} ${await response.text().catch(() => "")}`.slice(0, 300));
-		}
-	});
 	await page.getByRole("button", { name: "Send answer" }).click();
 
-	// The accepted result carries a toast + navigate (A0 seam). Poll the
-	// action route outcome; then expect the toast.
-	await page.waitForTimeout(1500);
-	console.log("DIAG action responses:", JSON.stringify(actionResults));
+	// The accepted result carries a toast + navigate (A0 seam): wait for
+	// the toast itself, not a settle delay.
 	await expect(page.getByText("Answer sent").first()).toBeVisible({
 		timeout: 10_000,
 	});
