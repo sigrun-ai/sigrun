@@ -49,6 +49,8 @@ import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createJobsView } from "./core-views/jobs.js";
 import { createSkillsView } from "./core-views/skills.js";
 import { learnedSkillsDir } from "../curation/paths.js";
+import { primaryAdmin } from "../harness/identity/primary-admin.js";
+import { isSuperuser } from "./auth/principal.js";
 import { accessPrincipalOf } from "./auth/access-principal.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
@@ -369,6 +371,16 @@ export async function createServer(
 			userDir: join(opened.extensionStores.roots.configDir, "skills"),
 			packageRoots: () => opened.skillRoots,
 			bump: () => surfacesService.bumpAllInstances("core", "skills"),
+			// Whole-branch review I3: the userless superuser (the naive
+			// single-operator principal) acts as the PRIMARY ADMIN — the
+			// identity package's own seam (the jail's fallback). Absent (an
+			// empty directory), the superuser keeps its own scope. An
+			// anonymous NON-superuser never resolves (access none).
+			resolveUserlessCaller: (principal) =>
+				principal.user ??
+				(isSuperuser(principal)
+					? primaryAdmin(opened.identity.users.list())?.user
+					: undefined),
 		}),
 	]);
 	app.decorate("surfaces", surfacesService);

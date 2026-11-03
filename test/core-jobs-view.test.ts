@@ -345,8 +345,8 @@ describe("core/jobs list (the caller-visible rows)", () => {
 		expect(root.selection).toEqual({ selected: false, back: {} });
 	});
 
-	test("anonymous principals have access none", async () => {
-		const { app } = await bootServer();
+	test("anonymous principals have access none; the userless superuser has the view", async () => {
+		const { app, alice } = await bootServer();
 		// The pipeline answers the no-credential call at the auth gate
 		// (401 — the token method's answer for a missing Bearer), so the
 		// view itself never even renders for an anonymous caller.
@@ -365,13 +365,35 @@ describe("core/jobs list (the caller-visible rows)", () => {
 				user: undefined,
 				admin: false,
 				service: false,
-				method: "none",
+				method: "token",
 			},
 			params: {},
 			key: "anon",
 			signal: new AbortController().signal,
 		});
 		expect(rendered.access).toBe("none");
+		// Whole-branch review I3: the USERLESS SUPERUSER (the naive
+		// single-operator loopback principal, `method: "none"` with no
+		// user header) has the view — the /v1/jobs routes grant it write,
+		// and the view is parity. Its list covers every job (the access
+		// rule's superuser clause answers write for every row).
+		const own = await createJob(app, alice, promptSpec("acme-nightly"));
+		const naive = await def!.render({
+			principal: {
+				user: undefined,
+				admin: false,
+				service: false,
+				method: "none",
+			},
+			params: {},
+			key: "naive",
+			signal: new AbortController().signal,
+		});
+		expect(naive.access).toBe("write");
+		const ids = (atPointer(naive.data as Record<string, any>, "/jobs") as any[]).map(
+			(row) => row.id,
+		);
+		expect(ids).toContain(own.id);
 	});
 
 	test("an unknown or hidden `job` param renders the list with main empty state Job not found", async () => {

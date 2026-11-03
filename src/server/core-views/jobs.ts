@@ -48,6 +48,7 @@ import type {
 } from "../../extension.js";
 import type { JobsService } from "../../jobs/index.js";
 import { jobAccess } from "../jobs-access.js";
+import { isSuperuser } from "../auth/principal.js";
 
 /** The runs page size and the revisions page size (the plan refinement). */
 export const PAGE_SIZE = 25;
@@ -345,9 +346,15 @@ export function createJobsView(deps: {
 }): SurfaceDef<"view"> {
 	const { jobs } = deps;
 
-	/** The caller's directory-aware principal (undefined user = anonymous). */
+	/** The caller's directory-aware principal (undefined user = anonymous).
+	 *  Whole-branch review I3: the USERLESS SUPERUSER (the naive
+	 *  single-operator loopback principal) is admitted — the /v1/jobs
+	 *  routes grant it write, and the view is parity (the access rule's
+	 *  superuser clause answers write for every row). */
 	const callerOf = (ctx: SurfaceContext): AccessPrincipal | undefined => {
-		if (ctx.principal.user === undefined) return undefined;
+		if (ctx.principal.user === undefined && !isSuperuser(ctx.principal)) {
+			return undefined;
+		}
 		return deps.accessPrincipal(ctx.principal);
 	};
 

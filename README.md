@@ -1217,7 +1217,19 @@ roots (the config dir and packages) are read-only here, and a per-user
 **overlay** is their only write (your overlay, your precedence — other
 users are unaffected). Each history-backed skill keeps its full **git
 history**: page through it 25 entries at a time, read the per-file
-diffs of any change, and restore an old state. Some surface actions
+diffs of any change, and restore an old state.
+
+The tab is per-user — a caller sees their own Workspace and Learned
+roots. On the naive single-operator loopback posture (the userless
+superuser — no `X-Sigrun-User` header), the Skills tab resolves that
+caller to the **primary admin** (the earliest-created directory user
+with the admin flag — the same fallback the execution jail uses), so
+her workspace and learned skills are the ones on screen. With an empty
+directory (no claimed user yet) there is no primary admin, so the
+tab shows only the deployment's shared roots (Config dir / Packages)
+and its own empty Workspace/Learned scope.
+
+Some surface actions
 hand the channel a navigation to apply (a surface action returning
 `navigate`): the webui applies it; the TUI does not yet apply
 `ActionResult.navigate` — a known channel gap.
@@ -1334,7 +1346,9 @@ drills into its summary, runs, and revisions (a revision view diffs its
 spec against the previous one), and a run with a conversation links
 straight to it — that action-result navigation is applied by the webui;
 the TUI does not yet apply `ActionResult.navigate` (a known channel
-gap).
+gap). Access is exactly the `/v1/jobs` rule — including the naive
+single-operator posture: the userless superuser (no `X-Sigrun-User`
+header) sees and manages every job, matching the REST routes' grant.
 
 ## Restarting
 

@@ -317,13 +317,74 @@ describe("core/skills listing", () => {
 		expect(response.statusCode).toBe(401);
 		const def = app.surfaces.coreViewDefs.find((one) => one.id === "skills");
 		expect(def).toBeDefined();
+		// An anonymous principal on a NON-superuser method (a token call
+		// with no identity) has no view.
 		const rendered = await def!.render({
-			principal: { user: undefined, admin: false, service: false, method: "none" },
+			principal: { user: undefined, admin: false, service: false, method: "token" },
 			params: {},
 			key: "anon",
 			signal: new AbortController().signal,
 		});
 		expect(rendered.access).toBe("none");
+	});
+
+	test("the userless superuser acts as the primary admin (whole-branch review I3)", async () => {
+		// The naive single-operator loopback principal (method "none", no
+		// user header) resolves to the PRIMARY ADMIN — the earliest-created
+		// directory user with the admin flag (alice, seeded first) — the
+		// same fallback the jail uses. Her workspace/learned scope answers.
+		const { app, alice } = await bootServer();
+		await act(app, alice, "create", {
+			where: "workspace",
+			name: "acme-naive-visible",
+			description: "the naive operator's skill (as alice)",
+			body: "Alice's own.",
+		}, {});
+		const def = app.surfaces.coreViewDefs.find((one) => one.id === "skills");
+		expect(def).toBeDefined();
+		const naive = await def!.render({
+			principal: { user: undefined, admin: false, service: false, method: "none" },
+			params: {},
+			key: "naive",
+			signal: new AbortController().signal,
+		});
+		expect(naive.access).toBe("write");
+		const rows = atPointer(naive.data as Record<string, any>, "/skills") as any[];
+		// Alice's workspace skill is in scope (the view IS alice's).
+		expect(
+			rows.some((row) => row.id === "workspace:acme-naive-visible"),
+		).toBe(true);
+		// A write through the naive principal lands as alice (the
+		// workspace write actor) and commits to HER repo.
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/ext/core/surfaces/skills/actions",
+			headers: { "content-type": "application/json" },
+			payload: JSON.stringify({
+				action: "create",
+				payload: {
+					where: "workspace",
+					name: "acme-naive-made",
+					description: "made by the naive operator",
+					body: "Naive body.",
+				},
+				params: {},
+			}),
+		});
+		// The action route 401s the no-credential call at the auth gate
+		// (the token method's answer) — the DEF-level dispatch is the
+		// identity-bearing path here.
+		expect(created.statusCode).toBe(401);
+		const create = def!.actions?.create;
+		expect(create).toBeDefined();
+		const defCreate = await create!(
+			{ principal: { user: undefined, admin: false, service: false, method: "none" }, params: {}, key: "naive", signal: new AbortController().signal },
+			{ where: "workspace", name: "acme-naive-made", description: "made by the naive operator", body: "Naive body." },
+		);
+		expect(defCreate.ok, JSON.stringify(defCreate)).toBe(true);
+		// The skill exists in ALICE's workspace root, not a shared one.
+		const rendered = await view(app, alice, { skill: "acme-naive-made", root: "workspace" });
+		expect((atPointer(rendered.json.data, "/main") as any).body).toBe("Naive body.\n");
 	});
 });
 

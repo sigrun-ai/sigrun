@@ -94,6 +94,16 @@ export interface SkillsViewDeps {
 	bump(): void;
 	/** The clock (the catch-up throttle + form defaults). */
 	now?(): Date;
+	/** Whole-branch review I3: the caller the USERLESS SUPERUSER acts as.
+	 *  The naive single-operator loopback principal owns no skills of its
+	 *  own (skills are per-user), so the view resolves it to the PRIMARY
+	 *  ADMIN — the same fallback the jail uses (the earliest-created
+	 *  directory user with the admin flag). Absent (an empty directory),
+	 *  the superuser sees the deployment's shared roots with its own
+	 *  (empty) workspace/learned scope — the pre-I3 posture. The dep
+	 *  receives the full principal: only the userless SUPERUSER resolves;
+	 *  an anonymous non-superuser stays undefined (access none). */
+	resolveUserlessCaller?(principal: Principal): string | undefined;
 }
 
 /** The catch-up contract (the brief, verbatim): once per repo per 30 s, 5 s bound. */
@@ -263,8 +273,15 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 	// The per-repo catch-up throttle (the brief's once-per-30s rule).
 	const lastCatchUp = new Map<GitHistory, number>();
 
-	/** The caller's username (anonymous → undefined; the surface 404s). */
-	const userOf = (ctx: SurfaceContext): string | undefined => ctx.principal.user;
+	/** The caller's EFFECTIVE username (review I3): an anonymous
+	 *  principal → undefined (the surface 404s); the userless superuser
+	 *  resolves through {@link SkillsViewDeps.resolveUserlessCaller} to
+	 *  the primary admin when the dep is wired (else it keeps its own
+	 *  undefined scope — the empty-workspace posture). */
+	const userOf = (ctx: SurfaceContext): string | undefined =>
+		deps.resolveUserlessCaller === undefined
+			? ctx.principal.user
+			: deps.resolveUserlessCaller(ctx.principal);
 
 	/** The caller's shared root listing (workspace/learned scoped to them). */
 	const listFor = (user: string): Promise<readonly RootSkill[]> => {
