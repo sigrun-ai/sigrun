@@ -1,10 +1,13 @@
 /**
- * Built-in extensions: codemode, MCP, tool search, OAuth and the curator
- * ship WITH core — present by default, disableable via settings
+ * Built-in extensions: codemode, MCP, tool search, the gateway, OAuth and
+ * the curator ship WITH core — present by default, disableable via settings
  * `builtinExtensions`, replaceable by a same-named configured extension.
+ * Every other extension is optional and loads only when configured.
  *
- * The first three mirror pi 1.3.0's built-in tool surface; OAuth adds
- * sigrun's standard OIDC/OAuth2 login providers without extra setup.
+ * The first three mirror pi 1.3.0's built-in tool surface; the gateway is
+ * the channel-adapter engine (hermes/openclaw parity: channels work out of
+ * the box); OAuth adds sigrun's standard OIDC/OAuth2 login providers
+ * without extra setup; the curator runs the per-user learning loops.
  *
  * Resolution root (Ruling 2): built-ins resolve through core's OWN
  * node_modules via `createRequire(import.meta.url)` — they are core
@@ -23,7 +26,8 @@
  * (`readPackageName` for path-shaped entries, `parsePackageSpecifier`
  * otherwise), never by string equality on the raw specifier.
  *
- * Disabled (Ruling 6): `builtinExtensions: {codemode?, mcp?, toolSearch?, oauth?}`
+ * Disabled (Ruling 6): `builtinExtensions: {codemode?, mcp?, toolSearch?,
+ * gateway?, oauth?, curator?}`
  * (each defaulting to `true`, restart-required). A disabled built-in is
  * absent from `/v1/extensions` entirely; one log line records the skip.
  *

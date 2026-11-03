@@ -506,6 +506,15 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 							},
 							{
 								type: "toggle",
+								// Absent means ON (the built-in set defaults enabled).
+								default: true,
+								name: "builtinExtensions.gateway",
+								label: "Gateway",
+								help: "The built-in channel gateway engine — applies at restart",
+								apply: applyOf("builtinExtensions.gateway"),
+							},
+							{
+								type: "toggle",
 								default: true,
 								name: "builtinExtensions.oauth",
 								label: "OAuth login",
