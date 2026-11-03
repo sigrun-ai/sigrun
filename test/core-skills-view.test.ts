@@ -656,7 +656,10 @@ describe("core/skills history availability + catch-up", () => {
 
 	test("opening the tab commits outside edits as outside; two renders within 30 s run one catch-up", async () => {
 		const { app, opened, workspace, alice } = await bootServer();
-		// An outside edit: a file written behind the server's back.
+		// An outside edit: a file written behind the server's back (the
+		// FIRST render is the tab-open whose catch-up commits it — the
+		// 30 s throttle then holds the second render back, which is the
+		// second assertion below).
 		await putWorkspaceSkill(workspace, "acme-outside", "written outside", "Outside body.");
 		const before = await workspaceLog(opened, "alice");
 		expect(before.some((commit) => commit.summary === "outside changes")).toBe(false);

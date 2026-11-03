@@ -159,10 +159,12 @@ describe("core views (tabs+skills Task 4)", () => {
 			coreViews?: { id: string; title: string; icon: string }[];
 			extensions: { name: string }[];
 		};
-		// createServer attaches the built-in jobs view (Task 5); the
-		// test fixture attaches second (attachCoreViews order).
+		// createServer attaches the built-in jobs view (Task 5) and the
+		// built-in skills view (Task 12); the test fixture attaches last
+		// (attachCoreViews order).
 		expect(meta.coreViews).toEqual([
 			{ id: "jobs", title: "Jobs", icon: "clock" },
+			{ id: "skills", title: "Skills", icon: "book" },
 			{ id: "fixture", title: "Fixture view", icon: "board" },
 		]);
 		expect(meta.extensions.some((one) => one.name === "core")).toBe(false);
@@ -182,6 +184,7 @@ describe("core views (tabs+skills Task 4)", () => {
 		};
 		expect(body.coreViews).toEqual([
 			{ id: "jobs", title: "Jobs", icon: "clock" },
+			{ id: "skills", title: "Skills", icon: "book" },
 			{ id: "fixture", title: "Fixture view", icon: "board" },
 		]);
 		expect(body.extensions.some((one) => one.name === "core")).toBe(false);
@@ -214,15 +217,16 @@ describe("core views (tabs+skills Task 4)", () => {
 		});
 		const meta = await call(app, { method: "GET", url: "/v1/meta", token });
 		expect(meta.status).toBe(200);
-		// Task 5 made the empty list history: a fresh server lists the
-		// built-in jobs view (Task 12's skills view lands beside it).
+		// Task 12 landed the skills view beside Task 5's jobs view.
 		expect(meta.body.coreViews).toEqual([
 			{ id: "jobs", title: "Jobs", icon: "clock" },
+			{ id: "skills", title: "Skills", icon: "book" },
 		]);
 		const list = await call(app, { method: "GET", url: "/v1/extensions", token });
 		expect(list.status).toBe(200);
 		expect(list.body.coreViews).toEqual([
 			{ id: "jobs", title: "Jobs", icon: "clock" },
+			{ id: "skills", title: "Skills", icon: "book" },
 		]);
 	});
 });

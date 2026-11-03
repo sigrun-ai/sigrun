@@ -145,6 +145,33 @@ export class GitHistory {
 		this.logLine = opts.log ?? (() => {});
 	}
 
+	/**
+	 * Make the repo usable WITHOUT committing (boot's eager-init
+	 * shape): `prepare()` under the per-repo lock. A catch-up would
+	 * commit whatever the work tree holds under the catch-up summary
+	 * — an eager init racing the user's first edit would absorb that
+	 * edit under an init summary (the 2026-11-03 core/skills failure).
+	 * Settling only INITS the repo; the next catch-up/write records
+	 * the content under its own actor and summary.
+	 */
+	settle(): Promise<void> {
+		return this.withLock(async () => {
+			const state = await this.prepare();
+			if (!state.ok) this.logLine(`history settle failed: ${state.reason}`);
+		});
+	}
+
+	/**
+	 * Whether the repo is usable, under the per-repo lock: a bare
+	 * `rev-parse` outside the lock can interleave with another
+	 * instance's init (the 2026-11-03 core/skills race — an
+	 * availability read between a racing init's `mkdir` and its
+	 * completion answered "not a git repository", and the caller
+	 * rendered history-unavailable while a catch-up committed fine).
+	 * `prepare()` self-heals the half-initialized state (its mkdir +
+	 * init are idempotent), so an availability read NEVER blocks a
+	 * recoverable repo behind a false negative.
+	 */
 	async availability(): Promise<HistoryAvailability> {
 		try {
 			await access(this.spec.workTree, constants.R_OK | constants.W_OK);
@@ -155,8 +182,9 @@ export class GitHistory {
 			};
 		}
 		try {
-			await this.run(["rev-parse", "--git-dir"]);
-			return { ok: true };
+			const state = await this.withLock(() => this.prepare());
+			if (state.ok) return { ok: true };
+			return { ok: false, reason: state.reason };
 		} catch (error) {
 			const detail = error instanceof Error ? error.message : String(error);
 			return {

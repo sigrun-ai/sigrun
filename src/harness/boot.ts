@@ -1224,12 +1224,35 @@ export async function openHarness(
 		const workspace = workspaceService?.workspaceRoot(user);
 		return workspaceHistoryFor(user, workspace, {
 			cache: workspaceHistories,
-			create: (resolved) =>
-				new GitHistory(workspaceRepoSpec(managedPaths.userAreas(user), resolved), {
+			create: (resolved) => {
+				const history = new GitHistory(workspaceRepoSpec(managedPaths.userAreas(user), resolved), {
 					gitHome: gitHomeDir,
 					now: () => clockNow(),
 					log: (line) => console.warn(`workspace history (${user}): ${line}`),
-				}),
+				});
+				// Task 12 race fix: settle the repo AT CONSTRUCTION, not on
+				// first use. Two concurrent first-uses (the view's catch-up +
+				// a write) each run prepare()'s init before either's commit:
+				// the later init lands between the earlier init and ITS
+				// commit — status reads an empty index, and the write lands
+				// with no commit. An eager empty catchUp (no-op on an
+				// existing repo, the import commit on a fresh one) makes
+				// every later use see a settled repo. Awaited BEFORE the
+				// instance returns so no first use can interleave with the
+				// init. Fail-soft like everything here: errors warn, never
+				// throw.
+				void (async () => {
+					try {
+						// settle(), never a catch-up: an init that COMMITTED
+						// would absorb a racing first edit under the init
+						// summary (the 2026-11-03 core/skills failure).
+						await history.settle();
+					} catch (error) {
+						console.warn(`workspace history (${user}) init failed: ${String(error)}`);
+					}
+				})();
+				return history;
+			},
 		});
 	};
 	// Curation history migration (tabs+skills Task 9): every directory

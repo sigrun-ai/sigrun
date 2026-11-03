@@ -104,11 +104,23 @@ function isObject(payload: unknown): payload is Record<string, unknown> {
 	return typeof payload === "object" && payload !== null && !Array.isArray(payload);
 }
 
-/** One string field of the payload (undefined when absent/not a string). */
+/**
+ * One string field of the payload. Form dispatches wrap the fields as
+ * `{values: {...}, rev}` (the webui FormBlock contract); callout-level
+ * buttons dispatch a null payload and their targets ride the instance
+ * params. This reads the top level first, then the `values` envelope,
+ * so both shapes resolve.
+ */
 function fieldOf(payload: unknown, key: string): string | undefined {
 	if (!isObject(payload)) return undefined;
-	const value = payload[key];
-	return typeof value === "string" ? value : undefined;
+	const top = payload[key];
+	if (typeof top === "string") return top;
+	const values = payload.values;
+	if (isObject(values)) {
+		const nested = values[key];
+		if (typeof nested === "string") return nested;
+	}
+	return undefined;
 }
 
 /** The `{itemId}` a collection activation carries. */
@@ -691,6 +703,12 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 		if (!scanned.ok) {
 			return { ok: false, error: { message: `content scan refused line ${scanned.line}: ${scanned.rule}`, field: "body" } };
 		}
+		// The work tree (<workspace>/skills) must exist BEFORE the
+		// history write: prepare()'s access check fails a missing tree,
+		// and the mutation would land with no commit (the e2e race: a
+		// fresh workspace has no skills dir until the first skill).
+		const skillsRoot = join(workspace, "skills");
+		await mkdir(skillsRoot, { recursive: true });
 		const skills = await listFor(user);
 		const existing = skills.find((skill) => skill.name === name && skill.root === "workspace");
 		if (opts.mode === "create" && existing !== undefined) {
@@ -708,7 +726,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					skill: name,
 				},
 				async () => {
-					const dir = join(workspace, "skills", name);
+					const dir = join(skillsRoot, name);
 					await mkdir(dir, { recursive: true });
 					await writeFile(join(dir, "SKILL.md"), text);
 				},
@@ -840,7 +858,10 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 			save: async (ctx: SurfaceContext, payload: unknown): Promise<ActionResult> => {
 				const user = userOf(ctx);
 				if (user === undefined) return { ok: false, error: { message: "forbidden" } };
-				const name = fieldOf(payload, "name") ?? selectedParams(ctx).skill;
+				// The form's name field is DISABLED on an existing skill
+				// (names are read-only after creation) — a disabled field never
+				// rides the submit envelope, so the name comes from the params.
+				const name = selectedParams(ctx).skill ?? fieldOf(payload, "name");
 				const description = fieldOf(payload, "description");
 				const body = fieldOf(payload, "body");
 				if (name === undefined) {
