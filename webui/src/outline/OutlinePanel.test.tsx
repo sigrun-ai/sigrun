@@ -9,6 +9,7 @@
 	.IS_REACT_ACT_ENVIRONMENT = true;
 
 import { act, createElement as h } from "react";
+import TestRenderer from "react-test-renderer";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { render, textContent } from "../test-utils";
 import { OutlinePanel } from "./OutlinePanel";
@@ -188,6 +189,62 @@ test("each item's clampable text sits in an .outline-text span; the button's tit
 			renderer.unmount();
 		});
 		expect(observers[0]?.disconnect).toHaveBeenCalledTimes(1);
+	});
+
+	test("a conversation switch with an EQUAL turn-id set re-measures and clears a stale data-clamped marker", () => {
+		// The clamp effect's spans are keyed by turnIds — but the marker
+		// belongs to THIS conversation's transcript: a conversation switch
+		// remounts the transcript (a NEW scrollRoot host element), so the
+		// effect must re-run (and re-measure) on a scrollRoot change even
+		// when both conversations' turn ids collide.
+		const instances: {
+			observe: ReturnType<typeof vi.fn>;
+			disconnect: ReturnType<typeof vi.fn>;
+		}[] = [];
+		class FakeResizeObserver {
+			observe = vi.fn();
+			disconnect = vi.fn();
+			constructor() {
+				instances.push(this as unknown as (typeof instances)[number]);
+			}
+		}
+		vi.stubGlobal("ResizeObserver", FakeResizeObserver);
+		const turns = [
+			{ entryId: 1, text: "the same id set" },
+			{ entryId: 5, text: "in both conversations" },
+		];
+		// The clamp effect needs a REAL nav host ref — give the test
+		// renderer one (an empty .outline-text set: nothing clamps).
+		// createNodeMock must return a fresh node per host element (React
+		// asserts node identity when a shared object backs two nodes).
+		const makeFakeNav = () =>
+			({
+				querySelectorAll: () => [],
+			}) as unknown as HTMLElement;
+		let renderer!: TestRenderer.ReactTestRenderer;
+		act(() => {
+			renderer = TestRenderer.create(
+				h(OutlinePanel, { scrollRoot: fakeScrollRoot({}), turns }),
+				{ createNodeMock: makeFakeNav },
+			);
+		});
+		expect(instances).toHaveLength(1);
+		// The switch: identical turn ids, a DIFFERENT scroll root — the
+		// effect must tear down and re-run (a SECOND observer instance), so
+		// the previous conversation's clamped set is re-measured (and
+		// cleared when nothing overflows).
+		act(() => {
+			renderer.update(
+				h(OutlinePanel, { scrollRoot: fakeScrollRoot({}), turns }),
+			);
+		});
+		expect(instances).toHaveLength(2);
+		expect(instances[0]!.disconnect).toHaveBeenCalledTimes(1);
+		expect(instances[1]!.observe).toHaveBeenCalledTimes(1);
+		act(() => {
+			renderer.unmount();
+		});
+		expect(instances[1]!.disconnect).toHaveBeenCalledTimes(1);
 	});
 
 	test("empty transcript state: no turns, no items", () => {

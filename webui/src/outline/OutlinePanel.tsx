@@ -119,6 +119,10 @@ export function OutlinePanel(props: {
 	// The +1 absorbs sub-pixel rounding. An absent nav ref (the test
 	// renderer attaches no host refs) or ResizeObserver (ancient
 	// browsers) leaves the attribute unset — the clamp itself is pure CSS.
+	// The deps carry scrollRoot: a conversation switch with an EQUAL
+	// turn-id set remounts the transcript, and the clamped set belongs to
+	// the transcript it measured — without the re-run, a stale
+	// data-clamped marker survives the switch.
 	useLayoutEffect(() => {
 		const nav = navRef.current;
 		if (nav === null) return;
@@ -148,7 +152,7 @@ export function OutlinePanel(props: {
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- the spans
 		// to measure are keyed by turnIds (same ids ⇒ same items)
-	}, [turnIds]);
+	}, [scrollRoot, turnIds]);
 
 	if (turns.length === 0) {
 		return (
