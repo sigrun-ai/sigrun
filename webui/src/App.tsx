@@ -55,9 +55,17 @@ import {
 	type AttachChatTransport,
 } from "./entries/chatTransportContext";
 import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
+import { BottomBar } from "./layout/BottomBar";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
-import { extPanelEntries, extViewEntries, loadRailOrder, moveExtView, orderExtViews } from "./layout/extViews";
+import {
+	extPanelEntries,
+	extViewEntries,
+	coreViewEntries,
+	loadRailOrder,
+	moveExtView,
+	orderExtViews,
+} from "./layout/extViews";
 import { TabMemory, tabOfRoute } from "./layout/tabs";
 import { JobsPanel } from "./jobs/JobsPanel";
 import { OutlinePanel } from "./outline/OutlinePanel";
@@ -944,6 +952,18 @@ function AppShell(options: AppOptions = {}) {
 				: [],
 		[boot, railOrder],
 	);
+	// The bottom bar's entries (tabs+skills Task 2): core views first,
+	// then the ext entries — the bar renders the skills/jobs slots only
+	// when the served meta lists them (meta.coreViews empty → no dead
+	// tabs) and sheets the rest. Undefined only when the route is the dev
+	// gallery (no active tab there; the bar takes the chats default).
+	const bottomBarEntries = useMemo(
+		() =>
+			boot.status === "ready"
+				? [...coreViewEntries(boot.meta), ...railExtEntries]
+				: [],
+		[boot, railExtEntries],
+	);
 	// The active tab (tabs Task 1): the rail highlights it and dead-ends
 	// its click. The dev Blocks gallery is NOT a tab (its section rides
 	// its own hash outside the tab router) — null is the no-tab signal,
@@ -1251,6 +1271,8 @@ function AppShell(options: AppOptions = {}) {
 				className="side-drawer"
 				data-open={drawerOpen ? "" : undefined}
 			>
+				{/* Tabs+skills Task 2: below 900px the rail leaves the drawer
+				    (the bottom bar carries the tabs); CSS hides it there. */}
 				<Rail
 					meta={boot.meta}
 					onOpenTab={onOpenTab}
@@ -1471,6 +1493,13 @@ function AppShell(options: AppOptions = {}) {
 					aria-hidden="true"
 				/>
 			)}
+			{/* The ≤900px bottom tab bar (tabs+skills Task 2): CSS hides it
+			    at desktop widths, where the rail carries the tabs. */}
+			<BottomBar
+				active={activeTab ?? "chats"}
+				extViews={bottomBarEntries}
+				onTab={onOpenTab}
+			/>
 			{/* The share editor overlay (spec §5.9): the sidebar's owner-only
 			    Share… action targets a row; the backdrop click closes. */}
 			{shareFor !== null &&

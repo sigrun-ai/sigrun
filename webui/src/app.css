@@ -2201,10 +2201,129 @@ body {
 	display: none;
 }
 
+/* ── the phone bottom bar (tabs+skills Task 2): fixed at ≤900px ─────── */
+
+.bottom-bar {
+	display: none;
+}
+
+@media (max-width: 900px) {
+	/* The rail's tabs move to the bottom bar; the drawer keeps ONLY the
+	   conversation list. */
+	.side-drawer .rail {
+		display: none;
+	}
+
+	/* The drawer's list takes the full drawer width (the rail's 52px
+	   column is gone). */
+	.side-drawer .session-list {
+		width: min(320px, 85vw);
+		border-right: none;
+	}
+
+	.bottom-bar {
+		display: flex;
+		position: fixed;
+		left: 0;
+		right: 0;
+		bottom: 0;
+		z-index: 80;
+		align-items: stretch;
+		justify-content: space-around;
+		background: var(--bg);
+		border-top: 1px solid var(--border);
+		/* The iOS home indicator: the bar's own padding clears it. */
+		padding-bottom: env(safe-area-inset-bottom);
+	}
+
+	.bottom-bar-btn {
+		flex: 1;
+		display: flex;
+		flex-direction: column;
+		align-items: center;
+		justify-content: center;
+		gap: 2px;
+		padding: 6px 0 4px;
+		border: none;
+		background: transparent;
+		color: var(--faint);
+		cursor: pointer;
+	}
+
+	.bottom-bar-btn svg {
+		width: 20px;
+		height: 20px;
+	}
+
+	.bottom-bar-btn:hover,
+	.bottom-bar-btn-active {
+		color: var(--text);
+	}
+
+	.bottom-bar-btn-active {
+		box-shadow: inset 0 2px 0 var(--accent);
+	}
+
+	.bottom-bar-label {
+		font-size: 10px;
+		line-height: 1;
+	}
+
+	/* The More sheet: a bottom-anchored dialog over a dimming backdrop,
+	   above the bar. */
+	.bottom-sheet-backdrop {
+		position: fixed;
+		inset: 0;
+		z-index: 95;
+		background: rgb(0 0 0 / 35%);
+		display: flex;
+		flex-direction: column;
+		justify-content: flex-end;
+	}
+
+	.bottom-sheet {
+		background: var(--surface);
+		border-top: 1px solid var(--border);
+		border-radius: 12px 12px 0 0;
+		padding: 8px 8px calc(8px + env(safe-area-inset-bottom));
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		max-height: 60vh;
+		overflow-y: auto;
+	}
+
+	.bottom-sheet-item {
+		display: flex;
+		align-items: center;
+		gap: 10px;
+		padding: 10px 12px;
+		border: none;
+		border-radius: 8px;
+		background: transparent;
+		color: var(--text);
+		cursor: pointer;
+		font-size: 1rem;
+		text-align: left;
+	}
+
+	.bottom-sheet-item:hover {
+		background: var(--surface-2);
+	}
+
+	.bottom-sheet-item svg {
+		width: 18px;
+		height: 18px;
+		color: var(--muted);
+		flex: none;
+	}
+}
+
 /* ── narrow viewports (≤900px: drawer + overlay panel) ───────────────── */
 
 @media (max-width: 900px) {
-	/* The rail + sidebar collapse into one left drawer. */
+	/* The rail + sidebar collapse into one left drawer (the rail itself
+	   hides inside it — the phone's tabs live on the bottom bar). */
 	.side-drawer {
 		position: fixed;
 		top: 0;
@@ -2252,6 +2371,13 @@ body {
 
 	.chat-center {
 		padding: 20px 16px 8rem;
+	}
+
+	/* The main column clears the fixed bottom bar (the bar overlays the
+	   app root; without the padding the composer dock and the last row of
+	   any full-width surface slide under it). */
+	.main-column {
+		padding-bottom: calc(52px + env(safe-area-inset-bottom));
 	}
 
 	.chat-header {
