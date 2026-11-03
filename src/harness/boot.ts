@@ -136,10 +136,12 @@ import { createAdmissionGuard } from "./identity/users.js";
 import { sweepAccountLinks } from "./identity/link-sweep.js";
 import { effectiveOwner as resolveEffectiveOwner } from "./identity/primary-admin.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
-import { learnedSkillsDir } from "../curation/paths.js";
+import { learnedSkillsDir, userRepoSpec } from "../curation/paths.js";
 import { SkillStore } from "../curation/store.js";
 import { OverlayStore } from "../curation/overlays.js";
 import { UsageCounters } from "../curation/usage.js";
+import { GitHistory } from "../history/git.js";
+import { migrateUserCuration } from "../curation/migrate.js";
 import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
 import { createCurationHost } from "../curation/host.js";
 import {
@@ -1079,6 +1081,9 @@ export async function openHarness(
 	const skillStores = new Map<string, SkillStore>();
 	const overlayStores = new Map<string, OverlayStore>();
 	const usageCounters = new Map<string, UsageCounters>();
+	const curationHistories = new Map<string, GitHistory>();
+	const migratedUsers = new Set<string>();
+	const gitHomeDir = join(roots.stateDir, "git-home");
 	const curationOf = (user: string | undefined) => {
 		if (user === undefined) return undefined;
 		// Curator A10: cache-FIRST resolution — a store set captured before
@@ -1093,6 +1098,27 @@ export async function openHarness(
 			return undefined;
 		}
 		const userArea = managedPaths.userAreas(user);
+		let history = curationHistories.get(user);
+		if (history === undefined) {
+			history = new GitHistory(userRepoSpec(userArea), {
+				gitHome: gitHomeDir,
+				now: () => clockNow(),
+				log: (line) => console.warn(`curation history (${user}): ${line}`),
+			});
+			curationHistories.set(user, history);
+		}
+		// Migration (tabs+skills Task 9): the boot sweep below covers the
+		// directory users boot saw; a user created AFTER boot migrates on
+		// this first construction. Never-in-a-render: curationOf is the
+		// store factory, not a render path. Fire-and-forget: the import
+		// commit lands before the first real write because both take the
+		// same per-repo lock (GitHistory's).
+		if (!migratedUsers.has(user)) {
+			migratedUsers.add(user);
+			void migrateUserCuration(userArea, history).catch((error) => {
+				console.warn(`curation migration (${user}) failed: ${String(error)}`);
+			});
+		}
 		let store = skillStores.get(user);
 		if (store === undefined) {
 			store = new SkillStore({
@@ -1109,6 +1135,7 @@ export async function openHarness(
 					return undefined;
 				},
 				userExists: () => identity.users.get(user) !== undefined,
+				history,
 			});
 			skillStores.set(user, store);
 		}
@@ -1118,7 +1145,7 @@ export async function openHarness(
 				userArea,
 				user,
 				userExists: () => identity.users.get(user) !== undefined,
-				feed: store,
+				history,
 			});
 			overlayStores.set(user, overlays);
 		}
@@ -1136,8 +1163,14 @@ export async function openHarness(
 			});
 			usageCounters.set(user, usage);
 		}
-		return { store, overlays, usage };
+		return { store, overlays, usage, history };
 	};
+	// Curation history migration (tabs+skills Task 9): every directory
+	// user boot sees imports once. Users created after boot migrate on
+	// their first curationOf (the migratedUsers seam above).
+	for (const record of identity.users.list()) {
+		curationOf(record.user);
+	}
 	const curationSkillsOptions = {
 		...skillsOptions,
 		skillStore: (user: string | undefined) => curationOf(user)?.store,

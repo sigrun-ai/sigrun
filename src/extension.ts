@@ -431,12 +431,14 @@ export type CurationSkillChange =
 
 /**
  * One change-feed entry (structural mirror of the store's `FeedEntry`).
- * The undo-relevant fields (`before`, `after`) are opaque version ids.
+ * `id`, `before` and `after` are commit SHAs in the user's curation
+ * history repo (tabs+skills Task 9); `actor` widens to include
+ * `"outside"` for catch-up commits the store itself did not author.
  */
 export type CurationFeedEntry = {
 	readonly id: string;
 	readonly at: string;
-	readonly actor: "curator" | "agent" | "user";
+	readonly actor: "curator" | "agent" | "user" | "outside";
 	readonly action: string;
 	readonly skill: string;
 	readonly reason?: string;

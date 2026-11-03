@@ -34,6 +34,8 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { CurationRunDoc, curationRun } from "../src/curation/run-doc.js";
+import { GitHistory } from "../src/history/git.js";
+import { userRepoSpec } from "../src/curation/paths.js";
 import { SkillStore } from "../src/curation/store.js";
 import {
 	OVERLAY_HEADING,
@@ -99,18 +101,22 @@ async function bootHarness(): Promise<{ opened: OpenedHarness; dir: string }> {
 /** One user's store pair over the data-dir user area. */
 function userOf(dir: string, user: string): UserStores {
 	const userArea = join(dir, "data", "users", user);
+	const history = new GitHistory(userRepoSpec(userArea), {
+		gitHome: join(dir, "state", "git-home"),
+	});
 	const store = new SkillStore({
 		userArea,
 		user,
 		now: () => new Date(),
 		nameTakenElsewhere: async () => undefined,
 		userExists: () => true,
+		history,
 	});
 	const overlays = new OverlayStore({
 		userArea,
 		user,
 		userExists: () => true,
-		feed: store,
+		history,
 	});
 	return { user, userArea, store, overlays };
 }

@@ -1,12 +1,25 @@
+/**
+ * SkillStore (tabs+skills plan, Task 9): the per-user learned-skill
+ * store on git. Every mutation is one commit in the user's curation
+ * repo (`userRepoSpec(userArea)`) with the Sigrun-* trailers; the feed
+ * is the log (id/before/after are commit SHAs); undo is a path-restore
+ * commit (never git revert).
+ *
+ * The store's public methods and FeedEntry shape are unchanged; the
+ * versioning feed.jsonl and withUserLock machinery are gone (git is the
+ * lock and the feed).
+ */
+
+import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
-import { join, dirname } from "node:path";
-import { curationDir, learnedSkillsDir } from "./paths.js";
+import type { GitHistory, HistoryActor, HistoryCommit } from "../history/git.js";
+import { curationDir, learnedSkillsDir, userRepoSpec } from "./paths.js";
 import { validSkillName } from "./names.js";
 import { scanContent } from "./scan.js";
 
-export type Actor = "curator" | "agent" | "user";
-export type ChangeAction = "create" | "patch" | "write_file" | "remove_file" | "archive" | "restore" | "overlay" | "pin" | "unpin" | "undo";
+export type Actor = "curator" | "agent" | "user" | "outside";
+export type ChangeAction = "create" | "patch" | "write_file" | "remove_file" | "archive" | "restore" | "overlay" | "pin" | "unpin" | "undo" | "change";
 
 export interface FeedEntry {
 	id: string;
@@ -44,24 +57,14 @@ export interface SkillStoreOptions {
 	now: () => Date;
 	nameTakenElsewhere: (name: string) => Promise<string | undefined>;
 	userExists: () => boolean;
+	/** The user's curation history repo (boot builds and caches it). */
+	history: GitHistory;
 }
 
 interface State { pins: Record<string, boolean>; archived: string[]; createdAt: Record<string, string>; }
 interface ChangeMeta { actor: Actor; reviewId?: string; conversationId?: number; reason?: string; }
 
-const VERSIONS = 10;
-const FEED_ENTRIES = 500;
 const SUPPORT_ROOTS = ["references", "templates", "scripts", "assets"];
-const locks = new Map<string, Promise<void>>();
-
-async function withUserLock<T>(user: string, fn: () => Promise<T>): Promise<T> {
-	const previous = locks.get(user) ?? Promise.resolve();
-	const current = previous.then(fn, fn);
-	const tail = current.then(() => undefined, () => undefined);
-	locks.set(user, tail);
-	try { return await current; }
-	finally { if (locks.get(user) === tail) locks.delete(user); }
-}
 
 function requireUser(options: SkillStoreOptions): void {
 	if (!options.userExists()) throw new Error("user removed");
@@ -105,17 +108,6 @@ async function exists(path: string): Promise<boolean> {
 	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return false; throw error; }
 }
 
-async function copyTree(source: string, target: string): Promise<void> {
-	const info = await lstat(source);
-	if (info.isSymbolicLink()) throw new Error(`symlinks are not allowed: ${source}`);
-	if (info.isDirectory()) {
-		await mkdir(target, { recursive: true });
-		for (const entry of await readdir(source)) await copyTree(join(source, entry), join(target, entry));
-	} else if (info.isFile()) {
-		await cp(source, target);
-	} else throw new Error(`unsupported file type: ${source}`);
-}
-
 async function assertNoSymlinks(root: string, file: string): Promise<void> {
 	const parts = file.split("/");
 	let path = root;
@@ -151,28 +143,34 @@ async function writeFileAtomic(path: string, text: string): Promise<void> {
 	await rename(temp, path);
 }
 
-async function readFeed(dir: string): Promise<FeedEntry[]> {
-	try {
-		const text = await readFile(join(dir, "feed.jsonl"), "utf8");
-		return text.split("\n").filter(Boolean).map((line) => JSON.parse(line) as FeedEntry).reverse();
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
-		throw error;
+/** The Sigrun actor shape the store's FeedEntry carries. */
+function actorOf(meta: ChangeMeta, user: string): HistoryActor {
+	switch (meta.actor) {
+		case "user": return { kind: "user", user };
+		case "curator": return { kind: "curator" };
+		case "agent": return { kind: "agent" };
+		case "outside": return { kind: "outside" };
 	}
 }
 
-async function nextVersion(dir: string, name: string): Promise<string> {
-	const root = join(dir, "versions", name);
-	let entries: string[] = [];
-	try { entries = await readdir(root); }
-	catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
-	const highest = entries.reduce((max, entry) => Math.max(max, /^v(\d+)$/.exec(entry)?.[1] === undefined ? 0 : Number(/^v(\d+)$/.exec(entry)![1])), 0);
-	return `v${highest + 1}`;
-}
-
-async function versionLocation(version: string): Promise<"skills" | "archive" | undefined> {
-	try { return (await readFile(join(version, ".location"), "utf8")).trim() === "archive" ? "archive" : "skills"; }
-	catch (error) { if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined; throw error; }
+/** Map one history commit to a feed entry; untrailered commits get action "change", skill "". */
+function entryOf(commit: HistoryCommit, user: string): FeedEntry {
+	const actor: Actor =
+		commit.actor.kind === "user"
+			? (commit.actor.user === user ? "user" : "outside")
+			: commit.actor.kind;
+	const action = (commit.action ?? "change") as ChangeAction;
+	const skill = commit.skill ?? "";
+	return {
+		id: commit.sha,
+		at: commit.at,
+		actor,
+		action,
+		skill,
+		...(commit.reason === undefined ? {} : { reason: commit.reason }),
+		...(commit.reviewId === undefined ? {} : { reviewId: commit.reviewId }),
+		...(commit.conversationId === undefined ? {} : { conversationId: commit.conversationId }),
+	};
 }
 
 export class SkillStore {
@@ -188,11 +186,15 @@ export class SkillStore {
 		this.archive = join(this.root, "archive");
 	}
 
+	private get history(): GitHistory {
+		return this.options.history;
+	}
+
 	async list(): Promise<readonly LearnedSkillInfo[]> {
 		requireUser(this.options);
 		const state = await readState(this.root);
 		const names = new Set<string>();
-		for (const root of [this.skills, join(this.root, "archive")]) {
+		for (const root of [this.skills, this.archive]) {
 			try {
 				for (const entry of await readdir(root, { withFileTypes: true })) {
 					if (entry.isDirectory() && validSkillName(entry.name)) names.add(entry.name);
@@ -202,11 +204,11 @@ export class SkillStore {
 		const result: LearnedSkillInfo[] = [];
 		for (const name of [...names].sort()) {
 			const archived = state.archived.includes(name);
-			const path = join(archived ? join(this.root, "archive") : this.skills, name, "SKILL.md");
+			const path = join(archived ? this.archive : this.skills, name, "SKILL.md");
 			try {
 				const text = await readFile(path, "utf8");
 				const meta = frontmatter(text);
-				result.push({ name, description: meta.description, archived, pinned: state.pins[name] === true, bytes: Buffer.byteLength(text), createdAt: state.createdAt[name] ?? (await stat(path)).birthtime.toISOString() });
+				result.push({ name, description: meta.description, archived, pinned: state.pins[name] === true, bytes: Buffer.byteLength(text), createdAt: state.createdAt[name] ?? "" });
 			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		}
 		return result;
@@ -222,217 +224,380 @@ export class SkillStore {
 
 	async apply(name: string, change: SkillChange, meta: ChangeMeta): Promise<FeedEntry> {
 		requireUser(this.options);
-		return withUserLock(this.options.user, async () => {
-			requireUser(this.options);
-			skillName(name);
-			const state = await readState(this.root);
-			const archived = state.archived.includes(name);
-			const root = join(archived ? this.archive : this.skills, name);
-			if (change.kind === "create") {
-				if (await exists(root)) throw new Error(`skill already exists: ${name}`);
-				const taken = await this.options.nameTakenElsewhere(name);
-				if (taken !== undefined) throw new Error(`skill name ${name} is already used by ${taken}; use overlay instead`);
-				checkContent(change.content);
-				if (frontmatter(change.content).name !== name) throw new Error(`frontmatter name must match the directory ${name}`);
-				await mkdir(root, { recursive: true });
-				await writeFile(join(root, "SKILL.md"), change.content);
-				state.createdAt[name] = this.options.now().toISOString();
-				return this.commit(name, "create", meta, state, undefined, root);
-			}
+		skillName(name);
+		// The mutation's validations run BEFORE the history write: a thrown
+		// validation must not become a commit (the fail-soft rule is for git
+		// failures, not store rejections).
+		const state = await readState(this.root);
+		const archived = state.archived.includes(name);
+		const root = join(archived ? this.archive : this.skills, name);
+		if (change.kind === "create") {
+			if (await exists(root)) throw new Error(`skill already exists: ${name}`);
+			const taken = await this.options.nameTakenElsewhere(name);
+			if (taken !== undefined) throw new Error(`skill name ${name} is already used by ${taken}; use overlay instead`);
+			checkContent(change.content);
+			if (frontmatter(change.content).name !== name) throw new Error(`frontmatter name must match the directory ${name}`);
+		} else {
 			if (!(await exists(root))) throw new Error(`unknown skill: ${name}`);
-			if (change.kind === "archive") {
+			if (change.kind === "archive" && archived) throw new Error(`skill is archived: ${name}`);
+			if (change.kind === "restore" && !archived) throw new Error(`skill is not archived: ${name}`);
+			if (change.kind !== "archive" && change.kind !== "restore") {
 				if (archived) throw new Error(`skill is archived: ${name}`);
-				return this.commit(name, "archive", meta, state, root, join(this.root, "archive", name), change.absorbedInto);
-			}
-			if (change.kind === "restore") {
-				if (!archived) throw new Error(`skill is not archived: ${name}`);
-				const version = change.version === undefined ? undefined : join(this.root, "versions", name, change.version);
-				if (version !== undefined && !(await exists(version))) throw new Error(`unknown version: ${change.version}`);
-				return this.commit(name, "restore", meta, state, root, join(this.skills, name), undefined, version);
-			}
-			if (archived) throw new Error(`skill is archived: ${name}`);
-			if (change.kind !== "patch" && change.kind !== "write_file" && change.kind !== "remove_file") throw new Error("unsupported skill change");
-			return this.commit(name, change.kind, meta, state, root, root, undefined, undefined, async () => {
-				if (change.kind === "patch") {
-					const file = change.file === undefined ? "SKILL.md" : supportFile(change.file);
-					await assertNoSymlinks(root, file);
-					const oldText = await readFile(join(root, file), "utf8");
-					const first = oldText.indexOf(change.old);
-					if (first < 0 || oldText.indexOf(change.old, first + 1) >= 0 || change.old === "") throw new Error("patch old text must be a unique span");
-					const text = oldText.slice(0, first) + change.new + oldText.slice(first + change.old.length);
-					checkContent(text);
-					if (file === "SKILL.md" && frontmatter(text).name !== name) throw new Error(`frontmatter name must match the directory ${name}`);
-					await writeFile(join(root, file), text);
-				} else if (change.kind === "write_file") {
-					const file = supportFile(change.file);
-					await assertNoSymlinks(root, file);
-					checkContent(change.content);
-					await mkdir(join(root, file, ".."), { recursive: true });
-					await writeFile(join(root, file), change.content);
-				} else {
-					const file = supportFile(change.file);
-					await assertNoSymlinks(root, file);
-					await rm(join(root, file));
+				if (change.kind !== "patch" && change.kind !== "write_file" && change.kind !== "remove_file") {
+					throw new Error("unsupported skill change");
 				}
-			});
-		});
+			}
+		}
+		const before = await this.headSha();
+		// The repo's work tree must exist before the git dir can init
+		// inside it (mkdir the root, never the work tree itself).
+		await mkdir(this.root, { recursive: true });
+		const sha = await this.history.write(
+			{
+				actor: actorOf(meta, this.options.user),
+				summary: `${change.kind} ${name}`,
+				action: change.kind,
+				skill: name,
+				...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }),
+				...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }),
+				...(meta.reason === undefined && !(change.kind === "archive" && change.absorbedInto !== undefined)
+					? {}
+					: { reason: change.kind === "archive" && change.absorbedInto !== undefined ? change.absorbedInto : meta.reason! }),
+			},
+			async () => {
+				requireUser(this.options);
+				await this.mutate(name, change);
+			},
+			{ kind: "outside" },
+		);
+		return this.entry(
+			sha,
+			change.kind,
+			name,
+			meta,
+			before,
+			change.kind === "archive" ? change.absorbedInto : undefined,
+		);
 	}
 
-	async pin(name: string, pinned: boolean): Promise<void> {
+	async pin(name: string, pinned: boolean, reviewId?: string): Promise<FeedEntry> {
 		requireUser(this.options);
-		await withUserLock(this.options.user, async () => {
-			requireUser(this.options);
-			skillName(name);
-			const state = await readState(this.root);
-			if (!(await this.list()).some((skill) => skill.name === name)) throw new Error(`unknown skill: ${name}`);
-			state.pins[name] = pinned;
-			await writeState(this.root, state);
-			await this.appendFeed({ id: randomUUID(), at: this.options.now().toISOString(), actor: "user", action: pinned ? "pin" : "unpin", skill: name });
-		});
+		skillName(name);
+		if (!(await this.list()).some((skill) => skill.name === name)) throw new Error(`unknown skill: ${name}`);
+		const before = await this.headSha();
+		const action = pinned ? "pin" : "unpin";
+		const sha = await this.history.write(
+			{
+				actor: { kind: "user", user: this.options.user },
+				summary: `${action} ${name}`,
+				action,
+				skill: name,
+				...(reviewId === undefined ? {} : { reviewId }),
+			},
+			async () => {
+				requireUser(this.options);
+				const state = await readState(this.root);
+				state.pins[name] = pinned;
+				await writeState(this.root, state);
+			},
+			{ kind: "outside" },
+		);
+		return this.entry(sha, action, name, { actor: "user", reviewId }, before);
 	}
 
 	async feed(limit: number, before?: string): Promise<readonly FeedEntry[]> {
 		requireUser(this.options);
-		const entries = await readFeed(this.root);
-		const start = before === undefined ? 0 : entries.findIndex((entry) => entry.id === before);
-		if (start < 0) return [];
-		return entries.slice(start + (before === undefined ? 0 : 1), start + (before === undefined ? 0 : 1) + Math.max(0, limit));
+		// Over-fetch: feed skips untrailered commits (catch-ups, the
+		// import), so a page may hold fewer than limit entries.
+		const commits = await this.history.log({ limit: limit * 4, ...(before === undefined ? {} : { before }) });
+		const entries: FeedEntry[] = [];
+		for (const commit of commits) {
+			if (commit.action === undefined && commit.skill === undefined) continue;
+			const entry = entryOf(commit, this.options.user);
+			const parent = await this.history.parentOf(commit.sha);
+			entries.push({
+				...entry,
+				...(parent === undefined ? {} : { before: parent }),
+				after: commit.sha,
+			});
+			if (entries.length >= limit) break;
+		}
+		return entries;
 	}
 
 	async undo(entryIds: readonly string[]): Promise<readonly FeedEntry[]> {
 		requireUser(this.options);
-		return withUserLock(this.options.user, async () => {
-			requireUser(this.options);
-			const all = await readFeed(this.root);
-			const selected = all.filter((entry) => entryIds.includes(entry.id) && entry.before !== undefined);
-			const earliest = new Map<string, FeedEntry>();
-			for (const entry of selected) {
-				const previous = earliest.get(entry.skill);
-				if (previous === undefined || all.indexOf(entry) > all.indexOf(previous)) earliest.set(entry.skill, entry);
-			}
-			// The create-undo companion: an undone CREATE has no before
-			// snapshot (nothing existed) — reverting it means REMOVING the
-			// skill (archive, never hard delete; restorable from versions).
-			const createdOnly = all.filter(
-				(entry) => entryIds.includes(entry.id) && entry.before === undefined && entry.action === "create",
+		// The selected commits, oldest first (the restore target is the
+		// earliest one's parent).
+		const log = await this.history.log({ limit: 1000 });
+		// The selected commits, OLDEST first (the restore target is the
+		// earliest one's parent): the log is newest-first.
+		const selected = log
+			.filter((commit) => entryIds.includes(commit.sha))
+			.reverse();
+		if (selected.length === 0) return [];
+		// A review already undone (its reviewId is on a commit's
+		// Sigrun-Undoes) is a no-op. A redo (undoing an undo) has no
+		// reviewId on the selected commit, so it falls through.
+		const reviewIds = new Set(
+			selected.map((commit) => commit.reviewId).filter((id): id is string => id !== undefined),
+		);
+		const anyUndone = log.some((commit) => commit.undoes !== undefined);
+		if (reviewIds.size > 0 && anyUndone) {
+			const already = log.some(
+				(commit) => commit.undoes !== undefined && [...reviewIds].some((id) => commit.undoes!.split(",").map((part) => part.trim()).includes(id)),
 			);
-			for (const entry of createdOnly) {
-				if (!earliest.has(entry.skill)) earliest.set(entry.skill, entry);
-			}
-			const result: FeedEntry[] = [];
-			const state = await readState(this.root);
-			for (const entry of earliest.values()) {
-				if (entry.before === undefined) {
-					// Undo of a create: archive the skill (the no-delete
-					// rule — `restore` brings it back from versions).
-					if (state.archived.includes(entry.skill)) continue;
-					const from = join(this.skills, entry.skill);
-					if (!(await exists(from))) continue;
-					const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, from, join(this.root, "archive", entry.skill));
-					result.push(next);
-					continue;
-				}
-				const current = join(state.archived.includes(entry.skill) ? this.archive : this.skills, entry.skill);
-				const previous = join(this.root, "versions", entry.skill, entry.before!);
-				if (!(await exists(previous)) || !(await exists(current))) continue;
-				const location = await versionLocation(previous);
-				if (location === undefined) throw new Error(`unknown version location: ${entry.before}`);
-				const destination = join(location === "archive" ? this.archive : this.skills, entry.skill);
-				const next = await this.commit(entry.skill, "undo", { actor: "user" }, state, current, destination, undefined, previous);
-				result.push(next);
-			}
-			return result;
-		});
-	}
-
-	/**
-	 * Append one feed entry verbatim — the A5 overlay seam. OverlayStore
-	 * owns its files but records every change in the SAME per-user feed
-	 * (action `"overlay"`), so retention, the per-user lock and the P8
-	 * view hold for overlay changes too. Entry ids/at values are the
-	 * caller's.
-	 */
-	async appendFeedEntry(entry: FeedEntry): Promise<void> {
-		requireUser(this.options);
-		await withUserLock(this.options.user, async () => {
-			requireUser(this.options);
-			await this.appendFeed(entry);
-		});
-	}
-
-	/**
-	 * Persists a change: snapshots the before state, applies the mutation,
-	 * snapshots the after state, records the feed entry and runs retention.
-	 * Every version directory carries a `.location` file recording where its
-	 * content lived (skills or archive) when the snapshot was taken, so undo
-	 * can pick the right destination and retention removes the metadata with
-	 * the snapshot it belongs to.
-	 */
-	private async commit(name: string, action: ChangeAction, meta: ChangeMeta, state: State, beforeRoot?: string, afterRoot?: string, absorbedInto?: string, restoreFrom?: string, mutate?: () => Promise<void>): Promise<FeedEntry> {
-		const versionRoot = join(this.root, "versions", name);
-		let before: string | undefined;
-		if (beforeRoot !== undefined && await exists(beforeRoot)) {
-			before = await nextVersion(this.root, name);
-			await copyTree(beforeRoot, join(versionRoot, before));
-			await writeFile(join(versionRoot, before, ".location"), beforeRoot.startsWith(this.archive + "/") ? "archive" : "skills");
+			if (already) return [];
 		}
-		if (mutate !== undefined) await mutate();
-		if (action === "archive") {
-			await mkdir(this.archive, { recursive: true });
-			await rename(beforeRoot!, afterRoot!);
-			state.archived = [...new Set([...state.archived, name])];
-		} else if (action === "restore") {
-			await mkdir(this.skills, { recursive: true });
-			if (restoreFrom === undefined) {
-				await rename(beforeRoot!, afterRoot!);
-			} else {
-				const staged = await this.stageVersion(restoreFrom);
-				await rm(beforeRoot!, { recursive: true, force: true });
-				await rename(staged, afterRoot!);
-			}
-			state.archived = state.archived.filter((item) => item !== name);
-		} else if (action === "undo") {
-			// A create-undo (no restoreFrom): the move alone archives the
-			// skill; an edit-undo stages the before-snapshot into place.
-			if (restoreFrom !== undefined) {
-				const staged = await this.stageVersion(restoreFrom);
-				await rm(beforeRoot!, { recursive: true, force: true });
-				await mkdir(dirname(afterRoot!), { recursive: true });
-				await rename(staged, afterRoot!);
-			} else {
-				await mkdir(dirname(afterRoot!), { recursive: true });
-				await rename(beforeRoot!, afterRoot!);
-			}
-			if (afterRoot!.startsWith(this.archive + "/")) state.archived = [...new Set([...state.archived, name])];
-			else state.archived = state.archived.filter((item) => item !== name);
+		const createOnly: HistoryCommit[] = [];
+		const restorable: HistoryCommit[] = [];
+		for (const commit of selected) {
+			// An undo-of-create ARCHIVED the skill: the redo must restore
+			// those paths too, so an undo commit whose undoes point at a
+			// create is restorable, not create-only.
+			if (commit.action === "create" && commit.skill !== undefined) createOnly.push(commit);
+			else restorable.push(commit);
 		}
-		let after: string | undefined;
-		if (action !== "archive") {
-			after = await nextVersion(this.root, name);
-			const current = afterRoot ?? beforeRoot!;
-			await copyTree(current, join(versionRoot, after));
-			await writeFile(join(versionRoot, after, ".location"), state.archived.includes(name) ? "archive" : "skills");
+		// Oldest first → the earliest selected commit is FIRST.
+		const earliest = restorable[0];
+		// The restore covers the pathspec roots (a state move — skills ↔
+		// archive — is never missed when the selection's own paths see
+		// only one side). GitHistory.pathspec-derived, not the raw commit
+		// paths: the redo case's create commit names skills/, the undo
+		// commit names archive/, and only the ROOTS cover both.
+		const paths: readonly string[] = ["skills", "curation/archive", "curation/state.json"];
+		const undoes = selected.map((commit) => commit.sha).sort().join(",");
+		const reviewId = [...reviewIds].sort().join(",");
+		const skill = earliest?.skill ?? selected[0]!.skill ?? "";
+		const before = await this.headSha();
+		// The restore target: the earliest selected commit's PARENT's tree,
+		// restricted to the touched paths. Computed OUTSIDE the write's lock
+		// (pure git reads), applied inside it.
+		const parent = restorable.length > 0 && earliest !== undefined
+			? await this.history.parentOf(earliest.sha)
+			: undefined;
+		const atParent: Map<string, Buffer> = new Map();
+		if (restorable.length > 0 && parent !== undefined) {
+			for (const path of await this.lsTree(parent, paths)) {
+				atParent.set(path, await this.catFile(parent, path));
+			}
 		}
-		await writeState(this.root, state);
-		const entry: FeedEntry = { id: randomUUID(), at: this.options.now().toISOString(), actor: meta.actor, action, skill: name, ...(absorbedInto === undefined && meta.reason === undefined ? {} : { reason: absorbedInto ?? meta.reason }), ...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }), ...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }), ...(before === undefined ? {} : { before }), ...(after === undefined ? {} : { after }) };
-		await this.appendFeed(entry);
-		const versions = (await readdir(versionRoot)).filter((entry) => /^v\d+$/.test(entry)).sort((a, b) => Number(b.slice(1)) - Number(a.slice(1)));
-		for (const old of versions.slice(VERSIONS)) await rm(join(versionRoot, old), { recursive: true, force: true });
-		return entry;
-	}
-
-	/** Copies a version snapshot to a staging directory, minus the `.location` metadata file. */
-	private async stageVersion(version: string): Promise<string> {
-		const staged = join(this.root, `.staged-${randomUUID()}`);
-		await copyTree(version, staged);
-		await rm(join(staged, ".location"), { force: true });
-		return staged;
-	}
-
-	private async appendFeed(entry: FeedEntry): Promise<void> {
 		await mkdir(this.root, { recursive: true });
-		const entries = (await readFeed(this.root)).reverse();
-		entries.push(entry);
-		await writeFileAtomic(join(this.root, "feed.jsonl"), entries.slice(-FEED_ENTRIES).map((item) => JSON.stringify(item)).join("\n") + "\n");
+		const sha = await this.history.write(
+			{
+				actor: { kind: "user", user: this.options.user },
+				summary: `undo ${skill}`.trim(),
+				action: "undo",
+				skill,
+				...(reviewId === "" ? {} : { reviewId }),
+				undoes,
+			},
+			async () => {
+				requireUser(this.options);
+				if (restorable.length > 0) {
+					await this.restorePaths(atParent, paths);
+				}
+				if (createOnly.length > 0) {
+					const state = await readState(this.root);
+					for (const commit of createOnly) {
+						const name = commit.skill!;
+						if (state.archived.includes(name)) continue;
+						const from = join(this.skills, name);
+						if (!(await exists(from))) continue;
+						await mkdir(this.archive, { recursive: true });
+						await renameForce(from, join(this.archive, name));
+						state.archived = [...new Set([...state.archived, name])];
+					}
+					await writeState(this.root, state);
+				}
+			},
+			{ kind: "outside" },
+		);
+		if (sha === undefined) return [];
+		// One FeedEntry per skill touched, all carrying the undo commit's sha.
+		const skills = [...new Set(selected.map((commit) => commit.skill ?? ""))];
+		return skills.map((one) =>
+			this.entry(sha, "undo", one, { actor: "user", ...(reviewId === "" ? {} : { reviewId }) }, before),
+		);
 	}
+
+	/** Restore a learned skill's files AND its state.json archived/pin entries to `sha`, in one commit. Restoring a version of an archived skill un-archives it. */
+	async restoreVersion(name: string, sha: string, meta: ChangeMeta): Promise<FeedEntry> {
+		requireUser(this.options);
+		skillName(name);
+		const before = await this.headSha();
+		// The skill's own dirs plus state.json: the restore puts the files
+		// back where they were at sha (skills/ when live, archive/ when
+		// archived) and state.json carries the archived/pin rows.
+		const paths = [`skills/${name}`, `curation/archive/${name}`, "curation/state.json"];
+		// The snapshot is computed BEFORE the write (the write's own
+		// staging moves HEAD; reading "the tree at sha" inside the mutate
+		// would follow it).
+		const snapshot: Map<string, Buffer> = new Map();
+		for (const path of await this.lsTree(sha, paths)) {
+			snapshot.set(path, await this.catFile(sha, path));
+		}
+		await mkdir(this.root, { recursive: true });
+		const undoSha = await this.history.write(
+			{
+				actor: actorOf(meta, this.options.user),
+				summary: `restore ${name}@${sha.slice(0, 8)}`,
+				action: "restore",
+				skill: name,
+				...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }),
+				...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }),
+				...(meta.reason === undefined ? {} : { reason: meta.reason }),
+			},
+			async () => {
+				requireUser(this.options);
+				await this.restorePaths(snapshot, paths);
+			},
+			{ kind: "outside" },
+		);
+		return this.entry(undoSha, "restore", name, meta, before);
+	}
+
+	// ---- internals ------------------------------------------------------
+
+	/**
+	 * Inside a history write: make `paths` exactly as the snapshot
+	 * (path → content at the target commit). Removes every tracked path
+	 * under `paths` absent from the snapshot, writes the rest. Deepest
+	 * first so a moved-away directory's old path never shadows the
+	 * restore of its new location.
+	 */
+	private async restorePaths(
+		snapshot: ReadonlyMap<string, Buffer>,
+		paths: readonly string[],
+	): Promise<void> {
+		const head = new Set(await this.lsTree("HEAD", paths));
+		const remove = [...head].filter(
+			(path) => !snapshot.has(path) && paths.some((entry) => path === entry || path.startsWith(`${entry}/`)),
+		);
+		for (const path of remove.sort((a, b) => b.length - a.length)) {
+			await rm(join(this.options.userArea, path), { recursive: true, force: true });
+		}
+		for (const [path, content] of snapshot) {
+			const target = join(this.options.userArea, path);
+			await mkdir(dirname(target), { recursive: true });
+			await writeFile(target, content);
+		}
+	}
+
+	/** git ls-tree -r --name-only <tree> -- <paths>, via the history's own git. */
+	private async lsTree(tree: string, paths: readonly string[]): Promise<string[]> {
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const spec = userRepoSpec(this.options.userArea);
+		const { stdout } = await promisify(execFile)(
+			"git",
+			[`--git-dir=${spec.gitDir}`, `--work-tree=${spec.workTree}`, "-c", `safe.directory=${spec.workTree}`, "ls-tree", "-r", "--name-only", tree, "--", ...paths],
+			{ env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" } },
+		);
+		return stdout.split("\n").map((line) => line.trim()).filter((line) => line !== "");
+	}
+
+	/** git cat-file blob <sha>:<path>, via the history's own git. */
+	private async catFile(sha: string, path: string): Promise<Buffer> {
+		const { execFile } = await import("node:child_process");
+		const { promisify } = await import("node:util");
+		const spec = userRepoSpec(this.options.userArea);
+		const { stdout } = await promisify(execFile)(
+			"git",
+			[`--git-dir=${spec.gitDir}`, `--work-tree=${spec.workTree}`, "-c", `safe.directory=${spec.workTree}`, "cat-file", "blob", `${sha}:${path}`],
+			{ env: { ...process.env, GIT_CONFIG_GLOBAL: "/dev/null", GIT_CONFIG_NOSYSTEM: "1" }, encoding: "buffer" },
+		);
+		return stdout;
+	}
+
+	// ---- internals ------------------------------------------------------
+
+	private async mutate(name: string, change: SkillChange): Promise<void> {
+		// Validations already ran in apply(); this replays the decision tree
+		// against the (possibly catch-up-shifted) on-disk state.
+		const state = await readState(this.root);
+		const archived = state.archived.includes(name);
+		const root = join(archived ? this.archive : this.skills, name);
+		if (change.kind === "create") {
+			await mkdir(root, { recursive: true });
+			await writeFile(join(root, "SKILL.md"), change.content);
+			state.createdAt[name] = this.options.now().toISOString();
+			await writeState(this.root, state);
+			return;
+		}
+		if (change.kind === "archive") {
+			await mkdir(this.archive, { recursive: true });
+			await renameForce(root, join(this.archive, name));
+			state.archived = [...new Set([...state.archived, name])];
+			await writeState(this.root, state);
+			return;
+		}
+		if (change.kind === "restore") {
+			await mkdir(this.skills, { recursive: true });
+			await renameForce(root, join(this.skills, name));
+			state.archived = state.archived.filter((item) => item !== name);
+			await writeState(this.root, state);
+			return;
+		}
+		if (change.kind === "patch") {
+			const file = change.file === undefined ? "SKILL.md" : supportFile(change.file);
+			await assertNoSymlinks(root, file);
+			const oldText = await readFile(join(root, file), "utf8");
+			const first = oldText.indexOf(change.old);
+			if (first < 0 || oldText.indexOf(change.old, first + 1) >= 0 || change.old === "") throw new Error("patch old text must be a unique span");
+			const text = oldText.slice(0, first) + change.new + oldText.slice(first + change.old.length);
+			checkContent(text);
+			if (file === "SKILL.md" && frontmatter(text).name !== name) throw new Error(`frontmatter name must match the directory ${name}`);
+			await writeFile(join(root, file), text);
+		} else if (change.kind === "write_file") {
+			const file = supportFile(change.file);
+			await assertNoSymlinks(root, file);
+			checkContent(change.content);
+			await mkdir(join(root, file, ".."), { recursive: true });
+			await writeFile(join(root, file), change.content);
+		} else {
+			const file = supportFile(change.file);
+			await assertNoSymlinks(root, file);
+			await rm(join(root, file));
+		}
+	}
+
+	/** Build the returned FeedEntry: sha-backed, with before/after. */
+	private entry(
+		sha: string | undefined,
+		action: ChangeAction,
+		skill: string,
+		meta: ChangeMeta,
+		before: string | undefined,
+		absorbedInto?: string,
+	): FeedEntry {
+		const id = sha ?? `(no-commit-${randomUUID()})`;
+		const reason = absorbedInto ?? meta.reason;
+		return {
+			id,
+			// The write clock: feed() serves the commit's authored-at on
+			// read-back; the returned entry carries the write's own time.
+			at: this.options.now().toISOString(),
+			actor: meta.actor,
+			action,
+			skill,
+			...(reason === undefined ? {} : { reason }),
+			...(meta.reviewId === undefined ? {} : { reviewId: meta.reviewId }),
+			...(meta.conversationId === undefined ? {} : { conversationId: meta.conversationId }),
+			...(before === undefined ? {} : { before }),
+			...(sha === undefined ? {} : { after: sha }),
+		};
+	}
+
+	/** HEAD's sha, or undefined on an empty/failed repo. */
+	private async headSha(): Promise<string | undefined> {
+		const log = await this.history.log({ limit: 1 });
+		return log[0]?.sha;
+	}
+}
+
+/** rename(2) with the destination's parent ensured. */
+async function renameForce(from: string, to: string): Promise<void> {
+	await mkdir(dirname(to), { recursive: true });
+	await rename(from, to);
 }

@@ -508,6 +508,79 @@ describe("host.curation (curator P6 surface)", () => {
 		});
 	});
 
+	test("undoReview reverts a 2-commit review interleaved with an outside catch-up, without conflict", { timeout: 60_000 }, async () => {
+		// The review patches the skill TWICE (two store commits), an
+		// outside catch-up lands BETWEEN them, and undoReview still
+		// restores the pre-review state as ONE commit (never git revert,
+		// which would conflict with the interleaved catch-up).
+		const { app, opened, dir } = await bootServer([
+			fauxAssistantMessage("the owned turn's answer"),
+			// The read-before-write gate: view, then two patches.
+			fauxAssistantMessage(
+				[fauxToolCall("skill_manage", { action: "view", name: "acme-deploy" } as JsonObject)],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(
+				[fauxToolCall("skill_manage", {
+					action: "patch",
+					name: "acme-deploy",
+					old_text: "Deploy the acme way.",
+					new_text: "Deploy the acme way, step one.",
+					reason: "first pass",
+				} as JsonObject)],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage(
+				[fauxToolCall("skill_manage", {
+					action: "patch",
+					name: "acme-deploy",
+					old_text: "step one",
+					new_text: "step two",
+					reason: "second pass",
+				} as JsonObject)],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("review done"),
+		]);
+		const curation = app.hostBridge.curation;
+		await curation.skills("alice").apply(
+			"acme-deploy",
+			{ kind: "create", content: ACME_SKILL },
+			{ reviewId: "seed-1" },
+		);
+		const parent = await ownedConversation(opened, "alice");
+		// An outside catch-up commit lands after the review's first store
+		// commit: seed an overlay between the fork's creation and its run.
+		const overlays = curation.overlays("alice");
+		await overlays.put(
+			{ root: "user dir", skill: "acme-release" },
+			"outside note",
+			"0".repeat(64),
+			{ actor: "curator" },
+		);
+		const result = await curation.forkReview(parent as ConversationId, {
+			instruction: "Patch twice.",
+			allow: ["skill_manage"],
+			maxToolCalls: 8,
+			maxOutputTokens: 8_000,
+			deadlineMs: 20_000,
+			reviewId: "review-interleave",
+		});
+		expect(result.status).toBe("completed");
+		expect(result.changes.length).toBeGreaterThanOrEqual(2);
+		const { readFile } = await import("node:fs/promises");
+		const skillPath = join(dir, "data", "users", "alice", "skills", "acme-deploy", "SKILL.md");
+		expect(await readFile(skillPath, "utf8")).toContain("step two");
+		const reverted = await curation.undoReview("alice", "review-interleave");
+		expect(reverted).toBe(1);
+		// Both patches reverted: the ORIGINAL body is back, and the
+		// interleaved overlay commit is untouched.
+		expect(await readFile(skillPath, "utf8")).toBe(ACME_SKILL);
+		expect(
+			await overlays.get({ root: "user dir", skill: "acme-release" }),
+		).toMatchObject({ text: "outside note" });
+	});
+
 	test("skills(user).apply writes with actor curator and stamps the review", { timeout: 30_000 }, async () => {
 		const { app } = await bootServer();
 		const curation = app.hostBridge.curation;

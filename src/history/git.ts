@@ -469,6 +469,9 @@ export class GitHistory {
 			const gitDirInfo = await stat(this.spec.gitDir).catch(() => undefined);
 			if (gitDirInfo === undefined) {
 				try {
+					// The git dir's PARENT must exist: `git init` does not create
+					// it, and this module owns the git dir (never the work tree).
+					await mkdir(this.spec.gitDir, { recursive: true });
 					await this.run(["init", "--initial-branch=main"]);
 					await this.writeInfoExclude();
 				} catch (initError) {
