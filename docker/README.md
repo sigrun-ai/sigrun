@@ -6,6 +6,38 @@ option; for a durable/persistent deployment prefer the Helm chart
 (`charts/` (Helm chart), landing as the deploy move migrates the historical
 `deploy/` base manifests) or your own manifests.
 
+## First run: claim the install, then mint a token
+
+With a browser: open `http://localhost:3000/` — the onboarding gate
+asks for the setup code (printed once in the container log at boot:
+`docker compose logs sigrun | grep 'setup code'`) and claims the first
+admin account.
+
+Headless (no browser on the host): claim over the API, then mint an API
+token with the image's CLI. The claim body's identity field is `user`:
+
+```sh
+# 1. Read the setup code from the log (or /cache/setup-code in the
+#    container — see "Setup code location" below).
+docker compose logs sigrun | grep 'setup code'
+
+# 2. Claim (non-loopback binds require the code; the CLI, being inside
+#    the container, is trusted without it).
+curl -X POST http://localhost:3000/v1/onboarding/claim \
+  -H 'content-type: application/json' \
+  -d '{"code": "N42E-HB2G", "user": "<your-username>"}'
+
+# 3. Mint an API token for that user (prints the token ONCE — it is the
+#    bearer for `Authorization: Bearer …` and the TUI).
+docker compose exec sigrun sigrun token create <name> --user <your-username>
+```
+
+The `sigrun` CLI inside the container operates on the same state roots
+as the running server (`/data`, `/cache`); run it via `docker compose
+exec` (or `docker exec`) so those env-derived paths match — a bare
+`sigrun` on the host points at YOUR XDG dirs, not the container's, and
+will report `unknown user` for users that only exist in the container.
+
 ## Build the image
 
 The image is a COMMON CORE — sigrun plus its built-ins only. Extensions
@@ -15,7 +47,11 @@ the data volume (see **Configuration** below and the repo README's
 Extensions section). The published image is
 `ghcr.io/sigrun-ai/sigrun` — `docker compose up` pulls it. To run from a
 local checkout instead, `docker build -t sigrun:local .` and swap the
-compose `image:` line; no extension access is needed at build time.
+compose `image:` line. **Build precondition:** a local build MUST first
+run the `publish-deps.mjs registry` dance in the `Dockerfile`'s header
+comment (swapping the dev tree's `file:` built-in deps for registry
+pins) — without it the image builds green but every built-in extension
+quarantines at boot.
 
 ## Run
 
@@ -114,6 +150,17 @@ container; later boots are a no-op fast path unless the list changed).
 Removing an entry from `extensions` uninstalls it on the next boot. A
 failed install fails the boot, naming the specifier — the container
 log says why. No image rebuild, ever.
+
+### Setup code location
+
+The setup code's file location follows `SIGRUN_CACHE_DIR`: the compose
+file sets it to `/cache`, so the code is at `/cache/setup-code` **and**
+printed once in the container log. A bare `docker run` of the image
+sets neither `SIGRUN_CACHE_DIR` nor the compose tmpfs, so the code
+falls back to `$SIGRUN_HOME`-derived XDG cache —
+`/data/home/.cache/sigrun/setup-code`. The container **log line is the
+always-true source** regardless of deploy shape: `docker compose logs
+sigrun | grep 'setup code'` (or `docker logs <ctr>` for a bare run).
 
 ## Production
 

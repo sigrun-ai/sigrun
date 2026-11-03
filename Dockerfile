@@ -164,7 +164,8 @@ COPY --from=build /app/package.json ./package.json
 # image dir). COPY lands mode 0644, hence the chmod.
 COPY docker/*.sh scripts/smoke-image.sh /usr/local/share/sigrun/
 RUN chmod +x /usr/local/share/sigrun/*.sh \
-    && ln -s /usr/local/share/sigrun/entrypoint.sh /usr/local/bin/sigrun-entrypoint.sh
+    && ln -s /usr/local/share/sigrun/entrypoint.sh /usr/local/bin/sigrun-entrypoint.sh \
+    && ln -s /app/dist/cli.js /usr/local/bin/sigrun
 # The volume mount points (chart PVC at /data, cache emptyDir at
 # /cache), owned by the default uid so a fresh named volume or tmpfs
 # inherits the image dir's ownership — the non-root server can write

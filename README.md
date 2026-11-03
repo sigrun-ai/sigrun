@@ -114,6 +114,9 @@ Open `http://localhost:3000/` (web UI) or drive the API:
 ```bash
 curl localhost:3000/v1/meta
 curl -X POST localhost:3000/v1/conversations -H 'content-type: application/json' -d '{}'
+# A submission carries its text in the `input` field:
+curl -X POST localhost:3000/v1/conversations/1/submissions \
+  -H 'content-type: application/json' -d '{"input": "hello"}'
 ```
 
 From a source checkout the dev shape is `npm install && npm start`
@@ -667,16 +670,25 @@ re-pointed to a different user. The holder or an administrator must remove
 a conflicting old link first.
 
 **Onboarding (the first claim).** An unclaimed server serves
-`GET /v1/onboarding` + `POST /v1/onboarding/claim`. On a loopback bind
-or through a trusted proxy identity the claim needs no code; otherwise
-the one-shot setup code is required — printed once in the log at boot
-and written to `<cacheDir>/setup-code` (in the Helm chart: the pod log
-and `/cache/setup-code`; `SIGRUN_SETUP_CODE` pins it instead). The
-claimant becomes the first admin and owns the reserved root
-conversation. Later users join by invite code (`POST /v1/users/invites`,
-admin) or by trusted-proxy auto-provision; admins can transfer or remove
-users (`PATCH`/`DELETE /v1/users/{user}` — deletion transfers their
+`GET /v1/onboarding` + `POST /v1/onboarding/claim`. The claim body is
+`{"code": "…", "user": "<username>"}` (plus optional `name`, `email`,
+`issueToken`, `tokenName`); the identity field is `user`, not
+`username`. On a loopback bind or through a trusted proxy identity the
+claim needs no code; otherwise the one-shot setup code is required —
+printed once in the log at boot and written to `<cacheDir>/setup-code`
+(in the Helm chart: the pod log and `/cache/setup-code`;
+`SIGRUN_SETUP_CODE` pins it instead). The claimant becomes the first
+admin and owns the reserved root conversation. Later users join by
+invite code (`POST /v1/users/invites`, admin) or by trusted-proxy
+auto-provision; admins can transfer or remove users
+(`PATCH`/`DELETE /v1/users/{user}` — deletion transfers their
 conversations).
+
+**Setup code location.** `<cacheDir>` resolves from `SIGRUN_CACHE_DIR`
+(compose/chart set it to `/cache`); without it the code lands under the
+`SIGRUN_HOME`-derived XDG cache (e.g. `/data/home/.cache/sigrun` on the
+published image). The boot **log line** is the always-true source
+regardless of deploy shape — grep it: `grep 'setup code' <the log>`.
 
 **Proxy-only onboarding.** On a proxy-only server bound beyond
 loopback, onboarding happens entirely **through the proxy**: the first
@@ -1356,11 +1368,14 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   the history (newest first).
 - `POST /v1/conversations`, `POST /v1/conversations/{id}/submissions`,
   `GET /v1/conversations/{id}` — the durable conversation surface
-  (SSE streaming views included).
+  (SSE streaming views included). A submission body is
+  `{"input": "..."}` (or a `{"input": [parts]}` array of
+  text/image/file content parts).
 - `GET /v1/providers` — per-provider readiness, statuses only (never
   credentials); `GET /v1/auth/check` is the deprecated alias.
 - `GET /v1/onboarding`, `POST /v1/onboarding/claim` — the unclaimed
-  state and the first-user claim.
+  state and the first-user claim (body `{"code": "…", "user": "…"}` —
+  the identity field is `user`).
 - `POST /v1/auth/login`, `POST /v1/auth/logout`, `GET /v1/auth/whoami` —
   token sign-in, logout, and the resolved principal.
 - `GET /v1/auth/providers`, `GET /v1/auth/login/{provider}`,
