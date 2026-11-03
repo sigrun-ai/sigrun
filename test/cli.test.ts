@@ -848,6 +848,24 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		// Nothing was minted.
 		await expect(readFile(join(dir, "api-tokens.json"), "utf8")).rejects.toThrow();
 	});
+
+	test("token create against a FRESH root (no directory file) blames the roots, not the user", async () => {
+		// Fresh-eyes B2b: a claim that happened in the CONTAINER left no
+		// users.json on the host's roots, and the old message ('add it
+		// first') sent the operator the wrong way — the user exists in the
+		// running server's state. An ABSENT users.json can only mean the
+		// CLI is pointed at the wrong state roots (or nothing was claimed),
+		// so the message names the resolved dir and that trap directly.
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		expect(
+			await cliMain(["token", "create", "laptop", "--user", "alice"], storeEnv(dir), undefined, io),
+		).toBe(1);
+		const text = errors.join("\n");
+		expect(text).toContain("no user directory");
+		expect(text).toContain(dir);
+		expect(text).toContain("state roots");
+	});
 });
 
 describe("cliMain user proxy links (username derivation D4)", () => {

@@ -41,7 +41,7 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -984,7 +984,8 @@ async function runIdentityCommand(
 	io: CliIO,
 	isolationProbe: typeof probeIsolation,
 ): Promise<number> {
-	const stores = openIdentityStores(resolveStoreRoots(env));
+	const roots = resolveStoreRoots(env);
+	const stores = openIdentityStores(roots);
 	if (parsed.command === "token") {
 		switch (parsed.sub) {
 			case "create": {
@@ -999,6 +1000,19 @@ async function runIdentityCommand(
 				}
 				const user = derived;
 				if (stores.users.get(user) === undefined) {
+					// Fresh-eyes B2b: an ABSENT users.json means this CLI is
+					// pointed at roots that have never been claimed — almost
+					// always the host-vs-container trap (the claim happened in
+					// the container's /data; the host CLI reads XDG roots), so
+					// "add the user" is the wrong remedy. A PRESENT directory
+					// without the user is a genuine unknown user.
+					if (!existsSync(join(roots.configDir, "users.json"))) {
+						throw new Error(
+							`unknown user "${user}" — no user directory at ${roots.configDir}: this CLI's state roots hold no claimed install. ` +
+								`If the server runs in a container, mint the token there (docker exec <ctr> sigrun token create …), ` +
+								`or point this CLI at the same state roots (SIGRUN_CONFIG_DIR/SIGRUN_DATA_DIR) as the server.`,
+						);
+					}
 					throw new Error(
 						`unknown user "${user}" — add it first: sigrun user add ${user}`,
 					);
