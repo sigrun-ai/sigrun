@@ -1412,9 +1412,12 @@ describe("docker compose reference", () => {
 		// spec §6: writes are confined to /data (volume), /cache and /tmp
 		// (tmpfs) — everything else is read-only (NPM_CONFIG_CACHE is baked
 		// to /cache/npm in the image, so npm's cache writes land on tmpfs).
+		// /cache MUST mount uid=1000: Docker tmpfs defaults root-owned
+		// mode-755 (except /tmp's 1777), so a bare /cache hard-fails the
+		// uid-1000 boot with EACCES on the setup code (fresh-eyes B1).
 		expect(service.read_only).toBe(true);
 		expect(service.tmpfs).toEqual(
-			expect.arrayContaining(["/tmp", "/cache"]),
+			expect.arrayContaining(["/tmp", "/cache:uid=1000"]),
 		);
 		expect(service.cap_drop).toEqual(["ALL"]);
 		expect(service.security_opt).toEqual(["no-new-privileges:true"]);
