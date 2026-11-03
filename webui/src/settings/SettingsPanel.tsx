@@ -126,13 +126,9 @@ export function SettingsPanel(props: {
 	readonly onSection: (id: string) => void;
 	/** The App's restart action (§13.3) — the callout's Restart button. */
 	readonly onRestart?: () => Promise<void>;
-	/** The page's close (✕): the host routes it (history back when the
-	 * page was entered in-app, else the chat route). */
-	readonly onClose: () => void;
 }): React.ReactElement {
 	const {
 		client,
-		onClose,
 		onSection,
 		prefsState,
 		theme,
@@ -330,14 +326,6 @@ export function SettingsPanel(props: {
 						onChange={(event) => setQuery(event.target.value)}
 					/>
 					<span className="spacer" />
-					<button
-						type="button"
-						className="settings-close"
-						title="close settings"
-						onClick={onClose}
-					>
-						✕
-					</button>
 				</header>
 				{pendingRestart.length > 0 && (
 					<div className="settings-restart-callout" role="status">

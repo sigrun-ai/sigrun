@@ -1,9 +1,8 @@
 /**
- * Rail (B2, UI refresh): the 52px section rail — brand mark, the single
- * active Chats entry, a spacer, the health dot (data-health ok/degraded
- * derived from /v1/meta), and the Settings button. The dot's title is the
- * rail's hover surface for extension + backup status (the old TopBar's
- * badges collapsed into one quiet indicator).
+ * Rail (tabs Task 1): the 52px rail is the desktop TAB BAR — one tab per
+ * view (Chats, the core views /v1/meta lists, the extension views, then
+ * spacer, health, user, logout, Settings). Tab clicks dispatch
+ * `onOpenTab(tab)`; clicking the ACTIVE tab dispatches nothing.
  */
 
 import { readFileSync } from "node:fs";
@@ -15,6 +14,7 @@ import { Rail } from "./Rail";
 function makeMeta(init?: {
 	readonly extensions?: MetaResponse["extensions"];
 	readonly health?: MetaResponse["health"];
+	readonly coreViews?: MetaResponse["coreViews"];
 }): MetaResponse {
 	return {
 		version: "0.0.0-test",
@@ -38,12 +38,13 @@ function makeMeta(init?: {
 		isolation: { mode: "auto", active: false, available: false, abi: 0, osUsers: "off" },
 		seam: { interactions: [], ambient: [] },
 		collisions: { webui: [], providers: [], commands: [] },
-		};
+		...(init?.coreViews === undefined ? {} : { coreViews: init.coreViews }),
+	};
 }
 
 describe("Rail", () => {
-	test("renders the brand, the active Chats entry, and Settings", () => {
-		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
+	test("renders the brand, the active Chats tab, and the Settings tab", () => {
+		const renderer = render(<Rail meta={makeMeta()} />);
 		// The brand is the gull-wing mark; its accessible name is the product name.
 		const brand = renderer.root.findByProps({ className: "rail-brand" });
 		expect(brand.props.title).toBe("sigrun");
@@ -52,10 +53,13 @@ describe("Rail", () => {
 		});
 		expect(chats.props["aria-current"]).toBe("page");
 		expect(chats.props.title).toBe("Chats");
+		expect(
+			renderer.root.findAllByProps({ "data-rail-section": "settings" }),
+		).toHaveLength(1);
 	});
 
 	test("the brand mark is the gull wing — two stroke paths at weight 1.9 (0.4.0 Task 8)", () => {
-		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
+		const renderer = render(<Rail meta={makeMeta()} />);
 		const brand = renderer.root.findByProps({ className: "rail-brand" });
 		const svg = brand.findByType("svg");
 		expect(svg.type).toBe("svg");
@@ -78,22 +82,22 @@ describe("Rail", () => {
 	});
 
 	test("no rune or Norse-script text anywhere in the rail tree or the icon set source", () => {
-		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
+		const renderer = render(<Rail meta={makeMeta()} />);
 		const tree = JSON.stringify(renderer.toJSON());
 		// The Unicode Runic block (U+16A0–U+16FF) covers every Norse-script
 		// glyph the outgoing sowilo mark used.
-		expect(tree).not.toMatch(/[\u16A0-\u16FF]/);
+		expect(tree).not.toMatch(/[ -᛿]/);
 		expect(tree).not.toContain("sowilo");
 		// The source file too — the outgoing mark also lived in comments.
 		const source = readFileSync(new URL("./icons.tsx", import.meta.url), "utf8");
 		// The Runic block again, plus the words the old comments used.
-		expect(source).not.toMatch(/[\u16A0-\u16FF]/);
+		expect(source).not.toMatch(/[ -᛿]/);
 		expect(source).not.toContain("sowilo");
 		expect(source).not.toContain("rune");
 	});
 
 	test("health dot is ok when every extension and health field is ok (unconfigured backup is not degraded)", () => {
-		const renderer = render(<Rail meta={makeMeta()} onOpenSettings={() => {}} />);
+		const renderer = render(<Rail meta={makeMeta()} />);
 		const dot = renderer.root.findByProps({ className: "rail-health" });
 		expect(dot.props["data-health"]).toBe("ok");
 	});
@@ -107,7 +111,6 @@ describe("Rail", () => {
 						{ name: "gatekeeper", status: "quarantined" },
 					],
 				})}
-				onOpenSettings={() => {}}
 			/>,
 		);
 		const dot = renderer.root.findByProps({ className: "rail-health" });
@@ -122,7 +125,7 @@ describe("Rail", () => {
 		];
 		for (const health of cases) {
 			const renderer = render(
-				<Rail meta={makeMeta({ health })} onOpenSettings={() => {}} />,
+				<Rail meta={makeMeta({ health })} />,
 			);
 			expect(
 				renderer.root.findByProps({ className: "rail-health" }).props[
@@ -141,7 +144,6 @@ describe("Rail", () => {
 						{ name: "gatekeeper", status: "quarantined" },
 					],
 				})}
-				onOpenSettings={() => {}}
 			/>,
 		);
 		const title = renderer.root.findByProps({ className: "rail-health" })
@@ -155,7 +157,6 @@ describe("Rail", () => {
 		const renderer = render(
 			<Rail
 				meta={makeMeta({ extensions: [], health: { backup: "configured", memory: "ok", providers: "ok" } })}
-				onOpenSettings={() => {}}
 			/>,
 		);
 		const title = renderer.root.findByProps({ className: "rail-health" })
@@ -169,7 +170,6 @@ describe("Rail", () => {
 		const renderer = render(
 			<Rail
 				meta={makeMeta()}
-				onOpenSettings={() => {}}
 				identity={{ user: "idp-user", admin: false, service: false, method: "session", provider: "login:oauth:corp" }}
 				onLogout={onLogout}
 			/>,
@@ -180,36 +180,39 @@ describe("Rail", () => {
 		expect(onLogout).toHaveBeenCalledOnce();
 	});
 
-	test("the Settings button forwards onOpenSettings", () => {
-		const onOpenSettings = vi.fn();
+	test("tab clicks dispatch onOpenTab with the tab id; the ACTIVE tab dispatches nothing", () => {
+		const onOpenTab = vi.fn();
 		const renderer = render(
-			<Rail meta={makeMeta()} onOpenSettings={onOpenSettings} />,
+			<Rail meta={makeMeta()} activeTab="chats" onOpenTab={onOpenTab} />,
 		);
-		const settings = renderer.root.findByProps({ "aria-label": "settings" });
-		expect(settings.props.title).toBe("Settings");
-		(settings.props as { onClick: () => void }).onClick();
-		expect(onOpenSettings).toHaveBeenCalledTimes(1);
-	});
-
-	test("settingsActive marks the Settings button as the current page (0.4.0 Task 4)", () => {
-		// Off the settings page: a plain button, no aria-current.
-		const inactive = render(
-			<Rail meta={makeMeta()} onOpenSettings={() => {}} />,
-		);
-		const inactiveButton = inactive.root.findByProps({
+		// Clicking the active tab (chats) dispatches NOTHING — no duplicate
+		// history entry for a view already showing.
+		const chats = renderer.root.findByProps({ "data-rail-section": "chats" });
+		(chats.props as { onClick: () => void }).onClick();
+		expect(onOpenTab).not.toHaveBeenCalled();
+		// A different tab dispatches its id.
+		const settings = renderer.root.findByProps({
 			"data-rail-section": "settings",
 		});
-		expect(inactiveButton.props.className).toBe("rail-btn");
-		expect(inactiveButton.props["aria-current"]).toBeUndefined();
-		// On the settings page: the active class + aria-current="page".
-		const active = render(
-			<Rail meta={makeMeta()} onOpenSettings={() => {}} settingsActive />,
-		);
+		(settings.props as { onClick: () => void }).onClick();
+		expect(onOpenTab).toHaveBeenCalledWith("settings");
+		expect(onOpenTab).toHaveBeenCalledTimes(1);
+	});
+
+	test("the active tab carries the active class + aria-current", () => {
+		const active = render(<Rail meta={makeMeta()} activeTab="settings" />);
 		const activeButton = active.root.findByProps({
 			"data-rail-section": "settings",
 		});
 		expect(activeButton.props.className).toBe("rail-btn rail-btn-active");
 		expect(activeButton.props["aria-current"]).toBe("page");
+		// Off its tab: a plain button.
+		const inactive = render(<Rail meta={makeMeta()} activeTab="chats" />);
+		const inactiveButton = inactive.root.findByProps({
+			"data-rail-section": "settings",
+		});
+		expect(inactiveButton.props.className).toBe("rail-btn");
+		expect(inactiveButton.props["aria-current"]).toBeUndefined();
 	});
 
 	test("the Blocks gallery entry is absent without dev meta and present with dev: true (U1 Task 6)", () => {
@@ -223,7 +226,6 @@ describe("Rail", () => {
 		const withoutDev = render(
 			<Rail
 				meta={makeMeta()}
-				onOpenSettings={() => {}}
 				onOpenGallery={() => {}}
 			/>,
 		);
@@ -231,12 +233,64 @@ describe("Rail", () => {
 		const withDev = render(
 			<Rail
 				meta={{ ...makeMeta(), dev: true }}
-				onOpenSettings={() => {}}
 				onOpenGallery={() => {}}
 			/>,
 		);
 		expect(hasBlocksEntry(withDev.root)).toBe(true);
 	});
+});
+
+describe("Rail core views (tabs Task 1, fed by Task 4's coreViewEntries)", () => {
+	function coreMeta(): MetaResponse {
+		return makeMeta({
+			coreViews: [
+				{ id: "skills", title: "Skills", icon: "book" },
+				{ id: "jobs", title: "Jobs", icon: "list" },
+			],
+		});
+	}
+
+	test("the Skills and Jobs tabs render ONLY when meta.coreViews lists them", () => {
+		const without = render(<Rail meta={makeMeta()} />);
+		expect(
+			without.root.findAllByProps({ "data-rail-section": "skills" }),
+		).toHaveLength(0);
+		expect(
+			without.root.findAllByProps({ "data-rail-section": "jobs" }),
+		).toHaveLength(0);
+		const withCore = render(<Rail meta={coreMeta()} />);
+		expect(
+			withCore.root.findAllByProps({ "data-rail-section": "skills" }),
+		).toHaveLength(1);
+		expect(
+			withCore.root.findAllByProps({ "data-rail-section": "jobs" }),
+		).toHaveLength(1);
+	});
+
+	test("a core view tab click dispatches its tab id (skills/jobs)", () => {
+		const onOpenTab = vi.fn();
+		const renderer = render(
+			<Rail meta={coreMeta()} activeTab="chats" onOpenTab={onOpenTab} />,
+		);
+		const skills = renderer.root.findByProps({ "data-rail-section": "skills" });
+		(skills.props as { onClick: () => void }).onClick();
+		expect(onOpenTab).toHaveBeenCalledWith("skills");
+	});
+
+	test("a core view icon renders through the blocks icon set, not the title's first letter", () => {
+		const renderer = render(<Rail meta={coreMeta()} />);
+		const skills = renderer.root.findByProps({ "data-rail-section": "skills" });
+		// The "book" icon renders the blocks Icon component (an svg); the old
+		// letter fallback would render the text "S".
+		expect(skills.findAllByType("svg")).toHaveLength(1);
+		expect(skills.findAllByType("svg")[0]?.props.className).toContain(
+			"blk-icon",
+		);
+		// No letter fallback: the button's children are the icon, not text.
+		expect(skills.findAll((node) => typeof node.children === "string")).toHaveLength(0);
+	});
+});
+
 describe("Rail extension views (UI-blocks U3 Task 5)", () => {
 	function extMeta(surfaces?: readonly { id: string; title: string; icon: string; placement: "view" | "panel" }[]): MetaResponse {
 		return makeMeta({
@@ -250,13 +304,12 @@ describe("Rail extension views (UI-blocks U3 Task 5)", () => {
 		});
 	}
 
-	test("an extension view renders one rail entry after the core entries", () => {
+	test("an extension view renders one rail tab after the core entries", () => {
 		const renderer = render(
 			<Rail
 				meta={extMeta([
 					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
 				])}
-				onOpenSettings={() => {}}
 			/>,
 		);
 		const entry = renderer.root.findByProps({
@@ -265,13 +318,31 @@ describe("Rail extension views (UI-blocks U3 Task 5)", () => {
 		expect(entry.props.title).toBe("Acme board");
 	});
 
+	test("an ext view entry with icon 'book' renders the blocks icon component, not the letter", () => {
+		const renderer = render(
+			<Rail
+				meta={extMeta([
+					{ id: "board", title: "Acme board", icon: "book", placement: "view" },
+				])}
+			/>,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		// The blocks Icon renders an svg with the blk-icon class; the old
+		// fallback rendered the title's first letter as text.
+		const svgs = entry.findAllByType("svg");
+		expect(svgs).toHaveLength(1);
+		expect(svgs[0]?.props.className).toContain("blk-icon");
+		expect(entry.findAll((node) => typeof node.children === "string")).toHaveLength(0);
+	});
+
 	test("a panel surface does NOT render a rail entry", () => {
 		const renderer = render(
 			<Rail
 				meta={extMeta([
 					{ id: "stats", title: "Acme stats", icon: "chart", placement: "panel" },
 				])}
-				onOpenSettings={() => {}}
 			/>,
 		);
 		const found = renderer.root.findAllByProps({
@@ -286,7 +357,6 @@ describe("Rail extension views (UI-blocks U3 Task 5)", () => {
 				meta={extMeta([
 					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
 				])}
-				onOpenSettings={() => {}}
 				hiddenExtSurfaces={["fixture-surfaces/board"]}
 			/>,
 		);
@@ -297,22 +367,41 @@ describe("Rail extension views (UI-blocks U3 Task 5)", () => {
 		).toHaveLength(0);
 	});
 
-	test("the rail entry click forwards (slug, id) to onOpenExtView", () => {
-		const onOpenExtView = vi.fn();
+	test("an ext view tab click dispatches its ext:<slug>/<id> tab id", () => {
+		const onOpenTab = vi.fn();
 		const renderer = render(
 			<Rail
 				meta={extMeta([
 					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
 				])}
-				onOpenSettings={() => {}}
-				onOpenExtView={onOpenExtView}
+				activeTab="chats"
+				onOpenTab={onOpenTab}
 			/>,
 		);
 		const entry = renderer.root.findByProps({
 			"data-rail-section": "ext:fixture-surfaces/board",
 		});
 		(entry.props as { onClick: () => void }).onClick();
-		expect(onOpenExtView).toHaveBeenCalledWith("fixture-surfaces", "board");
+		expect(onOpenTab).toHaveBeenCalledWith("ext:fixture-surfaces/board");
 	});
-});
+
+	test("the active ext tab is marked current and its click dispatches nothing", () => {
+		const onOpenTab = vi.fn();
+		const renderer = render(
+			<Rail
+				meta={extMeta([
+					{ id: "board", title: "Acme board", icon: "board", placement: "view" },
+				])}
+				activeTab="ext:fixture-surfaces/board"
+				onOpenTab={onOpenTab}
+			/>,
+		);
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:fixture-surfaces/board",
+		});
+		expect(entry.props.className).toBe("rail-btn rail-btn-active");
+		expect(entry.props["aria-current"]).toBe("page");
+		(entry.props as { onClick: () => void }).onClick();
+		expect(onOpenTab).not.toHaveBeenCalled();
+	});
 });

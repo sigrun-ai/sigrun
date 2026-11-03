@@ -492,6 +492,10 @@ describe("App shell", () => {
 		expect(calls.map((c) => c.input)).toContain(
 			"/v1/conversations/2/files?path=.",
 		);
+		// The select wrote #/c/2 into the fallback hash (tabs Task 1: the
+		// chat route carries the id) — reset the seam so the next test
+		// boots on the chat default.
+		resetLocationHashForTest();
 	});
 
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {
@@ -508,6 +512,9 @@ describe("App shell", () => {
 		]);
 		expect(sources[1]?.source.closed).toBe(true);
 		expect(sources[2]?.source.closed).toBe(false);
+		// The select wrote #/c/2 into the fallback hash — reset the seam
+		// so the next test boots on the chat default.
+		resetLocationHashForTest();
 	});
 
 	test("renaming from the header persists the name and updates the title", async () => {
@@ -883,88 +890,204 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 		}
 	});
 
-	test("re-clicking the active nav entry pushes NO duplicate history entry; ✕ exits in one click", async () => {
-		// A pushState-recording history stub: the hash-owning `location`
-		// seam makes writeHash's dedup + the ✕'s replaceState observable.
-		const pushes: string[] = [];
-		const replaces: string[] = [];
+	test("booting at #/c/2 selects conversation 2 (tabs Task 1: the chat route carries the id)", async () => {
+		// The boot deep link: the hash router parses #/c/2 into a chat route
+		// carrying the conversation id; the shell selects it once the list
+		// lands (the boot default would otherwise pick the root).
+		resetLocationHashForTest("#/c/2");
+		const { client, createEventSource, sources } = makeHarness();
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await vi.waitFor(() => {
+				expect(textContent(renderer.toJSON())).toContain(
+					"Moor line inspection",
+				);
+			});
+			// Conversation 2's stream opened (sources[0] is the shared /v1/events).
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/2/stream",
+			]);
+			// The header title is the selected conversation's display name.
+			const title = renderer.root.findByProps({ className: "chat-title" });
+			expect(String(title.props.children)).toContain("Moor line inspection");
+		} finally {
+			// The boot hash deep-linked conversation 2; leave the seam on
+			// the chat default so the NEXT test boots clean.
+			resetLocationHashForTest("#/c");
+		}
+	});
+
+	test("Settings has no close button (tabs Task 1: the page exits via its tab, not a ✕)", async () => {
+		const { client, createEventSource } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const settings = renderer.root.findByProps({ "aria-label": "settings" });
+		await act(async () => {
+			(settings.props as { onClick: () => unknown }).onClick();
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "settings-page" }),
+		).toHaveLength(1);
+		expect(
+			renderer.root.findAllByProps({ className: "settings-close" }),
+		).toHaveLength(0);
+		resetLocationHashForTest();
+	});
+
+	test("the conversation list and right panel render only on the Chats tab", async () => {
+		const meta = makeMeta({
+			extensions: [
+				{
+					name: "curator",
+					status: "ok",
+					surfaces: [
+						{ id: "curator", title: "Curator", icon: "book", placement: "view" },
+					],
+				},
+			],
+		});
+		const { client, createEventSource } = makeHarness({ meta });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// On Chats: the sidebar list renders, and the panel can open.
+		expect(
+			renderer.root.findAllByProps({ className: "session-list" }),
+		).toHaveLength(1);
+		await clickPanel(renderer, "outline");
+		expect(
+			renderer.root.findAllByProps({ className: "right-panel" }),
+		).toHaveLength(1);
+		// Switch to the curator ext tab: the list AND the panel are gone
+		// (the surface renders full width).
+		const entry = renderer.root.findByProps({
+			"data-rail-section": "ext:curator/curator",
+		});
+		await act(async () => {
+			(entry.props as { onClick: () => void }).onClick();
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "session-list" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findAllByProps({ className: "right-panel" }),
+		).toHaveLength(0);
+		resetLocationHashForTest();
+	});
+
+	test("Back walks tab switches with their remembered routes", async () => {
+		// Review Focus 4: a tab remembers the route it was last seen on;
+		// browser back/forward walk the tab switches AND their routes.
+		const listeners: (() => void)[] = [];
 		const win = globalThis as unknown as {
 			location?: { hash: string };
 			history?: {
 				pushState(d: unknown, t: string, u: string): void;
 				replaceState(d: unknown, t: string, u: string): void;
 			};
+			addEventListener?: (type: string, listener: () => void) => void;
+			removeEventListener?: (type: string, listener: () => void) => void;
 		};
 		const originalLocation = win.location;
 		const originalHistory = win.history;
+		const originalAdd = win.addEventListener;
+		const originalRemove = win.removeEventListener;
 		win.location = { hash: "" };
-		const applyUrl = (url: string): void => {
-			if (typeof url === "string" && url.includes("#")) {
-				win.location!.hash = url.slice(url.indexOf("#"));
-			}
-		};
 		win.history = {
 			pushState: (_d, _t, url) => {
-				pushes.push(url);
-				applyUrl(url);
+				if (typeof url === "string" && url.includes("#")) {
+					win.location!.hash = url.slice(url.indexOf("#"));
+				}
 			},
-			replaceState: (_d, _t, url) => {
-				replaces.push(url);
-				applyUrl(url);
-			},
+			replaceState: () => undefined,
 		};
-		const { client, createEventSource } = makeHarness();
+		win.addEventListener = ((_type: string, listener: () => void) => {
+			listeners.push(listener);
+		}) as typeof win.addEventListener;
+		win.removeEventListener = (() => undefined) as typeof win.removeEventListener;
+		const meta = {
+			...makeMeta(),
+			coreViews: [
+				{ id: "skills", title: "Skills", icon: "book" },
+				{ id: "jobs", title: "Jobs", icon: "list" },
+			],
+		};
+		const { client, createEventSource } = makeHarness({ meta });
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
 		);
+		const { SurfacePage } = await import("./blocks/SurfacePage");
 		try {
-			// Enter settings from the chat page, then re-click the rail's
-			// Settings button (already on #/settings): NO new push.
-			const settingsButton = renderer.root.findByProps({ "aria-label": "settings" });
+			// 1. Select conversation 2 (the chat tab's remembered route becomes #/c/2).
+			await clickConversation(renderer, "Moor line inspection");
+			expect(locationHash()).toBe("#/c/2");
+			// 2. Click the Skills tab (renders only because meta.coreViews lists it).
+			const skills = renderer.root.findByProps({
+				"data-rail-section": "skills",
+			});
 			await act(async () => {
-				(settingsButton.props as { onClick: () => unknown }).onClick();
+				(skills.props as { onClick: () => void }).onClick();
+			});
+			expect(locationHash()).toBe("#/ext/core/skills");
+			// Navigate with params (the skills tab remembers the param'd route).
+			const page = await vi.waitFor(() =>
+				renderer.root.findByType(SurfacePage),
+			);
+			await act(async () => {
+				(page.props.onNavigate as (action: {
+					params?: Record<string, unknown>;
+				}) => void)({ params: { skill: "acme-deploy" } });
+			});
+			const skillsHash = `#/ext/core/skills?params=${encodeURIComponent(
+				'{"skill":"acme-deploy"}',
+			)}`;
+			expect(locationHash()).toBe(skillsHash);
+			// 3. Click Settings.
+			const settings = renderer.root.findByProps({
+				"data-rail-section": "settings",
+			});
+			await act(async () => {
+				(settings.props as { onClick: () => void }).onClick();
 			});
 			expect(locationHash()).toBe("#/settings");
-			const pushesAfterEntry = pushes.length;
+			// Back once: the Skills tab returns WITH its params.
+			win.location = { hash: skillsHash };
 			await act(async () => {
-				(settingsButton.props as { onClick: () => unknown }).onClick();
+				for (const listener of listeners) listener();
 			});
-			expect(pushes).toHaveLength(pushesAfterEntry); // deduped
-			// Re-clicking the ACTIVE nav entry (General) also pushes nothing.
-			const nav = await vi.waitFor(() => {
-				const items = renderer.root.findAllByProps({ className: "settings-nav-item" });
-				expect(items.length).toBeGreaterThan(0);
-				return items[0] as unknown as { props: { onClick: () => unknown } };
-			});
-			await act(async () => {
-				nav.props.onClick();
-			});
-			expect(locationHash()).toBe("#/settings/general");
-			const pushesAfterNav = pushes.length;
-			await act(async () => {
-				nav.props.onClick();
-			});
-			expect(pushes).toHaveLength(pushesAfterNav); // deduped
-			// ✕ exits in ONE click: the settings entry is REPLACED with the
-			// displaced pre-settings hash (the entry-point hash), and the
-			// chat column returns — no stacked entries to pop past.
-			const close = renderer.root.findByProps({ className: "settings-close" });
-			await act(async () => {
-				(close.props as { onClick: () => unknown }).onClick();
-			});
-			expect(locationHash()).toBe("#/c");
+			expect(locationHash()).toBe(skillsHash);
 			expect(
 				renderer.root.findAllByProps({ className: "settings-page" }),
 			).toHaveLength(0);
-			expect(
-				renderer.root.findAllByProps({ className: "composer-slot" }),
-			).toHaveLength(1);
-			// The replace (not push) is what exited: the last history write
-			// is a replaceState onto the chat hash.
-			expect(replaces[replaces.length - 1]).toBe("#/c");
+			await vi.waitFor(() => renderer.root.findByType(SurfacePage));
+			// Back again: the Chats tab returns at #/c/2 with conversation 2 active.
+			win.location = { hash: "#/c/2" };
+			await act(async () => {
+				for (const listener of listeners) listener();
+			});
+			expect(locationHash()).toBe("#/c/2");
+			await vi.waitFor(() => {
+				expect(
+					renderer.root.findAllByType(SurfacePage),
+				).toHaveLength(0);
+			});
+			await vi.waitFor(() => {
+				const title = renderer.root.findByProps({
+					className: "chat-title",
+				});
+				expect(String(title.props.children)).toContain(
+					"Moor line inspection",
+				);
+			});
 		} finally {
 			win.location = originalLocation;
 			win.history = originalHistory;
+			win.addEventListener = originalAdd;
+			win.removeEventListener = originalRemove;
 			resetLocationHashForTest();
 		}
 	});
@@ -1000,7 +1123,7 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		expect(locationHash()).toContain("/ext/fixture-surfaces/board");
 	});
 
-	test("the Chats rail button leaves an extension view for the chat route", async () => {
+	test("the Chats tab returns to its remembered route (tabs Task 1)", async () => {
 		const { client, createEventSource } = makeHarness({ meta: extMeta() });
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
@@ -1018,12 +1141,14 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		await act(async () => {
 			(chats.props as { onClick: () => void }).onClick();
 		});
-		expect(locationHash()).toBe("#/c");
+		// The chats tab remembers its last route (the boot default
+		// selected conversation 2, whose select wrote #/c/2).
+		expect(locationHash()).toBe("#/c/2");
 		expect(renderer.root.findAllByType(SurfacePage)).toHaveLength(0);
 		resetLocationHashForTest();
 	});
 
-	test("picking a conversation in the sidebar leaves an extension view", async () => {
+	test("the conversation list renders only on the Chats tab (tabs Task 1)", async () => {
 		const { client, createEventSource } = makeHarness({ meta: extMeta() });
 		const renderer = await renderAsync(
 			<App client={client} createEventSource={createEventSource} />,
@@ -1037,12 +1162,9 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		const { SurfacePage } = await import("./blocks/SurfacePage");
 		await vi.waitFor(() => renderer.root.findByType(SurfacePage));
 		const { SessionList } = await import("./sessions/SessionList");
-		const list = renderer.root.findByType(SessionList);
-		await act(async () => {
-			(list.props.onSelect as (id: number) => void)(2);
-		});
-		expect(locationHash()).toBe("#/c/2");
-		expect(renderer.root.findAllByType(SurfacePage)).toHaveLength(0);
+		// Off the Chats tab the sidebar list does NOT render — a select
+		// must come from the Chats tab's own list.
+		expect(renderer.root.findAllByType(SessionList)).toHaveLength(0);
 		resetLocationHashForTest();
 	});
 
@@ -1082,11 +1204,12 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 			target?: unknown;
 		}) => void;
 
-		// {conversation} → the chat route + the conversation selected.
+		// {conversation} → the chat route carrying the id + the
+		// conversation selected.
 		await act(async () => {
 			onNavigate({ target: { conversation: 2 } });
 		});
-		expect(locationHash()).toBe("#/c");
+		expect(locationHash()).toBe("#/c/2");
 
 		// {settings} → the settings page route (the section id rides the hash).
 		await act(async () => {

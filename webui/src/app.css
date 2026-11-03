@@ -2389,14 +2389,6 @@ body {
 	flex: 1;
 }
 
-.settings-close {
-	background: none;
-	border: none;
-	color: var(--muted);
-	cursor: pointer;
-	font-size: 13px;
-}
-
 .settings-body {
 	display: flex;
 	flex-direction: column;

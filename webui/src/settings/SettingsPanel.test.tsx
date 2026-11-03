@@ -318,7 +318,6 @@ function renderPanelWithPrefs(
 				onRestart={async () => {
 					restarts += 1;
 				}}
-				onClose={() => {}}
 			/>
 		);
 	}
