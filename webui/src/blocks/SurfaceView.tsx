@@ -7,7 +7,7 @@
  * inside the width-measuring container.
  */
 
-import { useCallback, useEffect, useMemo, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, type ReactNode } from "react";
 import type {
 	CoreTarget,
 	JsonObject,
@@ -42,19 +42,18 @@ export function SurfaceView(props: {
 	});
 	const keepaliveMs = props.keepaliveMs;
 	const visible = props.visible;
-	const refresh = surface.refresh;
-	// The keepalive callback must be STABLE (useCallback): a new identity
-	// per render re-arms the interval effect below every time the hook
-	// re-renders (the surface's own data updates churn it), restarting
-	// the 5-minute clock and never letting a tick fire mid-edit.
-	const refreshStable = useCallback(async (): Promise<void> => {
-		await refresh();
-	}, [refresh]);
+	// The ref arm keeps the interval stable: `surface.refresh` is a fresh
+	// closure every render (the surface hook re-creates it), so listing it
+	// as an effect dep would re-arm the 5-minute keepalive on every data
+	// update — restarting the clock and re-binding the visibility
+	// listener. The interval reads the LATEST closure through the ref.
+	const refreshRef = useRef(surface.refresh);
+	refreshRef.current = surface.refresh;
 	useEffect(() => {
 		if (keepaliveMs === undefined) return undefined;
 		const timer = setInterval(() => {
 			if (visible !== undefined && !visible()) return;
-			void refreshStable();
+			void refreshRef.current();
 		}, keepaliveMs);
 		const doc = (
 			globalThis as {
@@ -65,14 +64,14 @@ export function SurfaceView(props: {
 			}
 		).document;
 		const onVisibility = (): void => {
-			if (visible === undefined || visible()) void refreshStable();
+			if (visible === undefined || visible()) void refreshRef.current();
 		};
 		doc?.addEventListener("visibilitychange", onVisibility);
 		return () => {
 			clearInterval(timer);
 			doc?.removeEventListener("visibilitychange", onVisibility);
 		};
-	}, [keepaliveMs, visible, refreshStable]);
+	}, [keepaliveMs, visible]);
 	// The `/view/` branch (a form writing it publishes to siblings via
 	// `/view/...` bindings). `viewState` carries the view branch alone;
 	// the form strips the `/view/` prefix itself.

@@ -449,72 +449,78 @@ describe("App shell", () => {
 
 	test("selecting a conversation drives the view hook and renders the transcript; the Workspace panel lists that conversation's files", async () => {
 		const { calls, client, createEventSource, sources } = makeHarness();
-		const renderer = await renderAsync(
-			<App client={client} createEventSource={createEventSource} />,
-		);
-		// The boot default selected the root (id 1) and opened its stream
-		// (sources[0] is the shared /v1/events source).
-		expect(sources.map((s) => s.url)).toEqual([
-			"/v1/events",
-			"/v1/conversations/1/stream",
-		]);
-		await clickConversation(renderer, "Moor line inspection");
-		expect(sources.map((s) => s.url)).toEqual([
-			"/v1/events",
-			"/v1/conversations/1/stream",
-			"/v1/conversations/2/stream",
-		]);
-		// sources[2] is conversation 2's stream.
-		act(() => {
-			sources[2]?.source.emit(
-				"snapshot",
-				JSON.stringify(
-					makeView({
-						id: 2,
-						entries: [
-							makeEntry(
-								"pi.user",
-								[textMessage("user", "hello from conversation two")],
-								{ id: 10, conversationId: 2 },
-							),
-						],
-					}),
-				),
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
 			);
-		});
-		const text = textContent(renderer.toJSON());
-		expect(text).toContain("hello from conversation two");
-		// Opening the Workspace panel lists conversation 2's workspace root.
-		expect(calls.map((c) => c.input)).not.toContain(
-			"/v1/conversations/2/files?path=.",
-		);
-		await clickPanel(renderer, "workspace");
-		expect(calls.map((c) => c.input)).toContain(
-			"/v1/conversations/2/files?path=.",
-		);
-		// The selection wrote the deep-link hash (sidebar selects ride the
-		// hash writer); the seam must land back on the chat default so the
-		// NEXT test boots on the root conversation, not this leftover id.
-		resetLocationHashForTest();
+			// The boot default selected the root (id 1) and opened its stream
+			// (sources[0] is the shared /v1/events source).
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/1/stream",
+			]);
+			await clickConversation(renderer, "Moor line inspection");
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/1/stream",
+				"/v1/conversations/2/stream",
+			]);
+			// sources[2] is conversation 2's stream.
+			act(() => {
+				sources[2]?.source.emit(
+					"snapshot",
+					JSON.stringify(
+						makeView({
+							id: 2,
+							entries: [
+								makeEntry(
+									"pi.user",
+									[textMessage("user", "hello from conversation two")],
+									{ id: 10, conversationId: 2 },
+								),
+							],
+						}),
+					),
+				);
+			});
+			const text = textContent(renderer.toJSON());
+			expect(text).toContain("hello from conversation two");
+			// Opening the Workspace panel lists conversation 2's workspace root.
+			expect(calls.map((c) => c.input)).not.toContain(
+				"/v1/conversations/2/files?path=.",
+			);
+			await clickPanel(renderer, "workspace");
+			expect(calls.map((c) => c.input)).toContain(
+				"/v1/conversations/2/files?path=.",
+			);
+		} finally {
+			// The selection wrote the deep-link hash (sidebar selects ride the
+			// hash writer); the seam must land back on the chat default so the
+			// NEXT test boots on the root conversation, not this leftover id.
+			resetLocationHashForTest();
+		}
 	});
 
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {
 		const { client, createEventSource, sources } = makeHarness();
-		const renderer = await renderAsync(
-			<App client={client} createEventSource={createEventSource} />,
-		);
-		await clickConversation(renderer, "Tide table rewrite");
-		await clickConversation(renderer, "Moor line inspection");
-		expect(sources.map((s) => s.url)).toEqual([
-			"/v1/events",
-			"/v1/conversations/1/stream",
-			"/v1/conversations/2/stream",
-		]);
-		expect(sources[1]?.source.closed).toBe(true);
-		expect(sources[2]?.source.closed).toBe(false);
-		// Same seam reset: the clicks above left `#/c/2` in the module
-		// fallback — the next test must boot on the chat default.
-		resetLocationHashForTest();
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await clickConversation(renderer, "Tide table rewrite");
+			await clickConversation(renderer, "Moor line inspection");
+			expect(sources.map((s) => s.url)).toEqual([
+				"/v1/events",
+				"/v1/conversations/1/stream",
+				"/v1/conversations/2/stream",
+			]);
+			expect(sources[1]?.source.closed).toBe(true);
+			expect(sources[2]?.source.closed).toBe(false);
+		} finally {
+			// Same seam reset: the clicks above left `#/c/2` in the module
+			// fallback — the next test must boot on the chat default.
+			resetLocationHashForTest();
+		}
 	});
 
 	test("renaming from the header persists the name and updates the title", async () => {
