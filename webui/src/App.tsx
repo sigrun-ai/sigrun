@@ -1242,6 +1242,22 @@ function AppShell(options: AppOptions = {}) {
 		void archiveConversation(activeId, true);
 	}, [activeId, archiveConversation]);
 
+	// The sign-out closure (W1 Task 8; tabs+skills Task 2): ONE callback
+	// shared by the rail footer and the bottom bar's More sheet — the
+	// rail hides at ≤900px, so the phone layout's sheet is its only
+	// sign-out surface. End the server session, then hand the flip back —
+	// a failed logout call still signs the UI out (the cookie is
+	// best-effort dead either way).
+	const onSignOut =
+		onLogout === undefined
+			? undefined
+			: () => {
+					void client
+						.logout()
+						.catch(() => undefined)
+						.finally(() => onLogout());
+				};
+
 	if (boot.status === "loading") {
 		return (
 			<div className="app-boot">
@@ -1293,19 +1309,7 @@ function AppShell(options: AppOptions = {}) {
 					hiddenExtSurfaces={hiddenExtSurfaces}
 					extViewEntries={railExtEntries}
 					onMoveExtView={onMoveExtView}
-					onLogout={
-						onLogout === undefined
-							? undefined
-							: () => {
-								// End the server session, then hand the flip back — a
-								// failed logout call still signs the UI out (the cookie
-								// is best-effort dead either way).
-								void client
-									.logout()
-									.catch(() => undefined)
-									.finally(() => onLogout());
-							}
-					}
+					onLogout={onSignOut}
 				/>
 				{list.error !== null && (
 					<p className="side-error" role="alert">
@@ -1499,6 +1503,7 @@ function AppShell(options: AppOptions = {}) {
 				active={activeTab ?? "chats"}
 				extViews={bottomBarEntries}
 				onTab={onOpenTab}
+				{...(onSignOut === undefined ? {} : { onSignOut })}
 			/>
 			{/* The share editor overlay (spec §5.9): the sidebar's owner-only
 			    Share… action targets a row; the backdrop click closes. */}

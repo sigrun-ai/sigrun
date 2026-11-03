@@ -33,6 +33,7 @@ const WIDGET: ExtViewEntry = {
 function renderBar(init?: {
 	readonly active?: Parameters<typeof BottomBar>[0]["active"];
 	readonly extViews?: readonly ExtViewEntry[];
+	readonly onSignOut?: () => void;
 }) {
 	const onTab = vi.fn();
 	const renderer = render(
@@ -40,6 +41,9 @@ function renderBar(init?: {
 			active={init?.active ?? "chats"}
 			extViews={init?.extViews ?? []}
 			onTab={onTab}
+			{...(init?.onSignOut === undefined
+				? {}
+				: { onSignOut: init.onSignOut })}
 		/>,
 	);
 	return { renderer, onTab };
@@ -106,8 +110,19 @@ describe("BottomBar", () => {
 		expect(onTab).toHaveBeenCalledWith("skills");
 		click(barButton(renderer, "jobs"));
 		expect(onTab).toHaveBeenCalledWith("jobs");
+	});
+
+	test("clicking the active tab dispatches nothing (the rail's rule)", () => {
+		const { renderer, onTab } = renderBar({ active: "chats" });
 		click(barButton(renderer, "chats"));
-		expect(onTab).toHaveBeenCalledWith("chats");
+		expect(onTab).not.toHaveBeenCalled();
+		// The More toggle excepts itself: it opens the sheet even while
+		// More is the current tab (it does not navigate).
+		const ext = renderBar({ active: "ext:acme-widgets/board" });
+		click(barButton(ext.renderer, "more"));
+		expect(
+			ext.renderer.root.findAll((node) => node.props.role === "dialog"),
+		).toHaveLength(1);
 	});
 
 	test("More is current on an ext tab; the fixed tabs are current on their own", () => {
@@ -155,6 +170,42 @@ describe("BottomBar", () => {
 		expect(onTab).toHaveBeenCalledWith("settings");
 		expect(
 			renderer.root.findAll((node) => node.props.role === "dialog"),
+		).toHaveLength(0);
+	});
+
+	test("the sheet ends with Sign out when the host passes onSignOut", () => {
+		const onSignOut = vi.fn();
+		const { renderer, onTab } = renderBar({
+			extViews: [WIDGET],
+			onSignOut,
+		});
+		click(barButton(renderer, "more"));
+		const labels = renderer.root
+			.findAll((node) => node.props.role === "dialog")[0]!
+			.findAll((node) => node.type === "button")
+			.map((node) => node.props["aria-label"]);
+		expect(labels).toEqual(["board", "settings", "sign out"]);
+		const signOut = renderer.root
+			.findAll((node) => node.props.role === "dialog")[0]!
+			.findAll((node) => node.type === "button")
+			.find((node) => node.props["aria-label"] === "sign out")!;
+		click(signOut);
+		expect(onSignOut).toHaveBeenCalledTimes(1);
+		expect(onTab).not.toHaveBeenCalled();
+		// The sheet closed.
+		expect(
+			renderer.root.findAll((node) => node.props.role === "dialog"),
+		).toHaveLength(0);
+	});
+
+	test("the sheet carries no Sign out row without the prop", () => {
+		const { renderer } = renderBar({ extViews: [WIDGET] });
+		click(barButton(renderer, "more"));
+		expect(
+			renderer.root.findAll(
+				(node) =>
+					node.type === "button" && node.props["aria-label"] === "sign out",
+			),
 		).toHaveLength(0);
 	});
 

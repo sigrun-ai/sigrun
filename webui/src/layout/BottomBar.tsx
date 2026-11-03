@@ -14,7 +14,7 @@ import { useState } from "react";
 import type { IconName } from "@sigrun/shared/blocks";
 import { Icon } from "../blocks/icons";
 import type { ExtViewEntry } from "./extViews";
-import { ChatsIcon, MoreIcon, SettingsIcon } from "./icons";
+import { ChatsIcon, LogoutIcon, MoreIcon, SettingsIcon } from "./icons";
 import type { TabId } from "./tabs";
 
 /** The bar's core-view slots: the entry id → the tab id it opens. */
@@ -42,6 +42,11 @@ function BarButton(props: {
 			{...(props.active ? { "aria-current": "page" as const } : {})}
 			onClick={(event) => {
 				event.preventDefault();
+				// The rail's rule: clicking the ACTIVE tab dispatches nothing
+				// (no duplicate history entry for the view already showing).
+				// The More toggle excepts itself — it opens/closes the sheet
+				// rather than navigating.
+				if (props.active && props.tab !== "more") return;
 				props.onPress();
 			}}
 		>
@@ -62,6 +67,11 @@ export function BottomBar(props: {
 	readonly active: TabId;
 	readonly extViews: readonly ExtViewEntry[];
 	readonly onTab: (tab: TabId) => void;
+	/** Ends the browser session (App passes the rail's logout closure);
+	 *  present → the More sheet carries a Sign out row after Settings.
+	 *  The rail (the desktop sign-out affordance) hides at ≤900px, so
+	 *  the phone layout needs this seam (review fix). */
+	readonly onSignOut?: () => void;
 }) {
 	const [sheetOpen, setSheetOpen] = useState(false);
 	const core = new Map<string, ExtViewEntry>();
@@ -151,6 +161,20 @@ export function BottomBar(props: {
 							<SettingsIcon />
 							<span>Settings</span>
 						</button>
+						{props.onSignOut !== undefined && (
+							<button
+								type="button"
+								className="bottom-sheet-item"
+								aria-label="sign out"
+								onClick={() => {
+									setSheetOpen(false);
+									props.onSignOut?.();
+								}}
+							>
+								<LogoutIcon />
+								<span>Sign out</span>
+							</button>
+						)}
 					</div>
 				</div>
 			)}
