@@ -189,8 +189,12 @@ export interface SkillsOptions {
 	readonly usage?: (owner: string | undefined) => import("../curation/usage.js").UsageCounters | undefined;
 }
 
-/** Parsed frontmatter: required fields absent when missing or empty. */
-interface ParsedSkillFile {
+/**
+ * Parsed frontmatter: required fields absent when missing or empty.
+ * Exported for `src/skills/roots.ts` (Task 11): the core/skills view's
+ * every-root listing reuses this exact parsing.
+ */
+export interface ParsedSkillFile {
 	readonly name?: string;
 	readonly description?: string;
 	/** Frontmatter `disable-model-invocation: true` — the skill is hidden. */
@@ -223,7 +227,7 @@ function unquote(value: string): string {
  * closing delimiter. Returns `undefined` when the block is absent or never
  * closes (neither required field could have parsed).
  */
-function parseSkillFile(text: string): ParsedSkillFile | undefined {
+export function parseSkillFile(text: string): ParsedSkillFile | undefined {
 	const lines = text.split(/\r?\n/);
 	if (lines[0]?.trim() !== FRONTMATTER_DELIMITER) return undefined;
 	let close = -1;
