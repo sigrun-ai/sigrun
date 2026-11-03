@@ -64,16 +64,17 @@ function sectionByKey(key: string) {
  * (env read, not_found → undefined) is this module's own; the harness-level
  * tests below prove the same sections render end-to-end through generation.
  */
-test("identity renders the static sigrun facts", async () => {
-	// The verbatim identity text from the plan's Global Constraints:
-	// runtime facts only — no tool claims, no model name.
+test("identity renders the static runtime facts", async () => {
+	// The verbatim identity text: runtime facts only — no tool claims, no
+	// model name, no agent name (that is `SOUL.md`'s to choose), and no
+	// durability copy.
 	const identity = sectionByKey("identity");
 	const text = await identity.render(
 		promptInput(undefined),
 		BACKGROUND_CONTEXT,
 	);
 	expect(text).toBe(
-		"You are sigrun, an AI assistant running as a persistent server built on the pi-durable harness. Conversations are durable: they survive restarts and can span channels (web UI, terminal UI, HTTP API). Multiple conversations may be active at once; each is independent.",
+		"You are a small but extensible multi-user AI assistant built on the pi-durable harness. Conversations can span channels (web UI, terminal UI, HTTP API), and multiple independent conversations may be active at once.",
 	);
 });
 
