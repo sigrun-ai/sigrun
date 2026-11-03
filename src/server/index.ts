@@ -155,6 +155,13 @@ export async function createServer(
 		loginNow?: () => number;
 	},
 ): Promise<FastifyInstance> {
+	// Polish A1 (spec §5.2): a server EXISTS here, so every seam host's
+	// bridge is expected — synchronously, before the first await, so a
+	// pre-bind call made while this function opens keeps the bounded wait
+	// instead of failing fast. Rigs that start a server need no open
+	// option; `serve`/`webui/e2e` additionally pass `expectHostBridge:
+	// true` at open for the window BEFORE this call.
+	opened.expectHostBridge();
 	const app = Fastify({
 		logger: false,
 		// U7 Task 3: the image route's GET `src=data:` form carries up to

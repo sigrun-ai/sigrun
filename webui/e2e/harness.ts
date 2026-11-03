@@ -298,6 +298,9 @@ async function bootOnDir(
 		);
 	}
 	const opened = await openHarness(config, {
+		// Polish A1 (spec §5.2): the e2e harness boots the real server —
+		// bridge calls in the pre-bind window keep the bounded wait.
+		expectHostBridge: true,
 		// The unclaimed gate 403s an empty directory under every method —
 		// the e2e boots a claimed admin ("tester") exactly like the
 		// in-process suites' test/helpers/identity.ts seam. The AUTH boot

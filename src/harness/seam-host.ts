@@ -226,6 +226,37 @@ export interface SeamHost {
 	 * it is not part of the extension-facing surface.
 	 */
 	bindBridge(bridge: HostBridge): void;
+	/**
+	 * Declare that a server WILL bind this host's bridge (polish A1, spec
+	 * §5.2): `OpenedHarness.expectHostBridge` fans this out to every seam
+	 * host — `createServer` calls it synchronously on entry, and the
+	 * `expectHostBridge: true` open option marks it at boot. While set, a
+	 * bridge call on an unbound host keeps the bounded pre-bind wait;
+	 * while clear, an unbound call rejects immediately with
+	 * {@link HostBridgeUnavailableError}. Idempotent.
+	 */
+	expectBridge(): void;
+}
+
+/**
+ * A bridge-backed `host.*` member was called in a process that will never
+ * bind the host bridge (no `createServer`, no `expectHostBridge: true`).
+ * Fails fast instead of waiting out the bind deadline: the member and the
+ * calling extension are named so the embedder can either start a server
+ * or stop calling bridged members.
+ */
+export class HostBridgeUnavailableError extends Error {
+	readonly member: string;
+	readonly caller: string;
+	constructor(member: string, caller: string) {
+		super(
+			`seam host: ${member} — no server will bind the host bridge (caller: ${caller}); ` +
+				`start createServer or pass expectHostBridge: true to wait for a bind`,
+		);
+		this.name = "HostBridgeUnavailableError";
+		this.member = member;
+		this.caller = caller;
+	}
 }
 
 /**
@@ -333,14 +364,24 @@ export function createSeamHost(
 	const bridgePromise = new Promise<HostBridge>((resolve) => {
 		bridgeReleased = resolve;
 	});
+	// Fail-fast vs wait (polish A1, spec §5.2): `expectBridge()` declares a
+	// server WILL bind (fanned out from `OpenedHarness.expectHostBridge`,
+	// which `createServer` calls synchronously on entry). Until then a
+	// bridge-less process is treated as a serverless embed — calls reject
+	// at once instead of stalling the full hook deadline.
+	let bridgeBound = false;
+	let bridgeExpected = false;
 	// The pre-bind bound: a bridge call that waits PAST this long fails
 	// loud instead of hanging forever (the jobs-task fake-clock hang's
-	// lesson). Production never sees it — `createServer` binds the bridge
-	// at boot, long inside the bound — but a serverless embed that never
-	// builds a server would otherwise await an eternally pending promise.
+	// lesson). Only reachable when a server is expected — `createServer`
+	// binds the bridge at boot, long inside the bound.
 	const bridgeDeadlineMs = 60_000;
 	const hostBridge = async (member: string): Promise<HostBridge> => {
 		await bind.harness();
+		if (bridgeBound) return await bridgePromise;
+		if (!bridgeExpected) {
+			throw new HostBridgeUnavailableError(member, identity.name);
+		}
 		return await Promise.race([
 			bridgePromise,
 			new Promise<never>((_, reject) => {
@@ -361,6 +402,11 @@ export function createSeamHost(
 	// FRESH proxy per read) shares one settled reference. See the getter's
 	// own comment for the sync-member discipline this serves.
 	let curationHost: SeamHost["curation"] | undefined;
+
+	// The surfaces fire-and-forget lane logs an unavailable bridge ONCE per
+	// member (polish A1): the same fail-fast error every call, so repeats
+	// are noise — other failures keep their per-call console.error.
+	let surfacesUnavailableLogged = false;
 
 	return {
 		get stores() {
@@ -835,6 +881,14 @@ export function createSeamHost(
 						bridge.surfaces.changed(identity.name, id, key, update);
 					})
 					.catch((error) => {
+						if (error instanceof HostBridgeUnavailableError) {
+							if (surfacesUnavailableLogged) return;
+							surfacesUnavailableLogged = true;
+							console.warn(
+								`seam host: surfaces.changed (${identity.name}) — ${error.message} (further repeats suppressed)`,
+							);
+							return;
+						}
 						console.error(
 							`seam host: surfaces.changed (${identity.name}/${id}) failed:`,
 							error,
@@ -844,7 +898,12 @@ export function createSeamHost(
 		},
 
 		bindBridge(bridge) {
+			bridgeBound = true;
 			bridgeReleased(bridge);
+		},
+
+		expectBridge() {
+			bridgeExpected = true;
 		},
 	};
 }
