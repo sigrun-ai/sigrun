@@ -997,7 +997,7 @@ function AppShell(options: AppOptions = {}) {
 					onSelect(target.conversation);
 					return;
 				}
-			if ("job" in target) {
+				if ("job" in target) {
 					// Tabs+skills Task 6: the JobsPanel is gone — a job
 					// target routes to the Jobs TAB carrying the id in the
 					// surface params (the core/jobs view's `job` selection).

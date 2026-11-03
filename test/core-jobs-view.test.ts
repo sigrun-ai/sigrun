@@ -152,7 +152,7 @@ async function act(
 	app: FastifyInstance,
 	token: string,
 	action: string,
-	payload: Record<string, unknown>,
+	payload: Record<string, unknown> | null,
 	params: Record<string, unknown>,
 ): Promise<{ status: number; json: any }> {
 	return call(app, "POST", "/v1/ext/core/surfaces/jobs/actions", token, {
@@ -621,6 +621,56 @@ describe("core/jobs actions", () => {
 			{ job: job.id },
 		);
 		expect(deniedReset.json).toEqual({ ok: false, error: { message: "forbidden" } });
+	});
+
+	test("the null-payload path resolves the job from the instance params (params.job)", async () => {
+		const { app, alice, bob } = await bootServer();
+		// Shared read: bob sees the job (access read), so the surface
+		// action reaches the handler, where the job-level write rule is
+		// the forbidden (the existing runNow test's access shape).
+		const job = await createJob(
+			app,
+			alice,
+			promptSpec("acme-nightly", {
+				sharing: { scope: "household", level: "read" },
+			}),
+		);
+
+		// The instance renders first (the action route resolves the
+		// instance's access through the cached/first render).
+		expect((await view(app, alice, { job: job.id })).status).toBe(200);
+		expect((await view(app, bob, { job: job.id })).status).toBe(200);
+
+		// (a) payload null → params.job: the owner's button-shaped
+		// dispatch (both channels send a null payload for a plain callout
+		// button) fires the job and records a run.
+		const fired = await act(app, alice, "runNow", null, { job: job.id });
+		expect(fired.status).toBe(200);
+		expect(fired.json.ok).toBe(true);
+		expect(fired.json.toast).toContain("acme-nightly");
+		const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs`, alice);
+		expect(runs.json.runs[0]?.manual).toBe(true);
+
+		// (b) payload null → params.job: the reader's dispatch is the
+		// job-level forbidden (the payload override never sees the wire).
+		const denied = await act(app, bob, "runNow", null, { job: job.id });
+		expect(denied.status).toBe(200);
+		expect(denied.json).toEqual({ ok: false, error: { message: "forbidden" } });
+		const deniedReset = await act(app, bob, "resetState", null, { job: job.id });
+		expect(deniedReset.json).toEqual({ ok: false, error: { message: "forbidden" } });
+
+		// (c) no selection at all: neither payload nor params names a job.
+		expect((await view(app, alice)).status).toBe(200);
+		const unselected = await act(app, alice, "runNow", null, {});
+		expect(unselected.json).toEqual({
+			ok: false,
+			error: { message: "runNow needs a selected job (params.job)" },
+		});
+		const unselectedReset = await act(app, alice, "resetState", null, {});
+		expect(unselectedReset.json).toEqual({
+			ok: false,
+			error: { message: "resetState needs a selected job (params.job)" },
+		});
 	});
 
 	test("resetState empties the job state folder", async () => {
