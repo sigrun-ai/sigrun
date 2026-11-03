@@ -71,6 +71,8 @@ export function MessageActions(props: {
 	onEdit?(): void;
 	/** The right-aligned faint label (`<model> · <n> tokens`), when known. */
 	meta?: string;
+	/** The label's untruncated id — a hover `title` on the meta span. */
+	metaTitle?: string;
 }) {
 	const [copied, setCopied] = useState(false);
 	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -104,7 +106,9 @@ export function MessageActions(props: {
 				Fork from here
 			</button>
 			{props.meta !== undefined && (
-				<span className="message-meta">{props.meta}</span>
+				<span className="message-meta" title={props.metaTitle}>
+					{props.meta}
+				</span>
 			)}
 		</div>
 	);
