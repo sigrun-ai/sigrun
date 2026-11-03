@@ -9,9 +9,16 @@
  * any partial `user.git` is discarded and the import is redone. The
  * legacy artifacts (`feed.jsonl`, `versions/`) are never touched — they
  * stay read-only on disk and outside the repo's pathspec.
+ *
+ * The discard + import run INSIDE one `history.write` (the per-repo
+ * lock): a store write concurrent with the migration either lands
+ * before the discard (its commit is discarded and its content is
+ * re-imported from disk — nothing lost) or after the import (its own
+ * commit on top). The unlocked rm of an earlier revision could delete
+ * a repo a concurrent write had just committed (review I3).
  */
 
-import { access, mkdir, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import type { GitHistory } from "../history/git.js";
 import { historyDir, userRepoSpec } from "./paths.js";
@@ -34,21 +41,16 @@ export async function migrateUserCuration(
 	const marker = join(historyDir(userArea), "MIGRATED");
 	if (await present(marker)) return "already";
 	if (!(await pathspecContent(userArea))) return "nothing";
-	// Discard a partial repo before the import: GitHistory would
-	// otherwise treat it as an existing repo and the import commit
-	// would land on top of the half-imported state. A user.git without
-	// the marker is ALWAYS partial (the marker is the import's last
-	// step).
-	await rm(join(historyDir(userArea), "user.git"), { recursive: true, force: true });
-	// The work tree must exist before the git dir can init inside it.
+	// The discard + import are ONE locked operation (GitHistory.
+	// freshImport): a concurrent store write either lands before the
+	// discard (its content is re-imported from disk — nothing lost) or
+	// after the import (its own commit on top). The work tree must exist
+	// before the git dir can init inside it.
 	await mkdir(historyDir(userArea), { recursive: true });
-	const sha = await history.write(
-		{
-			actor: { kind: "outside" },
-			summary: "Imported from the curation store",
-		},
-		async () => {},
-	);
+	const sha = await history.freshImport({
+		actor: { kind: "outside" },
+		summary: "Imported from the curation store",
+	});
 	if (sha === undefined) {
 		// Git failed (fail-soft): no commit, no marker — the next boot
 		// retries the whole import.

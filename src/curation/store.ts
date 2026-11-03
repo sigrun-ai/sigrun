@@ -10,7 +10,7 @@
  * lock and the feed).
  */
 
-import { lstat, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { randomUUID } from "node:crypto";
 import type { GitHistory, HistoryActor, HistoryCommit } from "../history/git.js";
@@ -59,6 +59,12 @@ export interface SkillStoreOptions {
 	userExists: () => boolean;
 	/** The user's curation history repo (boot builds and caches it). */
 	history: GitHistory;
+	/**
+	 * The user's pending migration (boot's curationOf): a mutating op
+	 * awaits it so its commit lands AFTER the import — never swallowed
+	 * by the migration's discard (review I3). Defaults to no-op.
+	 */
+	ready?: () => Promise<void>;
 }
 
 interface State { pins: Record<string, boolean>; archived: string[]; createdAt: Record<string, string>; }
@@ -208,7 +214,7 @@ export class SkillStore {
 			try {
 				const text = await readFile(path, "utf8");
 				const meta = frontmatter(text);
-				result.push({ name, description: meta.description, archived, pinned: state.pins[name] === true, bytes: Buffer.byteLength(text), createdAt: state.createdAt[name] ?? "" });
+				result.push({ name, description: meta.description, archived, pinned: state.pins[name] === true, bytes: Buffer.byteLength(text), createdAt: state.createdAt[name] ?? (await stat(path)).birthtime.toISOString() });
 			} catch (error) { if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error; }
 		}
 		return result;
@@ -224,6 +230,7 @@ export class SkillStore {
 
 	async apply(name: string, change: SkillChange, meta: ChangeMeta): Promise<FeedEntry> {
 		requireUser(this.options);
+		await this.options.ready?.();
 		skillName(name);
 		// The mutation's validations run BEFORE the history write: a thrown
 		// validation must not become a commit (the fail-soft rule is for git
@@ -282,6 +289,7 @@ export class SkillStore {
 
 	async pin(name: string, pinned: boolean, reviewId?: string): Promise<FeedEntry> {
 		requireUser(this.options);
+		await this.options.ready?.();
 		skillName(name);
 		if (!(await this.list()).some((skill) => skill.name === name)) throw new Error(`unknown skill: ${name}`);
 		const before = await this.headSha();
@@ -327,6 +335,7 @@ export class SkillStore {
 
 	async undo(entryIds: readonly string[]): Promise<readonly FeedEntry[]> {
 		requireUser(this.options);
+		await this.options.ready?.();
 		// The selected commits, oldest first (the restore target is the
 		// earliest one's parent).
 		const log = await this.history.log({ limit: 1000 });
@@ -336,19 +345,19 @@ export class SkillStore {
 			.filter((commit) => entryIds.includes(commit.sha))
 			.reverse();
 		if (selected.length === 0) return [];
-		// A review already undone (its reviewId is on a commit's
-		// Sigrun-Undoes) is a no-op. A redo (undoing an undo) has no
-		// reviewId on the selected commit, so it falls through.
+		// Already undone: a commit whose Sigrun-Undoes names a selected
+		// commit's sha. (The earlier reviewId comparison was dead code:
+		// undoes carry SHAs, never reviewIds.)
+		const selectedShas = new Set(selected.map((commit) => commit.sha));
+		const already = log.some(
+			(commit) =>
+				commit.undoes !== undefined &&
+				commit.undoes.split(",").map((part) => part.trim()).some((sha) => selectedShas.has(sha)),
+		);
+		if (already) return [];
 		const reviewIds = new Set(
 			selected.map((commit) => commit.reviewId).filter((id): id is string => id !== undefined),
 		);
-		const anyUndone = log.some((commit) => commit.undoes !== undefined);
-		if (reviewIds.size > 0 && anyUndone) {
-			const already = log.some(
-				(commit) => commit.undoes !== undefined && [...reviewIds].some((id) => commit.undoes!.split(",").map((part) => part.trim()).includes(id)),
-			);
-			if (already) return [];
-		}
 		const createOnly: HistoryCommit[] = [];
 		const restorable: HistoryCommit[] = [];
 		for (const commit of selected) {
@@ -360,12 +369,21 @@ export class SkillStore {
 		}
 		// Oldest first → the earliest selected commit is FIRST.
 		const earliest = restorable[0];
-		// The restore covers the pathspec roots (a state move — skills ↔
-		// archive — is never missed when the selection's own paths see
-		// only one side). GitHistory.pathspec-derived, not the raw commit
-		// paths: the redo case's create commit names skills/, the undo
-		// commit names archive/, and only the ROOTS cover both.
-		const paths: readonly string[] = ["skills", "curation/archive", "curation/state.json"];
+		// The restore is scoped to the SELECTED commits' skills: for each
+		// skill, both of its homes (skills/ AND curation/archive/ — a state
+		// move only ever names one side in a commit's path list), plus
+		// curation/state.json only when a selected commit touched it.
+		// Non-selected state under the roots is never reverted.
+		const selectedSkills = new Set(
+			selected.map((commit) => commit.skill).filter((name): name is string => name !== undefined && name !== ""),
+		);
+		const paths: string[] = [];
+		for (const name of selectedSkills) {
+			paths.push(`skills/${name}`, `curation/archive/${name}`);
+		}
+		if (selected.some((commit) => commit.paths.includes("curation/state.json"))) {
+			paths.push("curation/state.json");
+		}
 		const undoes = selected.map((commit) => commit.sha).sort().join(",");
 		const reviewId = [...reviewIds].sort().join(",");
 		const skill = earliest?.skill ?? selected[0]!.skill ?? "";
@@ -424,6 +442,7 @@ export class SkillStore {
 	/** Restore a learned skill's files AND its state.json archived/pin entries to `sha`, in one commit. Restoring a version of an archived skill un-archives it. */
 	async restoreVersion(name: string, sha: string, meta: ChangeMeta): Promise<FeedEntry> {
 		requireUser(this.options);
+		await this.options.ready?.();
 		skillName(name);
 		const before = await this.headSha();
 		// The skill's own dirs plus state.json: the restore puts the files
@@ -519,6 +538,10 @@ export class SkillStore {
 		const archived = state.archived.includes(name);
 		const root = join(archived ? this.archive : this.skills, name);
 		if (change.kind === "create") {
+			// Re-validate against the post-catch-up state: two concurrent
+			// same-name creates both pass the pre-write check; the second
+			// must not clobber the first.
+			if (await exists(root)) throw new Error(`skill already exists: ${name}`);
 			await mkdir(root, { recursive: true });
 			await writeFile(join(root, "SKILL.md"), change.content);
 			state.createdAt[name] = this.options.now().toISOString();

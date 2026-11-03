@@ -196,6 +196,26 @@ export class GitHistory {
 		});
 	}
 
+	/**
+	 * Lock → DISCARD any existing repo → init fresh → one commit of the
+	 * current pathspec content as meta (the curation migration import,
+	 * Task 9). Atomic under the per-repo lock: a concurrent write either
+	 * lands before the discard (its content is re-imported from disk —
+	 * nothing lost) or after the import commit. Returns the import
+	 * commit's sha, or undefined when nothing could be staged.
+	 */
+	freshImport(meta: CommitMeta): Promise<string | undefined> {
+		return this.withLock(async () => {
+			await rm(this.spec.gitDir, { recursive: true, force: true });
+			const state = await this.prepare();
+			if (!state.ok) {
+				this.logLine(`history import landed without a commit: ${state.reason}`);
+				return undefined;
+			}
+			return this.commit(meta);
+		});
+	}
+
 	async log(opts: {
 		readonly path?: string;
 		readonly limit: number;

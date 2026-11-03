@@ -94,6 +94,8 @@ export interface OverlayStoreOptions {
 	readonly userExists: () => boolean;
 	/** The user's curation history repo — overlay changes commit here. */
 	readonly history: GitHistory;
+	/** The user's pending migration: put/remove await it (review I3). */
+	readonly ready?: () => Promise<void>;
 }
 
 /** Directory label per root kind (no spaces in path segments). */
@@ -197,6 +199,7 @@ export class OverlayStore {
 	 */
 	async put(key: OverlayKey, text: string, upstreamHash: string, meta: OverlayMeta): Promise<FeedEntry> {
 		this.requireUser();
+		await this.options.ready?.();
 		checkKey(key);
 		if (await exists(join(learnedSkillsDir(this.options.userArea), key.skill))) {
 			throw new Error(`an overlay never applies to a learned skill: ${key.skill}`);
@@ -227,6 +230,7 @@ export class OverlayStore {
 	/** Remove the overlay for a key; returns the feed entry. Throws when none is stored. */
 	async remove(key: OverlayKey, meta: OverlayMeta): Promise<FeedEntry> {
 		this.requireUser();
+		await this.options.ready?.();
 		checkKey(key);
 		const file = this.fileOf(key);
 		if (!(await exists(file))) throw new Error(`unknown overlay: ${keyString(key)}`);

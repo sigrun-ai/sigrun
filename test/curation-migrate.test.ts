@@ -182,6 +182,39 @@ describe("migrateUserCuration", () => {
 		await access(join(historyDir(userArea), "MIGRATED"));
 	});
 
+	test("a store write concurrent with the migration is never swallowed", async () => {
+		// I3: the discard + import are atomic under the repo lock. A
+		// write racing the migration lands either before the discard
+		// (content re-imported from disk) or after the import (its own
+		// commit) — never lost.
+		const { userArea, history } = await setup();
+		await mkdir(join(userArea, "skills", "acme-deploy"), { recursive: true });
+		await writeFile(join(userArea, "skills", "acme-deploy", "SKILL.md"), SKILL);
+		const { SkillStore } = await import("../src/curation/store.js");
+		const store = new SkillStore({
+			userArea,
+			user: "alice",
+			now: () => new Date(),
+			nameTakenElsewhere: async () => undefined,
+			userExists: () => true,
+			history,
+		});
+		const [result] = await Promise.all([
+			migrateUserCuration(userArea, history),
+			store.pin("acme-deploy", true),
+		]);
+		expect(result).toBe("migrated");
+		// The pin landed: state.json on disk has it, and the log has the
+		// pin commit (either re-imported or its own commit).
+		const state = JSON.parse(
+			await readFile(join(userArea, "curation", "state.json"), "utf8"),
+		) as { pins: Record<string, boolean> };
+		expect(state.pins["acme-deploy"]).toBe(true);
+		const log = await history.log({ limit: 10 });
+		expect(log.some((commit) => commit.summary === "Imported from the curation store")).toBe(true);
+		expect(log.some((commit) => commit.action === "pin")).toBe(true);
+	});
+
 	test("second run returns already", async () => {
 		const { userArea, history } = await setup();
 		await mkdir(join(userArea, "skills", "acme-deploy"), { recursive: true });

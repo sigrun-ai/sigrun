@@ -1082,7 +1082,11 @@ export async function openHarness(
 	const overlayStores = new Map<string, OverlayStore>();
 	const usageCounters = new Map<string, UsageCounters>();
 	const curationHistories = new Map<string, GitHistory>();
-	const migratedUsers = new Set<string>();
+	// Per-user migration promise (review I3): store/overlay mutations
+	// await it via their `ready` seam, so a write during a pending
+	// migration lands as its OWN commit after the import — never
+	// swallowed by the migration's discard.
+	const migrations = new Map<string, Promise<void>>();
 	const gitHomeDir = join(roots.stateDir, "git-home");
 	const curationOf = (user: string | undefined) => {
 		if (user === undefined) return undefined;
@@ -1110,15 +1114,23 @@ export async function openHarness(
 		// Migration (tabs+skills Task 9): the boot sweep below covers the
 		// directory users boot saw; a user created AFTER boot migrates on
 		// this first construction. Never-in-a-render: curationOf is the
-		// store factory, not a render path. Fire-and-forget: the import
-		// commit lands before the first real write because both take the
-		// same per-repo lock (GitHistory's).
-		if (!migratedUsers.has(user)) {
-			migratedUsers.add(user);
-			void migrateUserCuration(userArea, history).catch((error) => {
-				console.warn(`curation migration (${user}) failed: ${String(error)}`);
-			});
+		// store factory, not a render path.
+		if (!migrations.has(user)) {
+			const migration = migrateUserCuration(userArea, history)
+				.then(
+					() => undefined,
+					(error) => {
+						console.warn(`curation migration (${user}) failed: ${String(error)}`);
+					},
+				)
+				.finally(() => {
+					migrations.delete(user);
+				});
+			migrations.set(user, migration);
 		}
+		const ready = async (): Promise<void> => {
+			await migrations.get(user);
+		};
 		let store = skillStores.get(user);
 		if (store === undefined) {
 			store = new SkillStore({
@@ -1136,6 +1148,7 @@ export async function openHarness(
 				},
 				userExists: () => identity.users.get(user) !== undefined,
 				history,
+				ready,
 			});
 			skillStores.set(user, store);
 		}
@@ -1146,6 +1159,7 @@ export async function openHarness(
 				user,
 				userExists: () => identity.users.get(user) !== undefined,
 				history,
+				ready,
 			});
 			overlayStores.set(user, overlays);
 		}

@@ -193,6 +193,69 @@ describe("SkillStore", () => {
 		expect(await store.view("acme-deploy")).toBe(content());
 	});
 
+	test("re-undo after an intervening change is a no-op and keeps the change", async () => {
+		// C2: the guard is sha-based (Sigrun-Undoes names commit shas).
+		// Undo the review, make an intervening change to the same skill,
+		// undo the review AGAIN → [] and the intervening change survives
+		// (an empty-diff accident or a reviewId-keyed guard would fail
+		// this: the second undo would produce a real commit wiping the
+		// intervening state, or re-apply the review).
+		const { store, history } = await setup();
+		await create(store);
+		const patched = await store.apply(
+			"acme-deploy",
+			{ kind: "patch", old: "Deploy acme", new: "Deploy acme badly" },
+			{ actor: "curator", reviewId: "review-4" },
+		);
+		expect(await store.undo([patched.id])).toHaveLength(1);
+		// The intervening change.
+		await store.apply(
+			"acme-deploy",
+			{ kind: "patch", old: "Deploy acme", new: "Deploy acme, intervened" },
+			{ actor: "user" },
+		);
+		expect(await store.undo([patched.id])).toEqual([]);
+		expect(await store.view("acme-deploy")).toContain("intervened");
+		// And no second undo commit landed.
+		expect((await history.log({ limit: 10 })).filter((commit) => commit.action === "undo")).toHaveLength(1);
+	});
+
+	test("undo of a patch-only review keeps a later pin (skill-scoped restore)", async () => {
+		// C1(a): the undo restores the PATCHED paths, never a roots-wide
+		// state.json — a pin that landed after the review survives.
+		const { store } = await setup();
+		await create(store);
+		const patched = await store.apply(
+			"acme-deploy",
+			{ kind: "patch", old: "Deploy acme", new: "Deploy acme badly" },
+			{ actor: "curator", reviewId: "review-5" },
+		);
+		await store.pin("acme-deploy", true);
+		const undone = await store.undo([patched.id]);
+		expect(undone).toHaveLength(1);
+		expect(await store.view("acme-deploy")).toBe(content());
+		expect((await store.list())[0]).toMatchObject({ pinned: true });
+	});
+
+	test("undo of one review leaves a second review's skill alone", async () => {
+		// C1(b): skill-scoped restore — a different review's create under
+		// the same roots is not clobbered.
+		const { userArea, store } = await setup();
+		await create(store, "acme-deploy");
+		const patched = await store.apply(
+			"acme-deploy",
+			{ kind: "patch", old: "Deploy acme", new: "Deploy acme badly" },
+			{ actor: "curator", reviewId: "review-6" },
+		);
+		await create(store, "acme-release", content("acme-release"));
+		await store.undo([patched.id]);
+		expect(await store.view("acme-deploy")).toBe(content());
+		// The other skill is still live on disk and in the list.
+		expect(await store.view("acme-release")).toBe(content("acme-release"));
+		expect((await store.list()).map((row) => row.name).sort()).toEqual(["acme-deploy", "acme-release"]);
+		void userArea;
+	});
+
 	test("undo of a create archives (state.json and archive dir both in the commit)", async () => {
 		const { store, history } = await setup();
 		const created = await store.apply(
@@ -358,10 +421,14 @@ describe("SkillStore", () => {
 			store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely" }, { actor: "agent" }),
 			store.apply("acme-deploy", { kind: "write_file", file: "templates/deploy.txt", content: "safe deploy" }, { actor: "agent" }),
 		]);
+		// Serialized by the lock, but arrival order is racy: assert the
+		// SET, both feed and log, one commit per apply.
 		const feed = await store.feed(10);
-		expect(feed.map((entry) => entry.id)).toEqual([second.id, first.id, expect.any(String)]);
+		expect(new Set(feed.map((entry) => entry.id))).toEqual(new Set([second.id, first.id, feed[2]!.id]));
+		expect(feed).toHaveLength(3);
 		const log = await history.log({ limit: 10 });
-		expect(log.map((commit) => commit.sha)).toEqual([second.id, first.id, log[2]!.sha]);
+		expect(log).toHaveLength(3);
+		expect(new Set(log.map((commit) => commit.sha))).toEqual(new Set([first.id, second.id, log[2]!.sha]));
 		expect(await store.view("acme-deploy")).toContain("Deploy acme safely");
 		expect(await store.view("acme-deploy", "templates/deploy.txt")).toBe("safe deploy");
 	});

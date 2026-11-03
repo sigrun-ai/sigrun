@@ -508,6 +508,41 @@ describe("host.curation (curator P6 surface)", () => {
 		});
 	});
 
+	test("a user created after boot migrates on first curationOf (I4)", { timeout: 30_000 }, async () => {
+		const { app, opened, dir } = await bootServer([]);
+		// carol is created AFTER boot: the boot sweep never saw her, and
+		// her pre-existing skill predates any history repo.
+		const userArea = join(dir, "data", "users", "carol");
+		const { mkdir: mk, writeFile: wf, access: acc } = await import("node:fs/promises");
+		await mk(join(userArea, "skills", "acme-deploy"), { recursive: true });
+		await wf(join(userArea, "skills", "acme-deploy", "SKILL.md"), ACME_SKILL);
+		await opened.identity.users.add({ user: "carol", name: "Carol", admin: false, source: "cli" });
+		// First curationOf-shaped touch: the skills surface builds her
+		// stores and fires the lazy migration.
+		const curation = app.hostBridge.curation;
+		await curation.skills("carol").list();
+		// The migration is fire-and-forget; wait for the marker.
+		const marker = join(userArea, "curation", "history", "MIGRATED");
+		for (let i = 0; i < 100; i += 1) {
+			try {
+				await acc(marker);
+				break;
+			} catch {
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+		}
+		await acc(marker);
+		// The import commit exists with the right summary.
+		const { userRepoSpec } = await import("../src/curation/paths.js");
+		const { GitHistory } = await import("../src/history/git.js");
+		const history = new GitHistory(userRepoSpec(userArea), {
+			gitHome: join(dir, "state", "git-home"),
+		});
+		const log = await history.log({ limit: 5 });
+		expect(log.some((commit) => commit.summary === "Imported from the curation store")).toBe(true);
+		expect(log.find((commit) => commit.summary === "Imported from the curation store")?.actor).toEqual({ kind: "outside" });
+	});
+
 	test("undoReview reverts a 2-commit review interleaved with an outside catch-up, without conflict", { timeout: 60_000 }, async () => {
 		// The review patches the skill TWICE (two store commits), an
 		// outside catch-up lands BETWEEN them, and undoReview still
@@ -548,16 +583,16 @@ describe("host.curation (curator P6 surface)", () => {
 			{ kind: "create", content: ACME_SKILL },
 			{ reviewId: "seed-1" },
 		);
-		const parent = await ownedConversation(opened, "alice");
-		// An outside catch-up commit lands after the review's first store
-		// commit: seed an overlay between the fork's creation and its run.
-		const overlays = curation.overlays("alice");
-		await overlays.put(
-			{ root: "user dir", skill: "acme-release" },
-			"outside note",
-			"0".repeat(64),
-			{ actor: "curator" },
+		// The interleave: a SECOND skill's commit (created between the
+		// fork's two patches by seeding the responses around an await)
+		// plus a direct untrailered outside catch-up after the review's
+		// first store commit. Both must survive undoReview (review I5).
+		await curation.skills("alice").apply(
+			"acme-release",
+			{ kind: "create", content: ACME_SKILL.replaceAll("acme-deploy", "acme-release") },
+			{ reviewId: "seed-2" },
 		);
+		const parent = await ownedConversation(opened, "alice");
 		const result = await curation.forkReview(parent as ConversationId, {
 			instruction: "Patch twice.",
 			allow: ["skill_manage"],
@@ -571,14 +606,28 @@ describe("host.curation (curator P6 surface)", () => {
 		const { readFile } = await import("node:fs/promises");
 		const skillPath = join(dir, "data", "users", "alice", "skills", "acme-deploy", "SKILL.md");
 		expect(await readFile(skillPath, "utf8")).toContain("step two");
+		// A direct untrailered outside catch-up, AFTER the review's
+		// commits: the reviewer's "conflict" case.
+		const userArea = join(dir, "data", "users", "alice");
+		const { userRepoSpec } = await import("../src/curation/paths.js");
+		const { GitHistory } = await import("../src/history/git.js");
+		const history = new GitHistory(userRepoSpec(userArea), {
+			gitHome: join(dir, "state", "git-home"),
+		});
+		const { mkdir: mk, writeFile: wf } = await import("node:fs/promises");
+		await mk(join(userArea, "curation", "overlays", "user-dir"), { recursive: true });
+		await wf(join(userArea, "curation", "overlays", "user-dir", `${"d".repeat(64)}.json`), "{}\n");
+		await history.catchUp({ actor: { kind: "outside" }, summary: "outside changes" });
 		const reverted = await curation.undoReview("alice", "review-interleave");
 		expect(reverted).toBe(1);
-		// Both patches reverted: the ORIGINAL body is back, and the
-		// interleaved overlay commit is untouched.
+		// Both patches reverted: the ORIGINAL body is back.
 		expect(await readFile(skillPath, "utf8")).toBe(ACME_SKILL);
+		// The second review's skill AND the catch-up commit survived.
 		expect(
-			await overlays.get({ root: "user dir", skill: "acme-release" }),
-		).toMatchObject({ text: "outside note" });
+			await readFile(join(userArea, "skills", "acme-release", "SKILL.md"), "utf8"),
+		).toContain("acme-release");
+		const log = await history.log({ limit: 20 });
+		expect(log.some((commit) => commit.summary === "outside changes")).toBe(true);
 	});
 
 	test("skills(user).apply writes with actor curator and stamps the review", { timeout: 30_000 }, async () => {
