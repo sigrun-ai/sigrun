@@ -66,6 +66,10 @@ retries). Before classifying any failure as a known load flake:
    reproduction shapes and mechanism evidence are recorded. Release approval
    remains the user's decision.
 
+E2E specs that load sibling extensions (e.g. `escalations-inbox.spec.ts`,
+resolved via `siblingRepo`) use the sibling's committed `dist/` — rebuild it
+(`npm run build` in that repo) before `test:e2e` when it changed.
+
 ## Conventions
 
 - **Installs**: users install via npm, git source, or file path —
