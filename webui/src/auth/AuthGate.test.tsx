@@ -547,17 +547,20 @@ describe("AuthGate", () => {
 		expect(renderer.root.findAllByProps({ "data-auth-field": "code" })).toHaveLength(0);
 	});
 
-	test("an empty methods list is not proxy-only and keeps token login on a 401", async () => {
+	test("an empty methods list counts as proxy-only (unknown posture fails safe — polish task 12)", async () => {
+		// The old predicate called [] "not proxy-only", but an empty
+		// methods list cannot mint a redeemable setup code (nothing can)
+		// and a hidden-posture server must never invite an unredeemable
+		// claim. The claim form is no longer offered.
 		const harness = makeHarness({
-			onboarding: { state: "claimed", methods: [], codeRequired: true },
-			whoamiStatus: 401,
+			onboarding: { state: "unclaimed", methods: [], codeRequired: true },
 		});
 		const renderer = await renderAsync(
 			<AuthGate client={harness.client} createEventSource={harness.createEventSource} />,
 		);
-		expect(renderer.root.findAllByProps({ "data-auth-screen": "login" })).toHaveLength(1);
 		expect(
 			renderer.root.findAllByProps({ "data-auth-screen": "proxy-unidentified" }),
-		).toHaveLength(0);
+		).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-auth-screen": "onboarding" })).toHaveLength(0);
 	});
 });

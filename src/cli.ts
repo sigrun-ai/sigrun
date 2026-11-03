@@ -59,6 +59,7 @@ import { resolveHelper } from "./sandbox/helper.js";
 import { selfPackageRoot } from "./harness/packages.js";
 import { createAdmissionGuard } from "./harness/identity/users.js";
 import type { ClaimResponse, OnboardingState } from "@sigrun/shared/views";
+import { isProxyOnly } from "@sigrun/shared/auth";
 import { serve, type BootedServer } from "./serve.js";
 import {
 	ACCENT_NAMES,
@@ -763,14 +764,25 @@ export interface CliIO {
  * source is operator-typed (unchecked): derive the canonical key before
  * it reaches the wire (the server derives on receipt too). Unusable
  * input fails loud, never a silent empty identity.
+ *
+ * The flag is OPERATOR-EXPLICIT (polish task 12): an empty `--user ""`
+ * errors like any other unusable flag value — never a silent fallthrough
+ * to SIGRUN_USER/tui.json (the operator asked for a user; resolving a
+ * different identity would be a surprise). Ambient sources (env, file)
+ * keep the lenient "empty means unset" rule.
  */
-function resolveUser(
-	parsed: ParsedArgs,
+export function resolveUser(
+	parsed: Pick<ParsedArgs, "user">,
 	env: Env,
 	file: TuiFile,
 ): string | undefined {
-	const raw = parsed.user ?? env.SIGRUN_USER ?? file.user;
-	if (raw === undefined || raw.trim() === "") return undefined;
+	// The ambient chain: an empty/blank value means UNSET and the next
+	// source takes over (the pre-existing env→file semantics — only the
+	// explicit flag errors on empty).
+	const envUser = env.SIGRUN_USER?.trim() === "" ? undefined : env.SIGRUN_USER;
+	const fileUser = file.user?.trim() === "" ? undefined : file.user;
+	const raw = parsed.user ?? envUser ?? fileUser;
+	if (raw === undefined) return undefined;
 	const derived = deriveUsername(raw);
 	if (derived === undefined) {
 		throw new Error(`invalid_username: "${raw}" derives no usable username`);
@@ -1118,18 +1130,8 @@ async function runIdentityCommand(
 	throw new Error(`unhandled ${parsed.command} subcommand`);
 }
 
-/**
- * The CLI-local mirror of the server's proxy-only rule (proxy-trust
- * Task 6): no token callers exist, so a setup-code prompt can never
- * be redeemed. Kept here rather than imported from src/server — the
- * CLI does not import server auth modules.
- */
-function isProxyOnly(methods: readonly string[]): boolean {
-	return methods.includes("proxy") && !methods.includes("token");
-}
-
 /** What a successful onboarding claim returned (Task 7, spec §5.8). */
-interface OnboardedIdentity {
+export interface OnboardedIdentity {
 	readonly user: string;
 	/** The one-time token (present when the claim sent issueToken). */
 	readonly token?: string;
@@ -1146,7 +1148,7 @@ interface OnboardedIdentity {
  * old path and surfaces whatever the server says. A failed CLAIM is
  * loud (the server's error body, exit 1) — the operator re-runs.
  */
-async function onboardIfUnclaimed(
+export async function onboardIfUnclaimed(
 	server: string,
 	prompt: (question: string, opts?: { secret?: boolean }) => Promise<string>,
 	fetchImpl: CliFetch,
@@ -1166,6 +1168,10 @@ async function onboardIfUnclaimed(
 				| { error?: unknown }
 				| undefined;
 			if (body?.error !== "setup_required") return undefined;
+			// The 403 carries no methods: the posture is unknown, so the
+			// dead-end guard stays armed (`[]` is proxy-only by definition —
+			// a stranger-facing server that hides its methods must not
+			// prompt for a setup code it may not accept).
 			state = { state: "unclaimed", methods: [], codeRequired: true };
 		} else {
 			return undefined;
@@ -1176,10 +1182,20 @@ async function onboardIfUnclaimed(
 	}
 	if (state.state !== "unclaimed") return undefined;
 
-	// Proxy-trust Task 6: a proxy-only server without a vouched identity
-	// refuses the claim (403 proxy_identity_required) and never mints a
-	// setup code — prompt for one and the operator can only lose.
-	if (isProxyOnly(state.methods) && state.codeRequired && state.proxyIdentity === undefined) {
+	// Proxy-trust Task 6 (+ polish task 12's parity ruling): a proxy-only
+	// server mints no redeemable setup code, so ANY CLI claim against it
+	// dead-ends — even a non-loopback deployment with NO proxy secret
+	// (the loopback peer vouches in that shape, so codeRequired is false,
+	// yet the claim 403s on own-host protection). The webui gates on
+	// codeRequired && no proxyIdentity alone; the CLI used to ALSO exempt
+	// that loopback case and prompt for a code the server then refuses
+	// with 403 proxy_identity_required. The CLI now gates exactly like
+	// the webui: a proxy-only server means onboarding happens in a
+	// browser, no exceptions. (The run-mode companion boot IS exempted:
+	// it binds loopback, which both drops codeRequired AND vouches the
+	// identity.)
+	const methods = state.methods; // the ?? [] version-skew guard lives in isProxyOnly itself (fail-safe on unknown posture)
+	if (isProxyOnly(methods) && state.proxyIdentity === undefined) {
 		throw new Error(
 			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
 		);
