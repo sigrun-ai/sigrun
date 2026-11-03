@@ -247,7 +247,7 @@ export function SettingsPanel(props: {
 					? extensions.find((entry) => entry.name === section)
 					: undefined;
 			if (uncovered !== undefined) {
-					setOpen({ kind: "extension", slug: uncovered.name });
+				setOpen({ kind: "extension", slug: uncovered.name });
 				return;
 			}
 		}
