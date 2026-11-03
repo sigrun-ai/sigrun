@@ -99,6 +99,13 @@ export const HOST_RUNTIME_MODULES: readonly string[] = [
 	"@earendil-works/pi-durable",
 	"@earendil-works/chord",
 	"typebox",
+	// The shared workspace is host-shipped too (wire + access contracts
+	// every extension family type against; @sigrun/recall is the first
+	// packages-dir extension importing it at RUNTIME — value imports like
+	// accessOf, not just types). Linked like the Earendil host modules so
+	// a packages-dir extension's bare `@sigrun/shared/*` import resolves
+	// against the copy the host runs (one shared, never a second copy).
+	"@sigrun/shared",
 	SELF_MODULE_NAME,
 ];
 

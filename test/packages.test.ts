@@ -470,6 +470,14 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 		expect(HOST_RUNTIME_MODULES).toContain("@earendil-works/chord");
 	});
 
+	test("@sigrun/shared joins the host runtime modules (linked into packages dirs)", () => {
+		// The recall workstream: shared is host-shipped AND runtime-imported
+		// by packages-dir extensions (accessOf et al.) — the first such
+		// extension (@sigrun/recall) quarantined without the link. Shared
+		// links like the other host modules; one copy, the host's.
+		expect(HOST_RUNTIME_MODULES).toContain("@sigrun/shared");
+	});
+
 	test("sigrun links ITSELF into the packages dir (the spec 14.1 self-link)", () => {
 		// The source checkout has no node_modules/@sigrun/sigrun anywhere
 		// above src/ (sigrun is not a dependency of itself) — the node_modules
