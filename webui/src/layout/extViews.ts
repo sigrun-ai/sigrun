@@ -41,6 +41,29 @@ export interface ExtViewEntry {
 
 /** The localStorage key the saved order rides (a client preference). */
 export const RAIL_ORDER_KEY = "sigrun.railOrder";
+/**
+ * The core-view rail entries (tabs+skills Task 4): the meta response's
+ * `coreViews` rows mapped into the same entry shape extension views use
+ * (slug `core`), so the rail lists core views with ONE code path. The
+ * row type is structural — the tab shell (Task 1) passes its meta
+ * fixture; the rail renders core views FIRST, ahead of the ext entries.
+ */
+export function coreViewEntries(meta: {
+	readonly coreViews?: readonly {
+		readonly id: string;
+		readonly title: string;
+		readonly icon: string;
+		readonly refreshMs?: number;
+	}[];
+}): ExtViewEntry[] {
+	return (meta.coreViews ?? []).map((view) => ({
+		slug: "core",
+		id: view.id,
+		title: view.title,
+		icon: view.icon,
+		...(view.refreshMs === undefined ? {} : { refreshMs: view.refreshMs }),
+	}));
+}
 
 /** The composite key one entry orders by (`slug/id` — a view id is
  *  unique within its extension). */

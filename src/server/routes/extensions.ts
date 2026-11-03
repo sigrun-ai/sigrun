@@ -146,7 +146,15 @@ export function registerExtensionRoutes(
 				routes: [],
 			});
 		}
-		return { extensions };
+		// The core-owned views (tabs+skills Task 4): the reserved `core`
+		// slug's view defs under `coreViews` — core views are NOT
+		// extensions, so no `extensions[]` row exists for them (the health
+		// dot is unaffected). Absent when none attach (sparse).
+		const coreViews = ctx.surfaces.coreViews();
+		return {
+			extensions,
+			...(coreViews.length === 0 ? {} : { coreViews }),
+		};
 	});
 
 	// The per-extension settings object (`settings/<slug>.json`), absent

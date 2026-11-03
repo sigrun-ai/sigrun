@@ -154,12 +154,16 @@ export class Sidebar implements Component {
 	 * rebuild the VIEWS group (one row per declared view surface, in
 	 * declaration order, status "ok" only). Panels live in the side pane,
 	 * not here. Failures keep the last good list (a flaky server must
-	 * never blank the sidebar).
+	 * never blank the sidebar). Core views (tabs+skills Task 4 — the
+	 * reserved `core` slug) list FIRST, ahead of every extension view.
 	 */
 	async refreshViews(): Promise<void> {
 		try {
 			const list = await this.#client.listExtensions();
 			const views: { slug: string; id: string; title: string }[] = [];
+			for (const view of list.coreViews ?? []) {
+				views.push({ slug: "core", id: view.id, title: view.title });
+			}
 			for (const extension of list.extensions) {
 				if (extension.status !== "ok") continue;
 				for (const surface of extension.surfaces ?? []) {

@@ -155,6 +155,15 @@ export function registerMetaRoutes(
 					: { reason: opened.isolation.reason }),
 				osUsers: opened.osUsers.status,
 			},
+			// The core-owned views (tabs+skills Task 4): the reserved `core`
+			// slug's view defs, projected per request from the surface service
+			// (the SAME list /v1/extensions serves) — the tab shell's rail
+			// reads them from here and never fetches /v1/extensions separately.
+			// Absent when no core views attached (sparse — Task 4 boots with an
+			// empty list, Tasks 5/12 attach the real views).
+			...(ctx.surfaces.coreViews().length === 0
+				? {}
+				: { coreViews: ctx.surfaces.coreViews() }),
 			// The seam inventory: declaration-derived, no doc reads.
 			seam: {
 				interactions: [...opened.seamKinds]

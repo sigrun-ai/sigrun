@@ -334,6 +334,12 @@ export async function createServer(
 			),
 		},
 	]);
+	// The core-owned views (tabs+skills Task 4): the reserved `core`
+	// slug's `SurfaceDef<"view">` list — the built-in Jobs (Task 5) and
+	// Skills (Task 12) views. Tasks 5/12 supply their defs here; until
+	// then the list is EMPTY and `/v1/meta` + `/v1/extensions` carry no
+	// `coreViews` block.
+	surfacesService.attachCoreViews([]);
 	app.decorate("surfaces", surfacesService);
 	// The chat-block change seam (UI-blocks U5 Task 2, spec §8.2):
 	// show_blocks/update_blocks AND the user-edit route publish
