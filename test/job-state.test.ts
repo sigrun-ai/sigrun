@@ -44,11 +44,12 @@ function serviceFor(
 		coreRoot: join(dataDir, "core"),
 		userAreas: (user) => join(dataDir, "users", user),
 	};
-	return createWorkspaceService({
+		return createWorkspaceService({
 		isolation: {} as never,
 		pool: {} as never,
 		directory: { list: () => records } as never,
 		managed,
+		defaultWorkspacePath: join(dataDir, "workspace"),
 		ownerOf: async () => undefined,
 		...options,
 	});

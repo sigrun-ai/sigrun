@@ -397,6 +397,7 @@ describe("per-owner workspace envs", () => {
 					coreRoot,
 					userAreas: (user) => join(dir, "data", "users", user),
 				},
+				defaultWorkspacePath: join(dir, "workspace"),
 				ownerOf: async (id) => owners.get(id),
 			});
 			const prefs = defaultWorkspacePrefs(join(dir, "shared"));

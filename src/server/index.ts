@@ -35,6 +35,8 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { join } from "node:path";
 import { LoginFlows } from "./login/flows.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { ConversationId } from "@earendil-works/pi-durable";
+import { SessionMetaDoc } from "./session-meta.js";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
@@ -427,6 +429,32 @@ export async function createServer(
 		if (event.type !== "job.changed") return;
 		void opened.eventBus.runBounded("core/jobs job.changed", () => {
 			surfacesService.bumpAllInstances("core", "jobs");
+		});
+	});
+	// Workspace skills history (tabs+skills Task 10): every settled run
+	// catches up the conversation owner's `<workspace>/skills` repo on the
+	// bus's bounded side lane. Every error is caught and logged — the
+	// settle hook NEVER throws into the event bus — and ownerless
+	// conversations (no SessionMeta owner) do nothing.
+	opened.events.subscribe((event) => {
+		if (event.type !== "run.settled") return;
+		void opened.eventBus.runBounded("history run.settled", async () => {
+			try {
+				const meta = await opened.harness.snapshot(
+					SessionMetaDoc,
+					event.conversationId as ConversationId,
+					BACKGROUND_CONTEXT,
+				);
+				const owner = meta?.owner;
+				if (owner === undefined) return;
+				await opened.history.workspace(owner)?.catchUp({
+					actor: { kind: "agent" },
+					summary: "agent changes",
+					conversationId: event.conversationId,
+				});
+			} catch (error) {
+				console.warn(`workspace history catch-up failed: ${String(error)}`);
+			}
 		});
 	});
 	// The pipeline is registered FIRST (W1 Task 3): it replaces the naive

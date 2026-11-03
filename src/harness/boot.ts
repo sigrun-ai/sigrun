@@ -141,6 +141,10 @@ import { SkillStore } from "../curation/store.js";
 import { OverlayStore } from "../curation/overlays.js";
 import { UsageCounters } from "../curation/usage.js";
 import { GitHistory } from "../history/git.js";
+import {
+	workspaceHistoryFor,
+	workspaceRepoSpec,
+} from "../history/workspace-history.js";
 import { migrateUserCuration } from "../curation/migrate.js";
 import { buildCurationRegistry, type CurationRegistry } from "../curation/targets.js";
 import { createCurationHost } from "../curation/host.js";
@@ -502,6 +506,17 @@ export interface OpenedHarness {
 	 * empty registry is the no-declarer deploy (core ships none).
 	 */
 	readonly curation: CurationRegistry;
+	/**
+	 * The per-user WORKSPACE skills history (tabs+skills Task 10): the
+	 * second repo — `<workspace>/skills` under git, resolved through the
+	 * workspace service's root selection (rules 1–4) and cached per
+	 * (user, workspace path). Undefined when the selection refuses
+	 * (multi-user without isolation, osUser unavailable, an invalid
+	 * stored path) — a settled run then catches up nothing.
+	 */
+	readonly history: {
+		readonly workspace: (user: string) => GitHistory | undefined;
+	};
 	/**
 	 * The curation host (curator P6, A9): the `host.curation` surface —
 	 * the run producers (fork review, digest, maintain) and the read
@@ -1181,6 +1196,24 @@ export async function openHarness(
 		}
 		return { store, overlays, usage, history };
 	};
+	// Workspace skills history (tabs+skills Task 10): the SECOND repo per
+	// user — `<workspace>/skills` under git, caught up on settle. Cached
+	// per (user, workspace path): a changed path is a new instance on the
+	// same gitDir, so one log follows the user across workspace moves.
+	const workspaceHistories = new Map<string, GitHistory>();
+	const workspaceHistoryOf = (user: string): GitHistory | undefined => {
+		const workspace = workspaceService?.workspaceRoot(user);
+		return workspaceHistoryFor(user, workspace, {
+			userArea: managedPaths.userAreas,
+			cache: workspaceHistories,
+			create: (resolved) =>
+				new GitHistory(workspaceRepoSpec(managedPaths.userAreas(user), resolved), {
+					gitHome: gitHomeDir,
+					now: () => clockNow(),
+					log: (line) => console.warn(`workspace history (${user}): ${line}`),
+				}),
+		});
+	};
 	// Curation history migration (tabs+skills Task 9): every directory
 	// user boot sees imports once. Users created after boot migrate on
 	// their first curationOf (the migratedUsers seam above).
@@ -1725,6 +1758,7 @@ export async function openHarness(
 		pool: sandboxPool,
 		directory: identity.users,
 		managed: managedPaths,
+		defaultWorkspacePath: config.workspace.path,
 		ownerOf: async (conversationId, read, ctx) =>
 			(await read.snapshot(SessionMetaDoc, conversationId, ctx))?.owner,
 	});
@@ -2229,6 +2263,7 @@ export async function openHarness(
 		skillRoots: extensionSkillRoots,
 		curation,
 		curationHost,
+		history: { workspace: workspaceHistoryOf },
 		commandExpansion,
 		eventBus,
 		events,
