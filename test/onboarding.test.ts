@@ -495,6 +495,23 @@ describe("derived proxy onboarding identity", () => {
 // ---------------------------------------------------------------------------
 
 describe("POST /v1/onboarding/claim", () => {
+	test("an unknown body field → 400 invalid_field naming the sent key AND the accepted fields", async () => {
+		// Fresh-eyes A3: `{"code": …, "username": "x"}` answered
+		// invalid_field naming only the SENT field, leaving the operator
+		// to guess the accepted one (`user`).
+		const { app } = await bootServer({ listenHost: "0.0.0.0" });
+		const response = await app.inject({
+			method: "POST",
+			url: "/v1/onboarding/claim",
+			payload: { code: "ZZZZ-ZZZZ", username: "eve" },
+		});
+		expect(response.statusCode).toBe(400);
+		const body = response.json();
+		expect(body.error).toBe("invalid_field");
+		expect(body.field).toBe("username");
+		expect(body.expected).toContain("user");
+	});
+
 	test("a wrong code → 403 invalid_code", async () => {
 		const { app } = await bootServer({ listenHost: "0.0.0.0" });
 		const response = await app.inject({
