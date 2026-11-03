@@ -394,6 +394,38 @@ describe("core/jobs list (the caller-visible rows)", () => {
 			(row) => row.id,
 		);
 		expect(ids).toContain(own.id);
+		// The P1 remainder: the ROW ACTIVATIONS must admit the superuser
+		// too — openJob/openRevision used to hard-gate on a defined user
+		// while the view rendered (navigation errored "forbidden").
+		const naiveCtx = {
+			principal: { user: undefined, admin: false, service: false, method: "none" as const },
+			params: {},
+			key: "naive",
+			signal: new AbortController().signal,
+		};
+		const openedJob = await def!.actions?.openJob(naiveCtx, { itemId: own.id });
+		expect(openedJob).toMatchObject({
+			ok: true,
+			navigate: { type: "navigate", params: { job: own.id } },
+		});
+		const openedRevision = await def!.actions?.openRevision(
+			{ ...naiveCtx, params: { job: own.id } },
+			{ itemId: "1" },
+		);
+		expect(openedRevision).toMatchObject({
+			ok: true,
+			navigate: { type: "navigate", params: { job: own.id, revision: 1 } },
+		});
+		// An anonymous NON-superuser still errors forbidden on both.
+		const anonCtx = { ...naiveCtx, principal: { ...naiveCtx.principal, method: "token" as const } };
+		expect(await def!.actions?.openJob(anonCtx, { itemId: own.id })).toEqual({
+			ok: false,
+			error: { message: "forbidden" },
+		});
+		expect(await def!.actions?.openRevision({ ...anonCtx, params: { job: own.id } }, { itemId: "1" })).toEqual({
+			ok: false,
+			error: { message: "forbidden" },
+		});
 	});
 
 	test("an unknown or hidden `job` param renders the list with main empty state Job not found", async () => {

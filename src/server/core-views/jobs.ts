@@ -747,7 +747,9 @@ export function createJobsView(deps: {
 				ctx: SurfaceContext,
 				payload: unknown,
 			): Promise<ActionResult> => {
-				if (ctx.principal.user === undefined) {
+				// Same admission as callerOf (review I3's P1 remainder):
+				// anonymous → forbidden; the userless superuser is admitted.
+				if (callerOf(ctx) === undefined) {
 					return { ok: false, error: { message: "forbidden" } };
 				}
 				const jobId = itemIdOf(payload);
@@ -768,7 +770,7 @@ export function createJobsView(deps: {
 				ctx: SurfaceContext,
 				payload: unknown,
 			): Promise<ActionResult> => {
-				if (ctx.principal.user === undefined) {
+				if (callerOf(ctx) === undefined) {
 					return { ok: false, error: { message: "forbidden" } };
 				}
 				const jobId = paramsOf(ctx.params).job;
