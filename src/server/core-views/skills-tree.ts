@@ -70,6 +70,51 @@ export interface SkillCommitFile {
 	readonly path: string;
 	readonly before: string;
 	readonly after: string;
+	/** The elision marker row (whole-branch review I6): present ONLY on
+	 *  the trailing row the total-bytes cap inserted; its `path` names
+	 *  the count of omitted files. */
+	readonly elided?: true;
+}
+
+/**
+ * The TOTAL bytes one commit's inlined before+after texts may occupy
+ * across ALL files (whole-branch review I6): `changes()` caps each side
+ * per file at 64 KiB, but a many-file commit could still blow the 4 MiB
+ * view cap and 500 the tab. Beyond this budget the remaining files are
+ * replaced by ONE elision marker row.
+ */
+export const SKILLS_COMMIT_TOTAL_BYTES = 512 * 1024;
+
+/** The elision marker text (the tree pins it; the UI shows it). */
+export function elidedMarker(omitted: number): string {
+	return `diff truncated — ${omitted} more file${omitted === 1 ? "" : "s"}`;
+}
+
+/**
+ * Cap a commit's files to the total inline budget (review I6): files
+ * embed in path order until the running before+after total would pass
+ * {@link SKILLS_COMMIT_TOTAL_BYTES}; the rest collapse into one marker
+ * row. A single file always embeds (its sides are already per-file
+ * capped at 64 KiB) — the budget is checked BETWEEN files, never
+ * against the first.
+ */
+export function capCommitFiles(
+	files: readonly SkillCommitFile[],
+): SkillCommitFile[] {
+	let total = 0;
+	const kept: SkillCommitFile[] = [];
+	for (const file of files) {
+		const size = file.before.length + file.after.length;
+		if (kept.length > 0 && total + size > SKILLS_COMMIT_TOTAL_BYTES) break;
+		kept.push(file);
+		total += size;
+	}
+	const omitted = files.length - kept.length;
+	if (omitted === 0) return kept;
+	return [
+		...kept,
+		{ path: elidedMarker(omitted), before: "", after: "", elided: true },
+	];
 }
 
 /** The main branch of the data document for a selected skill. */
@@ -627,15 +672,21 @@ export function buildSkillsTree(
 				body: { $: "/main/history/reason" },
 			});
 		}
-		// The selected commit: one `diff` block per changed file.
+		// The selected commit: one `diff` block per changed file. The
+		// elision marker row (review I6's total-bytes cap) renders as a
+		// markdown note, not a diff.
 		if (main.commit !== null) {
-			const files: JsonObject[] = main.commit.files.map((file, index) => ({
-				type: "diff",
-				id: `commit-diff-${index}`,
-				before: file.before,
-				after: file.after,
-				lang: "markdown",
-			}));
+			const files: JsonObject[] = main.commit.files.map((file, index): JsonObject =>
+				file.elided === true
+					? { type: "markdown", id: `commit-elided-${index}`, text: `_${file.path}_` }
+					: {
+							type: "diff",
+							id: `commit-diff-${index}`,
+							before: file.before,
+							after: file.after,
+							lang: "markdown",
+						},
+			);
 			mainBlocks.push({
 				type: "section",
 				id: "commit-section",

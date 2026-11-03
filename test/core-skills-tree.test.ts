@@ -21,12 +21,14 @@ import type { HistoryCommit } from "../src/history/git.js";
 import type { RootSkill } from "../src/skills/roots.js";
 import {
 	buildSkillsTree,
+	capCommitFiles,
 	GROUP_TITLES,
 	groupOfRow,
 	historyPage,
 	parseRowId,
 	rowIdOf,
 	sidebarRows,
+	SKILLS_COMMIT_TOTAL_BYTES,
 	SKILLS_HISTORY_PAGE_SIZE,
 	skillsInstanceKey,
 	skillsParamsOf,
@@ -251,6 +253,57 @@ describe("a selected commit", () => {
 		const actions = blocksOfType(tree, "callout").find((block) => block.id === "skill-actions");
 		const restore = (actions?.actions ?? []).find((button: any) => button.id === "skill-restore");
 		expect(restore?.action).toMatchObject({ type: "submit", name: "restoreVersion" });
+	});
+
+	test("a wide commit stays under the total-bytes cap with an elision marker (review I6)", () => {
+		// changes() caps each side per file at 64 KiB, but a many-file
+		// commit would blow the 4 MiB view cap if every file embedded.
+		// The TOTAL inline budget is 512 KiB across files; the overflow
+		// collapses into ONE marker row.
+		// 30 files × 64 KiB/side ≈ 3.8 MiB raw — far over the budget.
+		const wide = Array.from({ length: 30 }, (_, index) => ({
+			path: `acme-wide/file-${index}.md`,
+			before: "b".repeat(64 * 1024),
+			after: "a".repeat(64 * 1024),
+		}));
+		const capped = capCommitFiles(wide);
+		// The marker row is last, names the omitted count, and is flagged.
+		const marker = capped[capped.length - 1];
+		expect(marker?.elided).toBe(true);
+		expect(marker?.path).toBe(`diff truncated — ${30 - (capped.length - 1)} more files`);
+		// The embedded total is within the budget (one file always embeds).
+		const inlined = capped
+			.filter((file) => file.elided !== true)
+			.reduce((sum, file) => sum + file.before.length + file.after.length, 0);
+		expect(inlined).toBeLessThanOrEqual(SKILLS_COMMIT_TOTAL_BYTES);
+		expect(inlined).toBeGreaterThan(0);
+		// The data document (tree's bind target) is far under the 4 MiB cap.
+		const data = { main: { commit: { sha: "c".repeat(40), files: capped } } };
+		expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThan(4 * 1024 * 1024);
+		// The tree renders the marker as a markdown note, the kept files as diffs.
+		const tree = buildSkillsTree(
+			{ skill: "acme-wide", root: "workspace", commit: "c".repeat(40) },
+			mainData({ name: "acme-wide", commit: { sha: "c".repeat(40), files: capped } }),
+			EMPTY_FORM,
+			{ writable: true, historyAvailable: true, selectedExists: true },
+		);
+		expect(blocksOfType(tree, "diff")).toHaveLength(capped.length - 1);
+		const notes = blocksOfType(tree, "markdown");
+		expect(notes.some((block) => typeof block.text === "string" && block.text.includes("diff truncated"))).toBe(true);
+		expect(blockCount(tree)).toBeLessThan(2000);
+	});
+
+	test("a small commit embeds every file (no marker); a single oversize file always embeds", () => {
+		const small = [
+			{ path: "a/SKILL.md", before: "x", after: "y" },
+			{ path: "a/notes.md", before: "", after: "n" },
+		];
+		expect(capCommitFiles(small).map((file) => file.path)).toEqual(["a/SKILL.md", "a/notes.md"]);
+		// One file over the whole budget on its own: it still embeds (the
+		// per-file 64 KiB side caps bound it) — the budget is BETWEEN files.
+		const solo = [{ path: "big/SKILL.md", before: "b".repeat(600 * 1024), after: "" }];
+		expect(capCommitFiles(solo)).toHaveLength(1);
+		expect(capCommitFiles(solo)[0]?.elided).toBeUndefined();
 	});
 });
 

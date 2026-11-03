@@ -67,6 +67,7 @@ import type {
 } from "../../extension.js";
 import {
 	buildSkillsTree,
+	capCommitFiles,
 	parseRowId,
 	rowIdOf,
 	SKILLS_HISTORY_PAGE_SIZE,
@@ -536,7 +537,11 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					selection.params.commit,
 					selection.historyPaths[0],
 				);
-				commit = { sha: selection.params.commit, files: files.map((file) => ({ ...file })) };
+				// Review I6: cap the TOTAL inlined bytes across the commit's
+				// files (changes() caps each side per file at 64 KiB, but a
+				// many-file commit could still blow the 4 MiB view cap and 500
+				// the tab) — the overflow collapses into one elision marker.
+				commit = { sha: selection.params.commit, files: capCommitFiles(files.map((file) => ({ ...file }))) };
 			}
 		}
 		return {
