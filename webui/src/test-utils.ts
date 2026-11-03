@@ -78,6 +78,14 @@ export function render(element: ReactElement): TestRenderer.ReactTestRenderer {
 	return renderer;
 }
 
+/** All text under a test INSTANCE, concatenated (a button whose label
+ *  is split across spans reads as one string). */
+export function instanceText(node: TestRenderer.ReactTestInstance): string {
+	return node.children
+		.map((child) => (typeof child === "string" ? child : instanceText(child)))
+		.join("");
+}
+
 /** All text under a rendered JSON tree, concatenated (assertion helper). */
 export function textContent(
 	node:

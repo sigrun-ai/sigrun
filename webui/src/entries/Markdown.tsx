@@ -135,10 +135,14 @@ function FilterableTable(props: { children?: ReactNode }) {
 					</span>
 				</div>
 			)}
-			<table>
-				{filtering ? sections.filter((child) => child !== body) : sections}
-				{filtering && cloneElement(body, undefined, visible)}
-			</table>
+			{/* The table scrolls sideways INSIDE its card when its columns
+			    don't fit (phones): the page never does. */}
+			<div className="md-tbl-scroll">
+				<table>
+					{filtering ? sections.filter((child) => child !== body) : sections}
+					{filtering && cloneElement(body, undefined, visible)}
+				</table>
+			</div>
 		</div>
 	);
 }

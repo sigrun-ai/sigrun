@@ -18,7 +18,7 @@ import {
 	type FetchLike,
 	type ModelEntry,
 } from "../api";
-import { makeView, renderAsync, textContent } from "../test-utils";
+import { instanceText, makeView, renderAsync, textContent } from "../test-utils";
 import { Composer } from "./Composer";
 
 const MODELS: readonly ModelEntry[] = [
@@ -242,7 +242,7 @@ describe("Composer", () => {
 		expect(toggle.props["aria-expanded"]).toBe(false);
 		// No pi.agent doc on the view yet: the catalog's first entry is the
 		// working selection (the ring still reads a model).
-		expect(toggle.children.join("")).toContain("Faux One");
+		expect(instanceText(toggle)).toContain("Faux One");
 		act(() => {
 			toggle.props.onClick();
 		});
@@ -405,7 +405,7 @@ describe("Composer", () => {
 		});
 		const renderer = await renderComposer(client, view);
 		const toggle = renderer.root.findByProps({ "data-picker": "model" });
-		expect(toggle.children.join("")).toContain("Faux Two");
+		expect(instanceText(toggle)).toContain("Faux Two");
 		const ring = renderer.root.findByProps({ className: "composer-ring" });
 		expect(ring.props["data-usage-percent"]).toBe(25);
 	});
@@ -480,7 +480,7 @@ describe("Composer", () => {
 			// The pill names the picked model immediately (the view frame is the
 			// authority that follows).
 			expect(
-				renderer.root.findByProps({ "data-picker": "model" }).children.join(""),
+				instanceText(renderer.root.findByProps({ "data-picker": "model" })),
 			).toContain("Faux M2");
 		});
 
@@ -501,7 +501,7 @@ describe("Composer", () => {
 			});
 			// The previous selection survives the failure (never silently lost).
 			expect(
-				renderer.root.findByProps({ "data-picker": "model" }).children.join(""),
+				instanceText(renderer.root.findByProps({ "data-picker": "model" })),
 			).toContain("Faux One");
 			expect(textContent(renderer.toJSON())).toContain("failed with status 400");
 			expect(renderer.root.findByProps({ role: "alert" })).toBeDefined();
@@ -515,7 +515,7 @@ describe("Composer", () => {
 			});
 			const renderer = await renderComposer(client, makeView());
 			const toggle = renderer.root.findByProps({ "data-picker": "thinking" });
-			expect(toggle.children.join("")).toContain("Thinking: default");
+			expect(instanceText(toggle)).toContain("Thinking: default");
 			act(() => {
 				toggle.props.onClick();
 			});
@@ -533,7 +533,7 @@ describe("Composer", () => {
 			},
 			]);
 			expect(
-				renderer.root.findByProps({ "data-picker": "thinking" }).children.join(""),
+				instanceText(renderer.root.findByProps({ "data-picker": "thinking" })),
 			).toContain("Thinking: high");
 		});
 
