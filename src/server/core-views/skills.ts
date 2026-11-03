@@ -1,8 +1,10 @@
 /**
  * The `core/skills` view (tabs+skills Task 12): every skill root the
- * deployment serves — Workspace / Learned / Config dir / Packages ·
- * <pkg> / Deleted — with owned-skill CRUD, git history with per-file
- * diffs, and overlays for the read-only roots.
+ * deployment serves — Workspace / Learned / Config dir (the
+ * `<configDir>/skills` root) / one group per package (`· <pkg>`) /
+ * Deleted (whole-branch review I5: the spec's label semantics) — with
+ * owned-skill CRUD, git history with per-file diffs, and overlays for
+ * the read-only roots.
  *
  * - The caller sees THEIR OWN roots: workspace skills under
  *   `workspaceRoot(user)`, learned skills + overlays + the learned

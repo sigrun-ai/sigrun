@@ -22,24 +22,34 @@ import type { Principal } from "../../extension.js";
 /** The history page size (the brief's 25-per-page rule). */
 export const SKILLS_HISTORY_PAGE_SIZE = 25;
 
-/** Sidebar group ids, in display order (the brief's grouping). */
+/**
+ * Sidebar group ids, in display order (the brief's grouping).
+ * Whole-branch review I5 — the spec's semantics: the `<configDir>/skills`
+ * root groups under **Config dir**; package skills get PER-PACKAGE groups
+ * appended after the declared ones (the collection contract tolerates
+ * unknown group keys — webui, TUI and the text renderer all title an
+ * undeclared group by its key, so the key IS the display string:
+ * `· <pkg>`). Workspace / Learned / Deleted are unchanged.
+ */
 export const SKILL_GROUPS = [
 	"workspace",
 	"learned",
-	"user-dir",
 	"config-dir",
 	"deleted",
 ] as const;
 
 export type SkillGroupId = (typeof SKILL_GROUPS)[number];
 
-/** The group titles. A `package` root lands in "config-dir" with a
- *  per-row pkg badge (no per-package groups) — see groupOfRow's
- *  label↔root naming note. */
+/** One package skill's per-package group key — `· <pkg>`. Undeclared
+ *  groups render under their key, so the key doubles as the title. */
+export function packageGroupKey(pkg: string): string {
+	return `· ${pkg}`;
+}
+
+/** The group titles for the DECLARED groups. */
 export const GROUP_TITLES: Record<SkillGroupId, string> = {
 	workspace: "Workspace",
 	learned: "Learned",
-	"user-dir": "User dir",
 	"config-dir": "Config dir",
 	deleted: "Deleted",
 };
@@ -172,22 +182,20 @@ export function parseRowId(id: string): { root: SkillRootKind; name: string; pkg
 	return pkg === "" || name === "" ? undefined : { root, name, pkg };
 }
 
-/** One skill's sidebar group. */
-export function groupOfRow(skill: RootSkill, deleted: boolean): SkillGroupId {
+/** One skill's sidebar group (a per-package id for package skills). */
+export function groupOfRow(skill: RootSkill, deleted: boolean): SkillGroupId | string {
 	if (deleted) return "deleted";
 	switch (skill.root) {
 		case "workspace":
 			return "workspace";
 		case "learned":
 			return "learned";
-		// Label↔root naming swap (vs the spec's labels): the UI shows the
-		// `<configDir>/skills` root as "User dir" and package roots land
-		// under "Config dir" with a per-row pkg badge (no per-package
-		// groups).
+		// Review I5: the spec's semantics — `<configDir>/skills` IS the
+		// Config dir group; a package skill groups under its own package.
 		case "user dir":
-			return "user-dir";
-		case "package":
 			return "config-dir";
+		case "package":
+			return packageGroupKey(skill.packageName ?? "unknown");
 	}
 }
 
@@ -211,12 +219,14 @@ export function sidebarRows(
 	}));
 }
 
-/** The ordered `groups` declaration (unknown group ids — a package's name — append). */
+/** The ordered `groups` declaration. The DECLARED groups order the
+ *  sidebar; per-package groups (`· <pkg>`) are undeclared and append
+ *  after them, rendered under their key (the collection contract
+ *  tolerates unknown group keys). */
 function sidebarGroups(): JsonObject[] {
 	return [
 		{ id: "workspace", title: "Workspace" },
 		{ id: "learned", title: "Learned" },
-		{ id: "user-dir", title: "User dir" },
 		{ id: "config-dir", title: "Config dir" },
 		{ id: "deleted", title: "Deleted" },
 	];

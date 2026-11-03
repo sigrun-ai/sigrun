@@ -1208,9 +1208,10 @@ model receives the expanded text.
 
 **The Skills tab.** The core Skills view (`#/ext/core/skills`) is the
 management surface for all of this: every skill root the deployment
-serves, grouped — **Workspace**, **Learned**, **User dir** (the
-deployment-wide `<config-dir>/skills/`), **Config dir** (package
-skills, each row carrying a package badge), and **Deleted** — with
+serves, grouped — **Workspace**, **Learned**, **Config dir** (the
+deployment-wide `<config-dir>/skills/`, read-only), one group **per
+installed package** (`· <pkg>` — package skills, each row carrying the
+package badge), and **Deleted** — with
 shadowing made visible (a lower-precedence skill that never wins says
 so). Skills you own are editable in place; the deployment's shared
 roots (the config dir and packages) are read-only here, and a per-user

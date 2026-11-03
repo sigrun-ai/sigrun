@@ -4,9 +4,10 @@
  *
  * Pinned here:
  *
- * - the sidebar rows group Workspace / Learned / User dir / Config dir
- *   (packages named `Packages · <pkg>`) / Deleted, with badges for
- *   packages, shadowed rows and hidden skills;
+ * - the sidebar rows group Workspace / Learned / Config dir (the
+ *   `<configDir>/skills` root — whole-branch review I5's spec
+ *   semantics) / per-package groups (`· <pkg>`) / Deleted, with badges
+ *   for packages, shadowed rows and hidden skills;
  * - a history page is 25 rows + *Load more* navigating with the last
  *   sha as `cursor`;
  * - a selected commit renders ONE `diff` block per changed file;
@@ -125,13 +126,21 @@ describe("sidebar rows: groups, badges, shadowed row", () => {
 			rows.find((row) => row.name === name && (group === undefined || row.group === group));
 		expect(byName("acme-deploy", "workspace")).toBeDefined();
 		expect(byName("acme-notes")?.group).toBe("learned");
-		expect(byName("acme-shared")?.group).toBe("user-dir");
-		expect(byName("acme-packaged")?.group).toBe("config-dir");
+		// Review I5 (the spec's semantics): the `<configDir>/skills` root
+		// groups under Config dir; a package skill groups under its own
+		// package (`· <pkg>` — the undeclared-group key IS the title).
+		expect(byName("acme-shared")?.group).toBe("config-dir");
+		expect(byName("acme-packaged")?.group).toBe("· acme-ext");
 		// The shadowed loser: the package row, with the winner named.
-		const shadowed = rows.filter((row) => row.name === "acme-deploy" && row.group === "config-dir");
+		const shadowed = rows.filter((row) => row.name === "acme-deploy" && row.group === "· acme-ext");
 		expect(shadowed).toHaveLength(1);
 		expect(shadowed[0]?.shadowedBy).toBe("shadowed by workspace");
 		expect(shadowed[0]?.pkg).toBe("acme-ext");
+		// A second package gets its OWN group.
+		const other = sidebarRows([
+			skillRow({ name: "acme-other", root: "package", packageName: "acme-tools", rootDir: "/pkgs/acme-tools/skills", dir: "/pkgs/acme-tools/skills/acme-other" }),
+		]);
+		expect(other[0]?.group).toBe("· acme-tools");
 		// The hidden flag and the deleted group.
 		expect(byName("acme-hidden")?.hidden).toBe(true);
 		expect(byName("acme-archived")?.group).toBe("deleted");
@@ -139,9 +148,12 @@ describe("sidebar rows: groups, badges, shadowed row", () => {
 		const errorSkill = skillRow({ name: "acme-broken", error: "symlinks are not allowed in skill files", description: "" });
 		const errorRow = sidebarRows([errorSkill])[0];
 		expect(errorRow?.error).toContain("symlinks");
-		// Group titles cover the fixed groups.
-		expect(Object.keys(GROUP_TITLES)).toEqual(["workspace", "learned", "user-dir", "config-dir", "deleted"]);
-		expect(groupOfRow(skills[3]!, false)).toBe("config-dir");
+		// Group titles cover the DECLARED groups (per-package groups are
+		// undeclared — their key is the title).
+		expect(Object.keys(GROUP_TITLES)).toEqual(["workspace", "learned", "config-dir", "deleted"]);
+		expect(GROUP_TITLES["config-dir"]).toBe("Config dir");
+		expect(groupOfRow(skills[2]!, false)).toBe("config-dir");
+		expect(groupOfRow(skills[3]!, false)).toBe("· acme-ext");
 	});
 
 	test("row ids round-trip through parseRowId (openSkill's {itemId})", () => {
