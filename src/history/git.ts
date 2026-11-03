@@ -40,6 +40,7 @@ import {
 	actorName,
 	decodeActor,
 	encodeTrailers,
+	sanitizeMeta,
 } from "./trailers.js";
 
 const execFileAsync = promisify(execFile);
@@ -206,6 +207,11 @@ export class GitHistory {
 		// parent so the cursor commit itself is excluded.
 		const start =
 			opts.before === undefined ? head.trim() : `${opts.before}^`;
+		// Paging from the root commit's sha (`<root>^` does not exist) is an
+		// empty page, not an error: Task 12's paginator reaches it normally.
+		if (opts.before !== undefined && (await this.parentOf(opts.before)) === undefined) {
+			return [];
+		}
 		const format = [
 			"--format=%x1e%H%x1f%aI%x1f%s%x1f%an",
 			"%x1f%(trailers:key=Sigrun-Actor,valueonly)",
@@ -478,7 +484,20 @@ export class GitHistory {
 					};
 				}
 			} else {
-				await this.recoverCorrupt();
+				// Corrupt recovery is fail-soft like everything else: any failure
+				// here (rename blocked, init failing) degrades to no-commit; the
+				// caller's mutation still runs.
+				try {
+					await this.recoverCorrupt();
+				} catch (recoverError) {
+					this.logLine(
+						`corrupt git dir recovery failed for ${this.spec.gitDir}: ${String(recoverError)}`,
+					);
+					return {
+						ok: false,
+						reason: `corrupt git dir at ${this.spec.gitDir} could not be recovered: ${String(recoverError)}`,
+					};
+				}
 			}
 		}
 		return { ok: true };
@@ -531,7 +550,15 @@ export class GitHistory {
 		for (const entry of this.spec.pathspec) {
 			const absolute = `${this.spec.workTree}/${entry}`;
 			const info = await stat(absolute).catch(() => undefined);
-			if (info === undefined) continue;
+			if (info === undefined) {
+				// An absent entry still stages when git tracks files under it:
+				// that's how a deleted pathspec root records its deletions.
+				// `git add --all` fatals only when the pathspec matches nothing
+				// in the index OR the work tree.
+				if (!(await this.tracksAny(entry))) continue;
+				entries.push(entry);
+				continue;
+			}
 			if (info.isDirectory()) {
 				for (const nested of await this.nestedGitDirs(absolute, entry)) {
 					excluded.push(nested);
@@ -550,6 +577,16 @@ export class GitHistory {
 			...excluded.map((path) => `:(exclude)${path}`),
 		]);
 		return true;
+	}
+
+	/** Whether the index tracks any file under the pathspec entry. */
+	private async tracksAny(entry: string): Promise<boolean> {
+		try {
+			const stdout = await this.output(["ls-files", "--", entry]);
+			return stdout.trim() !== "";
+		} catch {
+			return false;
+		}
 	}
 
 	private async nestedGitDirs(
@@ -603,6 +640,9 @@ export class GitHistory {
 	 */
 	private async commit(meta: CommitMeta): Promise<string | undefined> {
 		try {
+			// Trailer/content injection guard: every string that flows into
+			// the message is sanitized first (trailers.ts).
+			const cleanMeta = sanitizeMeta(meta);
 			const lockState = await this.checkIndexLock();
 			if (!lockState.ok) {
 				this.logLine(`history commit skipped: ${lockState.reason}`);
@@ -616,10 +656,10 @@ export class GitHistory {
 				...this.spec.pathspec,
 			]);
 			if (status.trim() === "") return undefined;
-			const trailers = encodeTrailers(meta);
+			const trailers = encodeTrailers(cleanMeta);
 			const message =
-				trailers === "" ? meta.summary : `${meta.summary}\n\n${trailers}`;
-			const sha = await this.runCommit(message, meta);
+				trailers === "" ? cleanMeta.summary : `${cleanMeta.summary}\n\n${trailers}`;
+			const sha = await this.runCommit(message, cleanMeta);
 			await this.gc();
 			return sha;
 		} catch (error) {
@@ -658,8 +698,16 @@ export class GitHistory {
 	}
 
 	private env(): NodeJS.ProcessEnv {
+		// Ambient GIT_* variables (GIT_INDEX_FILE, GIT_OBJECT_DIRECTORY,
+		// GIT_COMMON_DIR, ...) survive an argv-level -c and would let the
+		// caller's environment redirect or corrupt the repo. Strip them all;
+		// the module sets exactly the five it needs.
+		const env: NodeJS.ProcessEnv = {};
+		for (const [key, value] of Object.entries(process.env)) {
+			if (!key.startsWith("GIT_")) env[key] = value;
+		}
 		return {
-			...process.env,
+			...env,
 			GIT_CONFIG_GLOBAL: "/dev/null",
 			GIT_CONFIG_NOSYSTEM: "1",
 			HOME: this.gitHome,

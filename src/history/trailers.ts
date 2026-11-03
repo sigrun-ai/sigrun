@@ -28,8 +28,18 @@ export function actorName(actor: HistoryActor): string {
 }
 
 export function actorEmail(actor: HistoryActor): string {
-	const slug = actor.kind === "user" ? actor.user : actor.kind === "outside" ? "outside-sigrun" : actor.kind;
-	return `${slug}@sigrun.invalid`;
+	let raw: string;
+	if (actor.kind === "user") raw = actor.user;
+	else if (actor.kind === "outside") raw = "outside-sigrun";
+	else raw = actor.kind;
+	// The sigrun slug rule (src/curation/names.ts): lowercase, map every
+	// run of non-slug characters (spaces included) to one dash, trim edge
+	// dashes. A name that slugs to nothing falls back to "user".
+	const slug = raw
+		.toLowerCase()
+		.replace(/[^a-z0-9-]+/g, "-")
+		.replace(/^-+|-+$/g, "");
+	return `${slug === "" ? "user" : slug}@sigrun.invalid`;
 }
 
 export function decodeActor(value: string): HistoryActor {
@@ -37,6 +47,44 @@ export function decodeActor(value: string): HistoryActor {
 	if (value === "agent") return { kind: "agent" };
 	if (value === "outside sigrun") return { kind: "outside" };
 	return { kind: "user", user: value };
+}
+
+const TRAILER_KEY_LINE = /^Sigrun-(Actor|Action|Skill|Review|Conversation|Reason|Undoes):/;
+
+/**
+ * Sanitize a string before it enters the commit message. Blank-line
+ * sequences collapse to a space: git's trailer block starts at the last
+ * blank-line-separated paragraph, so an embedded "\n\nSigrun-Actor: …"
+ * would otherwise decode as trusted metadata. Lines shaped like a trailer
+ * key are flattened into the text.
+ */
+export function sanitizeField(value: string): string {
+	return value
+		.split("\n")
+		.map((line) => {
+			if (!TRAILER_KEY_LINE.test(line.trimStart())) return line;
+			return line.replace(":", " -");
+		})
+		.join(" ")
+		.replace(/\s+/g, " ")
+		.trim();
+}
+
+/** Every CommitMeta string that flows into the commit message. */
+export function sanitizeMeta(meta: CommitMeta): CommitMeta {
+	const clean = (value: string | undefined): string | undefined =>
+		value === undefined ? undefined : value.replace(/[\r\n]+/g, " ").trim();
+	const summary = sanitizeField(meta.summary);
+	return {
+		actor: meta.actor,
+		summary: summary === "" ? "(no summary)" : summary,
+		action: clean(meta.action),
+		skill: clean(meta.skill),
+		reviewId: clean(meta.reviewId),
+		conversationId: meta.conversationId,
+		reason: clean(meta.reason),
+		undoes: clean(meta.undoes),
+	};
 }
 
 export function encodeTrailers(meta: CommitMeta): string {

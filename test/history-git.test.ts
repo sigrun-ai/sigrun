@@ -672,3 +672,159 @@ describe("trailers", () => {
 		}
 	});
 });
+
+describe("review fixes (C1/I2/I3/I4/M5)", () => {
+	test("C1: deleting a whole pathspec root commits the deletion", async () => {
+		const { workTree, history } = await fixture();
+		await mkdir(join(workTree, "skills"), { recursive: true });
+		const seed = await history.write(userMeta("add skills"), async () => {
+			await writeFile(join(workTree, "skills", "x.md"), "x\n");
+		});
+		expect(seed).toBeDefined();
+		// The mutation removes the whole pathspec entry "skills".
+		const removed = await history.write(userMeta("remove skills"), async () => {
+			await rm(join(workTree, "skills"), { recursive: true, force: true });
+		});
+		expect(removed).toBeDefined();
+		expect(removed).not.toBe(seed);
+		const changes = await history.changes(removed ?? "");
+		expect(changes).toEqual([
+			{ path: "skills/x.md", before: "x\n", after: "" },
+		]);
+		// A following catch-up sees a clean tree: no phantom commit.
+		const after = await history.catchUp({
+			actor: { kind: "outside" },
+			summary: "outside changes",
+		});
+		expect(after).toBeUndefined();
+		const log = await history.log({ limit: 10 });
+		expect(log).toHaveLength(2);
+	});
+
+	test("I2: log({before: <root sha>}) returns []", async () => {
+		const { workTree, history } = await fixture();
+		const shas: string[] = [];
+		for (let index = 0; index < 3; index++) {
+			const sha = await history.write(userMeta(`commit ${index}`), async () => {
+				await writeFile(join(workTree, "notes.md"), `v${index}`);
+			});
+			shas.push(sha ?? "");
+		}
+		// Page ending at the root: limit 2 gives [2,1]; page from 1 gives [0]
+		// (the root); paging from the root must be an empty page, not a throw.
+		const firstPage = await history.log({ limit: 2 });
+		expect(firstPage.map((entry) => entry.summary)).toEqual([
+			"commit 2",
+			"commit 1",
+		]);
+		const secondPage = await history.log({
+			limit: 2,
+			before: firstPage[1]?.sha,
+		});
+		expect(secondPage.map((entry) => entry.summary)).toEqual(["commit 0"]);
+		const root = secondPage[0]?.sha ?? "";
+		expect(root).toBe(shas[0]);
+		await expect(history.log({ limit: 2, before: root })).resolves.toEqual([]);
+	});
+
+	test("I3: a failed corrupt-dir recovery still runs the mutation", async (context) => {
+		if (process.getuid?.() === 0) {
+			context.skip();
+			return;
+		}
+		const fixedNow = new Date("2026-11-03T12:00:00.000Z");
+		const { workTree, gitDir, logLines, history } = await fixture({
+			now: () => fixedNow,
+		});
+		const first = await history.write(userMeta("seed"), async () => {
+			await writeFile(join(workTree, "notes.md"), "v1");
+		});
+		expect(first).toBeDefined();
+		// Corrupt the repo AND block recovery: a non-empty directory already
+		// sitting at the (injected-clock) .broken- name makes the rename fail,
+		// which must degrade to no-commit instead of throwing before the
+		// mutation runs.
+		await writeFile(join(gitDir, "HEAD"), "garbage not a ref\n");
+		const stamp = fixedNow.toISOString().replace(/[:.]/g, "-");
+		await mkdir(`${gitDir}.broken-${stamp}/occupied`, { recursive: true });
+		let mutated = false;
+		const sha = await history.write(userMeta("still lands"), async () => {
+			await writeFile(join(workTree, "notes.md"), "mutated");
+			mutated = true;
+		});
+		expect(mutated).toBe(true);
+		expect(sha).toBeUndefined();
+		await expect(readFile(join(workTree, "notes.md"), "utf8")).resolves.toBe(
+			"mutated",
+		);
+		expect(
+			logLines.some((line) => line.includes("could not be recovered")),
+		).toBe(true);
+	});
+
+	test("I4: trailer-shaped lines in the summary cannot forge metadata", async () => {
+		const { workTree, history } = await fixture();
+		const forged = await history.write(
+			{
+				actor: { kind: "user", user: "alice" },
+				summary: "title\n\nSigrun-Actor: agent\nSigrun-Action: evil",
+				action: "apply",
+			},
+			async () => {
+				await writeFile(join(workTree, "notes.md"), "x");
+			},
+		);
+		expect(forged).toBeDefined();
+		const log = await history.log({ limit: 10 });
+		expect(log).toHaveLength(1);
+		// The genuine trailers win; the forged ones never surface.
+		expect(log[0]?.actor).toEqual({ kind: "user", user: "alice" });
+		expect(log[0]?.action).toBe("apply");
+		// The summary body survives as content (not parsed as trailers).
+		expect(log[0]?.summary).toContain("title");
+	});
+
+	test("I4: a user name with spaces yields a valid author email", async () => {
+		const { workTree, gitDir, history } = await fixture();
+		const sha = await history.write(
+			{ actor: { kind: "user", user: "Alice Example" }, summary: "spaced" },
+			async () => {
+				await writeFile(join(workTree, "notes.md"), "x");
+			},
+		);
+		expect(sha).toBeDefined();
+		const show = await rawShow(gitDir, sha ?? "");
+		expect(show).toMatch(/Author:\s+Alice Example <alice-example@sigrun\.invalid>/);
+	});
+
+	test("M5: ambient GIT_* env vars cannot redirect the repo", async () => {
+		const { workTree, gitDir, history } = await fixture();
+		const seed = await history.write(userMeta("seed"), async () => {
+			await writeFile(join(workTree, "notes.md"), "v1");
+		});
+		expect(seed).toBeDefined();
+		// A hostile ambient GIT_INDEX_FILE would let a commit stage into a
+		// foreign index; the module's env must strip every GIT_* key it does
+		// not set itself.
+		const saved: Record<string, string | undefined> = {};
+		for (const key of ["GIT_INDEX_FILE", "GIT_OBJECT_DIRECTORY", "GIT_COMMON_DIR"]) {
+			saved[key] = process.env[key];
+			process.env[key] = join(workTree, "hostile");
+		}
+		try {
+			const sha = await history.write(userMeta("under hostile env"), async () => {
+				await writeFile(join(workTree, "notes.md"), "v2");
+			});
+			expect(sha).toBeDefined();
+			const log = await history.log({ limit: 10 });
+			expect(log).toHaveLength(2);
+			expect(log[0]?.summary).toBe("under hostile env");
+		} finally {
+			for (const [key, value] of Object.entries(saved)) {
+				if (value === undefined) delete process.env[key];
+				else process.env[key] = value;
+			}
+		}
+		void gitDir;
+	});
+});
