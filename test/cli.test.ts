@@ -16,8 +16,10 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import {
 	cliMain,
 	loadTuiFile,
+	onboardIfUnclaimed,
 	parseArgs,
 	parsePort,
+	resolveUser,
 	USAGE_TEXT,
 	USAGE_ERROR_PATTERN,
 	type CliDeps,
@@ -1462,25 +1464,36 @@ describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
 		await expect(readFile(join(dir, "tui.json"), "utf8")).rejects.toThrow();
 	});
 
-	test("a loopback proxy-only unclaimed server keeps its no-code CLI claim path", async () => {
+	test("parity (polish task 12): an unvouched proxy-only server dead-ends the CLI even when codeRequired is false", async () => {
+		// The webui gate exempts this shape (its own request carries the
+		// loopback vouch); the CLI's cannot. The old CLI tried the claim
+		// and the server refused 403 proxy_identity_required — a dead end
+		// for the stranger-install attach path. Now: the same gate, no
+		// prompts, the browser pointer.
 		const dir = await tmpConfigDir();
-		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { prompt, questions } = scriptedPrompt([]);
 		const { fetch, claims } = onboardingFetchStub({
 			state: "unclaimed",
 			methods: ["proxy"],
 			codeRequired: false,
 		});
+		const errors: string[] = [];
 		const { deps, calls } = stubDeps({ prompt, fetch });
 		const code = await cliMain(
 			["attach", "--server", "https://sigrun.example"],
 			{ SIGRUN_CONFIG_DIR: dir },
 			deps,
+			{ error: (text) => errors.push(text) },
 		);
-		expect(code).toBe(0);
-		expect(questions).toEqual(["username: ", "name (optional): ", "email (optional): "]);
-		expect(claims).toHaveLength(1);
-		expect(calls.launchTui).toHaveLength(1);
+		expect(code).toBe(1);
+		expect(errors).toEqual([
+			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
+		]);
+		expect(questions).toEqual([]);
+		expect(claims).toEqual([]);
+		expect(calls.launchTui).toEqual([]);
 	});
+
 
 	test("a token-method unclaimed server still prompts for the setup code", async () => {
 		const dir = await tmpConfigDir();
@@ -1500,22 +1513,18 @@ describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
 		expect(questions[0]).toBe("setup code: ");
 	});
 
-	test("a GET that 403s setup_required is treated as unclaimed with a code", async () => {
+	test("a GET that 403s setup_required fails safe: no methods on the 403 → the proxy-only dead-end guard (polish task 12)", async () => {
+		// The 403 shape carries no methods, so the posture is unknown and
+		// isProxyOnly(undefined) is true — the stranger-facing server that
+		// hides its methods never gets a blind claim (never prompts for a
+		// code it may not redeem, never crashes on the missing key).
 		const dir = await tmpConfigDir();
-		const { prompt, questions } = scriptedPrompt(["ABCD-EFGH", "alice", "", ""]);
+		const { prompt, questions } = scriptedPrompt([]);
 		const claims: { url: string; body?: string }[] = [];
 		const fetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
 			if (init?.method === "POST") {
 				claims.push({ url, body: init.body });
-				return {
-					ok: true,
-					status: 200,
-					json: () =>
-						Promise.resolve({
-							user: { user: "alice", admin: true, createdAt: 1, source: "cli" },
-							token: "sgr_claimed_token",
-						}),
-				};
+				return { ok: true, status: 200, json: () => Promise.resolve({}) };
 			}
 			return {
 				ok: false,
@@ -1523,10 +1532,21 @@ describe("cliMain attach: the onboarding prompt flow (Task 7)", () => {
 				json: () => Promise.resolve({ error: "setup_required" }),
 			};
 		}) as NonNullable<CliDeps["fetch"]>;
-		const { deps } = stubDeps({ prompt, fetch: fetchImpl });
-		await cliMain(["attach", "--server", "https://sigrun.example"], { SIGRUN_CONFIG_DIR: dir }, deps);
-		expect(questions).toHaveLength(4);
-		expect(JSON.parse(claims[0]?.body ?? "{}")).toMatchObject({ code: "ABCD-EFGH" });
+		const errors: string[] = [];
+		const { deps, calls } = stubDeps({ prompt, fetch: fetchImpl });
+		const code = await cliMain(
+			["attach", "--server", "https://sigrun.example"],
+			{ SIGRUN_CONFIG_DIR: dir },
+			deps,
+			{ error: (text) => errors.push(text) },
+		);
+		expect(code).toBe(1);
+		expect(errors).toEqual([
+			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
+		]);
+		expect(questions).toEqual([]);
+		expect(claims).toEqual([]);
+		expect(calls.launchTui).toEqual([]);
 	});
 
 	test("an unreachable server (fetch rejects) skips onboarding and launches the TUI as before", async () => {
@@ -1634,6 +1654,107 @@ describe("TuiFile token validation (Task 7)", () => {
 		await writeFile(join(dir, "tui.json"), JSON.stringify({ token: 42 }), "utf8");
 		await expect(loadTuiFile({ SIGRUN_CONFIG_DIR: dir })).rejects.toThrowError(
 			/tui\.json: token must be a string/,
+		);
+	});
+});
+describe("onboardIfUnclaimed (unit; polish task 12)", () => {
+	// The 403 "setup_required" path carries no methods, so the proxy-only
+	// dead-end guard must treat the posture as UNKNOWN (methods ?? [] is
+	// proxy-only by definition) and stay armed — never a blind claim, never
+	// a TypeError on a pre-methods (version-skew) payload.
+	const stubFetch = (payload: unknown) =>
+		(async () => ({
+			ok: true,
+			status: 200,
+			json: () => Promise.resolve(payload),
+		})) as NonNullable<CliDeps["fetch"]>;
+	const noPrompt = (async () => {
+		throw new Error("prompt must not fire");
+	}) as (question: string) => Promise<string>;
+
+	test("a pre-methods payload (version skew) hits the dead-end guard, not a crash", async () => {
+		await expect(
+			onboardIfUnclaimed(
+				"https://sigrun.example",
+				noPrompt,
+				stubFetch({ state: "unclaimed", codeRequired: true }),
+			),
+		).rejects.toThrow(/sign-in proxy/);
+	});
+
+	test("a methods: [] payload hits the same fail-safe guard", async () => {
+		await expect(
+			onboardIfUnclaimed(
+				"https://sigrun.example",
+				noPrompt,
+				stubFetch({ state: "unclaimed", methods: [], codeRequired: true }),
+			),
+		).rejects.toThrow(/sign-in proxy/);
+	});
+
+	test("a token-method server clears the guard (the code prompt is redeemable)", async () => {
+		const answers = ["ABCD-EFGH", "alice", "", ""];
+		let next = 0;
+		const prompt = async (): Promise<string> => answers[next++] ?? "";
+		const fetchImpl = (async (url: string, init?: { method?: string; body?: string }) => {
+			if (init?.method === "POST") {
+				return {
+					ok: true,
+					status: 200,
+					json: () =>
+						Promise.resolve({
+							user: { user: "alice", admin: true, createdAt: 1, source: "cli" },
+							token: "sgr_claimed_token",
+						}),
+				};
+			}
+			return {
+				ok: true,
+				status: 200,
+				json: () =>
+					Promise.resolve({ state: "unclaimed", methods: ["token"], codeRequired: true }),
+			};
+		}) as NonNullable<CliDeps["fetch"]>;
+		const claimed = await onboardIfUnclaimed("https://sigrun.example", prompt, fetchImpl);
+		expect(claimed).toEqual({ user: "alice", token: "sgr_claimed_token" });
+	});
+});
+
+describe("resolveUser (polish task 12)", () => {
+	// --user is OPERATOR-EXPLICIT: an empty or unusable value must fail
+	// loud, never silently fall through to SIGRUN_USER/tui.json — the
+	// operator asked for a user; resolving another identity is a surprise.
+	test("an explicit --user '' errors (never silently drops to the next source)", () => {
+		expect(() =>
+			resolveUser(
+				{ user: "" },
+				{ SIGRUN_USER: "acme-env-user" },
+				{ user: "acme-file-user" },
+			),
+		).toThrow(/invalid_username/);
+	});
+
+	test("an explicit unusable --user errors, quoting the typed value", () => {
+		expect(() => resolveUser({ user: "!!!" }, {}, {})).toThrow(
+			/invalid_username: "!!!"/,
+		);
+	});
+
+	test("precedence holds: --user > SIGRUN_USER > tui.json; absent stays undefined", () => {
+		expect(
+			resolveUser({ user: "acme-flag" }, { SIGRUN_USER: "acme-env" }, { user: "acme-file" }),
+		).toBe("acme-flag");
+		expect(resolveUser({}, { SIGRUN_USER: "acme-env" }, { user: "acme-file" })).toBe(
+			"acme-env",
+		);
+		expect(resolveUser({}, {}, { user: "acme-file" })).toBe("acme-file");
+		expect(resolveUser({}, {}, {})).toBeUndefined();
+	});
+
+	test("an empty SIGRUN_USER / blank tui.json user means unset (envs and files are ambient)", () => {
+		expect(resolveUser({}, { SIGRUN_USER: "" }, {})).toBeUndefined();
+		expect(resolveUser({}, { SIGRUN_USER: "  " }, { user: "acme-file" })).toBe(
+			"acme-file",
 		);
 	});
 });
