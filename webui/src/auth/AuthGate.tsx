@@ -19,6 +19,8 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+// The webui reads the shared predicate (@sigrun/shared/auth — polish
+// task 12; one definition across the server, the webui, and the CLI).
 import { isProxyOnly } from "@sigrun/shared/auth";
 import {
 	ApiError,
@@ -46,9 +48,6 @@ type Gate =
 			readonly context: "boot" | "session_ended";
 	  }
 	| { readonly status: "ready"; readonly methods: readonly string[]; readonly identity: WhoamiResponse };
-
-	/** The webui reads the shared predicate (@sigrun/shared/auth — polish
-	 *  task 12; one definition across the server, the webui, and the CLI). */
 
 /** The same-origin §5 client (the AuthGate default; tests inject one). */
 const defaultClient = createClient();

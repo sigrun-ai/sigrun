@@ -1193,7 +1193,8 @@ export async function onboardIfUnclaimed(
 	// the webui: a proxy-only server means onboarding happens in a
 	// browser, no exceptions. (The run-mode companion boot IS exempted:
 	// it binds loopback, which both drops codeRequired AND vouches the
-	// identity.)
+	// identity. Its methods are [] — proxy-only by the fail-safe — and
+	// the claim then succeeds on the loopback vouch.)
 	const methods = state.methods; // the ?? [] version-skew guard lives in isProxyOnly itself (fail-safe on unknown posture)
 	if (isProxyOnly(methods) && state.proxyIdentity === undefined) {
 		throw new Error(

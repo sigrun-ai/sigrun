@@ -449,6 +449,11 @@ export class ConversationPane implements Component {
 				(existing) => existing.text === AUTH_FAILURE_MESSAGE,
 			);
 			if (index >= 0) {
+				// Not a plain no-op skip: the splice-and-remount REPLACES the
+				// stored notice and its component so the rendered kind
+				// refreshes when the dup arrives via the other channel
+				// (notice vs error — e.g. the events watcher after the
+				// conversation watch already posted).
 				this.#notices.splice(index, 1, notice);
 				const component = this.#noticeComponents.splice(
 					index,
