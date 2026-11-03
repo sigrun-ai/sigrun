@@ -22,6 +22,7 @@
  */
 
 import type { ConversationEntryWire, SigrunClient, ToolSlotWire } from "../api";
+import { modelBreadcrumb } from "@sigrun/shared/model-label";
 import type { ToolCall, TimelineEvent } from "@sigrun/shared/turns";
 import { ActivityLine } from "./ActivityLine";
 import { BlocksEntry, NoteEntry } from "./BlocksEntry";
@@ -40,22 +41,31 @@ export interface AssistantTurnData {
 	readonly timeline: readonly TimelineEvent[];
 }
 
-/** `<model> · in N (+cache R) · out N` from the last assistant message
- * carrying usage. Input/cache/output are distinct costs (a cached-heavy
- * turn reads very differently from a fresh-context one); cache legs are
- * omitted when zero so short turns stay quiet. */
-function metaLabel(entries: readonly ConversationEntryWire[]): string | undefined {
-	let meta: string | undefined;
+/** `<breadcrumb> · in N (+cache R) · out N` from the last assistant
+ * message carrying usage, plus the untruncated id for the hover title.
+ * Input/cache/output are distinct costs (a cached-heavy turn reads very
+ * differently from a fresh-context one); cache legs are omitted when zero
+ * so short turns stay quiet. The model reads as the provider breadcrumb
+ * (spec §5.1, `@sigrun/shared/model-label`) — `b/c/acme-flash` for a
+ * bifrost chain model, the plain name for a message with no provider. */
+function metaLabel(
+	entries: readonly ConversationEntryWire[],
+): { readonly text: string; readonly title: string } | undefined {
+	let meta: { readonly text: string; readonly title: string } | undefined;
 	for (const entry of entries) {
 		for (const message of entry.model ?? []) {
 			const model = typeof message.model === "string" ? message.model : undefined;
 			const usage = message.usage;
 			if (model !== undefined && usage !== undefined) {
+				const label = modelBreadcrumb(message.provider, model);
 				const cache =
 					usage.cacheRead > 0 || usage.cacheWrite > 0
 					? ` (+cache ${usage.cacheRead}${usage.cacheWrite > 0 ? `+${usage.cacheWrite}w` : ""})`
 						: "";
-				meta = `${model} · in ${usage.input}${cache} · out ${usage.output}`;
+				meta = {
+					text: `${label.short} · in ${usage.input}${cache} · out ${usage.output}`,
+					title: label.full,
+				};
 			}
 		}
 	}
@@ -90,6 +100,9 @@ export function AssistantTurn(props: {
 	// FOLDED to the bottom ActivityLine when text arrived) relocated content
 	// mid-stream; the user's round-2 ask is in-place interleaving.
 	const inPlace = timeline === true || live === true;
+	// One label for both render modes: the breadcrumb text plus the full id
+	// the hover title reveals.
+	const meta = metaLabel(turn.entries);
 	const forkHere = (): void => {
 		client
 			.fork(conversationId, turn.lastEntryId)
@@ -171,7 +184,8 @@ export function AssistantTurn(props: {
 					kind="assistant"
 					text={turn.text}
 					onFork={forkHere}
-					meta={metaLabel(turn.entries)}
+					meta={meta?.text}
+					metaTitle={meta?.title}
 				/>
 			</div>
 		);
@@ -235,7 +249,8 @@ export function AssistantTurn(props: {
 				kind="assistant"
 				text={turn.text}
 				onFork={forkHere}
-				meta={metaLabel(turn.entries)}
+				meta={meta?.text}
+				metaTitle={meta?.title}
 			/>
 		</div>
 	);

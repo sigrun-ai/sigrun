@@ -20,6 +20,10 @@
 			"types": "./dist/turns.d.ts",
 			"default": "./dist/turns.js"
 		},
+		"./model-label": {
+			"types": "./dist/model-label.d.ts",
+			"default": "./dist/model-label.js"
+		},
 		"./session-meta": {
 			"types": "./dist/session-meta.d.ts",
 			"default": "./dist/session-meta.js"

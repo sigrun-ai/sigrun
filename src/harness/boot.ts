@@ -420,6 +420,17 @@ export interface OpenedHarness {
 	 */
 	readonly bindHostBridge: (bridge: HostBridge) => void;
 	/**
+	 * Declare that a server WILL bind the host bridge (polish A1, spec
+	 * §5.2): fans `SeamHost.expectBridge` out to every seam host.
+	 * `createServer` calls this SYNCHRONOUSLY on entry (before its first
+	 * await), so a rig that starts a server needs no open option and its
+	 * pre-bind calls keep waiting; `serve`/`webui/e2e` also pass
+	 * `expectHostBridge: true` at open for the same pre-bind window.
+	 * Without this expectation a bridge-backed member call rejects
+	 * immediately with `HostBridgeUnavailableError`. Idempotent.
+	 */
+	readonly expectHostBridge: () => void;
+	/**
 	 * HTTP routes the loaded extensions declared (core hardening W5
 	 * Task 2, spec §9.2): one binding per extension whose factory result
 	 * carried `routes`, slug-attributed — `createServer` mounts each at
@@ -747,6 +758,17 @@ export interface OpenHarnessOptions {
 	 * logging/counting; observer failures are contained.
 	 */
 	readonly onReport?: (error: unknown, info: import("@earendil-works/pi-durable").ReportInfo) => void;
+	/**
+	 * A server WILL bind the host bridge in this process (polish A1, spec
+	 * §5.2), default `false`. While `false`, a bridge-backed `host.*`
+	 * member call on an unbound seam host rejects immediately with
+	 * `HostBridgeUnavailableError` (the in-process-rig/serverless-embed
+	 * fail-fast). While `true`, pre-bind calls keep the bounded 60s wait
+	 * for the bind. `createServer` sets the same expectation synchronously
+	 * on entry, so rigs that start a server need NOT pass this — only
+	 * `serve`/`webui/e2e` (which bind shortly after open) do.
+	 */
+	readonly expectHostBridge?: boolean;
 }
 
 /**
@@ -1346,6 +1368,14 @@ export async function openHarness(
 		},
 	);
 	perUserSlugs.push(...loadedPerUserSlugs);
+	// Fail-fast vs wait (polish A1, spec §5.2): the caller declared a
+	// server WILL bind the host bridge — mark every loaded seam host so
+	// pre-bind calls keep the bounded wait instead of rejecting at once.
+	// `createServer` repeats this on entry (idempotent) for rigs that
+	// never passed the option.
+	if (options.expectHostBridge === true) {
+		for (const host of seamHosts.values()) host.expectBridge();
+	}
 	// The curation-target registry (curator P7): the loader's validated,
 	// slug-attributed bindings folded into the ONE registry — the A8
 	// wrapping feed (isCurationTool) and the A9 host.curation surface
@@ -2135,6 +2165,9 @@ export async function openHarness(
 		seamKinds,
 		bindHostBridge: (bridge: HostBridge): void => {
 			for (const host of seamHosts.values()) host.bindBridge(bridge);
+		},
+		expectHostBridge: (): void => {
+			for (const host of seamHosts.values()) host.expectBridge();
 		},
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,

@@ -1,12 +1,15 @@
 /**
  * The seam host's pre-bind bridge bound (final review fix wave,
- * adjudication 2A): every bridge-forwarding member (`conversations`/
- * `users`/`accounts`/`access`/`identity`/`curation`/`models`/`commands`)
- * awaits the host bridge, which `createServer` binds at boot. An embed
- * that never starts a server would otherwise await an eternally pending
- * promise — the jobs-task fake-clock hang's root. The pin: a call on a
- * NEVER-bound host rejects within the deadline with a loud error naming
- * the member and asking whether createServer is running.
+ * adjudication 2A, revised by polish A1/spec §5.2): every
+ * bridge-forwarding member (`conversations`/`users`/`accounts`/`access`/
+ * `identity`/`curation`/`models`/`commands`) awaits the host bridge,
+ * which `createServer` binds at boot. When a server is EXPECTED
+ * (`expectBridge`, fanned out from `createServer`'s entry or the
+ * `expectHostBridge: true` open option), a call on a never-bound host
+ * rejects within the deadline with a loud error naming the member and
+ * asking whether createServer is running. When NO server is expected
+ * (the serverless-embed default), the same call rejects IMMEDIATELY
+ * with `HostBridgeUnavailableError`.
  *
  * Focused unit shape: a directly constructed seam host over a resolved
  * (never-bound) bridge, fake timers advancing the deadline. No boot, no
@@ -15,7 +18,10 @@
 
 import { afterAll, expect, test, vi } from "vitest";
 import type { Harness } from "@earendil-works/pi-durable";
-import { createSeamHost } from "../src/harness/seam-host.js";
+import {
+	createSeamHost,
+	HostBridgeUnavailableError,
+} from "../src/harness/seam-host.js";
 import { sharedExtensionStores, type StoreRoots } from "../src/harness/stores.js";
 import type { HostBridge } from "../src/server/host-bridge.js";
 
@@ -31,8 +37,8 @@ const ROOTS: StoreRoots = {
 };
 
 /** A seam host whose bridge is NEVER bound (the serverless-embed shape). */
-function neverBoundHost() {
-	return createSeamHost(
+function neverBoundHost(options: { expected?: boolean } = {}) {
+	const host = createSeamHost(
 		{ name: "fixture.deadline" },
 		{},
 		{
@@ -43,10 +49,25 @@ function neverBoundHost() {
 		},
 		sharedExtensionStores(ROOTS),
 	);
+	// The deadline cases pin the EXPECTED shape (a server will bind);
+	// the default (no expectation) is the immediate-reject case below.
+	if (options.expected === true) host.expectBridge();
+	return host;
 }
 
-test("a never-bound host member rejects at the deadline, naming the member", async () => {
+test("a never-bound host member rejects IMMEDIATELY when no server is expected", async () => {
 	const host = neverBoundHost();
+	const pending = host.users.list();
+	const assertion = expect(pending).rejects.toThrow(HostBridgeUnavailableError);
+	await assertion;
+	const error = await host.users.list().catch((one: unknown) => one);
+	expect(error).toBeInstanceOf(HostBridgeUnavailableError);
+	expect((error as HostBridgeUnavailableError).member).toBe("users.list");
+	expect((error as HostBridgeUnavailableError).caller).toBe("fixture.deadline");
+});
+
+test("a never-bound host member rejects at the deadline, naming the member", async () => {
+	const host = neverBoundHost({ expected: true });
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	try {
 		const pending = host.users.list();
@@ -61,7 +82,7 @@ test("a never-bound host member rejects at the deadline, naming the member", asy
 });
 
 test("the curation proxy's pre-bind forwarders reject the same way", async () => {
-	const host = neverBoundHost();
+	const host = neverBoundHost({ expected: true });
 	vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
 	try {
 		// A pre-bind member read returns a forwarder; SYNC store members
@@ -77,7 +98,7 @@ test("the curation proxy's pre-bind forwarders reject the same way", async () =>
 });
 
 test("pre-bind curation.skills(user) is a STORE (methods callable, deadline-bounded)", async () => {
-	const host = neverBoundHost();
+	const host = neverBoundHost({ expected: true });
 	const store = host.curation.skills("alice");
 	// The sync-return contract: the store comes back at once (not a
 	// promise) and every method is a function.
@@ -102,7 +123,7 @@ test("pre-bind curation.skills(user) is a STORE (methods callable, deadline-boun
 });
 
 test("a late bind still wins: the same member resolves once the bridge lands", async () => {
-	const host = neverBoundHost();
+	const host = neverBoundHost({ expected: true });
 	// Bind a minimal bridge BEFORE the deadline passes (production shape:
 	// createServer binds at boot).
 	const bridge = {

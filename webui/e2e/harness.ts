@@ -20,9 +20,11 @@
  * `afterAll`.
  */
 
+import { execFileSync } from "node:child_process";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
@@ -40,6 +42,37 @@ import { seededIdentity, unclaimedIdentity } from "../../test/helpers/identity.j
 
 /** The built bundle this E2E server serves (webui/e2e → webui/dist). */
 const WEBUI_DIST = fileURLToPath(new URL("../dist", import.meta.url));
+
+/**
+ * Resolve a sibling repo checkout (e.g. an extension repo) from ANY checkout
+ * shape. Tried in order:
+ *
+ * 1. `<worktree toplevel>/../<name>` — the polish-family layout
+ *    (`~/repos/.polish/sigrun` beside `~/repos/.polish/sigrun-escalations`),
+ *    also the plain side-by-side clone shape.
+ * 2. The MAIN checkout's directory (the dirname of the worktree's git common
+ *    dir), for worktrees nested somewhere without siblings (`repo/.worktrees/
+ *    <name>`).
+ *
+ * Throws naming both paths tried when neither exists.
+ */
+export function siblingRepo(name: string): string {
+	const toplevel = execFileSync("git", ["rev-parse", "--show-toplevel"], {
+		encoding: "utf8",
+	}).trim();
+	const fromToplevel = join(toplevel, "..", name);
+	if (existsSync(fromToplevel)) return fromToplevel;
+	const commonDir = execFileSync(
+		"git",
+		["rev-parse", "--path-format=absolute", "--git-common-dir"],
+		{ encoding: "utf8" },
+	).trim();
+	const fromMain = join(dirname(commonDir), "..", name);
+	if (existsSync(fromMain)) return fromMain;
+	throw new Error(
+		`e2e harness: sibling repo "${name}" not found (tried ${fromToplevel} and ${fromMain})`,
+	);
+}
 
 export interface E2EServerOptions {
 	/**
@@ -298,6 +331,9 @@ async function bootOnDir(
 		);
 	}
 	const opened = await openHarness(config, {
+		// Polish A1 (spec §5.2): the e2e harness boots the real server —
+		// bridge calls in the pre-bind window keep the bounded wait.
+		expectHostBridge: true,
 		// The unclaimed gate 403s an empty directory under every method —
 		// the e2e boots a claimed admin ("tester") exactly like the
 		// in-process suites' test/helpers/identity.ts seam. The AUTH boot

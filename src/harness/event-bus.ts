@@ -84,6 +84,7 @@ import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions
 import { AmbientDoc } from "./ambient.js";
 import { toDurableContext } from "./context.js";
 import { beginUserDeletion } from "./stores.js";
+import { HostBridgeUnavailableError } from "./seam-host.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
 /** The internal host-event payload: the wire union plus the hub-only `providers.changed`/`job.changed` variants boot publishes directly. */
@@ -449,6 +450,13 @@ export class EventBus {
 	}
 	#queueMax: number;
 	#hookDeadlineMs: number;
+	/**
+	 * The `${label}:${member}` pairs whose HostBridgeUnavailableError
+	 * already logged (polish A1, spec §5.2): a serverless process fails
+	 * fast on EVERY bridged handler call, so only the first per pair
+	 * warns — repeats are swallowed (still resolving the handler slot).
+	 */
+	#unavailableLogged = new Set<string>();
 	#idleThresholdMs: number | undefined;
 	#queue: BusEvent[] = [];
 	#settleHandlers: ((event: SettleGroup) => void | Promise<void>)[] = [];
@@ -1827,6 +1835,21 @@ export class EventBus {
 			// A handler may throw synchronously; that is the same failure as a
 			// rejected promise and must not escape into the drain loop.
 			const failed = (error: unknown) => {
+				if (error instanceof HostBridgeUnavailableError) {
+					const key = `${label}:${error.member}`;
+					if (this.#unavailableLogged.has(key)) {
+						finish();
+						return;
+					}
+					this.#unavailableLogged.add(key);
+					console.warn(
+						"event-bus: %s handler failed: %s (further repeats for this member suppressed)",
+						label,
+						error.message,
+					);
+					finish();
+					return;
+				}
 				console.error("event-bus: %s handler failed:", label, error);
 				finish();
 			};

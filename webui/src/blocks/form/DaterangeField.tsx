@@ -9,9 +9,16 @@ import type { DaterangeField, JsonValue } from "@sigrun/shared/blocks";
 import { boundString, useSurfaceData } from "../context";
 import { FieldRow, type FieldProps } from "./fields";
 
-/** Parse the subset of ISO 8601 durations the presets carry
- *  (`PnD`, `PnW`, `PnDTnH`, …). Returns milliseconds. */
-export function durationMs(duration: string): number | null {
+/** Resolve a preset duration against `now` (spec §5.3): the day and week
+ *  parts walk CALENDAR days on the local date — "7 days ago" is the same
+ *  wall-clock time seven days back, even when that span is 6×24h + 1×25h —
+ *  while the `T…H/M/S` part is ELAPSED time, subtracted after the calendar
+ *  part. Returns the two `YYYY-MM-DD` ends, or null for an unparseable
+ *  duration. */
+export function presetRange(
+	duration: string,
+	now: Date,
+): { readonly start: string; readonly end: string } | null {
 	const match = /^P(?:(\d+)W)?(?:(\d+)D)?(?:T(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?)?$/.exec(
 		duration,
 	);
@@ -21,9 +28,11 @@ export function durationMs(duration: string): number | null {
 	const hours = Number(match[3] ?? 0);
 	const minutes = Number(match[4] ?? 0);
 	const seconds = Number(match[5] ?? 0);
-	return (
-		(((weeks * 7 + days) * 24 + hours) * 60 + minutes) * 60 + seconds
-	) * 1000;
+	const start = new Date(now.getTime());
+	start.setDate(start.getDate() - (weeks * 7 + days));
+	const elapsedMs = ((hours * 60 + minutes) * 60 + seconds) * 1000;
+	const startDate = new Date(start.getTime() - elapsedMs);
+	return { start: isoDay(startDate), end: isoDay(now) };
 }
 
 function range(value: JsonValue): { start: string; end: string } {
@@ -53,11 +62,9 @@ export function DaterangeFieldView(props: FieldProps<DaterangeField>): ReactNode
 		props.onChange(field.name, { start, end });
 
 	const applyPreset = (duration: string): void => {
-		const ms = durationMs(duration);
-		if (ms === null) return;
-		const end = new Date();
-		const start = new Date(end.getTime() - ms);
-		write(isoDay(start), isoDay(end));
+		const next = presetRange(duration, new Date());
+		if (next === null) return;
+		write(next.start, next.end);
 	};
 
 	return (

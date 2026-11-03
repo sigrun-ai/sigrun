@@ -9,7 +9,6 @@
  * No personal data: synthetic job + key + options (tests own their literals).
  */
 
-import { execSync } from "node:child_process";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
@@ -17,15 +16,14 @@ import {
 	fauxAssistantMessage,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { bootE2EServer, type E2EServer } from "./harness.js";
+import { bootE2EServer, siblingRepo, type E2EServer } from "./harness.js";
 
 /** The real extension's built entry (committed dist). */
-// The extension repo is a SIBLING of the main sigrun checkout (the worktree
-// lives under <repo>/.worktrees/escalations — walk up past it).
-// The extension checkout is a SIBLING of the sigrun repo root (works in the
-// main checkout AND in worktrees, whose .worktrees/<name>/ nesting differs).
+// The extension repo is a SIBLING of the sigrun checkout; siblingRepo
+// resolves it from any checkout shape (polish family, side-by-side clones,
+// nested .worktrees/) — see harness.ts.
 const EXTENSION = pathToFileURL(
-	join(execSync("git rev-parse --show-toplevel").toString().trim(), "..", "sigrun-escalations", "dist", "index.js"),
+	join(siblingRepo("sigrun-escalations"), "dist", "index.js"),
 ).href;
 
 let server: E2EServer;

@@ -307,6 +307,9 @@ export async function serve(
 		extensionEntries: extensionResolutions,
 		env,
 		listenHost: host,
+		// Polish A1 (spec §5.2): serve goes on to createServer — bridge
+		// calls in the pre-bind window keep the bounded wait.
+		expectHostBridge: true,
 	});
 	// The gateway handle (gateway C2) exists BEFORE the server: the meta
 	// route reaches it through ServerContext, so the engine's health is

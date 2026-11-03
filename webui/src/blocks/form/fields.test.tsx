@@ -259,6 +259,14 @@ describe("list (§5.6)", () => {
 	});
 });
 
+/** YYYY-MM-DD for a Date in LOCAL time — spelled independently of the
+ *  component (a shared helper would let a component-side calendar bug hide
+ *  behind itself). */
+function localDay(date: Date): string {
+	const pad = (n: number): string => String(n).padStart(2, "0");
+	return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+
 describe("daterange (§5.6)", () => {
 	test("a preset fills both dates", () => {
 		const { dispatch, renderer } = harness(
@@ -277,12 +285,13 @@ describe("daterange (§5.6)", () => {
 		});
 		const start = inputByLabel(renderer, "Window start").props.value;
 		const end = inputByLabel(renderer, "Window end").props.value;
-		expect(start).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-		expect(end).toMatch(/^\d{4}-\d{2}-\d{2}$/);
-		const days =
-			(new Date(end as string).getTime() - new Date(start as string).getTime()) /
-			86_400_000;
-		expect(days).toBe(7);
+		// Seven CALENDAR days back (spec §5.3) — not 7×86_400_000 ms, which
+		// is a 6-day range whenever a DST change sits inside the window.
+		const now = new Date();
+		const sevenBack = new Date(now.getTime());
+		sevenBack.setDate(sevenBack.getDate() - 7);
+		expect(end).toBe(localDay(now));
+		expect(start).toBe(localDay(sevenBack));
 		act(() => {
 			findButton(renderer, "Save").props.onClick();
 		});

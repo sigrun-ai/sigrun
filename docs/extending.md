@@ -332,6 +332,33 @@ effects are identical by construction:
 An unknown conversation id throws (`conversation <id> not found`) on
 every method — the routes' 404 analog.
 
+### The host bridge: fail-fast when no server runs
+
+The bridged host members (`conversations`, `users`, `accounts`, `access`,
+`identity`, `curation`, `jobs`, `models`, `commands`, `notify`,
+`surfaces`) run the server's shared ops through a bridge `createServer`
+binds at boot.
+What a call on a not-yet-bound bridge does depends on whether a server
+is EXPECTED in the process:
+
+- **No server expected (default):** the call rejects immediately with
+  `HostBridgeUnavailableError` (exported from
+  `src/harness/seam-host.ts`), carrying the `member` (e.g.
+  `"users.list"`) and the `caller` (your extension's name). This is the
+  in-process-rig/serverless-embed shape — fail fast instead of stalling
+  the full hook deadline on a bind that will never come.
+- **A server is expected:** pre-bind calls keep the bounded wait (60s)
+  for the bind. `createServer` marks the expectation itself,
+  synchronously on entry, so an embedder that starts a server needs no
+  option and its pre-bind calls still wait. Embedders that open the
+  harness and bind shortly after (the way `serve` and the e2e harness
+  do) pass `expectHostBridge: true` to `openHarness` so the window
+  BEFORE `createServer` also waits.
+
+An event handler (e.g. `runSettled`) that hits the unavailable error
+logs ONE `console.warn` per (extension, member) from the event bus —
+repeats are swallowed, and the handler slot still resolves.
+
 ## The models and commands surfaces
 
 `host.models.list()` serves the SAME list `GET /v1/models` serves —

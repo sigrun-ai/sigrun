@@ -130,6 +130,9 @@ async function bootOpened(
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
+		// Polish A1: the factory-body accounts.lookup probe is a
+		// pre-bind-window call — this rig boots its server after open.
+		expectHostBridge: true,
 	});
 	cleanups.push(async () => {
 		await opened.harness.close(BACKGROUND_CONTEXT);
