@@ -10,12 +10,16 @@
  * legacy artifacts (`feed.jsonl`, `versions/`) are never touched — they
  * stay read-only on disk and outside the repo's pathspec.
  *
- * The discard + import run INSIDE one `history.write` (the per-repo
- * lock): a store write concurrent with the migration either lands
- * before the discard (its commit is discarded and its content is
+ * The discard + import run inside `GitHistory.freshImport` (the
+ * per-repo lock): a store write concurrent with the migration either
+ * lands before the discard (its commit is discarded and its content is
  * re-imported from disk — nothing lost) or after the import (its own
  * commit on top). The unlocked rm of an earlier revision could delete
- * a repo a concurrent write had just committed (review I3).
+ * a repo a concurrent write had just committed (review I3). Migration
+ * is once per process (boot keeps the settled promise): a "nothing"
+ * result writes no marker, and without once-per-process the NEXT
+ * curationOf after the user's first write would see the new skills/
+ * and wipe the user's history (review P0).
  */
 
 import { access, mkdir, writeFile } from "node:fs/promises";
@@ -31,8 +35,9 @@ export type MigrationResult = "migrated" | "already" | "nothing";
  * tracked content at all (no marker written — the first real write can
  * still import); "migrated" otherwise.
  *
- * A `user.git` without the marker is a partial migration: it is
- * discarded and the import runs fresh.
+ * A `user.git` without the marker on a repo this call did not just
+ * build is a partial migration: it is discarded and the import runs
+ * fresh.
  */
 export async function migrateUserCuration(
 	userArea: string,

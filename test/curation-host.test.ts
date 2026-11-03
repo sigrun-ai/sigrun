@@ -583,10 +583,10 @@ describe("host.curation (curator P6 surface)", () => {
 			{ kind: "create", content: ACME_SKILL },
 			{ reviewId: "seed-1" },
 		);
-		// The interleave: a SECOND skill's commit (created between the
-		// fork's two patches by seeding the responses around an await)
+		// The interleave: a SECOND skill's commit (created before the
+		// fork, so it sits between the seed and the review in the log)
 		// plus a direct untrailered outside catch-up after the review's
-		// first store commit. Both must survive undoReview (review I5).
+		// commits. Both must survive undoReview (review I5).
 		await curation.skills("alice").apply(
 			"acme-release",
 			{ kind: "create", content: ACME_SKILL.replaceAll("acme-deploy", "acme-release") },

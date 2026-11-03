@@ -215,6 +215,50 @@ describe("migrateUserCuration", () => {
 		expect(log.some((commit) => commit.action === "pin")).toBe(true);
 	});
 
+	test("P0: a nothing-migration followed by a write never wipes the write's history", async () => {
+		// The boot sequence that bit: curationOf migrates an EMPTY user
+		// ("nothing", no marker), the user's first write commits, and a
+		// once-per-process migration must never re-arm to freshImport
+		// over that history. migrateUserCuration itself is re-runnable;
+		// the once-per-process rule is boot's (kept promise). This test
+		// pins the invariant the boot side relies on: after "nothing",
+		// the FIRST write's repo must survive a second migration call
+		// ONLY when boot has already settled — so the assertion here is
+		// the store-facing one: a write after "nothing" commits, and a
+		// marked repo is never discarded.
+		const { userArea, history } = await setup();
+		await mkdir(userArea, { recursive: true });
+		expect(await migrateUserCuration(userArea, history)).toBe("nothing");
+		// The user's first write (a real store op).
+		const { SkillStore } = await import("../src/curation/store.js");
+		const store = new SkillStore({
+			userArea,
+			user: "alice",
+			now: () => new Date(),
+			nameTakenElsewhere: async () => undefined,
+			userExists: () => true,
+			history,
+		});
+		const created = await store.apply(
+			"acme-deploy",
+			{ kind: "create", content: SKILL },
+			{ actor: "curator", reviewId: "review-first" },
+		);
+		expect(created.id).toMatch(/^[0-9a-f]{40}$/);
+		// Boot marks the migration settled by writing the marker (the
+		// once-per-process seam's on-disk equivalent); a later migration
+		// call then refuses to touch the repo.
+		const { historyDir } = await import("../src/curation/paths.js");
+		await mkdir(historyDir(userArea), { recursive: true });
+		await writeFile(join(historyDir(userArea), "MIGRATED"), new Date().toISOString() + "\n");
+		expect(await migrateUserCuration(userArea, history)).toBe("already");
+		// The first write's commit survived: the log still names it, and
+		// its undoReview target exists.
+		const log = await history.log({ limit: 10 });
+		expect(log.some((commit) => commit.sha === created.id)).toBe(true);
+		expect(log.some((commit) => commit.reviewId === "review-first")).toBe(true);
+	});
+
 	test("second run returns already", async () => {
 		const { userArea, history } = await setup();
 		await mkdir(join(userArea, "skills", "acme-deploy"), { recursive: true });

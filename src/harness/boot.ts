@@ -1116,16 +1116,18 @@ export async function openHarness(
 		// this first construction. Never-in-a-render: curationOf is the
 		// store factory, not a render path.
 		if (!migrations.has(user)) {
-			const migration = migrateUserCuration(userArea, history)
-				.then(
-					() => undefined,
-					(error) => {
-						console.warn(`curation migration (${user}) failed: ${String(error)}`);
-					},
-				)
-				.finally(() => {
+			// Once per process: the settled promise STAYS in the map. A
+			// "nothing" migration writes no marker, so a re-arm after the
+			// user's first write would freshImport over their history
+			// (review P0). Only a FAILURE re-arms (the next curationOf
+			// retries).
+			const migration = migrateUserCuration(userArea, history).then(
+				() => undefined,
+				(error) => {
+					console.warn(`curation migration (${user}) failed: ${String(error)}`);
 					migrations.delete(user);
-				});
+				},
+			);
 			migrations.set(user, migration);
 		}
 		const ready = async (): Promise<void> => {
