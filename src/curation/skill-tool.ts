@@ -159,6 +159,13 @@ async function ownerOf(
 	}
 }
 
+/** The upstream-only view's outcome: the served body, or a TAGGED
+ *  not-found (the string sentinel's replacement — a caller tags the
+ *  result instead of prefix-matching its text). */
+type UpstreamOnlyView =
+	| { readonly found: true; readonly body: string }
+	| { readonly found: false; readonly message: string };
+
 /**
  * The `view` fallback for upstream-only names (the overlay lifecycle):
  * a name with no learned copy can still carry a stored overlay and/or a
@@ -174,7 +181,7 @@ async function viewUpstreamOnly(
 	args: { name: string; overlay_root?: OverlayRoot },
 	env: ExecutionEnv | undefined,
 	ctx: Context,
-): Promise<string> {
+): Promise<UpstreamOnlyView> {
 	// A stored overlay for this skill name: the exact root when the call
 	// names one, else whichever root holds one (that key decides).
 	const stored: Overlay | undefined =
@@ -194,7 +201,10 @@ async function viewUpstreamOnly(
 	};
 	const upstream = await deps.upstreamOf(key, env, ctx).catch(() => undefined);
 	if (stored === undefined && upstream === undefined) {
-		return `unknown skill "${args.name}" — no learned copy, no stored overlay, and no upstream resolved in the ${key.root} root.`;
+		return {
+			found: false,
+			message: `unknown skill "${args.name}" — no learned copy, no stored overlay, and no upstream resolved in the ${key.root} root.`,
+		};
 	}
 	const notes: string[] = [
 		`(no learned copy of "${args.name}"; showing the ${key.root} upstream${stored === undefined ? "" : " with the stored overlay"})`,
@@ -210,7 +220,7 @@ async function viewUpstreamOnly(
 	} else {
 		body = withOverlay(upstream.body, stored.text);
 	}
-	return `${notes.join(" ")}\n\n${body}`;
+	return { found: true, body: `${notes.join(" ")}\n\n${body}` };
 }
 
 /** Render the store's `list` result as the model-facing text. */
@@ -276,12 +286,19 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 					return {};
 				}
 				if (args.name === undefined) return error("view requires a skill name.");
-				const learned = await stores.store
-					.view(args.name, args.file_path ?? "SKILL.md")
-					.then(
-						(body) => body as string | undefined,
-						() => undefined as string | undefined,
-					);
+				// The learned read: ENOENT (no learned copy) falls through to
+				// the upstream/overlay serving below; ANY OTHER store failure
+				// (a permissions error, a corrupt root) must surface, never
+				// fail open into a phantom "unknown skill".
+				let learned: string | undefined;
+				try {
+					learned = await stores.store.view(args.name, args.file_path ?? "SKILL.md");
+				} catch (cause) {
+					if ((cause as NodeJS.ErrnoException | undefined)?.code !== "ENOENT") {
+						throw cause;
+					}
+					learned = undefined;
+				}
 				if (learned === undefined) {
 					// Upstream-only names (the overlay lifecycle): serve the stored
 					// overlay and/or the live upstream — without this fallback the
@@ -294,8 +311,8 @@ export function buildSkillManageTool(deps: SkillManageDeps) {
 						api.env,
 						context,
 					);
-					if (served.startsWith("unknown skill")) return error(served);
-					api.output(served);
+					if (!served.found) return error(served.message);
+					api.output(served.body);
 				} else {
 					api.output(learned);
 				}

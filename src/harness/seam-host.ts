@@ -320,6 +320,10 @@ export function createSeamHost(
 		connect(slug: string, name: string, user: string, ctx: Parameters<SigrunHost["services"]["connect"]>[2]): ReturnType<SigrunHost["services"]["connect"]>;
 		settingsChanged(slug: string, user: string): void;
 	},
+	options?: {
+		/** The pre-bind bridge-wait bound in ms (tests inject a small one). */
+		readonly bridgeDeadlineMs?: number;
+	},
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
 	const ambientKinds = new Set(kinds.ambient ?? []);
@@ -374,28 +378,37 @@ export function createSeamHost(
 	// The pre-bind bound: a bridge call that waits PAST this long fails
 	// loud instead of hanging forever (the jobs-task fake-clock hang's
 	// lesson). Only reachable when a server is expected — `createServer`
-	// binds the bridge at boot, long inside the bound.
-	const bridgeDeadlineMs = 60_000;
+	// binds the bridge at boot, long inside the bound. Injectable so a
+	// test can exercise the deadline without a 60-second wait.
+	const bridgeDeadlineMs = options?.bridgeDeadlineMs ?? 60_000;
 	const hostBridge = async (member: string): Promise<HostBridge> => {
 		await bind.harness();
 		if (bridgeBound) return await bridgePromise;
 		if (!bridgeExpected) {
 			throw new HostBridgeUnavailableError(member, identity.name);
 		}
-		return await Promise.race([
-			bridgePromise,
-			new Promise<never>((_, reject) => {
-				const timer = setTimeout(() => {
-					reject(
-						new Error(
-								`seam host: ${member} — the bridge never bound after ${bridgeDeadlineMs}ms; is createServer running? (caller: ${identity.name})`,
-						),
-					);
-				}, bridgeDeadlineMs);
-				// The rejection timer never keeps the process alive.
-				if (typeof timer === "object" && "unref" in timer) timer.unref();
-			}),
-		]);
+		// The deadline lane's timer is cleared the moment the bridge
+		// resolves — a successful bind never leaves a live 60-second
+		// rejection timer holding the process's event loop open.
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			return await Promise.race([
+				bridgePromise,
+				new Promise<never>((_, reject) => {
+					timer = setTimeout(() => {
+						reject(
+							new Error(
+									`seam host: ${member} — the bridge never bound after ${bridgeDeadlineMs}ms; is createServer running? (caller: ${identity.name})`,
+							),
+						);
+					}, bridgeDeadlineMs);
+					// The rejection timer never keeps the process alive.
+					if (typeof timer === "object" && "unref" in timer) timer.unref();
+				}),
+			]);
+		} finally {
+			if (timer !== undefined) clearTimeout(timer);
+		}
 	};
 	// The curation surface's settled bridge host (curator P6/A9): memoized
 	// HERE — in the host closure — so every `host.curation` getter call (a

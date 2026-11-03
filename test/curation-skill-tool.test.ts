@@ -392,6 +392,35 @@ describe("skill_manage (curator P3 tool, per-run state)", () => {
 		).toBe(false);
 	});
 
+	test("a non-ENOENT failure reading the learned root surfaces instead of degrading to unknown skill", { timeout: 20_000 }, async () => {
+		const { opened, dir } = await bootHarness();
+		const alice = userOf(dir, "alice");
+		await alice.store.apply(
+			"acme-deploy",
+			{ kind: "create", content: ACME },
+			{ actor: "curator" },
+		);
+		// A store whose view throws EACCES (a permissions failure, not a
+		// missing file): the tool must surface it — failing open into
+		// "unknown skill" would trap the run in a view-first loop.
+		const broken: UserStores = {
+			...alice,
+			store: Object.assign(Object.create(Object.getPrototypeOf(alice.store)), alice.store, {
+				view: async () => {
+					const cause = new Error("EACCES: permission denied") as NodeJS.ErrnoException;
+					cause.code = "EACCES";
+					throw cause;
+				},
+			}) as SkillStore,
+		};
+		const tool = skillManageTool(skillsOptions(dir, new Map([["alice", broken]])));
+		const id = await runConversation(opened, { user: "alice", reviewId: "review-eacces" });
+		const { api } = toolApi(opened, id);
+		await expect(
+			tool.execute({ action: "view", name: "acme-deploy" }, api, BACKGROUND_CONTEXT),
+		).rejects.toThrow(/EACCES/);
+	});
+
 	test("in a curator run on alice's behalf, writes land in alice's store even when the run's parent was bob-shared", { timeout: 20_000 }, async () => {
 		const { opened, dir } = await bootHarness();
 		const alice = userOf(dir, "alice");
