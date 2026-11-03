@@ -90,6 +90,11 @@ for (const name of SAMPLES) {
 		for (const width of WIDTHS) {
 			test(`at ${width.rem}rem`, async ({ page }) => {
 				await page.setViewportSize({ width: width.px, height: 800 });
+				// The calendar sample opens on TODAY's month: pin the clock in
+				// the fixture month so the screenshot is date-independent.
+				if (name === "collection-calendar") {
+					await page.clock.setFixedTime(new Date("2026-10-15T12:00:00Z"));
+				}
 				await page.goto(`${server.url}/#/blocks/${name}`);
 				const sample = page.locator(`[data-gallery-sample="${name}"]`);
 				await expect(sample).toBeVisible();
