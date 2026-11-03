@@ -19,8 +19,12 @@
 #      registry-mode dance must have shipped the x64 platform package);
 #   5. assert @sigrun/tui resolves.
 #
-# The docker image ships curl AND node, so polling and assertions stay
-# inside the one container — no bind-mounted state.
+# The docker image ships node, so polling and assertions stay inside the
+# one container — no bind-mounted state. (The header once claimed curl
+# too: node:22-bookworm-slim ships NO curl, and the old curl poll loop
+# exited 127 under `set -eu` — which `docker run --rm` swallowed, making
+# the whole script a false-green. Probes are `node -e fetch` now, and
+# the container's output is never hidden.)
 #
 # Honors NPM_CONFIG_REGISTRY (npm reads it natively; the smoke passes it
 # through to the container), so a local verdaccio proves the flow
@@ -56,11 +60,22 @@ if [ -n "${NPM_CONFIG_REGISTRY-}" ]; then
 	registry_env="--env NPM_CONFIG_REGISTRY=${NPM_CONFIG_REGISTRY}"
 fi
 
+# Opt-in docker network (e.g. SMOKE_DOCKER_NETWORK=sigrun-cleanroom for a
+# container-resolvable local registry); unset keeps the default bridge.
+network_flag=""
+if [ -n "${SMOKE_DOCKER_NETWORK-}" ]; then
+	network_flag="--network ${SMOKE_DOCKER_NETWORK}"
+fi
+
 # The container script takes the version as $1 and the slug list as $2
 # (a heredoc inside `sh -s` would eat stdin as the script — arguments
 # keep the two channels separate). Quoting note: the heredoc is
 # UNQUOTED-free — 'EOS' keeps the host shell out of it entirely.
-docker run --rm \
+# `-i` is LOAD-BEARING: without it docker closes stdin, `sh -s` reads an
+# empty script, and the whole run exits 0 having done NOTHING — the
+# silent false-green this flag fixes (Task 21 F1).
+docker run --rm -i \
+	$network_flag \
 	--env SIGRUN_DEFAULT_MODEL=openai/gpt-4o \
 	--env SIGRUN_API_TOKEN=sigrun-smoke-token \
 	--env SIGRUN_PORT=3000 \
@@ -97,8 +112,11 @@ cleanup() {
 }
 trap cleanup EXIT
 
+# Poll /healthz with node (the image ships NO curl — its absence under
+# `set -eu` exited 127 and read as "server up", the false-green this
+# probe replaces). A probe failure surfaces with the boot log.
 i=0
-until curl -fsS http://127.0.0.1:3000/healthz >/dev/null 2>&1; do
+until node -e "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"; do
 	i=$((i + 1))
 	if [ "$i" -ge 60 ]; then
 		echo "sigrun did not pass /healthz within 60s" >&2

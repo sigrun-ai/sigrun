@@ -41,7 +41,7 @@
  */
 
 import { spawn as nodeSpawn } from "node:child_process";
-import { readFileSync, realpathSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { mkdir, readFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
@@ -71,7 +71,8 @@ import {
 	type PaletteName,
 } from "@sigrun/shared/themes";
 
-export const USAGE_TEXT = `usage: sigrun [--user <name>]
+export const USAGE_TEXT = `usage: sigrun [-h | --help]
+       sigrun [--user <name>]
        sigrun serve
        sigrun attach [--server <url>] [--user <name>]
        sigrun token create <name> --user <user>
@@ -100,7 +101,7 @@ export const USAGE_ERROR_PATTERN = /^usage:/;
 
 /** The parse result: which command, plus the flag-carried overrides. */
 export interface ParsedArgs {
-	readonly command: "run" | "serve" | "attach" | "token" | "user" | "provider";
+	readonly command: "run" | "serve" | "attach" | "token" | "user" | "provider" | "help";
 	readonly server?: string;
 	readonly user?: string;
 	/** The `token`/`user`/`provider` subcommand. */
@@ -133,6 +134,7 @@ function usageError(message: string): Error {
  * is a usage error.
  */
 function parseTokenArgs(argv: readonly string[]): ParsedArgs {
+	if (argv.includes("-h") || argv.includes("--help")) return { command: "help" };
 	const sub = argv[0];
 	if (sub === "list") {
 		if (argv.length !== 1) {
@@ -187,6 +189,7 @@ function parseTokenArgs(argv: readonly string[]): ParsedArgs {
  * deriving it from the external username; ordinary add still requires it.
  */
 function parseUserArgs(argv: readonly string[]): ParsedArgs {
+	if (argv.includes("-h") || argv.includes("--help")) return { command: "help" };
 	const sub = argv[0];
 	if (sub === "list") {
 		if (argv.length !== 1) {
@@ -257,6 +260,7 @@ function parseUserArgs(argv: readonly string[]): ParsedArgs {
  * note says so).
  */
 function parseProviderArgs(argv: readonly string[]): ParsedArgs {
+	if (argv.includes("-h") || argv.includes("--help")) return { command: "help" };
 	const sub = argv[0];
 	if (sub !== "list" && sub !== "key" && sub !== "clear") {
 		throw usageError(
@@ -319,6 +323,12 @@ export function parseArgs(argv: readonly string[]): ParsedArgs {
 	if (argv[0] === "token") return parseTokenArgs(argv.slice(1));
 	if (argv[0] === "user") return parseUserArgs(argv.slice(1));
 	if (argv[0] === "provider") return parseProviderArgs(argv.slice(1));
+	// `-h`/`--help` ANYWHERE wins over every other argument: the first
+	// thing a stranger types must print usage with exit 0, never a usage
+	// error (fresh-eyes A6).
+	if (argv.includes("-h") || argv.includes("--help")) {
+		return { command: "help" };
+	}
 	let command: ParsedArgs["command"] | undefined;
 	let server: string | undefined;
 	let user: string | undefined;
@@ -977,7 +987,8 @@ async function runIdentityCommand(
 	io: CliIO,
 	isolationProbe: typeof probeIsolation,
 ): Promise<number> {
-	const stores = openIdentityStores(resolveStoreRoots(env));
+	const roots = resolveStoreRoots(env);
+	const stores = openIdentityStores(roots);
 	if (parsed.command === "token") {
 		switch (parsed.sub) {
 			case "create": {
@@ -992,6 +1003,19 @@ async function runIdentityCommand(
 				}
 				const user = derived;
 				if (stores.users.get(user) === undefined) {
+					// Fresh-eyes B2b: an ABSENT users.json means this CLI is
+					// pointed at roots that have never been claimed — almost
+					// always the host-vs-container trap (the claim happened in
+					// the container's /data; the host CLI reads XDG roots), so
+					// "add the user" is the wrong remedy. A PRESENT directory
+					// without the user is a genuine unknown user.
+					if (!existsSync(join(roots.configDir, "users.json"))) {
+						throw new Error(
+							`unknown user "${user}" — no user directory at ${roots.configDir}: this CLI's state roots hold no claimed install. ` +
+								`If the server runs in a container, mint the token there (docker exec <ctr> sigrun token create …), ` +
+								`or point this CLI at the same state roots (SIGRUN_CONFIG_DIR/SIGRUN_DATA_DIR) as the server.`,
+						);
+					}
 					throw new Error(
 						`unknown user "${user}" — add it first: sigrun user add ${user}`,
 					);
@@ -1152,6 +1176,13 @@ export async function onboardIfUnclaimed(
 	server: string,
 	prompt: (question: string, opts?: { secret?: boolean }) => Promise<string>,
 	fetchImpl: CliFetch,
+	/**
+	 * `loopbackVouch`: set by the `run` command — its companion boot is
+	 * loopback-bound, so the claim redeems on the loopback vouch even
+	 * though the (unauthenticated) methods list is the proxy-only
+	 * fail-safe shape. Unset (attach) keeps the strict guard.
+	 */
+	opts?: { loopbackVouch?: boolean },
 ): Promise<OnboardedIdentity | undefined> {
 	let state: OnboardingState | undefined;
 	try {
@@ -1196,7 +1227,7 @@ export async function onboardIfUnclaimed(
 	// identity. Its methods are [] — proxy-only by the fail-safe — and
 	// the claim then succeeds on the loopback vouch.)
 	const methods = state.methods; // the ?? [] version-skew guard lives in isProxyOnly itself (fail-safe on unknown posture)
-	if (isProxyOnly(methods) && state.proxyIdentity === undefined) {
+	if (isProxyOnly(methods) && state.proxyIdentity === undefined && opts?.loopbackVouch !== true) {
 		throw new Error(
 			"sigrun: this sigrun onboards through its sign-in proxy; open it in a browser",
 		);
@@ -1327,6 +1358,12 @@ export async function cliMain(
 
 	try {
 		switch (parsed.command) {
+			case "help": {
+				// Help goes to the DATA sink (stdout): the operator asked for
+				// it, so exit 0 — only a usage ERROR prints to stderr + exit 1.
+				io.out?.(USAGE_TEXT);
+				return 0;
+			}
 			case "serve": {
 				await realDeps.serve(env);
 				return 0;
@@ -1401,8 +1438,15 @@ export async function cliMain(
 					const server = `http://localhost:${booted.port}`;
 					// Loopback onboarding (Task 7): no code (loopback is the trust);
 					// tui.json gains ONLY the user — workstation run stays
-					// unauthenticated, so there is no token to keep.
-					const onboarded = await onboardIfUnclaimed(server, prompt, fetchImpl);
+					// unauthenticated, so there is no token to keep. The
+					// loopbackVouch exemption (fresh-eyes A5): this boot's methods
+					// are [] (unauthenticated loopback), which the dead-end guard
+					// reads as proxy-only — but the claim HERE redeems on the
+					// loopback vouch, so run mode must skip the guard or a fresh
+					// `sigrun run` dead-ends on the proxy message.
+					const onboarded = await onboardIfUnclaimed(server, prompt, fetchImpl, {
+						loopbackVouch: true,
+					});
 					if (onboarded !== undefined) {
 						await writeTuiFile({ user: onboarded.user }, env);
 					}

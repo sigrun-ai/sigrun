@@ -107,6 +107,14 @@ describe("parseArgs", () => {
 		expect(() => parseArgs(["bogus"])).toThrowError(USAGE_ERROR_PATTERN);
 	});
 
+	test("--help and -h parse as the help command", () => {
+		expect(parseArgs(["--help"])).toEqual({ command: "help" });
+		expect(parseArgs(["-h"])).toEqual({ command: "help" });
+		// Any position: the stranger's `sigrun serve --help` must help too.
+		expect(parseArgs(["serve", "--help"])).toEqual({ command: "help" });
+		expect(parseArgs(["--user", "acme-user", "-h"])).toEqual({ command: "help" });
+	});
+
 	test("a flag without a value fails loud", () => {
 		expect(() => parseArgs(["attach", "--server"])).toThrowError(USAGE_ERROR_PATTERN);
 		expect(() => parseArgs(["--user"])).toThrowError(USAGE_ERROR_PATTERN);
@@ -491,6 +499,45 @@ describe("cliMain attach", () => {
 	});
 });
 
+describe("cliMain help", () => {
+	test("--help prints usage to the DATA sink and resolves 0 (never boots)", async () => {
+		const { deps, calls } = stubDeps();
+		const out: string[] = [];
+		const errors: string[] = [];
+		const code = await cliMain(["--help"], {}, deps, {
+			out: (text) => {
+				out.push(text);
+			},
+			error: (text) => {
+				errors.push(text);
+			},
+		});
+		expect(code).toBe(0);
+		expect(out.join("\n")).toContain(USAGE_TEXT.trim().split("\n")[0] ?? "");
+		expect(errors).toEqual([]);
+		expect(calls.boot).toEqual([]);
+		expect(calls.serve).toEqual([]);
+		expect(calls.launchTui).toEqual([]);
+	});
+
+	test("-h and `sigrun serve --help` print usage and resolve 0", async () => {
+		for (const argv of [["-h"], ["serve", "--help"]]) {
+			const { deps, calls } = stubDeps();
+			const out: string[] = [];
+			const code = await cliMain(argv, {}, deps, {
+				out: (text) => {
+					out.push(text);
+				},
+				error: () => {},
+			});
+			expect(code).toBe(0);
+			expect(out.join("\n")).toContain(USAGE_TEXT.trim().split("\n")[0] ?? "");
+			expect(calls.boot).toEqual([]);
+			expect(calls.serve).toEqual([]);
+		}
+	});
+});
+
 describe("cliMain usage errors", () => {
 	test("unknown subcommand prints usage and resolves 1 (never boots)", async () => {
 		const { deps, calls } = stubDeps();
@@ -509,6 +556,15 @@ describe("cliMain usage errors", () => {
 });
 
 describe("parseArgs: token/user subcommands (Task 7)", () => {
+	test("sub-command help: token/user/provider -h parses as help (the top-level shape)", () => {
+		// A stranger probes sub-commands too — `sigrun token --help` must
+		// print usage with exit 0, not a usage error (review minor 3).
+		expect(parseArgs(["token", "--help"])).toEqual({ command: "help" });
+		expect(parseArgs(["token", "create", "-h"])).toEqual({ command: "help" });
+		expect(parseArgs(["user", "-h"])).toEqual({ command: "help" });
+		expect(parseArgs(["provider", "list", "--help"])).toEqual({ command: "help" });
+	});
+
 	test("token create <name> --user <u>", () => {
 		expect(parseArgs(["token", "create", "laptop", "--user", "alice"])).toEqual({
 			command: "token",
@@ -800,6 +856,24 @@ describe("cliMain user/token subcommands (Task 7: stores directly, no server)", 
 		expect(errors.join("\n")).toMatch(/ghost/);
 		// Nothing was minted.
 		await expect(readFile(join(dir, "api-tokens.json"), "utf8")).rejects.toThrow();
+	});
+
+	test("token create against a FRESH root (no directory file) blames the roots, not the user", async () => {
+		// Fresh-eyes B2b: a claim that happened in the CONTAINER left no
+		// users.json on the host's roots, and the old message ('add it
+		// first') sent the operator the wrong way — the user exists in the
+		// running server's state. An ABSENT users.json can only mean the
+		// CLI is pointed at the wrong state roots (or nothing was claimed),
+		// so the message names the resolved dir and that trap directly.
+		const dir = await tmpConfigDir();
+		const { errors, io } = captureIo();
+		expect(
+			await cliMain(["token", "create", "laptop", "--user", "alice"], storeEnv(dir), undefined, io),
+		).toBe(1);
+		const text = errors.join("\n");
+		expect(text).toContain("no user directory");
+		expect(text).toContain(dir);
+		expect(text).toContain("state roots");
 	});
 });
 
@@ -1622,6 +1696,43 @@ describe("cliMain run: the loopback onboarding flow (Task 7)", () => {
 			baseUrl: "http://localhost:4321",
 			user: "alice",
 		});
+	});
+
+	test("unclaimed loopback with methods [] (the REAL loopback posture) still claims — run mode exempts the proxy-only guard", async () => {
+		// Fresh-eyes A5: the loopback server reports methods [] (no auth),
+		// which isProxyOnly reads as the fail-safe proxy-only shape; before
+		// the loopbackVouch exemption this dead-ended every fresh
+		// `sigrun run` on the proxy message.
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({ codeRequired: false, methods: [] });
+		const { deps, calls } = stubDeps({ prompt, fetch });
+		const code = await cliMain([], storeEnv(dir), deps);
+		expect(code).toBe(0);
+		expect(claims).toHaveLength(1);
+		expect(questions.join("\n")).not.toMatch(/code/i);
+		expect(calls.launchTui[0]).toEqual({
+			baseUrl: "http://localhost:4321",
+			user: "alice",
+		});
+	});
+
+	test("attach keeps the guard: an unclaimed methods-[] server without a proxy identity still dead-ends on the proxy message", async () => {
+		const dir = await tmpConfigDir();
+		const { prompt, questions } = scriptedPrompt(["alice", "", ""]);
+		const { fetch, claims } = onboardingFetchStub({ codeRequired: false, methods: [] });
+		const { deps } = stubDeps({ prompt, fetch });
+		const errors: string[] = [];
+		const code = await cliMain(["attach"], storeEnv(dir), deps, {
+			out: () => {},
+			error: (text) => {
+				errors.push(text);
+			},
+		});
+		expect(code).toBe(1);
+		expect(errors.join("\n")).toMatch(/sign-in proxy/);
+		expect(claims).toEqual([]);
+		expect(questions).toEqual([]);
 	});
 
 	test("a claimed loopback server runs the old path unchanged", async () => {

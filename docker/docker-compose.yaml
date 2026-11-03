@@ -139,10 +139,13 @@ services:
     # /tmp is the read_only scratch dir, /cache the regenerable root
     # (spec §4: never a backup section, a wipe is a cold start);
     # data/state stay on the named sigrun-data volume, cache never
-    # touches it.
+    # touches it. `/cache:uid=1000` is REQUIRED: Docker creates tmpfs
+    # mounts root-owned (mode 755) except for /tmp (1777), so without the
+    # uid the uid-1000 server cannot write its setup code or npm cache
+    # and boot hard-fails with EACCES (fresh-eyes B1).
     tmpfs:
       - /tmp
-      - /cache
+      - /cache:uid=1000
     healthcheck:
       # Same /healthz liveness probe as deploy/base/deployment.yaml. The
       # node:22-slim image ships no curl/wget, so a node one-liner fetch.

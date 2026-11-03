@@ -157,7 +157,19 @@ interface ClaimBody {
 interface ClaimBodyError {
 	error: string;
 	field?: string;
+	/** The accepted keys, listed on an unknown-field rejection (A3). */
+	expected?: readonly string[];
 }
+
+/** The accepted claim-body keys, in the validator's switch order. */
+const CLAIM_BODY_FIELDS = [
+	"code",
+	"user",
+	"name",
+	"email",
+	"issueToken",
+	"tokenName",
+] as const;
 
 /**
  * Validate the claim body strictly: unknown keys and wrong types are
@@ -193,7 +205,10 @@ function validateClaimBody(body: unknown): ClaimBody | ClaimBodyError {
 				result.issueToken = value;
 				break;
 			default:
-				return { error: "invalid_field", field: key };
+				// Name BOTH directions: the sent key (field) and the accepted
+				// set (expected) — a `username` guess must point at `user`,
+				// never leave the operator to guess (fresh-eyes A3).
+				return { error: "invalid_field", field: key, expected: CLAIM_BODY_FIELDS };
 		}
 	}
 	return result;
