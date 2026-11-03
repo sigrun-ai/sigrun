@@ -13,7 +13,7 @@
 import { describe, expect, test } from "vitest";
 import type { SurfaceTransport, Tree } from "@sigrun/shared/blocks";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
-import type { ConversationViewWire } from "../src/api.js";
+import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "../src/api.js";
 
 function view(id: number, entries: unknown[]): ConversationViewWire {
 	return {
@@ -83,6 +83,48 @@ function rootFilesystemEntries(): unknown[] {
 		},
 	];
 }
+
+describe("ConversationPane auth notices (polish task 12)", () => {
+	// A 401 is terminal on BOTH streams (the conversation watch and the
+	// global events watch), so one revoked token produces two notices.
+	// The pane collapses them to one; the auth notice is process state,
+	// not conversation state, so a conversation swap's clearNotices keeps
+	// it (F4's per-conversation clearing still applies to everything else).
+
+	/** The auth line wraps at 80 columns; count its stable prefix. */
+	const AUTH_PREFIX = AUTH_FAILURE_MESSAGE.slice(0, 40);
+	const authCount = (lines: string): number =>
+		lines.split(AUTH_PREFIX).length - 1;
+
+	test("the auth-failure notice dedupes across streams (two 401s → one line)", () => {
+		const pane = new ConversationPane();
+		pane.showError(AUTH_FAILURE_MESSAGE);
+		pane.showError(AUTH_FAILURE_MESSAGE);
+		expect(authCount(pane.render(80).join("\n"))).toBe(1);
+	});
+
+	test("the auth notice survives clearNotices (a conversation swap keeps it)", () => {
+		const pane = new ConversationPane();
+		pane.showError(AUTH_FAILURE_MESSAGE);
+		pane.showError("submit failed (400): conv-1 error");
+		pane.clearNotices();
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain(AUTH_PREFIX);
+		expect(lines).not.toContain("conv-1 error");
+	});
+
+	test("showNotice and showError dedupe only the AUTH_FAILURE string", () => {
+		const pane = new ConversationPane();
+		pane.showNotice(AUTH_FAILURE_MESSAGE);
+		pane.showNotice(AUTH_FAILURE_MESSAGE);
+		pane.showError(AUTH_FAILURE_MESSAGE); // same string via the other kind
+		pane.showNotice("stream: disconnected");
+		pane.showNotice("stream: disconnected"); // transient notices keep arriving
+		const lines = pane.render(80).join("\n");
+		expect(authCount(lines)).toBe(1);
+		expect(lines.split("stream: disconnected").length - 1).toBe(2);
+	});
+});
 
 describe("ConversationPane (C2 turn rendering)", () => {
 	test("turns() groups entries into user + assistant turns", () => {
