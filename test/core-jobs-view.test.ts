@@ -472,14 +472,68 @@ describe("core/jobs selected job", () => {
 		expect(diff?.after).toBe(
 			JSON.stringify({ ...patch, enabled: true }, null, 2),
 		);
-		// A revision row's activation navigates to {job, revision}.
+		// A revision row's activation dispatches openRevision (the {itemId}
+		// pattern — a static navigate could never carry the ACTIVATED row's
+		// version, whole-branch review I1).
 		const list = findBlocks(rendered.json.tree.root.main, "collection").find(
 			(one) => one.id === "revisions",
 		);
-		expect(list?.onActivate).toMatchObject({ type: "navigate" });
+		expect(list?.onActivate).toEqual({ type: "edit", name: "openRevision" });
 		// The oldest revision (v1, no previous) renders no diff.
 		const oldest = await view(app, alice, { job: job.id, revision: 1 });
 		expect(findBlock(oldest.json.tree.root.main, "diff")).toBeUndefined();
+	});
+
+	test("openRevision navigates to the ACTIVATED row's revision ({job, revision})", async () => {
+		// Whole-branch review I1: with revision 3 selected, activating the
+		// revision-7 row must navigate to 7 — never re-navigate to 3 (the
+		// old static navigate did exactly that).
+		const { app, opened, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		for (let version = 2; version <= 7; version += 1) {
+			await opened.jobs.updateApi(
+				job.id,
+				{ schedule: { every: `${3600 + version}s` } },
+				"alice",
+			);
+		}
+		// The revision rows' ids ARE the versions (the {itemId} source).
+		const rendered = await view(app, alice, { job: job.id, revision: 3 });
+		const rows = (rendered.json.data as any).main.revisions.items as any[];
+		expect(rows[0]?.id).toBe("7");
+		// Activating the revision-7 row (while 3 is selected) navigates to 7.
+		const activated = await act(
+			app,
+			alice,
+			"openRevision",
+			{ itemId: "7" },
+			{ job: job.id, revision: 3 },
+		);
+		expect(activated.status).toBe(200);
+		// The wire envelope also stamps `rev` (the instance revision) —
+		// match the carried shape, not the whole envelope.
+		expect(activated.json).toMatchObject({
+			ok: true,
+			navigate: {
+				type: "navigate",
+				params: { job: job.id, revision: 7 },
+			},
+		});
+		// A bad item id is a clean error.
+		const bad = await act(
+			app,
+			alice,
+			"openRevision",
+			{ itemId: "not-a-revision" },
+			{ job: job.id },
+		);
+		expect(bad.json.ok).toBe(false);
+		// No selected job → a clean error (the job rides the params).
+		const noJob = await act(app, alice, "openRevision", { itemId: "2" }, {});
+		expect(noJob.json).toEqual({
+			ok: false,
+			error: { message: "openRevision needs a selected job (params.job)" },
+		});
 	});
 
 	test("runs page by 25 (runCursor); revisions page by 25 (revCursor)", async () => {

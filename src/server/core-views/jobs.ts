@@ -73,8 +73,11 @@ interface RunRow {
 	readonly conversationId: number | null;
 }
 
-/** One revision card row (JobsPanel parity: version/changedAt/changedBy). */
+/** One revision card row (JobsPanel parity: version/changedAt/changedBy).
+ *  The `id` IS the version as a string: the collection's {itemId}
+ *  activation (openRevision) derives from it (whole-branch review I1). */
 interface RevisionRow {
+	readonly id: string;
 	readonly version: number;
 	readonly changedAt: string;
 	readonly changedBy: string;
@@ -227,6 +230,7 @@ function runRow(run: JobRunWire): RunRow {
 /** The revision row (version, changedAt, changedBy). */
 function revisionRow(revision: JobRevisionWire): RevisionRow {
 	return {
+		id: String(revision.version),
 		version: revision.version,
 		changedAt: revision.changedAt,
 		changedBy: revision.changedBy,
@@ -473,13 +477,7 @@ export function createJobsView(deps: {
 							},
 						]
 					: [];
-			const revNavigate =
-				params.revision === undefined
-					? { type: "navigate", params: { job: job.id } }
-					: {
-							type: "navigate",
-							params: { job: job.id, revision: params.revision },
-						};
+
 				main.push(
 				{
 					type: "section",
@@ -564,7 +562,14 @@ export function createJobsView(deps: {
 							id: "revisions",
 							display: "list",
 							items: { $: "/main/revisions/items" },
-							onActivate: revNavigate,
+							// Per-row drill-in (the sidebar's openJob pattern,
+							// whole-branch review I1): a static `navigate` could
+							// only re-navigate to the ALREADY-selected revision —
+							// the diff would be unreachable by clicking. The
+							// `edit` activation carries {itemId} (the row's id,
+							// the revision VERSION) to `openRevision`, whose
+							// accepted result carries {job, revision} back (§6.3).
+							onActivate: { type: "edit", name: "openRevision" },
 							item: {
 								title: { $: "./version" },
 								subtitle: { $: "./changedBy" },
@@ -745,6 +750,35 @@ export function createJobsView(deps: {
 				return {
 					ok: true,
 					navigate: { type: "navigate", params: { job: jobId } },
+				};
+			},
+			// A revision row's drill-in (whole-branch review I1): {itemId}
+			// is the row's id = the revision VERSION; the current job rides
+			// the instance params (the surface is principal-scoped, so the
+			// params identify the selected job). The accepted result carries
+			// {job, revision} back through the wire (§6.3), same as openJob.
+			openRevision: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				if (ctx.principal.user === undefined) {
+					return { ok: false, error: { message: "forbidden" } };
+				}
+				const jobId = paramsOf(ctx.params).job;
+				if (jobId === undefined) {
+					return {
+						ok: false,
+						error: { message: "openRevision needs a selected job (params.job)" },
+					};
+				}
+				const itemId = itemIdOf(payload);
+				const revision = itemId === undefined ? NaN : Number(itemId);
+				if (!Number.isInteger(revision) || revision <= 0) {
+					return { ok: false, error: { message: "openRevision expects {itemId}" } };
+				}
+				return {
+					ok: true,
+					navigate: { type: "navigate", params: { job: jobId, revision } },
 				};
 			},
 			runNow: async (
