@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from "react";
 import type { LoginProviderWire, SigrunClient } from "../api";
-import { messageOf } from "./Onboarding";
+import { messageOf } from "./errors";
 
 const LOGIN_ERRORS: Readonly<Record<string, string>> = {
 	invalid_state: "That sign-in link was already used or came from another browser. Start again.",
