@@ -103,10 +103,15 @@ describe("the moved modules no longer live under src/shared", () => {
 
 	it("declares every consumed subpath in exports", () => {
 		const exportsMap = manifest.exports as Record<string, unknown>;
+		// The drift guard: `./usernames` (1ee795a) and `./model-label`
+		// (e775f31) each shipped an exports entry the guard never named —
+		// a new subpath belongs in this list when it lands.
 		for (const subpath of [
 			"./themes",
+			"./usernames",
 			"./conversations",
 			"./turns",
+			"./model-label",
 			"./session-meta",
 			"./commands",
 			"./interactions",
