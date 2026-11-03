@@ -262,10 +262,18 @@ describe("SkillStore", () => {
 		await store.apply("acme-deploy", { kind: "patch", old: "Deploy acme", new: "Deploy acme safely" }, { actor: "agent" });
 		expect(await store.view("acme-deploy")).toContain("safely");
 		// The residue itself is cleaned up: stray .tmp files beside a
-		// successfully written target are swept on write.
-		expect(
-			(await readdir(curationDir(userArea))).filter((entry) => entry.endsWith(".tmp")),
-		).toEqual([]);
+		// successfully written target are swept on write (the sweep is
+		// fire-and-forget so a write never blocks on it — poll for the
+		// settled state).
+		await expect
+			.poll(
+				async () =>
+					(await readdir(curationDir(userArea))).filter((entry) =>
+						entry.endsWith(".tmp"),
+					),
+				{ timeout: 5_000 },
+			)
+			.toEqual([]);
 	});
 
 	test("undoing an entry whose version snapshot was pruned reports the skip", async () => {
