@@ -148,10 +148,16 @@ test("pre-bind call waits when a server is expected", async () => {
 
 test("createServer marks the bridge expected", async () => {
 	const { opened, config } = await bootFixture();
+	const host = opened.seamHosts.get(FIXTURE_NAME)!;
+	// Start BEFORE createServer, WITHOUT the open option: this is the
+	// discriminating pre-bind path. createServer's synchronous on-entry
+	// expectHostBridge() must flip the expectation before this pending
+	// call's hostBridge continuation runs — without it, the call throws
+	// HostBridgeUnavailableError even though the bridge later binds.
+	const pending = host.users.list();
 	const app = await createServer(opened, config);
 	closes.push(() => app.close());
-	const host = opened.seamHosts.get(FIXTURE_NAME)!;
-	await expect(host.users.list()).resolves.toBeDefined();
+	await expect(pending).resolves.toBeDefined();
 });
 
 test("unavailable bridge errors log once per extension and member", async () => {

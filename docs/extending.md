@@ -335,8 +335,9 @@ every method — the routes' 404 analog.
 ### The host bridge: fail-fast when no server runs
 
 The bridged host members (`conversations`, `users`, `accounts`, `access`,
-`identity`, `curation`, `models`, `commands`, `notify`, `surfaces`) run
-the server's shared ops through a bridge `createServer` binds at boot.
+`identity`, `curation`, `jobs`, `models`, `commands`, `notify`,
+`surfaces`) run the server's shared ops through a bridge `createServer`
+binds at boot.
 What a call on a not-yet-bound bridge does depends on whether a server
 is EXPECTED in the process:
 
