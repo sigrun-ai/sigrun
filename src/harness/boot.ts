@@ -125,6 +125,7 @@ import { packagesDirOf, selfPackageRoot } from "./packages.js";
 import { resolveHelper } from "../sandbox/helper.js";
 import { launchInJail } from "../sandbox/launch.js";
 import { buildUserPolicy, defaultModuleTrees } from "../sandbox/policy.js";
+import { validateGrantPath } from "../sandbox/grants.js";
 import { lookupOsAccount } from "../sandbox/os-account.js";
 import { agentEnv } from "./agent-env.js";
 import { UserServices } from "./user-services.js";
@@ -928,6 +929,39 @@ export async function openHarness(
 		coreRoot,
 		userAreas: (user: string) => join(roots.dataDir, "users", user),
 	};
+	// Curation seal revalidation (tabs/skills Task 8): stored workspace or
+	// grant paths that fail TODAY's validator (e.g. a pre-seal record whose
+	// workspace is the bare user area, which contains curation/) are
+	// refused per use by buildUserPolicy, silently stripping the agent's
+	// tools. Boot names every such record loudly with its repair (Task 14
+	// documents PATCH /v1/users/<u> {"workspace": "<userArea>/workspace"}).
+	for (const record of identity.users.list()) {
+		if (record.workspace !== undefined) {
+			const result = validateGrantPath(record.workspace, {
+				managed: managedPaths,
+				user: record.user,
+			});
+			if (!result.ok) {
+				console.warn(
+					`identity: user "${record.user}" workspace ${record.workspace}: ${result.reason} (agent tools unavailable until repaired; re-point to ${managedPaths.userAreas(record.user)}/workspace)`,
+				);
+			}
+		}
+		for (const grant of record.grants ?? []) {
+			const result = validateGrantPath(grant.path, {
+				managed: managedPaths,
+				user: record.user,
+				...(grant.inheritedFrom === undefined
+					? {}
+					: { inheritedFrom: grant.inheritedFrom }),
+			});
+			if (!result.ok) {
+				console.warn(
+					`identity: user "${record.user}" grant ${grant.path}: ${result.reason} (grant refused until repaired)`,
+				);
+			}
+		}
+	}
 	const userServices = new UserServices({
 		launch: (policy, command, args, serviceEnv) => {
 			if (helper === undefined) throw new Error("sandbox helper not found");

@@ -172,6 +172,17 @@ export function validateGrantPath(
 		) {
 			return { ok: false, reason: "path is inside another user's area" };
 		}
+		// The curation dir is out of the agent's reach (spec §5): no
+		// workspace or grant may sit inside it, and none may CONTAIN it —
+		// a stored path equal to the bare user area would hand the agent
+		// the whole curation tree. Task 9 puts git history under
+		// curation/history.
+		for (const area of [ownArea, ...(inheritedArea === undefined ? [] : [inheritedArea])]) {
+			const curation = join(area, "curation");
+			if (inside(candidate, curation) || inside(curation, candidate)) {
+				return { ok: false, reason: "path overlaps the user's curation dir" };
+			}
+		}
 	}
 	return { ok: true, realpath: candidate };
 }
