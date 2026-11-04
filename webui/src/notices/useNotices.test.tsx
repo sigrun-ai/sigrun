@@ -241,6 +241,32 @@ describe("useNotices", () => {
 		expect(get().results).toEqual({ "n-1": "handler exploded" });
 	});
 
+	test("a REJECTED action POST (non-2xx ApiError) records the error in the lifted map and refetches", async () => {
+		const { client, get } = await mount({
+			notices: [notice({ id: "n-1", actions: [
+				{ id: "ack", label: "Ack", kind: "extension", name: "ack" },
+			] })],
+		});
+		// The realistic rejection shapes: 404 stale card / 409 handler
+		// unavailable / 429 rate-limited — all surface as a thrown
+		// ApiError, which must NOT escape as an unhandled rejection.
+		client.runNoticeAction.mockRejectedValue(new Error("409 conflict"));
+		let outcome: unknown;
+		await act(async () => {
+			outcome = await get().run(
+				get().notices[0] as UserNotice,
+				{ id: "ack", label: "Ack", kind: "extension", name: "ack" },
+				() => {},
+			);
+		});
+		// Resolved (never rethrown), the notice stays, the error text is
+		// in the lifted map for the card to show.
+		expect(outcome).toBeUndefined();
+		expect(get().notices.map((one) => one.id)).toEqual(["n-1"]);
+		expect(get().results).toEqual({ "n-1": "409 conflict" });
+		expect(client.listNotices).toHaveBeenCalled();
+	});
+
 	test("extension action failure keeps the notice and reports the error", async () => {
 		const { client, get } = await mount({
 			notices: [notice({ id: "n-1" })],

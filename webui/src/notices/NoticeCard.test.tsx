@@ -8,7 +8,7 @@ import { act, createElement as h } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { UserNotice, UserNoticeAction } from "@sigrun/shared/notices";
 import { render, instanceText } from "../test-utils";
-import { NoticeCard, RESULT_MESSAGE_MS } from "./NoticeCard";
+import { NoticeCard } from "./NoticeCard";
 
 function notice(fields: Partial<UserNotice> & Pick<UserNotice, "id">): UserNotice {
 	return {
@@ -32,11 +32,9 @@ function baseProps(noticeArg: UserNotice) {
 
 describe("NoticeCard", () => {
 	beforeEach(() => {
-		vi.useFakeTimers();
 		vi.restoreAllMocks();
 	});
 	afterEach(() => {
-		vi.useRealTimers();
 		vi.unstubAllGlobals();
 	});
 

@@ -205,10 +205,31 @@ test("pixel 7: bell in the header, pane a full-height sheet, peek a strip", asyn
 	expect((paneBox?.height ?? 0) >= (viewport?.height ?? 0) - 120).toBe(true);
 	await page.screenshot({ path: "/tmp/notices-shots/pixel7-pane.png" });
 
-	// A tap outside the sheet closes it (the overlay chrome survives).
-	await page.mouse.click(10, viewport === null ? 300 : viewport.height / 2);
+	// The sheet is FULL WIDTH at this viewport — there is no "outside"
+	// to tap. The phone's close affordance is the bell toggle: tapping
+	// the bell again closes the sheet.
+	await headerBell.click();
+	await expect(pane).not.toBeVisible();
+	// The posted notice is untouched by the pane chrome: the bell still
+	// carries it (the count is the pile's size).
+	await expect(headerBell.locator('[data-bell-count="1"]')).toBeVisible();
+	await expect(
+		page.locator(`[data-notice-id="${id}"]`),
+	).toHaveCount(0);
+
+	// The bell is in the shell on EVERY tab (spec §6): Settings carries
+	// the phone-header bell too (the rail hides at this width).
+	await page.goto(`${server.url}/#/settings`);
+	await expect(
+		page.locator('.phone-header [data-rail-section="notices"]'),
+	).toBeVisible();
+	// …and the Settings bell opens the overlay sheet with the notice.
+	await page.locator('.phone-header [data-rail-section="notices"]').click();
+	await expect(
+		page.locator(`.notices-pane [data-notice-id="${id}"]`),
+	).toBeVisible();
+
 	await context.close();
-	void id;
 });
 
 test("bob never sees alice's notice", async ({ browser }) => {

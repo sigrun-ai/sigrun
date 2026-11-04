@@ -1464,6 +1464,17 @@ function AppShell(options: AppOptions = {}) {
 			</div>
 			{section === "blocks" ? (
 				<main className="main-column">
+					{/* Notices Task 7: the bell is in the shell on EVERY tab
+					    (spec §6) — the gallery branch carries the phone header
+					    too (the rail hides ≤900px). */}
+					<header className="phone-header">
+						<span className="phone-header-spacer" />
+						<Bell
+							count={notices.notices.length}
+							active={noticesPaneOpen}
+							onToggle={toggleNoticesPane}
+						/>
+					</header>
 					<GalleryView />
 				</main>
 			) : route.kind === "settings" ? (
@@ -1473,6 +1484,25 @@ function AppShell(options: AppOptions = {}) {
 				// column). The route is the persistence: back/forward walk the
 				// section ids.
 				<main className="main-column" data-route="settings">
+					{/* Notices Task 7: the bell is in the shell on EVERY tab
+					    (spec §6) — Settings carries the phone header (the rail
+					    hides ≤900px) and the peek, same as the other tabs. */}
+					<header className="phone-header">
+						<span className="phone-header-spacer" />
+						<Bell
+							count={notices.notices.length}
+							active={noticesPaneOpen}
+							onToggle={toggleNoticesPane}
+						/>
+					</header>
+					<NoticePeek
+						arrivals={notices.arrivals}
+						visibleConversationId={null}
+						run={notices.run}
+						dismiss={(id) => void notices.dismiss(id)}
+						onNavigate={navigateTarget}
+						onOpenPane={openNoticesPane}
+					/>
 					<SettingsPanel
 						client={client}
 						prefsState={prefsState}
@@ -1682,7 +1712,12 @@ function AppShell(options: AppOptions = {}) {
 					aria-hidden="true"
 				/>
 			)}
-			{panel !== null && (
+			{/* The panel backdrop is the ≤900px click-outside surface
+			    (CSS hides it at desktop widths). The notices sheet is FULL
+			    WIDTH at that size — there is no outside to tap, and the
+			    backdrop would only overlay the header and swallow the
+			    bell's close toggle — so the notices panel skips it. */}
+			{panel !== null && panel !== "notices" && (
 				<div
 					className="panel-backdrop"
 					onClick={closePanel}

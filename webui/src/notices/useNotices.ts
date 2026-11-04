@@ -215,6 +215,22 @@ export function useNotices(
 			let response: NoticeActionResponse;
 			try {
 				response = await client.runNoticeAction(notice.id, action.id);
+			} catch (cause) {
+				// A REJECTED action POST (404 stale card, 409 handler
+				// unavailable, 429 rate-limited, or a network failure) is a
+				// user-facing outcome, not a silent loss: record the error
+				// text into the lifted results map (the card shows it like
+				// any ok:false error) and refetch — the notice stays on the
+				// server in every one of those shapes, so the pile heals to
+				// the truth. The run STILL resolves (the card's busy flag
+				// clears through .finally); the rejection never escapes as
+				// an unhandled promise.
+				setResults((current) => ({
+					...current,
+					[notice.id]: cause instanceof Error ? cause.message : String(cause),
+				}));
+				await refetch(true).catch(() => undefined);
+				return undefined;
 			} finally {
 				const next = new Set(pendingRef.current);
 				next.delete(notice.id);

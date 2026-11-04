@@ -6,15 +6,14 @@
  * inline strip and the peek reuse it.
  *
  * Extension actions POST through `onRun`; the result's `message`/`error`
- * shows on the card for 4 s (a transient line, then gone).
+ * renders from the LIFTED `result` prop (useNotices owns the text and
+ * its 4 s window — `RESULT_DELAY_MS` there is the single source; a
+ * card-local copy dies with the row on a clear-on-ok refetch).
  */
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useState, type ReactNode } from "react";
 import type { CoreTarget } from "@sigrun/shared/blocks";
 import type { UserNotice, UserNoticeAction } from "@sigrun/shared/notices";
-
-/** How long the run-result line shows on the card. */
-export const RESULT_MESSAGE_MS = 4_000;
 
 /** A compact relative age ("2 min", "1 h", "just now"). */
 export function relativeAge(at: string, now = Date.now()): string {
