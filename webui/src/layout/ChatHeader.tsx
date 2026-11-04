@@ -23,8 +23,6 @@ import { Icon } from "../blocks/icons";
 import type { IconName } from "@sigrun/shared/blocks";
 import { useDismiss } from "../useDismiss";
 
-export type { PanelKey } from "./panelSelection";
-
 export function ChatHeader(props: {
 	/** The conversation's display title (the rename input's start value). */
 	readonly title: string;

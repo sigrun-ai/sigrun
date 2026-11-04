@@ -103,7 +103,7 @@ export function extViewEntries(
 	return entries;
 }
 
-/** The flat list of extension PANEL surfaces (the right panel's tabs). */
+/** The flat list of extension PANEL surfaces (the header's panel toggles). */
 export function extPanelEntries(
 	extensions: readonly ExtensionSurfaceRow[],
 ): ExtViewEntry[] {

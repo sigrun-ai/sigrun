@@ -111,10 +111,6 @@ const defaultClient = createClient();
  *  types; keep the two in sync by hand. */
 const RESTART_READYZ_DEADLINE_MS = 60_000;
 
-/** Load/persist the panel selection: panelSelection.ts owns the
- *  localStorage seam ("sigrun.panel"; the notices pane is NEVER
- *  persisted — chrome, not state). */
-
 /** The chronological-transcript pref (the tool-visibility fix): persisted
  * like the panel mode; absent/garbage → the grouped default. */
 const TIMELINE_STORAGE_KEY = "sigrun.timeline";
@@ -720,10 +716,23 @@ function AppShell(options: AppOptions = {}) {
 	}, [extRoute, extKey, extKeyHash, extHub, list.streamId]);
 
 	// The open extension PANEL's transport (spec §7.1/§7.3): created ONLY
-	// while an ext panel is the selection — closing the panel drops the
-	// transport (no cadence, no watcher keepalive for a hidden panel).
-	const activeExtKey = panelKey !== null && panelKey.startsWith("ext:")
-		? panelKey
+	// while an ext panel is the RESOLVED selection (todo Task 2 R2) — a
+	// stale stored key (a removed panel) behaves exactly like a closed
+	// panel: no event key, no transport, no visible-surface registration,
+	// no backdrop. Closing the panel drops the transport (no cadence, no
+	// watcher keepalive for a hidden panel).
+	const panelSelectionResolved = useMemo(
+		() =>
+			boot.status === "ready"
+				? resolvePanel(
+						panelKey,
+						extPanelEntries(boot.meta.extensions),
+					)
+				: panelKey,
+		[panelKey, boot],
+	);
+	const activeExtKey = panelSelectionResolved !== null && panelSelectionResolved.startsWith("ext:")
+		? panelSelectionResolved
 		: null;
 	const extPanelParts = useMemo(() => {
 		if (activeExtKey === null) return null;
@@ -1114,9 +1123,9 @@ function AppShell(options: AppOptions = {}) {
 	);
 
 	// The bell: toggles the notices pane — docked (the Chats tab's
-	// right-panel mode) or the right-edge overlay elsewhere. Opening the
-	// docked pane closes outline/workspace/ext panel (the mode is
-	// exclusive); opening EITHER pane clears any ext panel tab.
+	// right-panel selection) or the right-edge overlay elsewhere. Opening
+	// the docked pane replaces the outline/workspace/ext selection (one
+	// selection model — panelSelection.ts).
 	const openNoticesPane = useCallback(
 		(scrollTo?: string): void => {
 			setNoticeScrollTo(scrollTo ?? null);
@@ -1632,10 +1641,7 @@ function AppShell(options: AppOptions = {}) {
 			    every other tab's surface is full width. */}
 			{route.kind === "chat" && (
 			<RightPanel
-				selection={resolvePanel(
-					panelKey,
-					extPanelEntries(boot.meta.extensions),
-				)}
+				selection={panelSelectionResolved}
 				{...(extPanelParts !== null && extPanelTransport !== undefined
 					? {
 							extContent: (
@@ -1700,7 +1706,7 @@ function AppShell(options: AppOptions = {}) {
 			    WIDTH at that size — there is no outside to tap, and the
 			    backdrop would only overlay the header and swallow the
 			    bell's close toggle — so the notices panel skips it. */}
-			{panelKey !== null && panelKey !== "notices" && (
+			{panelSelectionResolved !== null && panelSelectionResolved !== "notices" && (
 				<div
 					className="panel-backdrop"
 					onClick={closePanel}

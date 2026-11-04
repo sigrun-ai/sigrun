@@ -15,6 +15,7 @@ import {
 	type MetaResponse,
 } from "./api";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
+import { memoryStorage } from "./layout/extViews";
 import type { EventSourceFactory } from "./stream";
 import {
 	makeEntry,
@@ -1829,82 +1830,96 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 });
 
 describe("App right-panel selection model (todo Task 2)", () => {
-// The panel-row variant: `todos` as a PANEL surface.
-function panelMeta(): MetaResponse {
-return makeMeta({
-extensions: [
-{
-name: "fixture-todo",
-status: "ok",
-surfaces: [
-{ id: "todos", title: "Todos", icon: "list", placement: "panel" },
-],
-},
-],
-});
-}
+	// The panel-row variant: `todos` as a PANEL surface.
+	function panelMeta(): MetaResponse {
+		return makeMeta({
+			extensions: [
+				{
+					name: "fixture-todo",
+					status: "ok",
+					surfaces: [
+						{ id: "todos", title: "Todos", icon: "list", placement: "panel" },
+					],
+				},
+			],
+		});
+	}
 
-test("an installed panel extension does not open the panel", async () => {
-const { client, createEventSource } = makeHarness({ meta: panelMeta() });
-const renderer = await renderAsync(
-<App client={client} createEventSource={createEventSource} />,
-);
-// The header carries the extension toggle…
-expect(
-renderer.root.findAllByProps({ "data-panel": "ext:fixture-todo/todos" })
-.length,
-).toBe(1);
-// …but the panel itself stays CLOSED (no stored key).
-expect(
-renderer.root.findAllByProps({ className: "right-panel" }),
-).toHaveLength(0);
-});
+	test("an installed panel extension does not open the panel", async () => {
+		const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// The header carries the extension toggle…
+		expect(
+			renderer.root.findAllByProps({ "data-panel": "ext:fixture-todo/todos" })
+				.length,
+		).toBe(1);
+		// …but the panel itself stays CLOSED (no stored key).
+		expect(
+			renderer.root.findAllByProps({ className: "right-panel" }),
+		).toHaveLength(0);
+	});
 
-test("switching from an extension panel back to outline renders the outline", async () => {
-const { client, createEventSource } = makeHarness({ meta: panelMeta() });
-const renderer = await renderAsync(
-<App client={client} createEventSource={createEventSource} />,
-);
-await act(async () => {
-(
-renderer.root.findByProps({
-"data-panel": "ext:fixture-todo/todos",
-}).props as { onClick: () => void }
-).onClick();
-});
-let panel = renderer.root.findByProps({ className: "right-panel" });
-expect(panel.props["data-panel"]).toBe("ext");
-// The outline toggle replaces the ext selection under data-panel=outline.
-await act(async () => {
-(
-renderer.root.findByProps({ "data-panel": "outline" }).props as {
-onClick: () => void;
-}
-).onClick();
-});
-panel = renderer.root.findByProps({ className: "right-panel" });
-expect(panel.props["data-panel"]).toBe("outline");
-// The ext toggle is no longer pressed.
-expect(
-renderer.root.findByProps({ "data-panel": "ext:fixture-todo/todos" })
-.props["aria-pressed"],
-).toBe(false);
-});
+	test("switching from an extension panel back to outline renders the outline", async () => {
+		const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		await act(async () => {
+			(
+				renderer.root.findByProps({
+					"data-panel": "ext:fixture-todo/todos",
+				}).props as { onClick: () => void }
+			).onClick();
+		});
+		let panel = renderer.root.findByProps({ className: "right-panel" });
+		expect(panel.props["data-panel"]).toBe("ext");
+		// The outline toggle replaces the ext selection under data-panel=outline.
+		await act(async () => {
+			(
+				renderer.root.findByProps({ "data-panel": "outline" }).props as {
+					onClick: () => void;
+				}
+			).onClick();
+		});
+		panel = renderer.root.findByProps({ className: "right-panel" });
+		expect(panel.props["data-panel"]).toBe("outline");
+		// The ext toggle is no longer pressed.
+		expect(
+			renderer.root.findByProps({ "data-panel": "ext:fixture-todo/todos" })
+				.props["aria-pressed"],
+		).toBe(false);
+	});
 
-test("a stored ext key for a removed panel falls back to closed", async () => {
-// Store a selection for a panel NO installed extension declares.
-(globalThis as { localStorage?: Storage }).localStorage?.setItem(
-"sigrun.panel",
-"ext:gone/panel",
-);
-const { client, createEventSource } = makeHarness({ meta: panelMeta() });
-const renderer = await renderAsync(
-<App client={client} createEventSource={createEventSource} />,
-);
-expect(
-renderer.root.findAllByProps({ className: "right-panel" }),
-).toHaveLength(0);
-});
+	test("a stored ext key for a removed panel falls back to closed", async () => {
+		// A REAL storage stub — the webui vitest runs in node, where
+		// globalThis.localStorage is undefined (an optional setItem would
+		// no-op and the test would prove nothing).
+		const store = memoryStorage();
+		store.setItem("sigrun.panel", "ext:gone/panel");
+		(globalThis as { localStorage?: Storage }).localStorage = store;
+		try {
+			const { client, createEventSource, calls } = makeHarness({
+				meta: panelMeta(),
+			});
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// The stale key resolved to CLOSED: no right panel…
+			expect(
+				renderer.root.findAllByProps({ className: "right-panel" }),
+			).toHaveLength(0);
+			// …and no surface request was issued for the removed panel (the
+			// resolved selection — not the raw stored key — drives the
+			// transport attach).
+			expect(
+				calls.filter((one) => one.input.includes("/v1/ext/gone/")),
+			).toHaveLength(0);
+		} finally {
+			delete (globalThis as { localStorage?: Storage }).localStorage;
+		}
+	});
 });
 
 describe("App restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
