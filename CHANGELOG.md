@@ -167,6 +167,24 @@ fresh-eyes clean-room install verification.
   tree gets its own per-user repo (git dir outside the work tree),
   caught up on settled runs and tab opens; ownerless conversations
   skip it.
+- **`perConversation` panels**: a panel surface declared with
+  `perConversation: true` attaches with
+  `params: { conversationId: <open conversation id> }` (empty params
+  while nothing is open), follows the open conversation (a switch
+  refetches the new conversation's instance and remounts the panel so a
+  late response for the previous conversation cannot land), and routes
+  `changed` events per conversation instance. The id is
+  client-supplied — the extension must check the caller's access to the
+  conversation before rendering or acting on it.
+
+### Changed
+- Extension panels open from **header toggles** (one icon per declared
+  panel, beside Outline and Workspace) instead of right-panel tabs; an
+  installed panel stays closed until the user opens it.
+
+### Fixed
+- An installed extension panel no longer locks the right panel open and
+  no longer auto-opens its surface.
 
 ### Changed
 - **The curation seal**: workspaces and grants that sit inside or
