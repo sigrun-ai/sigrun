@@ -6,6 +6,14 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.7.0] - 2026-11-04
+
+- New `./model-label` subpath: `modelBreadcrumb` collapses every non-leaf path segment of
+  a model id to its first character and prepends the provider (`bifrost` +
+  `chain/acme-flash` → `b/c/acme-flash`).
+- New `./auth` subpath: the one `isProxyOnly` predicate (server, webui, CLI), treating
+  absent/empty method lists as proxy-only (fail safe).
+
 ## [0.6.1] - 2026-11-03
 
 - Version pin to the 0.6.1 core family (no shared-source changes beyond the version).

@@ -288,14 +288,14 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		const gateway = siblings.get("@sigrun/ext-gateway");
 		// The linked checkout tracks the RELEASED gateway line: 0.1.3
 		// (Part A, exact 0.2.1 peer), 0.1.4 (the peer-widening patch that
-		// adds 0.3.0), and 0.1.5-0.1.12 (the peer-widening line that adds
-		// 0.4.x/0.5.0/0.6.x
+		// adds 0.3.0), and 0.1.5-0.1.13 (the peer-widening line that adds
+		// 0.4.x/0.5.0/0.6.x/0.7.0
 		// while keeping 0.3.0). Each legitimately declares its line's
 		// acceptance; anything older — or a declaration from the WRONG
 		// line — is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.([3-9]|1[0-2])$/);
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.([3-9]|1[0-3])$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1)?)?)?)?)?)?$/,
+			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0)?)?)?)?)?)?)?$/,
 		);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not

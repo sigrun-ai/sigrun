@@ -53,7 +53,7 @@ const COMPOSE_FILE = join(
 /** The published image every deploy artifact names. The chart's tags
  * default to the appVersion, so a default render carries this exact
  * reference — no explicit --set needed (and no REPLACEME to work around). */
-const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.6.1";
+const PUBLISHED_IMAGE = "ghcr.io/sigrun-ai/sigrun:0.7.0";
 
 /** helm presence — a hard env requirement (no kubectl/kustomize fallback
  * exists: the manifests are templates, not static yaml). */
@@ -212,8 +212,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/instance": "sigrun",
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
-			        "app.kubernetes.io/version": "0.6.1",
-			        "helm.sh/chart": "sigrun-0.6.1",
+			        "app.kubernetes.io/version": "0.7.0",
+			        "helm.sh/chart": "sigrun-0.7.0",
 			      },
 			      "name": "sigrun",
 			      "namespace": "sigrun",
@@ -227,8 +227,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/instance": "sigrun",
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
-			        "app.kubernetes.io/version": "0.6.1",
-			        "helm.sh/chart": "sigrun-0.6.1",
+			        "app.kubernetes.io/version": "0.7.0",
+			        "helm.sh/chart": "sigrun-0.7.0",
 			      },
 			      "name": "sigrun-data",
 			      "namespace": "sigrun",
@@ -253,8 +253,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
 			        "app.kubernetes.io/service": "sigrun",
-			        "app.kubernetes.io/version": "0.6.1",
-			        "helm.sh/chart": "sigrun-0.6.1",
+			        "app.kubernetes.io/version": "0.7.0",
+			        "helm.sh/chart": "sigrun-0.7.0",
 			      },
 			      "name": "sigrun",
 			      "namespace": "sigrun",
@@ -290,8 +290,8 @@ describe("charts/sigrun lint + default render", () => {
 			        "app.kubernetes.io/instance": "sigrun",
 			        "app.kubernetes.io/managed-by": "Helm",
 			        "app.kubernetes.io/name": "sigrun",
-			        "app.kubernetes.io/version": "0.6.1",
-			        "helm.sh/chart": "sigrun-0.6.1",
+			        "app.kubernetes.io/version": "0.7.0",
+			        "helm.sh/chart": "sigrun-0.7.0",
 			      },
 			      "name": "sigrun",
 			      "namespace": "sigrun",
@@ -370,7 +370,7 @@ describe("charts/sigrun lint + default render", () => {
 			                  },
 			                },
 			              ],
-			              "image": "ghcr.io/sigrun-ai/sigrun:0.6.1",
+			              "image": "ghcr.io/sigrun-ai/sigrun:0.7.0",
 			              "imagePullPolicy": "IfNotPresent",
 			              "livenessProbe": {
 			                "failureThreshold": 3,
@@ -1431,7 +1431,7 @@ describe("docker compose reference", () => {
 		const doc = await composeDoc();
 		const service = doc.services.sigrun;
 		expect(service.image).toBe(
-			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.6.1}"}`,
+			`ghcr.io/sigrun-ai/sigrun:${"${SIGRUN_IMAGE_TAG:-0.7.0}"}`,
 		);
 		expect(service.user).toBe("${SIGRUN_UID:-1000}:${SIGRUN_GID:-1000}");
 	});

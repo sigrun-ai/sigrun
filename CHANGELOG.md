@@ -5,6 +5,39 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-11-04
+
+The polish pass: three waves of behaviour fixes, the full deferred-minors sweep, and a
+fresh-eyes clean-room install verification.
+
+### Core
+
+- **Host-bridge fail-fast** (breaking for embedders): bridged host members now reject
+  immediately with `HostBridgeUnavailableError` when no server will ever bind the bridge
+  (`openHarness` gains `expectHostBridge`; `createServer` marks it expected on entry).
+  Handlers log once per extension+member instead of stalling the hook deadline.
+- Date-range presets (`PnD`/`PnW`) count calendar days; the `T…` part stays elapsed time.
+- `modelBreadcrumb` in `@sigrun/shared/model-label`; the webui shows the provider as a
+  breadcrumb (`b/c/acme-flash`) with the full id on hover.
+- `isProxyOnly` lives once in `@sigrun/shared/auth` (empty/absent methods fail safe);
+  the CLI onboarding gate keys on proxy identity (its claim can never carry the loopback
+  vouch; `sigrun run`'s own loopback companion is exempt).
+- Curator: empty-text skill writes refused; `.tmp` sweep; pruned undos report-and-continue
+  (siblings still revert); two-targets-one-tool validated at load; scan caps gained
+  cursors; the 10k guard reports truncation.
+- serializePolicy has one writer; smoke scripts fail loudly (the registry smoke's
+  false-green fixed); `-h/--help` accepted at every CLI level.
+- Onboarding claim errors list the accepted body keys; token-create against fresh roots
+  blames the roots.
+- e2e suite: zero fixed sleeps (condition waits + boot barriers); a stale-closure in the
+  composer's answered-refetch was found and fixed by the strictness.
+
+### Fresh-eyes fixes (clean-room verified)
+
+- The compose route boots (tmpfs `/cache:uid=1000`); the container documents its token
+  path and the image puts `sigrun` on PATH (next build); the README documents the
+  submission and claim body shapes and where the setup code lands per deploy shape.
+
 ## [0.6.1] - 2026-11-03
 
 ### Fixed
