@@ -742,18 +742,42 @@ function AppShell(options: AppOptions = {}) {
 		}
 		return { slug, id };
 	}, [activeExtKey]);
+	// The panel's instance params (todo Task 3): an opted-in
+	// (perConversation) panel attaches with the OPEN conversation's id,
+	// a plain panel always {}. `panelParamsKey` (the canonical STRING) is
+	// the single dependency of the hash effect, the transport memo, and
+	// the visible-surface registration below — never `activeId` and never
+	// a freshly-built object — so a plain panel does NOT refetch when the
+	// active conversation switches (the string is unchanged, the memos
+	// and effects don't re-run).
+	const panelParams: JsonObject = useMemo((): JsonObject => {
+		if (activeExtKey === null || boot.status !== "ready") return {};
+		const entry = extPanelEntries(boot.meta.extensions).find(
+			(one) => `ext:${one.slug}/${one.id}` === activeExtKey,
+		);
+		if (entry?.perConversation === true && activeId !== null) {
+			return { conversationId: activeId };
+		}
+		return {};
+	}, [activeExtKey, boot, activeId]);
+	const panelParamsKey = useMemo(() => canonicalJson(panelParams), [panelParams]);
 	const [extPanelKeyHash, setExtPanelKeyHash] = useState<{
 		readonly forKey: string;
 		readonly hash: string;
 	} | null>(null);
+	// The hash gate keys on selection AND params: while the new
+	// instance's hash is pending (a conversation switch on an opted-in
+	// panel) the transport stays undefined — the host unmounts instead
+	// of loading the OLD conversation's instance.
+	const extPanelInstanceKey = `${activeExtKey ?? ""}:${panelParamsKey}`;
 	useEffect(() => {
 		if (extPanelParts === null) {
 			setExtPanelKeyHash(null);
 			return;
 		}
 		let alive = true;
-		const forKey = activeExtKey ?? "";
-		void eventKeyWeb(extPanelParts.slug, extPanelParts.id, canonicalJson({})).then(
+		const forKey = extPanelInstanceKey;
+		void eventKeyWeb(extPanelParts.slug, extPanelParts.id, panelParamsKey).then(
 			(hash) => {
 				if (alive) setExtPanelKeyHash({ forKey, hash });
 			},
@@ -761,12 +785,12 @@ function AppShell(options: AppOptions = {}) {
 		return () => {
 			alive = false;
 		};
-	}, [extPanelParts, activeExtKey]);
+	}, [extPanelParts, extPanelInstanceKey, panelParamsKey]);
 	const extPanelTransport = useMemo(() => {
 		if (
 			extPanelParts === null ||
 			extPanelKeyHash === null ||
-			extPanelKeyHash.forKey !== activeExtKey
+			extPanelKeyHash.forKey !== extPanelInstanceKey
 		) {
 			return undefined;
 		}
@@ -774,11 +798,16 @@ function AppShell(options: AppOptions = {}) {
 			{
 				slug: extPanelParts.slug,
 				id: extPanelParts.id,
+				// Parsed from the canonical key (the memo's dep), never a
+				// freshly-built object: the transport's identity tracks the
+				// key STRING, so a plain panel keeps ONE transport across a
+				// conversation switch (no refetch).
+				params: JSON.parse(panelParamsKey) as JsonObject,
 				...(list.streamId === undefined ? {} : { streamId: list.streamId }),
 			},
 			extPanelKeyHash.hash,
 		);
-	}, [extPanelParts, activeExtKey, extPanelKeyHash, extHub, list.streamId]);
+	}, [extPanelParts, extPanelInstanceKey, panelParamsKey, extPanelKeyHash, extHub, list.streamId]);
 
 	// Visible-surface registration (spec §7.3's re-registration rule):
 	// the open ext page remounts on a stream change (its key joins
@@ -791,11 +820,18 @@ function AppShell(options: AppOptions = {}) {
 			list.noteSurfaceVisible(extRoute.slug, extRoute.id, extRoute.params);
 		}
 		if (extPanelParts !== null) {
-			list.noteSurfaceVisible(extPanelParts.slug, extPanelParts.id);
+			// The SAME instance params as the transport (todo Task 3): a
+			// reconnect refetches the conversation instance actually shown.
+			list.noteSurfaceVisible(
+				extPanelParts.slug,
+				extPanelParts.id,
+				JSON.parse(panelParamsKey) as JsonObject,
+			);
 		}
 		// extKey re-runs the effect when the route's params change
-		// identity (extRoute is memoized by the router).
-	}, [extRoute, extKey, extPanelParts, list.streamId, list.noteSurfaceVisible]);
+		// identity (extRoute is memoized by the router); panelParamsKey
+		// does the same for the panel's conversation instance.
+	}, [extRoute, extKey, extPanelParts, panelParamsKey, list.streamId, list.noteSurfaceVisible]);
 	// The active panel's declared refresh cadence (§7.1): read from the
 	// meta projection's panel rows (never a second fetch).
 	const panelRefreshMs = useMemo(() => {
@@ -1646,7 +1682,11 @@ function AppShell(options: AppOptions = {}) {
 					? {
 							extContent: (
 								<ExtPanelHost
-									key={activeExtKey}
+									// Keyed on the instance: a conversation switch
+									// REMOUNTS the host, so a late response for the
+									// previous conversation can never land (useSurface's
+									// doLoad has no stale-response guard).
+									key={`${activeExtKey}:${panelParamsKey}`}
 									slug={extPanelParts.slug}
 									id={extPanelParts.id}
 									transport={extPanelTransport}
