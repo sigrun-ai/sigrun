@@ -61,6 +61,36 @@ const TWIN_SPECIFIER = pathToFileURL(
 	),
 ).href;
 
+/** The overlap fixture (contract: readTools and tools are disjoint). */
+const OVERLAP_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-curation-target-readtool-overlap",
+		"index.js",
+	),
+).href;
+
+/** The bad-callback fixture (contract: wantsReview/reviewed are functions). */
+const BAD_CALLBACK_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-curation-target-bad-callback",
+		"index.js",
+	),
+).href;
+
+/** The unregistered-read-tool fixture (contract: listed read tools must be registered). */
+const BAD_READ_SPECIFIER = pathToFileURL(
+	join(
+		import.meta.dirname,
+		"fixtures",
+		"fixture-curation-target-bad-read-tool",
+		"index.js",
+	),
+).href;
+
 /** The shared-tool fixture (contract: a tool names ONE curation target). */
 const SHARED_TOOL_SPECIFIER = pathToFileURL(
 	join(
@@ -281,6 +311,60 @@ describe("curation targets (curator P7)", () => {
 			{ user: "alice", deadline: 123, runs: 2, digestTexts: ["digest text"] },
 		]);
 		expect(report).toEqual({ changes: [] });
+	});
+
+	test("a target declaring readTools loads and the registry keeps them off the wrap feed", async () => {
+		const { opened } = await boot([entry(TARGET_SPECIFIER, "fixture-curation-target")]);
+		expect(opened.extensionOutcomes).toEqual([
+			{ name: "fixture-curation-target", status: "ok" },
+		]);
+		const [target] = opened.curation.targets();
+		expect(target?.readTools).toEqual(["notes_read"]);
+		// A read tool is NEVER a curation tool: knowledge_find's shape —
+		// allowed in reviews, model-visible for serving, never wrapped.
+		expect(opened.curation.isCurationTool("notes_read")).toBe(false);
+		expect(opened.curation.isCurationTool("notes_write")).toBe(true);
+	});
+
+	test("a readTools name also in tools quarantines", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { opened } = await boot([entry(OVERLAP_SPECIFIER, "fixture-curation-target-readtool-overlap")]);
+			const [outcome] = opened.extensionOutcomes;
+			expect(outcome?.status).toBe("quarantined");
+			expect(outcome?.error).toContain("readTools");
+			expect(outcome?.error).toContain("notes_write");
+			expect(opened.curation.targets()).toHaveLength(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a readTools name the extension does not register quarantines", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { opened } = await boot([entry(BAD_READ_SPECIFIER, "fixture-curation-target-bad-read-tool")]);
+			const [outcome] = opened.extensionOutcomes;
+			expect(outcome?.status).toBe("quarantined");
+			expect(outcome?.error).toContain("notes_other_read");
+			expect(outcome?.error).toContain("fixture-curation-target-bad-read-tool");
+			expect(opened.curation.targets()).toHaveLength(0);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("a target with a non-function wantsReview or reviewed quarantines", async () => {
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const { opened } = await boot([entry(BAD_CALLBACK_SPECIFIER, "fixture-curation-target-bad-callback")]);
+			const [outcome] = opened.extensionOutcomes;
+			expect(outcome?.status).toBe("quarantined");
+			expect(outcome?.error).toContain("wantsReview");
+			expect(opened.curation.targets()).toHaveLength(0);
+		} finally {
+			warn.mockRestore();
+		}
 	});
 
 	test("a zero-target extension loads fine (curationTargets is optional)", async () => {

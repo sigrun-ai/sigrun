@@ -1443,11 +1443,27 @@ import type {
 	SigrunExtensionResult,
 } from "@sigrun/sigrun/extension";
 
+declare function hasPendingNotes(): boolean;
+declare function clearPendingNotes(): void;
+
 const notes: CurationTarget = {
 	name: "notes",                    // core qualifies it "acme:notes"
 	tools: ["notes_write"],           // registered by THIS extension
+	readTools: ["notes_read"],       // reads: served, never wrapped
 	guidance: (user) =>
 		user === "alice" ? ["Put deploy lessons in the notes target."] : [],
+	// Ask for a review of one conversation (the fork path). Core bounds
+	// each call at 2 s; a throw or timeout counts as `false`.
+	wantsReview: (user, conversationId) => {
+		void user; void conversationId;
+		return hasPendingNotes();
+	},
+	// After a fork review of the conversation COMPLETED (and only then):
+	// retire the hints it consumed. Errors are caught and logged.
+	reviewed: (user, conversationId) => {
+		void user; void conversationId;
+		clearPendingNotes();
+	},
 	async undo(user, changeId, context) {
 		void user; void changeId; void context.abortSignal;
 		// restore the version this change replaced
@@ -1479,15 +1495,40 @@ export default function createAcmeNotes(): SigrunExtensionResult {
 }
 ```
 
-**The wrapping rule.** Only the tools you LIST are intercepted: every
-listed tool's call outside a curator run never executes — the owner's
-own calls are recorded as a review hint (the model is answered "Noted.
-The curator will review this after your reply."), anything else with
-"Not recorded: this is only learned from the owner's own messages."
+**The wrapping rule.** Only the tools you LIST in `tools` are
+intercepted: every listed tool's call outside a curator run never
+executes — the owner's own calls are recorded as a review hint (the
+model is answered "Noted. The curator will review this after your
+reply."), anything else with "Not recorded: this is only learned from
+the owner's own messages."
 A direct "remember this" tool you keep OUTSIDE the target is never
 intercepted, never gated, and never undone by the curator — you own
 that write path and its undo yourself. Inside a curator run the listed
 tools execute for the run's user, confined to the run's allow list.
+
+**Read tools.** Declare pure reads in `readTools` instead: they are
+model-visible for serving (a target is only served when every `tools`
+AND `readTools` name is in the conversation's selection) and allowed
+inside a review, but NEVER wrapped into a hint and never gated — a
+call outside a curator run executes verbatim. A read tool must be
+registered by YOUR extension and disjoint from `tools`; violating
+either quarantines the load. (The built-in knowledge extension's
+`knowledge_find` is the example shape.)
+
+**Review requests.** A target may request a fork review by answering
+true from `wantsReview(user, conversationId)` —
+`host.curation.wantsReview(user, id)` is true when any served target
+answers true. The signal applies to the FORK path only: a
+mixed-authorship conversation (anyone besides the owner spoke) goes to
+the idle digest and `wantsReview` is ignored there. Each target's call
+is bounded at two seconds — a throw or a timeout counts as `false`
+(and logs one line naming your target), so never block on the network
+inside it. When the requested review COMPLETES, core calls
+`reviewed(user, conversationId)` on every served target that declares
+it — after the result is recorded, once per review — so you can retire
+the hints it consumed. It is not called for any other outcome
+(failed, deadline, cancelled) nor for an ownerless conversation, and
+errors are caught and logged: treat it as a hint, not a delivery.
 
 Load requirements, all fail-loud (a violation quarantines the whole
 extension): `undo` is REQUIRED — no undo, no magic; every listed tool

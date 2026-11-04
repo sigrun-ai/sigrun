@@ -390,8 +390,28 @@ export interface CurationTarget {
 	readonly name: string;
 	/** Tools the review may call to write this target; registered by this extension. */
 	readonly tools: readonly string[];
+	/**
+	 * Read-only tools the review may call (knowledge C5): model-visible
+	 * for serving and allowed inside a review, but NEVER wrapped into a
+	 * review hint and never gated — the loader's wrap feed grows from
+	 * `tools` only. Registered by this extension; disjoint from `tools`.
+	 */
+	readonly readTools?: readonly string[];
 	/** Routing guidance for one user; `[]` = unavailable for this user. */
 	guidance(user: string): readonly string[] | Promise<readonly string[]>;
+	/**
+	 * Whether this target wants the conversation reviewed (the fork path
+	 * only — mixed-authorship conversations go to the idle digest). Core
+	 * bounds each call at 2 s; a throw or timeout counts as `false`.
+	 */
+	wantsReview?(user: string, conversationId: ConversationId): boolean | Promise<boolean>;
+	/**
+	 * Called after a fork review of the conversation COMPLETED (after
+	 * the result is recorded) — the target's signal that the review
+	 * consumed its hints. Not called for any other status. Errors are
+	 * caught and logged; a target must not rely on being called.
+	 */
+	reviewed?(user: string, conversationId: ConversationId): void | Promise<void>;
 	/** Revert one change this target reported. Required. */
 	undo(user: string, changeId: string, ctx: HandlerContext): Promise<void>;
 	/** Optional idle maintenance, called by the curator's idle pass. */
@@ -529,6 +549,8 @@ export type CurationEligibility = {
 export type CurationTargetInfo = {
 	readonly id: string;
 	readonly tools: readonly string[];
+	/** The target's declared read tools (C5; absent when it has none). */
+	readonly readTools?: readonly string[];
 	readonly guidance: readonly string[];
 	readonly maintain: boolean;
 };
@@ -585,8 +607,15 @@ export type SigrunCurationHost = {
 	modelCallsSince(id: ConversationId, entryId?: EntryId): Promise<number>;
 	/** Read and clear the conversation's pending review hints (A8's doc). */
 	takeHints(id: ConversationId): Promise<readonly CurationHint[]>;
-	/** Targets whose tools are all in the conversation's selection (no id: all). */
+	/** Targets whose tools (and readTools) are all in the conversation's selection (no id: all). */
 	targets(user: string, id?: ConversationId): Promise<readonly CurationTargetInfo[]>;
+	/**
+	 * Whether any target served for `(user, id)` requests a review (C5):
+	 * `true` when at least one served target's `wantsReview` answers
+	 * true. Each target's call is bounded (2 s); a throw or timeout
+	 * counts as `false`. Fork-path only — the idle digest never asks.
+	 */
+	wantsReview(user: string, id: ConversationId): Promise<boolean>;
 	/** The conversation's model-visible tool names (for the allow-list). */
 	tools(id: ConversationId): Promise<readonly string[]>;
 	/** Fork the conversation at its newest entry and drive the review run. */

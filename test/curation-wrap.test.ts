@@ -57,6 +57,7 @@ const TARGET_SPECIFIER = pathToFileURL(
 type FixtureModule = {
 	readonly writes: readonly { text: string }[];
 	readonly directs: readonly { text: string }[];
+	readonly reads: readonly { key: string }[];
 	readonly resetTargetFixture: () => void;
 	readonly default: () => {
 		readonly extension: {
@@ -440,6 +441,31 @@ describe("curation-tool wrapping (curator P9)", () => {
 			"two",
 		]);
 		expect(await takeHints(conversation!, BACKGROUND_CONTEXT)).toEqual([]);
+		expect(await hintsOf(opened, id)).toEqual([]);
+	});
+
+	test("readTools are not wrapped: a read tool called outside a curator run executes", { timeout: 20_000 }, async () => {
+		const { opened, fixture } = await boot();
+		// C5: a target's declared read tools (knowledge_find's shape) are
+		// allowed inside a review and model-visible for serving, but NEVER
+		// wrapped — the loader's wrap feed is grown from `tools` only, so
+		// the installed registration is the ORIGINAL object and a call
+		// outside any curator run executes verbatim (no hint, no gate).
+		const { extension } = fixture.default();
+		const original = extension.tools?.find((tool) => tool.name === "notes_read");
+		expect(original).toBeDefined();
+		expect(registryTool(opened, "notes_read")).toBe(original);
+		// Outside a run: the call executes — not even the owner-hint path
+		// is consulted (the wrapper was never installed on this tool).
+		const id = await liveConversation(opened, { owner: "alice" });
+		const { api } = toolApi(opened, id);
+		const result = await registryTool(opened, "notes_read").execute(
+			{ key: "deploy" },
+			api,
+			BACKGROUND_CONTEXT,
+		);
+		expect(outputText(result)).toBe("read: deploy");
+		expect(fixture.reads).toEqual([{ key: "deploy" }]);
 		expect(await hintsOf(opened, id)).toEqual([]);
 	});
 

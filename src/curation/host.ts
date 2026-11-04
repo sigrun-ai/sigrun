@@ -90,6 +90,9 @@ export interface CurationHostDeps {
 	readonly defaultAgent: () => AgentChange;
 }
 
+/** Per-target bound for one `wantsReview` answer (C5). */
+const WANTS_REVIEW_BOUND_MS = 2000;
+
 /** modelCallsSince's entry-page size (cursor-walked, never a cap). */
 const MODEL_CALLS_PAGE = 500;
 /** Scan bound for the cursor walk: a broken cursor loops, a count does not. */
@@ -251,26 +254,40 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 		},
 
 		async targets(user, id): Promise<readonly CurationTargetInfo[]> {
-			// The selection filter: a target is served for a conversation
-			// only when EVERY listed tool is model-visible in that
-			// conversation's resolved agent. No id: every target.
-			const visible =
-				id === undefined ? undefined : await modelVisibleTools(id);
-			const result: CurationTargetInfo[] = [];
-			for (const target of curation.targets()) {
-				if (visible !== undefined) {
-					if (target.tools.some((tool) => !visible.has(tool))) continue;
+			// The projection drops the C5 callbacks (the info is data —
+			// readTools rides only when the target declared it).
+			return (await servedTargets(user, id)).map((target) => ({
+				id: target.id,
+				tools: target.tools,
+				...(target.readTools.length === 0
+					? {}
+					: { readTools: target.readTools }),
+				guidance: target.guidance,
+				maintain: target.maintain,
+			}));
+		},
+
+		async wantsReview(user, id): Promise<boolean> {
+			// C5: any ONE served target requesting a review is enough. Each
+			// target's answer is bounded — a throw or a slow target counts
+			// as `false` with one log line naming the target (the review
+			// loop must never stall on one target's clock).
+			for (const target of await servedTargets(user, id)) {
+				if (target.wantsReview === undefined) continue;
+				let wants = false;
+				try {
+					wants = await bounded(
+						Promise.resolve(target.wantsReview(user, id)),
+					);
+				} catch (error) {
+					console.warn(
+						`curation: wantsReview of ${target.id} failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+					continue;
 				}
-				const guidance = await target.guidance(user);
-				if (guidance.length === 0) continue;
-				result.push({
-					id: target.id,
-					tools: [...target.tools],
-					guidance: [...guidance],
-					maintain: target.maintain !== undefined,
-				});
+				if (wants === true) return true;
 			}
-			return result;
+			return false;
 		},
 
 		async tools(id): Promise<readonly string[]> {
@@ -279,7 +296,32 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 		},
 
 		async forkReview(id, opts): Promise<CurationRunResult> {
-			return await forkReviewRun({ harness, registry }, id, opts);
+			const result = await forkReviewRun({ harness, registry }, id, opts);
+			// C5: after a COMPLETED review, tell every served target the
+			// review consumed its hints — the target's signal to retire
+			// them (errors caught and logged; a target never blocks the
+			// result). Owner read from the conversation's SessionMetaDoc,
+			// as the run driver does; other statuses and an ownerless
+			// conversation fire nothing.
+			if (result.status !== "completed") return result;
+			const meta = await harness.snapshot(
+				SessionMetaDoc,
+				id,
+				BACKGROUND_CONTEXT,
+			);
+			const owner = meta?.owner;
+			if (owner === undefined) return result;
+			for (const target of await servedTargets(owner, id)) {
+				if (target.reviewed === undefined) continue;
+				try {
+					await target.reviewed(owner, id);
+				} catch (error) {
+					console.warn(
+						`curation: reviewed of ${target.id} failed: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			return result;
 		},
 
 		async digestRun(user, opts): Promise<CurationRunResult> {
@@ -404,6 +446,80 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 		const conversation = await conversationOf(id, BACKGROUND_CONTEXT);
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
 		return new Set(agent.tools.map((tool: ToolRegistration) => tool.name));
+	}
+
+	/**
+	 * One served target: the C5 projection — `id`, copied lists,
+	 * `maintain` as a boolean, plus the review callbacks when the
+	 * target declares them. Internal — host members consume it.
+	 */
+	type ServedTarget = {
+		readonly id: string;
+		readonly tools: readonly string[];
+		readonly readTools: readonly string[];
+		readonly guidance: readonly string[];
+		readonly maintain: boolean;
+		readonly wantsReview?: QualifiedTarget["wantsReview"];
+		readonly reviewed?: QualifiedTarget["reviewed"];
+	};
+
+	/**
+	 * The targets served for `(user, id)`: the selection filter (every
+	 * listed tool — `tools` AND `readTools` — model-visible) and the
+	 * guidance filter (`[]` = unavailable for the user), projected for
+	 * the caller. No id: every target (selection-independent).
+	 */
+	async function servedTargets(
+		user: string,
+		id?: ConversationId,
+	): Promise<readonly ServedTarget[]> {
+		const visible =
+			id === undefined ? undefined : await modelVisibleTools(id);
+		const result: ServedTarget[] = [];
+		for (const target of curation.targets()) {
+			if (visible !== undefined) {
+				if (target.tools.some((tool) => !visible.has(tool))) continue;
+				if ((target.readTools ?? []).some((tool) => !visible.has(tool))) {
+					continue;
+				}
+			}
+			const guidance = await target.guidance(user);
+			if (guidance.length === 0) continue;
+			result.push({
+				id: target.id,
+				tools: [...target.tools],
+				readTools: [...(target.readTools ?? [])],
+				guidance: [...guidance],
+				maintain: target.maintain !== undefined,
+				...(target.wantsReview === undefined
+					? {}
+					: { wantsReview: target.wantsReview }),
+				...(target.reviewed === undefined
+					? {}
+					: { reviewed: target.reviewed }),
+			});
+		}
+		return result;
+	}
+
+	/** Bound one target answer at the C5 deadline; rejects past it. */
+	async function bounded(answer: Promise<boolean>): Promise<boolean> {
+		return await new Promise<boolean>((resolve, reject) => {
+			const timer = setTimeout(
+				() => reject(new Error("wantsReview timed out")),
+				WANTS_REVIEW_BOUND_MS,
+			);
+			answer.then(
+				(value) => {
+					clearTimeout(timer);
+					resolve(value === true);
+				},
+				(error) => {
+					clearTimeout(timer);
+					reject(error instanceof Error ? error : new Error(String(error)));
+				},
+			);
+		});
 	}
 
 	/** The feed entries one review caused (newest-first walk). */

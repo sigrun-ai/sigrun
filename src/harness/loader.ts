@@ -1072,6 +1072,47 @@ function validateCurationTargets(
 				`extension factory returned a curation target "${name}" whose maintain is not a function`,
 			);
 		}
+		// C5: readTools — an array of non-empty strings DISJOINT from
+		// tools (a read tool is never wrapped; a name on both lists is a
+		// contradiction). The registered-by-the-declaring-extension check
+		// lives in the load loop (no registry here).
+		const readTools = target?.readTools;
+		if (readTools !== undefined) {
+			if (
+				!Array.isArray(readTools) ||
+				readTools.some(
+					(tool) => typeof tool !== "string" || tool.length === 0,
+				)
+			) {
+				throw new Error(
+					`extension factory returned a curation target "${name}" whose readTools is not an array of non-empty strings`,
+				);
+			}
+			const overlap = readTools.find((tool) =>
+				(tools as readonly string[]).includes(tool),
+			);
+			if (overlap !== undefined) {
+				throw new Error(
+					`extension factory returned a curation target "${name}" whose readTools names "${overlap}" — a tool is either listed (wrapped) or read (never wrapped), never both`,
+				);
+			}
+		}
+		if (
+			target?.wantsReview !== undefined &&
+			typeof target.wantsReview !== "function"
+		) {
+			throw new Error(
+				`extension factory returned a curation target "${name}" whose wantsReview is not a function`,
+			);
+		}
+		if (
+			target?.reviewed !== undefined &&
+			typeof target.reviewed !== "function"
+		) {
+			throw new Error(
+				`extension factory returned a curation target "${name}" whose reviewed is not a function`,
+			);
+		}
 		targets.push(entry as CurationTarget);
 	}
 	return targets;
@@ -3052,6 +3093,17 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					if (unregistered !== undefined) {
 						throw new Error(
 							`extension "${slug}" declares curation target "${target.name}" listing tool "${unregistered}" it does not register`,
+						);
+					}
+					// C5: the same check for readTools (never wrapped, never fed
+					// to the wrap feed — only registered, so the served filter and
+					// the review gate see a real tool).
+					const unregisteredRead = (target.readTools ?? []).find(
+						(tool) => !registered.has(tool),
+					);
+					if (unregisteredRead !== undefined) {
+						throw new Error(
+							`extension "${slug}" declares curation target "${target.name}" listing read tool "${unregisteredRead}" it does not register`,
 						);
 					}
 					// A tool names ONE target (A8): two targets — across any
