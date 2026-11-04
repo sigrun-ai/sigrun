@@ -1767,9 +1767,9 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 		);
 		const extCalls = () =>
 			calls.filter((one) => one.input.includes("/v1/ext/fixture-surfaces/surfaces/stats"));
-		// Open the panel tab (the panel host loads its surface).
+		// Open the panel via its header toggle (the panel host loads its surface).
 		const tab = renderer.root.findByProps({
-			"data-panel-tab": "ext:fixture-surfaces/stats",
+			"data-panel": "ext:fixture-surfaces/stats",
 		});
 		await act(async () => {
 			(tab.props as { onClick: () => void }).onClick();
@@ -1825,6 +1825,85 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 			resetLocationHashForTest();
 		}
 	});
+});
+});
+
+describe("App right-panel selection model (todo Task 2)", () => {
+// The panel-row variant: `todos` as a PANEL surface.
+function panelMeta(): MetaResponse {
+return makeMeta({
+extensions: [
+{
+name: "fixture-todo",
+status: "ok",
+surfaces: [
+{ id: "todos", title: "Todos", icon: "list", placement: "panel" },
+],
+},
+],
+});
+}
+
+test("an installed panel extension does not open the panel", async () => {
+const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+const renderer = await renderAsync(
+<App client={client} createEventSource={createEventSource} />,
+);
+// The header carries the extension toggle…
+expect(
+renderer.root.findAllByProps({ "data-panel": "ext:fixture-todo/todos" })
+.length,
+).toBe(1);
+// …but the panel itself stays CLOSED (no stored key).
+expect(
+renderer.root.findAllByProps({ className: "right-panel" }),
+).toHaveLength(0);
+});
+
+test("switching from an extension panel back to outline renders the outline", async () => {
+const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+const renderer = await renderAsync(
+<App client={client} createEventSource={createEventSource} />,
+);
+await act(async () => {
+(
+renderer.root.findByProps({
+"data-panel": "ext:fixture-todo/todos",
+}).props as { onClick: () => void }
+).onClick();
+});
+let panel = renderer.root.findByProps({ className: "right-panel" });
+expect(panel.props["data-panel"]).toBe("ext");
+// The outline toggle replaces the ext selection under data-panel=outline.
+await act(async () => {
+(
+renderer.root.findByProps({ "data-panel": "outline" }).props as {
+onClick: () => void;
+}
+).onClick();
+});
+panel = renderer.root.findByProps({ className: "right-panel" });
+expect(panel.props["data-panel"]).toBe("outline");
+// The ext toggle is no longer pressed.
+expect(
+renderer.root.findByProps({ "data-panel": "ext:fixture-todo/todos" })
+.props["aria-pressed"],
+).toBe(false);
+});
+
+test("a stored ext key for a removed panel falls back to closed", async () => {
+// Store a selection for a panel NO installed extension declares.
+(globalThis as { localStorage?: Storage }).localStorage?.setItem(
+"sigrun.panel",
+"ext:gone/panel",
+);
+const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+const renderer = await renderAsync(
+<App client={client} createEventSource={createEventSource} />,
+);
+expect(
+renderer.root.findAllByProps({ className: "right-panel" }),
+).toHaveLength(0);
 });
 });
 

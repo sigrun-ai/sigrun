@@ -9,12 +9,19 @@
 import { act } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { render, textContent } from "../test-utils";
-import { ChatHeader, type PanelMode } from "./ChatHeader";
+import { ChatHeader } from "./ChatHeader";
+import { extPanelKey, type PanelKey } from "./panelSelection";
 
 function renderHeader(init?: {
 	readonly title?: string;
-	readonly panel?: PanelMode | null;
-	readonly onPanel?: (mode: PanelMode) => void;
+	readonly panel?: PanelKey | null;
+	readonly onPanel?: (key: PanelKey) => void;
+	readonly extPanels?: readonly {
+		readonly slug: string;
+		readonly id: string;
+		readonly title: string;
+		readonly icon: string;
+	}[];
 	readonly onRename?: (name: string) => Promise<void>;
 	readonly onExport?: () => void;
 	readonly onCompact?: () => void;
@@ -26,6 +33,7 @@ function renderHeader(init?: {
 			timeline={false}
 			onTimeline={() => {}}
 			panel={init?.panel ?? null}
+			extPanels={init?.extPanels ?? []}
 			onPanel={init?.onPanel ?? (() => {})}
 			onRename={init?.onRename ?? (async () => {})}
 			onExport={init?.onExport ?? (() => {})}
@@ -112,6 +120,43 @@ describe("ChatHeader", () => {
 		expect(onPanel).toHaveBeenCalledWith("workspace");
 	});
 
+	test("renders one toggle per extension panel with aria-pressed", () => {
+		const extPanels = [
+			{ slug: "todo", id: "todos", title: "Todos", icon: "list" },
+			{ slug: "acme", id: "stats", title: "Acme stats", icon: "chart" },
+		];
+		const renderer = renderHeader({
+			panel: "ext:todo/todos",
+			extPanels,
+		});
+		const todos = renderer.root.findByProps({
+			"data-panel": "ext:todo/todos",
+		});
+		expect(todos.props["aria-pressed"]).toBe(true);
+		expect(todos.props.title).toBe("Todos");
+		expect(todos.props["aria-label"]).toBe("Todos");
+		const stats = renderer.root.findByProps({
+			"data-panel": "ext:acme/stats",
+		});
+		expect(stats.props["aria-pressed"]).toBe(false);
+		expect(stats.props.title).toBe("Acme stats");
+	});
+
+	test("clicking an extension toggle calls onPanel with its ext key", () => {
+		const onPanel = vi.fn();
+		const renderer = renderHeader({
+			onPanel,
+			extPanels: [
+				{ slug: "todo", id: "todos", title: "Todos", icon: "list" },
+			],
+		});
+		const toggle = renderer.root.findByProps({
+			"data-panel": extPanelKey("todo", "todos"),
+		});
+		(toggle.props as { onClick: () => void }).onClick();
+		expect(onPanel).toHaveBeenCalledWith("ext:todo/todos");
+	});
+
 	test("the ⋯ menu lists Export, Compact, Rename, Archive; each item forwards its action", async () => {
 		const onExport = vi.fn();
 		const onCompact = vi.fn();
@@ -193,6 +238,7 @@ describe("ChatHeader", () => {
 				timeline={false}
 				onTimeline={() => {}}
 				panel={null}
+				extPanels={[]}
 				onPanel={() => {}}
 				onRename={async () => {}}
 				onExport={() => {}}
@@ -220,6 +266,7 @@ describe("ChatHeader", () => {
 				timeline={false}
 				onTimeline={() => {}}
 				panel={null}
+				extPanels={[]}
 				onPanel={() => {}}
 				onRename={async () => {}}
 				onExport={() => {}}

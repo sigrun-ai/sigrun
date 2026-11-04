@@ -21,6 +21,9 @@ export interface ExtensionSurfaceRow {
 		readonly icon: string;
 		readonly placement: "view" | "panel";
 		readonly refreshMs?: number;
+		/** Wire parity (todo Task 1): a per-conversation panel attaches
+		 *  under the active conversation's scope. */
+		readonly perConversation?: true;
 	}[];
 }
 
@@ -37,6 +40,9 @@ export interface ExtViewEntry {
 	/** The declared refresh cadence (§7.1); the open surface page's
 	 *  refetch interval. Absent → no cadence. */
 	readonly refreshMs?: number;
+	/** A per-conversation panel (todo Task 1) attaches under the active
+	 *  conversation's scope. */
+	readonly perConversation?: true;
 }
 
 /** The localStorage key the saved order rides (a client preference). */
@@ -111,6 +117,9 @@ export function extPanelEntries(
 				id: surface.id,
 				title: surface.title,
 				icon: surface.icon,
+				...(surface.perConversation === true
+					? { perConversation: true as const }
+					: {}),
 			});
 		}
 	}

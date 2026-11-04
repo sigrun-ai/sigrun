@@ -17,10 +17,13 @@
 
 import { useRef, useState, type ReactNode } from "react";
 import { MenuIcon, MoreIcon, OutlineIcon, WorkspaceIcon } from "./icons";
-import type { PanelMode } from "./RightPanel";
+import { extPanelKey, type PanelKey } from "./panelSelection";
+import type { ExtViewEntry } from "./extViews";
+import { Icon } from "../blocks/icons";
+import type { IconName } from "@sigrun/shared/blocks";
 import { useDismiss } from "../useDismiss";
 
-export type { PanelMode } from "./RightPanel";
+export type { PanelKey } from "./panelSelection";
 
 export function ChatHeader(props: {
 	/** The conversation's display title (the rename input's start value). */
@@ -29,10 +32,13 @@ export function ChatHeader(props: {
 	readonly timeline: boolean;
 	/** Toggle the chronological view. */
 	readonly onTimeline: () => void;
-	/** The open panel mode, or null when closed (drives aria-pressed). */
-	readonly panel: PanelMode | null;
-	/** Panel toggle: App maps a click on the active mode to close. */
-	readonly onPanel: (mode: PanelMode) => void;
+	/** The open panel selection, or null when closed (drives aria-pressed). */
+	readonly panel: PanelKey | null;
+	/** The installed extension panels: one toggle each, after the
+	 *  Outline/Workspace buttons (todo Task 2 — no in-panel tab strip). */
+	readonly extPanels: readonly ExtViewEntry[];
+	/** Panel toggle: App maps a click on the active key to close. */
+	readonly onPanel: (key: PanelKey) => void;
 	/** Persist a rename; resolves when the write landed. */
 	readonly onRename: (name: string) => Promise<void>;
 	readonly onExport: () => void;
@@ -158,6 +164,23 @@ export function ChatHeader(props: {
 			>
 				<WorkspaceIcon />
 			</button>
+			{props.extPanels.map((entry) => {
+				const key = extPanelKey(entry.slug, entry.id);
+				return (
+					<button
+						key={key}
+						type="button"
+						className="icon-btn"
+						data-panel={key}
+						title={entry.title}
+						aria-label={entry.title}
+						aria-pressed={panel === key}
+						onClick={() => onPanel(key)}
+					>
+						<Icon name={entry.icon as IconName} size={16} />
+					</button>
+				);
+			})}
 			<span className="chat-menu-slot" ref={menuSlot}>
 				<button
 					type="button"
