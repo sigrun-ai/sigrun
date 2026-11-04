@@ -114,4 +114,25 @@ describe("@sigrun/sigrun/extension (the documented contract type)", () => {
 			"run(input: string, tools: readonly string[]): Promise<CurationRunResult>",
 		);
 	});
+
+	test("the emitted d.ts declares the published-hook contract (knowledge C7)", () => {
+		const declarations = readFileSync(
+				join(REPO_ROOT, "dist", "extension.d.ts"),
+				"utf8",
+		);
+		// The C7 surface: the factory-result field plus the type names an
+		// extension imports (the consumer fixture above exercises them).
+		for (const name of [
+			"publishedHooks",
+			"PublishedHook",
+			"PublishedHookCall",
+			"PublishedHookResult",
+			"PublishedHookDeclaration",
+		]) {
+			expect(
+				declarations.includes(name),
+				`dist/extension.d.ts is missing "${name}"`,
+			).toBe(true);
+		}
+	});
 });

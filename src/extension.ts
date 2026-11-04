@@ -1670,6 +1670,29 @@ export interface SigrunHost {
 	 * for the bridge, never a silent drop.
 	 */
 	readonly curation: SigrunCurationHost;
+
+	/**
+	 * The published-hook surface (knowledge C7): look up a hook another
+	 * extension published (`get` returns `undefined` while loading is
+	 * still running and for unowned names) or call it through the core
+	 * registry. `call` NEVER throws: an unowned name is `absent`, a
+	 * payload the owner's schema rejects is `rejected`, and a provider
+	 * failure is `failed` with a reason. A call issued before loading
+	 * finishes waits for it — never `await` one inside a factory body
+	 * (stash the host; call from a tool, handler, worker, or job).
+	 */
+	readonly publishedHooks: {
+		get(name: string): { provider: string; input: TSchema; output?: TSchema } | undefined;
+		call(
+			name: string,
+			payload: unknown,
+			opts?: {
+				user?: string;
+				conversationId?: ConversationId;
+				abortSignal?: AbortSignal;
+			},
+		): Promise<PublishedHookResult>;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1755,6 +1778,16 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly gateway?: GatewayEngine;
 	/** Declared surfaces — views and panels (UI-blocks U3, spec §7.1; the service lands in Task 2). */
 	readonly surfaces?: SurfacesContribution;
+	/**
+	 * Published hooks (knowledge C7): named, schema-validated calls this
+	 * extension offers OTHER extensions through `host.publishedHooks`.
+	 * Core compiles each schema once at load; a malformed declaration
+	 * (bad name, duplicate within the extension, non-object input,
+	 * non-function `run`, a schema that fails to compile) quarantines
+	 * the extension. The first configured provider of a name owns it;
+	 * configured providers beat built-ins.
+	 */
+	readonly publishedHooks?: readonly PublishedHook[];
 }
 
 /**

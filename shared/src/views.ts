@@ -668,6 +668,18 @@ export interface MetaResponse {
 			readonly contributor: string;
 		}[];
 	};
+	/**
+	 * The published-hook registry (knowledge C7): one row per OWNED hook
+	 * name — `provider` is the owner slug, `shadowed` the losing
+	 * providers (configured losers before built-in losers). Ownership is
+	 * first-listed over `extensions[]`, configured before built-ins;
+	 * empty when nothing published.
+	 */
+	readonly publishedHooks: readonly {
+		readonly name: string;
+		readonly provider: string;
+		readonly shadowed: readonly string[];
+	}[];
 }
 
 /**

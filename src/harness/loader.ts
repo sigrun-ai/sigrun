@@ -95,6 +95,8 @@ import type {
 	LoginProviderContribution,
 	NotifierContribution,
 	ProviderContribution,
+	PublishedHook,
+	PublishedHookDeclaration,
 	SettingsSectionDef,
 	SigrunExtensionResult,
 	SigrunLifecycleHandlers,
@@ -128,7 +130,12 @@ import {
 	RESERVED_CORE_SECTION_KEYS,
 	RESERVED_EXTENSION_SLUGS,
 } from "./reserved-sections.js";
+import { Compile } from "typebox/compile";
 import { slugifyName } from "./stores.js";
+import {
+	PUBLISHED_HOOK_NAME,
+	PUBLISHED_HOOK_NAME_MAX_CHARS,
+} from "./published-hooks.js";
 import { wrapExtensionCurationTools } from "../curation/wrap.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
 
@@ -450,6 +457,14 @@ export interface LoadedExtensions {
 	 */
 	readonly noticeActionBindings: readonly ExtensionNoticeActionBinding[];
 	/**
+	 * `publishedHooks` declarations from loaded extensions (knowledge C7),
+	 * one entry per hook in load order, each `{extension, builtin, hook}`
+	 * with the slug attribution — boot folds this flat list into the ONE
+	 * `PublishedHookRegistry` (configured before built-ins; first per name
+	 * owns). Quarantined extensions contribute none.
+	 */
+	readonly publishedHookDeclarations: readonly PublishedHookDeclaration[];
+	/**
 	 * Declared jobs from factory results (jobs §8.3 — the `extension`
 	 * source), one entry per loaded extension whose result carried `jobs`;
 	 * quarantined extensions contribute none. Boot reconciliation folds
@@ -595,6 +610,8 @@ export interface ResolvedExtension {
 	readonly workers?: readonly ExtensionWorker[];
 	/** Curation targets (curator P7), validated fail-loud. */
 	readonly curationTargets?: readonly CurationTarget[];
+	/** Present only when the factory result carried `publishedHooks` (validated). */
+	readonly publishedHooks?: readonly PublishedHook[];
 	/** Present only when the factory result carried `noticeActions` (validated). */
 	readonly noticeActions?: Readonly<Record<string, UserNoticeActionHandler>>;
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
@@ -703,7 +720,8 @@ type LoaderReadKeys =
 	| "perUserTools"
 	| "userServices"
 	| "curationTargets"
-	| "noticeActions";
+	| "noticeActions"
+	| "publishedHooks";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -932,6 +950,83 @@ function validateNoticeActions(
 		actions[name] = handler as UserNoticeActionHandler;
 	}
 	return actions;
+}
+
+/**
+ * Validate a factory result's `publishedHooks` declaration (knowledge C7).
+ * Absent → undefined (no hooks). Present but malformed → throw; the loader
+ * quarantines the extension with the thrown message (fail-loud: an
+ * extension that THINKS it published a hook must not silently lose it).
+ * Per entry: a string `name` matching {@link PUBLISHED_HOOK_NAME} (and the
+ * length bound), no intra-extension duplicates, `input` an object, `run` a
+ * function — plus a `Compile` of both schemas, which is what makes the
+ * registry build's compile-throw unreachable in production.
+ */
+function validatePublishedHooks(
+	value: unknown,
+): readonly PublishedHook[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a publishedHooks field that is not an array",
+		);
+	}
+	const seen = new Set<string>();
+	for (const entry of value) {
+		const hook = entry as {
+			name?: unknown;
+			description?: unknown;
+			input?: unknown;
+			output?: unknown;
+			run?: unknown;
+		} | null;
+		const name = hook?.name;
+		if (
+			typeof name !== "string" ||
+			name.length > PUBLISHED_HOOK_NAME_MAX_CHARS ||
+			!PUBLISHED_HOOK_NAME.test(name)
+		) {
+			throw new Error(
+				`extension factory returned a published hook with an invalid name ${JSON.stringify(name)} (must match ${PUBLISHED_HOOK_NAME.source}, ≤${PUBLISHED_HOOK_NAME_MAX_CHARS} chars)`,
+			);
+		}
+		if (seen.has(name)) {
+			throw new Error(
+				`extension factory returned a duplicate published hook name "${name}"`,
+			);
+		}
+		seen.add(name);
+		if (
+			typeof hook?.input !== "object" ||
+			hook.input === null ||
+			Array.isArray(hook.input)
+		) {
+			throw new Error(
+				`extension factory returned a published hook "${name}" whose input is not a schema object`,
+			);
+		}
+		if (hook.output !== undefined && (typeof hook.output !== "object" || hook.output === null)) {
+			throw new Error(
+				`extension factory returned a published hook "${name}" whose output is not a schema object`,
+			);
+		}
+		if (typeof hook?.run !== "function") {
+			throw new Error(
+				`extension factory returned a published hook "${name}" whose run is not a function`,
+			);
+		}
+		// Compile ONCE here: a schema that fails to compile quarantines the
+		// extension at load, so the registry build never sees one.
+		try {
+			Compile(hook.input as never);
+			if (hook.output !== undefined) Compile(hook.output as never);
+		} catch (err) {
+			throw new Error(
+				`extension factory returned a published hook "${name}" whose schema fails to compile: ${err instanceof Error ? err.message : String(err)}`,
+			);
+		}
+	}
+	return value as readonly PublishedHook[];
 }
 
 function validateCurationTargets(
@@ -2281,6 +2376,12 @@ async function resolvedFromFactory(
 	// Notice actions (notices Task 3): a plain object of name → handler,
 	// every name grammar-checked; a malformed entry quarantines.
 	const noticeActions = validateNoticeActions(candidate.noticeActions);
+	// Published hooks (knowledge C7): validated HERE (before the slug
+	// exists — ownership and shadowing are registry concerns, never
+	// load-failures); the declarations attribute to the slug at
+	// collection. A malformed entry or a schema that fails to compile
+	// quarantines the extension.
+	const publishedHooks = validatePublishedHooks(candidate.publishedHooks);
 	return {
 		...(candidate.perUserTools === undefined
 			? {}
@@ -2323,6 +2424,7 @@ async function resolvedFromFactory(
 		...(workers === undefined ? {} : { workers }),
 		...(curationTargets === undefined ? {} : { curationTargets }),
 		...(noticeActions === undefined ? {} : { noticeActions }),
+		...(publishedHooks === undefined ? {} : { publishedHooks }),
 		...(providers === undefined ? {} : { providers }),
 		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
@@ -2619,6 +2721,11 @@ const workerBindings: ExtensionWorkerBinding[] = [];
 // these into the ONE CurationRegistry (src/curation/targets.ts).
 const curationBindings: ExtensionCurationBinding[] = [];
 const noticeActionBindings: ExtensionNoticeActionBinding[] = [];
+// Published hooks (knowledge C7): flat declarations, in load order,
+// slug-attributed with the built-in flag — boot folds them into the
+// registry AFTER `loadExtensions` returns (ownership: configured before
+// built-ins, first per name wins — the registry's own ordering rule).
+const publishedHookDeclarations: PublishedHookDeclaration[] = [];
 const userServiceBindings: { extension: string; services: readonly UserService[]; packageDir: string }[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
@@ -3075,6 +3182,16 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						actions: resolved.noticeActions,
 					});
 				}
+				// Published hooks (knowledge C7): collected AFTER the install
+				// — a quarantined extension never reaches here, so every
+				// declaration in the list comes from a LOADED extension.
+				for (const hook of resolved.publishedHooks ?? []) {
+					publishedHookDeclarations.push({
+						extension: slug,
+						builtin: builtin === true,
+						hook,
+					});
+				}
 				if (resolved.curationTargets !== undefined) {
 					curationBindings.push({
 						extension: slug,
@@ -3209,6 +3326,7 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		workerBindings,
 		curationBindings,
 		noticeActionBindings,
+		publishedHookDeclarations,
 		jobBindings,
 		routeBindings,
 		commandBindings,
