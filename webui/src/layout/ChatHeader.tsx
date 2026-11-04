@@ -10,9 +10,12 @@
  *   Esc close it (useDismiss).
  * - The narrow-viewport drawer toggle (CSS shows it ≤900px only, where
  *   the rail + sidebar collapse into the drawer).
+ * - Notices Task 7: the optional `bell` slot renders ahead of the panel
+ *   toggles; CSS shows it ≤900px only (the phone's rail hides, so the
+ *   bell moves into the header).
  */
 
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { MenuIcon, MoreIcon, OutlineIcon, WorkspaceIcon } from "./icons";
 import type { PanelMode } from "./RightPanel";
 import { useDismiss } from "../useDismiss";
@@ -39,6 +42,9 @@ export function ChatHeader(props: {
 	readonly drawerOpen: boolean;
 	/** Toggle the narrow-viewport drawer (rail + sidebar). */
 	readonly onToggleDrawer: () => void;
+	/** Notices Task 7: the bell node (App's Bell). Rendered in the
+	 *  header; CSS hides it above 900px (the rail carries it there). */
+	readonly bell?: ReactNode;
 }) {
 	const {
 		title,
@@ -118,6 +124,7 @@ export function ChatHeader(props: {
 				</button>
 			)}
 			<span className="chat-header-spacer" />
+			<span className="chat-header-bell">{props.bell}</span>
 			<button
 				type="button"
 				className="icon-btn"

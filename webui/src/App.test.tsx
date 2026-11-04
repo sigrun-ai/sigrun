@@ -441,7 +441,13 @@ describe("App shell", () => {
 				<App client={client} createEventSource={createEventSource} />,
 			);
 			const before = locationHash();
-			const bell = renderer.root.findByProps({ "data-rail-section": "notices" });
+			// Two bells render (the rail's + the chat header's phone copy);
+			// the rail's is the one these tests exercise.
+			const railBell = () =>
+				renderer.root
+					.findByProps({ className: "rail" })
+					.findByProps({ "data-rail-section": "notices" });
+			const bell = railBell();
 			await act(async () => {
 				(bell.props as { onClick: () => unknown }).onClick();
 			});
@@ -456,7 +462,7 @@ describe("App shell", () => {
 			expect(textContent(renderer.toJSON())).toContain("No notices");
 			// Clicking the bell again closes the pane.
 			await act(async () => {
-				(renderer.root.findByProps({ "data-rail-section": "notices" }).props as { onClick: () => unknown }).onClick();
+				(railBell().props as { onClick: () => unknown }).onClick();
 			});
 			expect(
 				renderer.root.findAllByProps({ className: "right-panel" }),
@@ -474,8 +480,11 @@ describe("App shell", () => {
 			const renderer = await renderAsync(
 				<App client={client} createEventSource={createEventSource} />,
 			);
+			// The rail's bell (the phone-header copy also renders, CSS-hidden).
 			const bell = () =>
-				renderer.root.findByProps({ "data-rail-section": "notices" });
+				renderer.root
+					.findByProps({ className: "rail" })
+					.findByProps({ "data-rail-section": "notices" });
 			const overlay = () =>
 				renderer.root.findAllByProps({
 					className: "notices-pane notices-pane-overlay",

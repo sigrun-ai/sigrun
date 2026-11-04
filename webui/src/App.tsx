@@ -1523,7 +1523,27 @@ function AppShell(options: AppOptions = {}) {
 				onArchive={onArchive}
 				drawerOpen={drawerOpen}
 				onToggleDrawer={() => setDrawerOpen((open) => !open)}
-			/>
+				bell={
+					<Bell
+						count={notices.notices.length}
+						active={noticesPaneOpen}
+						onToggle={toggleNoticesPane}
+					/>
+				}
+				/>
+			)}
+			{/* Notices Task 7: on phones (≤900px, CSS-only) every NON-chats
+			    tab carries the bell in a slim header row — the rail hides at
+			    that width, so the bell would be unreachable otherwise. */}
+			{route.kind !== "chat" && (
+				<header className="phone-header">
+					<span className="phone-header-spacer" />
+					<Bell
+						count={notices.notices.length}
+						active={noticesPaneOpen}
+						onToggle={toggleNoticesPane}
+					/>
+				</header>
 			)}
 			{shellError !== null && (
 					<p className="shell-error" role="alert">
@@ -1584,6 +1604,7 @@ function AppShell(options: AppOptions = {}) {
 											(one) => one.conversationId === activeId,
 										)
 							}
+							noticeResults={notices.results}
 							noticeRun={notices.run}
 							noticeDismiss={(id) => void notices.dismiss(id)}
 							onOpenNoticesPane={() => openNoticesPane()}
@@ -1632,6 +1653,7 @@ function AppShell(options: AppOptions = {}) {
 					<NoticesPane
 						variant="docked"
 						notices={notices.notices}
+						results={notices.results}
 						conversationName={noticeConversationName}
 						run={notices.run}
 						dismiss={(id) => void notices.dismiss(id)}
@@ -1673,6 +1695,7 @@ function AppShell(options: AppOptions = {}) {
 				<NoticesPane
 					variant="overlay"
 					notices={notices.notices}
+					results={notices.results}
 					conversationName={noticeConversationName}
 					run={notices.run}
 					dismiss={(id) => void notices.dismiss(id)}

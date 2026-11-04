@@ -179,14 +179,16 @@ describe("useNotices", () => {
 		vi.unstubAllGlobals();
 	});
 
-	test("extension action ok shows the result message and clears via refetch", async () => {
+	test("extension action ok shows the result message and clears via the deferred refetch", async () => {
 		const { client, store, get } = await mount({
 			notices: [notice({ id: "n-1", actions: [
 				{ id: "undo", label: "Undo", kind: "extension", name: "undo-learn" },
 			] })],
 		});
-		// The server's ok path removes the notice (keep absent) — the
-		// refetch after the POST sees it gone.
+		// The server's ok path removes the notice (keep absent); the
+		// hook's refetch is DEFERRED past the card's 4 s result message
+		// (spec §6's "briefly on the notice") — the pile updates only
+		// after the delay fires.
 		client.runNoticeAction.mockImplementation(async () => {
 			store.notices = store.notices.filter((one) => one.id !== "n-1");
 			return { ok: true as const, message: "learn undone" };
@@ -200,8 +202,43 @@ describe("useNotices", () => {
 			);
 		});
 		expect(client.runNoticeAction).toHaveBeenCalledWith("n-1", "undo");
-		expect(get().notices).toEqual([]);
+		// The response is returned BEFORE the deferred refetch fires; the
+		// pile still shows the notice (the card's message window), and
+		// the LIFTED results map carries the text (the card renders from
+		// here — the message survives whichever refetch drops the row).
 		expect(outcome).toMatchObject({ ok: true, message: "learn undone" });
+		expect(get().notices.map((one) => one.id)).toEqual(["n-1"]);
+		expect(get().results).toEqual({ "n-1": "learn undone" });
+		// Fire the deferred refetch: the pile heals to the server's state
+		// and the result entry expires with it (the one window).
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 4_100));
+		});
+		expect(get().notices).toEqual([]);
+		expect(get().results).toEqual({});
+	});
+
+	test("a failed extension action records the error in the lifted map and refetches now", async () => {
+		const { client, get } = await mount({
+			notices: [notice({ id: "n-1", actions: [
+				{ id: "retry", label: "Retry", kind: "extension", name: "retry" },
+			] })],
+		});
+		client.runNoticeAction.mockResolvedValue({
+			ok: false as const,
+			error: { message: "handler exploded" },
+		});
+		await act(async () => {
+			await get().run(
+				get().notices[0] as UserNotice,
+				{ id: "retry", label: "Retry", kind: "extension", name: "retry" },
+				() => {},
+			);
+		});
+		// The notice stays (the failure refetch ran immediately) and the
+		// error text is in the lifted map.
+		expect(get().notices.map((one) => one.id)).toEqual(["n-1"]);
+		expect(get().results).toEqual({ "n-1": "handler exploded" });
 	});
 
 	test("extension action failure keeps the notice and reports the error", async () => {

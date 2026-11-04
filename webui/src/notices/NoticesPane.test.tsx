@@ -169,4 +169,24 @@ describe("NoticesPane", () => {
 		});
 		expect(closed).toBe(1);
 	});
+
+	test("phone: the sheet keeps the overlay's close semantics (Escape closes)", () => {
+		// The ≤900px full-height sheet is CSS over the SAME overlay
+		// variant — its chrome (outside click / Escape) is unchanged; this
+		// pins that nothing phone-shaped adds a second close path.
+		const doc = makeDocument();
+		vi.stubGlobal("document", doc);
+		let closed = 0;
+		renderWithNodes(
+			h(NoticesPane, {
+				...baseProps([notice({ id: "n-1" })]),
+				variant: "overlay",
+				onClose: () => (closed += 1),
+			}),
+		);
+		act(() => {
+			doc.fire("keydown", { key: "Escape" });
+		});
+		expect(closed).toBe(1);
+	});
 });

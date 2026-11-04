@@ -134,9 +134,19 @@ export interface E2EServerOptions {
 				readonly proxy: { readonly trustedProxies: readonly string[] };
 				readonly claimed: true;
 		  };
-	/** U1 Task 6: boot the server with `SIGRUN_DEV=true` (the gallery's
-	 *  rail gate reads `/v1/meta`'s `dev`). */
+	/**
+	 * U1 Task 6: boot the server with `SIGRUN_DEV=true` (the gallery's
+	 * rail gate reads `/v1/meta`'s `dev`). */
 	readonly dev?: boolean;
+	/**
+	 * Notices Task 7: boot the TOKEN posture over the seeded (claimed)
+	 * identity — `SIGRUN_AUTH=token` instead of the naive workstation
+	 * `none`. Required by specs that add a second directory user: the
+	 * directory's admission guard refuses a second user while no auth
+	 * methods are configured. Requests then authenticate per request
+	 * (see `E2EServer.tokenFor`).
+	 */
+	readonly tokenAuth?: boolean;
 	/**
 	 * T26b-iii items 4 + 7: extension package specifiers to load (the
 	 * `OpenHarnessOptions.extensionSpecifiers` seam — "@sigrun/ext-codemode",
@@ -169,6 +179,12 @@ export interface E2EServer {
 	readonly opened: OpenedHarness;
 	/** The listening Fastify app. */
 	readonly app: FastifyInstance;
+	/**
+	 * Notices Task 7 (tokenAuth boots): mint a bearer token for one
+	 * directory user — the per-request auth a token-posture browser
+	 * context sends via `extraHTTPHeaders`.
+	 */
+	readonly tokenFor: (user: string) => Promise<string>;
 	/** The per-boot tmpdir — the conversation's workspace root (the checklist
 	 * tests write files here for the workspace-browser + upload items). */
 	readonly workspaceDir: string;
@@ -302,7 +318,13 @@ async function bootOnDir(
 		// every /v1 call needs the session cookie the onboarding claim
 		// (or a login) sets.
 		SIGRUN_AUTH:
-			options.auth === undefined ? "none" : "proxy" in options.auth ? "proxy" : "token",
+			options.auth === undefined
+				? options.tokenAuth === true
+					? "token"
+					: "none"
+				: "proxy" in options.auth
+					? "proxy"
+					: "token",
 		...(options.auth !== undefined && "proxy" in options.auth
 			? { SIGRUN_AUTH_TRUSTED_PROXIES: options.auth.proxy.trustedProxies.join(",") }
 			: {}),
@@ -411,6 +433,8 @@ async function bootOnDir(
 		conversationId: root.id,
 		opened,
 		app,
+		tokenFor: async (user: string) =>
+			(await opened.identity.tokens.create(`e2e-${user}`, user)).token,
 		workspaceDir: dir,
 		cleanup: async () => {
 			await close();

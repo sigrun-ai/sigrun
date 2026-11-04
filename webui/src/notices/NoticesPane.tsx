@@ -36,6 +36,8 @@ export function NoticesPane(props: {
 	/** The docked (Chats right-panel) or right-edge overlay chrome. */
 	readonly variant: "docked" | "overlay";
 	readonly notices: readonly UserNotice[];
+	/** Notices Task 7: the lifted per-notice result texts (useNotices'). */
+	readonly results?: Readonly<Record<string, string>>;
 	/** Conversation display names by id (the cards' meta links). */
 	readonly conversationName?: (id: number) => string | undefined;
 	readonly run: (
@@ -141,6 +143,7 @@ export function NoticesPane(props: {
 					<NoticeCard
 						key={notice.id}
 						notice={notice}
+						result={props.results?.[notice.id] ?? null}
 						conversationName={
 							notice.conversationId === undefined
 								? undefined

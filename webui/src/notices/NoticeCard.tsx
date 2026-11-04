@@ -33,6 +33,16 @@ export function NoticeCard(props: {
 	readonly notice: UserNotice;
 	/** The conversation's display name (the meta line links to it). */
 	readonly conversationName?: string;
+	/**
+	 * Notices Task 7: the last action result's text for THIS notice,
+	 * LIFTED into the parent (useNotices' results map). A local
+	 * useState copy dies with the row when a clear-on-ok refetch drops
+	 * the notice mid-message (React drops the queued update on an
+	 * ancestor-removed subtree); the lifted map survives the refetch —
+	 * the card renders the same message whether its row is the pre- or
+	 * post-heal one. The 4 s expiry lives in the map's owner.
+	 */
+	readonly result?: string | null;
 	readonly run: (
 		notice: UserNotice,
 		action: UserNoticeAction,
@@ -44,13 +54,8 @@ export function NoticeCard(props: {
 	readonly domId?: string;
 }): ReactNode {
 	const { notice } = props;
-	const [result, setResult] = useState<string | null>(null);
+	const result = props.result ?? null;
 	const [pending, setPending] = useState(false);
-	useEffect(() => {
-		if (result === null) return undefined;
-		const timer = setTimeout(() => setResult(null), RESULT_MESSAGE_MS);
-		return () => clearTimeout(timer);
-	}, [result]);
 
 	const busy = pending;
 	const runAction = (action: UserNoticeAction): void => {
@@ -64,29 +69,11 @@ export function NoticeCard(props: {
 				return;
 			}
 			setPending(true);
+			// The result text renders from the LIFTED `result` prop —
+			// `run`'s owner (useNotices) records it into its results map;
+			// this component only owns the busy flag.
 			void props
 				.run(notice, action, props.onNavigate)
-				.then((response) => {
-					if (
-						typeof response === "object" &&
-						response !== null &&
-						"ok" in response
-					) {
-						const outcome = response as {
-							ok: boolean;
-							message?: string;
-							error?: { message: string };
-						};
-						if (outcome.ok) {
-							if (outcome.message !== undefined) setResult(outcome.message);
-						} else if (outcome.error !== undefined) {
-							setResult(outcome.error.message);
-						}
-					}
-				})
-				.catch((cause: unknown) => {
-					setResult(cause instanceof Error ? cause.message : String(cause));
-				})
 				.finally(() => setPending(false));
 			return;
 		}

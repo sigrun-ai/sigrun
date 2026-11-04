@@ -15,6 +15,8 @@ export const INLINE_MAX = 3;
 export function InlineNotices(props: {
 	/** The active conversation's notices (any order; the 3 newest show). */
 	readonly notices: readonly UserNotice[];
+	/** Notices Task 7: the lifted per-notice result texts (useNotices'). */
+	readonly results?: Readonly<Record<string, string>>;
 	readonly run: (
 		notice: UserNotice,
 		action: UserNoticeAction,
@@ -34,6 +36,7 @@ export function InlineNotices(props: {
 				<NoticeCard
 					key={notice.id}
 					notice={notice}
+					result={props.results?.[notice.id] ?? null}
 					run={props.run}
 					dismiss={props.dismiss}
 					onNavigate={props.onNavigate}

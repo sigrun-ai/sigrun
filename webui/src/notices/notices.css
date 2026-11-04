@@ -204,3 +204,96 @@
 	cursor: pointer;
 	padding: 0 2px;
 }
+
+/* ── phones (≤900px): the bell in the header, the pane a full-height
+   sheet from the bell, the peek a slim strip under the header. ────── */
+
+/* The header bell slots (the chat header's and the non-chats tabs'
+   phone-header): hidden at desktop widths, where the rail carries the
+   bell. */
+.chat-header-bell {
+	display: none;
+}
+.phone-header {
+	display: none;
+}
+
+@media (max-width: 900px) {
+	/* The bell moves into each tab's header (the rail hides at this
+	   width). The rail's own copy of the Bell unmounts with the rail's
+	   display:none — but a desktop resize back restores it (the shell
+	   renders both; CSS shows one). */
+	.chat-header-bell {
+		display: inline-flex;
+		align-items: center;
+	}
+	/* The chat header's bell: an icon button in the header row (its
+	   rail-bell class keeps the badge positioning; the sizing matches
+	   the header's other icon buttons). */
+	.chat-header-bell .rail-bell {
+		width: 30px;
+		height: 30px;
+		border-radius: 6px;
+	}
+	/* The non-chats tabs (skills/jobs/ext/settings): a slim header row
+	   whose only control is the bell. */
+	.phone-header {
+		display: flex;
+		align-items: center;
+		height: 48px;
+		flex: none;
+		padding: 0 12px 0 16px;
+		border-bottom: 1px solid var(--border);
+		background: var(--bg);
+	}
+	.phone-header-spacer {
+		flex: 1;
+	}
+	.phone-header .rail-bell {
+		width: 30px;
+		height: 30px;
+		border-radius: 6px;
+	}
+
+	/* The pane becomes a full-height sheet from the bell: fixed under
+	   the header, full width, down to the bottom bar. Both chrome
+	   variants collapse to the sheet — the right-panel host (Chats) is
+	   itself a fixed overlay at this width, and the overlay pane pins
+	   its top under the 48px header. */
+	.notices-pane-overlay {
+		top: 48px;
+		left: 0;
+		width: auto;
+		border-left: none;
+		border-top: 1px solid var(--border);
+	}
+	/* The docked Chats pane's host (the right panel) is already a fixed
+	   overlay; on phones the notices sheet spans full width from under
+	   the header down to the bottom bar. */
+	.right-panel[data-panel="notices"] {
+		top: 48px;
+		left: 0;
+		right: 0;
+		bottom: calc(var(--bottom-bar-h) + env(safe-area-inset-bottom));
+		width: auto;
+	}
+	.right-panel[data-panel="notices"] .notices-pane {
+		flex: 1;
+		min-height: 0;
+	}
+
+	/* The peek becomes a slim strip under the header: full width, no
+	   floating card, no shadow. */
+	.notice-peek {
+		top: 48px;
+		left: 0;
+		right: 0;
+		border-radius: 0;
+		border-left: none;
+		border-right: none;
+		border-top: none;
+		box-shadow: none;
+		padding: 6px 12px;
+		justify-content: space-between;
+	}
+}

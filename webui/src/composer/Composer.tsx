@@ -288,6 +288,8 @@ export function Composer(props: {
 	/** Notices Task 6: the active conversation's notices render above the
 	 *  composer (the 3 newest, then "N more" opens the pane). */
 	readonly inlineNotices?: readonly UserNotice[];
+	/** Notices Task 7: the lifted per-notice result texts (useNotices'). */
+	readonly noticeResults?: Readonly<Record<string, string>>;
 	readonly noticeRun?: (
 		notice: UserNotice,
 		action: UserNoticeAction,
@@ -847,6 +849,7 @@ export function Composer(props: {
 				{(props.inlineNotices ?? []).length > 0 && (
 					<InlineNotices
 						notices={props.inlineNotices ?? []}
+						results={props.noticeResults}
 						run={props.noticeRun ?? (async () => undefined)}
 						dismiss={props.noticeDismiss ?? (() => {})}
 						onNavigate={props.onAmbientNavigate ?? (() => {})}

@@ -212,4 +212,46 @@ describe("ChatHeader", () => {
 		(toggle.props as { onClick: () => void }).onClick();
 		expect(onToggleDrawer).toHaveBeenCalledTimes(1);
 	});
+
+	test("the bell slot renders inside the header (the phone's bell home; CSS shows it ≤900px only)", () => {
+		const renderer = render(
+			<ChatHeader
+				title="t"
+				timeline={false}
+				onTimeline={() => {}}
+				panel={null}
+				onPanel={() => {}}
+				onRename={async () => {}}
+				onExport={() => {}}
+				onCompact={() => {}}
+				onArchive={() => {}}
+				drawerOpen={false}
+				onToggleDrawer={() => {}}
+				bell={<span data-rail-section="notices">bell</span>}
+			/>,
+		);
+		const slot = renderer.root.findByProps({ className: "chat-header-bell" });
+		expect(
+			slot.findAllByProps({ "data-rail-section": "notices" }).length,
+		).toBe(1);
+		// The slot sits between the spacer and the panel toggles (the
+		// header's right cluster).
+		const header = renderer.root.findByType("header");
+		const spacerIndex = (header.props.children as unknown[]).findIndex(
+			(child) =>
+				typeof child === "object" &&
+				child !== null &&
+				(child as { props?: { className?: string } }).props?.className ===
+					"chat-header-spacer",
+		);
+		const bellIndex = (header.props.children as unknown[]).findIndex(
+			(child) =>
+				typeof child === "object" &&
+				child !== null &&
+				(child as { props?: { className?: string } }).props?.className ===
+					"chat-header-bell",
+		);
+		expect(spacerIndex).toBeGreaterThanOrEqual(0);
+		expect(bellIndex).toBe(spacerIndex + 1);
+	});
 });

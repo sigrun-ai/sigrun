@@ -95,53 +95,28 @@ describe("NoticeCard", () => {
 		expect(button().props.disabled).toBe(false);
 	});
 
-	test("the result message renders, then clears after the 4 s window", async () => {
-		const action: UserNoticeAction = {
-			id: "undo",
-			label: "Undo",
-			kind: "extension",
-			name: "undo-learn",
-		};
+	test("the result prop renders the message line (the lifted map's text)", () => {
+		// Notices Task 7: the result text is LIFTED (useNotices' map) —
+		// the card renders the prop; the 4 s window is the hook's timer,
+		// covered in useNotices.test.tsx.
 		const root = render(
 			h(NoticeCard, {
-				...baseProps(notice({ id: "n-1", actions: [action] })),
-				run: async () => ({ ok: true, message: "learn undone" }),
+				...baseProps(notice({ id: "n-1" })),
+				run: async () => undefined,
+				result: "learn undone",
 			}),
 		);
-		await act(async () => {
-			await root.root.findByProps({ className: "notice-card-action" }).props.onClick();
-		});
-		const result = () => root.root.findAllByProps({ className: "notice-card-result" });
-		expect(result()).toHaveLength(1);
-		expect(instanceText(result()[0]!)).toBe("learn undone");
-		act(() => {
-			vi.advanceTimersByTime(RESULT_MESSAGE_MS + 10);
-		});
-		expect(result()).toHaveLength(0);
-	});
-
-	test("an action error renders, then clears", async () => {
-		const action: UserNoticeAction = {
-			id: "retry",
-			label: "Retry",
-			kind: "extension",
-			name: "retry",
-		};
-		const root = render(
+		expect(
+			instanceText(root.root.findByProps({ className: "notice-card-result" })),
+		).toBe("learn undone");
+		// Absent/null renders no line.
+		const bare = render(
 			h(NoticeCard, {
-				...baseProps(notice({ id: "n-1", actions: [action] })),
-				run: async () => ({ ok: false, error: { message: "handler exploded" } }),
+				...baseProps(notice({ id: "n-2" })),
+				run: async () => undefined,
+				result: null,
 			}),
 		);
-		await act(async () => {
-			await root.root.findByProps({ className: "notice-card-action" }).props.onClick();
-		});
-		expect(instanceText(root.root.findByProps({ className: "notice-card-result" }))).toBe(
-			"handler exploded",
-		);
-		act(() => {
-			vi.advanceTimersByTime(RESULT_MESSAGE_MS + 10);
-		});
-		expect(root.root.findAllByProps({ className: "notice-card-result" })).toHaveLength(0);
+		expect(bare.root.findAllByProps({ className: "notice-card-result" })).toHaveLength(0);
 	});
 });
