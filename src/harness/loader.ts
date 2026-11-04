@@ -1242,6 +1242,7 @@ function validateSurfaces(
 						icon?: unknown;
 						placement?: unknown;
 						sharedData?: unknown;
+						perConversation?: unknown;
 						refreshMs?: unknown;
 						instanceKey?: unknown;
 						render?: unknown;
@@ -1286,6 +1287,22 @@ function validateSurfaces(
 			) {
 				throw new Error(
 					`extension factory returned a surface "${def.id}" whose sharedData is not a boolean`,
+				);
+			}
+			if (
+				def?.perConversation !== undefined &&
+				typeof def.perConversation !== "boolean"
+			) {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" whose perConversation is not a boolean`,
+				);
+			}
+			// The flag is a PANEL property: a view/settings section cannot be
+			// attached to a conversation, so declaring it there is a
+			// declaration the host would silently ignore — fail loud.
+			if (def?.perConversation !== undefined && expected !== "panel") {
+				throw new Error(
+					`extension factory returned a surface "${def.id}" declares perConversation but is not a panel`,
 				);
 			}
 			if (def?.actions !== undefined) {

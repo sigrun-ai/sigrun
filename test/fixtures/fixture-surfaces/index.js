@@ -87,6 +87,25 @@ const statsTree = tree(
 	}),
 );
 
+/**
+ * The convo panel: opts in to per-conversation attachment (`perConversation`),
+ * so the channels attach it with `params: {conversationId}` of the open
+ * conversation. No `instanceKey` — the default canonical-JSON key keeps one
+ * instance per conversation id.
+ */
+const convoTree = tree(
+	page({
+		id: "convo",
+		title: "Acme convo",
+		main: [
+			stack({
+				id: "convo-stack",
+				children: [markdown({ id: "convo-note", text: "acme convo body" })],
+			}),
+		],
+	}),
+);
+
 /** The board's shared data (acme literals only — tests own their values). */
 const boardData = {
 	cards: [
@@ -251,6 +270,25 @@ export default function createFixtureSurfaces() {
 					// action while the board's bucket is exhausted.
 					actions: {
 						ping: (ctx, payload) => handleAction("ping", ctx, payload),
+					},
+				},
+				{
+					id: "convo",
+					title: "Acme convo",
+					icon: "list",
+					placement: "panel",
+					perConversation: true,
+					render: async (ctx) => {
+						record("render", "convo", ctx);
+						return {
+							tree: convoTree,
+							data: statsData,
+							access: accessOf(ctx.principal, "read"),
+						};
+					},
+					data: async (ctx) => {
+						record("data", "convo", ctx);
+						return { data: statsData, access: accessOf(ctx.principal, "read") };
 					},
 				},
 			],
