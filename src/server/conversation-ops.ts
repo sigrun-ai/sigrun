@@ -563,6 +563,29 @@ export async function submitOp(
 		opts.user,
 		BACKGROUND_CONTEXT,
 	);
+	// The implied clear (notices spec §3.2 rule 2): the user's next prompt
+	// in a conversation is them dealing with that conversation's notices,
+	// so every one of THEIR notices naming it goes. Attribution is the
+	// submit path's own (`opts.user` — the route's principal, the bridge's
+	// mapped user, the answer's acting user), exactly like authorship. A
+	// job or curator internal run submits through `conversation.submit`
+	// directly, never this op, so a scheduled run clears nothing. It sits
+	// behind the attribution pair so the notice store's file I/O never
+	// widens the window where the live run's input has no `bySubmission`
+	// key; a failing clear is logged, never fatal — a notice system must
+	// not break a turn.
+	if (opts.user !== undefined) {
+		try {
+			await ctx.notices.clearConversationFor(
+				opts.user,
+				Number(conversation.id),
+			);
+		} catch (error) {
+			console.warn(
+				`notices: clearing conversation ${String(conversation.id)} for ${opts.user} failed: ${String(error)}`,
+			);
+		}
+	}
 	// Admission stamps activity: the sidebar's activity sort must move the
 	// moment a prompt lands — before the run settles.
 	await touchActivity(

@@ -313,6 +313,10 @@ export function registerUserRoutes(
 		// must not load for the recipient. In-flight curator runs fail
 		// closed through the stores' user-exists gate (nothing recreated).
 		await removeUserCuration(ctx.managedPaths.userAreas(user));
+		// Notices spec §3.2 rule 8: notices are personal and never
+		// transferred. The user area itself stays for the workspace's
+		// recipient, so the notices file is removed on its own.
+		await ctx.notices.removeUser(user);
 		return await reply.code(204).send();
 	});
 }

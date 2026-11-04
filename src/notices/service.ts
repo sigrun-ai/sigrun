@@ -28,8 +28,10 @@
  * The per-user store cache (`stores` map) exists because constructing a
  * `NoticeStore` is closure-allocation over ONE user area; the store
  * itself caches nothing (every op reads the file under the area mutex),
- * so a stale cache entry can never serve stale data. `removeUser`
- * evicts the entry (Task 5's users route deletes the file).
+ * so a stale cache entry can never serve stale data. `removeUser` both
+ * evicts the entry and removes the file (spec §3.2 rule 8: the user
+ * area stays for the workspace's recipient, so the notices file —
+ * personal, never transferred — goes on its own).
  */
 
 import { ACTION_TIMEOUT_MS } from "../server/surfaces/service.js";
@@ -272,10 +274,16 @@ export class NoticesService {
 	}
 
 	/**
-	 * User deletion: evict the cached store (the file's removal is the
-	 * users route's, Task 5 — `removeFile` stays available for it).
+	 * User deletion: remove the user's notices file, then evict the cached
+	 * store (spec §3.2 rule 8). No change event — the user the events
+	 * would address is gone.
 	 */
 	async removeUser(user: string): Promise<void> {
+		// The cached store when present, else a throwaway one: the removal
+		// needs only the file path, and caching a store for a user who no
+		// longer exists would be waste.
+		const store = this.stores.get(user) ?? this.createStore(user);
+		await store.removeFile();
 		this.stores.delete(user);
 	}
 
@@ -296,7 +304,14 @@ export class NoticesService {
 	private storeFor(user: string): NoticeStore {
 		const cached = this.stores.get(user);
 		if (cached !== undefined) return cached;
-		const store = new NoticeStore({
+		const store = this.createStore(user);
+		this.stores.set(user, store);
+		return store;
+	}
+
+	/** One fresh per-user store (never cached — `storeFor` caches). */
+	private createStore(user: string): NoticeStore {
+		return new NoticeStore({
 			userArea: this.deps.userArea(user),
 			user,
 			userCreatedAt: () =>
@@ -315,8 +330,6 @@ export class NoticesService {
 			},
 			log: this.deps.log,
 		});
-		this.stores.set(user, store);
-		return store;
 	}
 
 	/**
