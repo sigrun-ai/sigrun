@@ -19,7 +19,7 @@ export const DEDUP_WINDOW_MS = 10 * 60 * 1000;
 
 /** One recorded invocation: its instance, request fingerprint, and
  *  its stored result. */
-interface DedupEntry {
+interface DedupEntry<R> {
 	readonly composite: string;
 	/** The recorded request's fingerprint (action + params + payload).
 	 *  A same-instance actionId arriving with a DIFFERENT fingerprint is
@@ -27,13 +27,13 @@ interface DedupEntry {
 	 *  browser tabs of one app share a channel's id sequence) — and
 	 *  must run its own handler rather than replay. */
 	readonly fingerprint: string;
-	readonly result: ActionResponse;
+	readonly result: R;
 	readonly expiresAt: number;
 }
 
 /** A same-instance duplicate hit: the first invocation's stored result. */
-export interface DedupHit {
-	readonly result: ActionResponse;
+export interface DedupHit<R> {
+	readonly result: R;
 }
 
 /**
@@ -41,9 +41,15 @@ export interface DedupHit {
  * same-instance duplicate (and `null` when a different instance already
  * holds the actionId — the caller treats that as a fresh action);
  * `record` stores the first result.
+ *
+ * Generic over the stored result type (notices Task 4): the surface
+ * actions' default (`ActionResponse`) and the notices service's
+ * `NoticeActionResponse` share the `{ok, ...}` result shape but are
+ * different unions — the notice dispatch stores its own type through
+ * the same mechanics without a cast.
  */
-export class ActionDedup {
-	private readonly entries = new Map<string, DedupEntry>();
+export class ActionDedup<R = ActionResponse> {
+	private readonly entries = new Map<string, DedupEntry<R>>();
 	private readonly clock: () => number;
 	private sweepCounter = 0;
 
@@ -64,7 +70,7 @@ export class ActionDedup {
 		actionId: string,
 		composite: string,
 		fingerprint: string,
-	): DedupHit | undefined | null {
+	): DedupHit<R> | undefined | null {
 		const entry = this.entries.get(actionId);
 		if (entry === undefined) return undefined;
 		if (entry.expiresAt <= this.clock()) {
@@ -85,7 +91,7 @@ export class ActionDedup {
 		actionId: string,
 		composite: string,
 		fingerprint: string,
-		result: ActionResponse,
+		result: R,
 	): void {
 		this.entries.set(actionId, {
 			composite,

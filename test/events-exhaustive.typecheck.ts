@@ -25,7 +25,7 @@ import type { HostEventWire } from "@sigrun/shared/views";
  * same broadcast mechanics as providers.changed but gated on the
  * principal's admin flag.
  */
-type EventDelivery = "conversation" | "broadcast" | "job" | "admin" | "never";
+type EventDelivery = "conversation" | "broadcast" | "job" | "admin" | "user" | "never";
 
 /** The mirror of `visible()`'s per-type dispatch, at the type level. */
 function classifyDelivery(event: HostEventWire): EventDelivery {
@@ -51,10 +51,12 @@ function classifyDelivery(event: HostEventWire): EventDelivery {
 		// Host machinery: never principal-facing.
 		case "taskSettled":
 			return "never";
-		// Task 4: the notices service delivers `notice.changed` to the
-		// notice user's own streams; until then the route withholds it.
+		// Notices (Task 4): delivered to the notice user's own streams
+		// only — the hub copy carries the recipient user, the route
+		// delivers when the principal IS that user (the wire shape strips
+		// the user).
 		case "notice.changed":
-			return "never";
+			return "user";
 			// U3 Task 4: delivered only to streams in the watcher registry
 			// with stored access ≠ none (the events route's own registry read).
 			// U5 Task 2: the CHAT shape joins the conversation-scoped class

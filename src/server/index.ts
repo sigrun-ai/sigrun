@@ -70,6 +70,7 @@ import { registerInteractionRoutes } from "./routes/interactions.js";
 import { registerMeRoutes } from "./routes/me.js";
 import { registerMetaRoutes } from "./routes/meta.js";
 import { registerMetricsRoutes } from "./routes/metrics.js";
+import { registerNoticeRoutes } from "./routes/notices.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
@@ -163,6 +164,12 @@ export async function createServer(
 		loginResolver?: LoginResolver;
 		/** Hermetic login-flow clock; production uses the server's own Date.now. */
 		loginNow?: () => number;
+		/**
+		 * The notice action timeout override (notices Task 4, spec §4):
+		 * tests inject ~50 ms so the timeout path settles fast; absent =
+		 * the real `ACTION_TIMEOUT_MS` (10 s).
+		 */
+		noticeActionTimeoutMs?: number;
 	},
 ): Promise<FastifyInstance> {
 	// Polish A1 (spec §5.2): a server EXISTS here, so every seam host's
@@ -261,23 +268,31 @@ export async function createServer(
 	// with `visibleToUser` as its arbitrary-user visibility answer and the
 	// hub as its notice.changed sink (the events route's notice.changed
 	// case narrows delivery to the notice user's own streams).
-	const noticesService = new NoticesService({
-		opened,
-		userArea: (user) => join(opened.extensionStores.roots.dataDir, "users", user),
-		visible: (conversationId, user) =>
-			visibleToUser(
-				// SAFETY: `visibleToUser` reads only `opened` off the context
-				// (its own doc); the full ServerContext does not exist yet.
-				{ opened } as ServerContext,
-				conversationId as ConversationId,
-				user,
-			),
-		publish: (event) => {
-			opened.events.publish(event);
+	const noticesService = new NoticesService(
+		{
+			opened,
+			userArea: (user) =>
+				join(opened.extensionStores.roots.dataDir, "users", user),
+			visible: (conversationId, user) =>
+				visibleToUser(
+					// SAFETY: `visibleToUser` reads only `opened` off the context
+					// (its own doc); the full ServerContext does not exist yet.
+					{ opened } as ServerContext,
+					conversationId as ConversationId,
+					user,
+				),
+			publish: (event) => {
+				opened.events.publish(event);
+			},
+			now: () => new Date(),
+			log: (line) => console.warn(line),
 		},
-		now: () => new Date(),
-		log: (line) => console.warn(line),
-	});
+		{
+			...(options?.noticeActionTimeoutMs === undefined
+				? {}
+				: { actionTimeoutMs: options.noticeActionTimeoutMs }),
+		},
+	);
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};
@@ -541,6 +556,7 @@ export async function createServer(
 	registerEventRoutes(app, ctx);
 	registerSubmissionRoutes(app, ctx);
 	registerInteractionRoutes(app, ctx);
+	registerNoticeRoutes(app, ctx);
 	registerFileRoutes(app, ctx);
 	registerProviderRoutes(app, ctx);
 	registerSettingsRoutes(app, ctx);

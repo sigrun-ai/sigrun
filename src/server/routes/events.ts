@@ -39,6 +39,7 @@ import { accessPrincipalOf } from "../auth/access-principal.js";
 import type { ServerContext } from "../context.js";
 import { SessionMetaDoc } from "../session-meta.js";
 import type { HostEventWire } from "../events/types.js";
+import type { NoticeChangedInternal } from "../../notices/events.js";
 import type { SurfaceChangedInternal } from "../surfaces/service.js";
 
 /** The heartbeat cadence (the /stream pattern: proxy idle-timeout survival). */
@@ -205,10 +206,25 @@ export function registerEventRoutes(
 						treeRev: event.treeRev,
 					};
 				}
-				// Task 4: `notice.changed` is withheld until the notices service
-				// delivers it to its user's own streams.
-				case "notice.changed":
-					return undefined;
+				// Notices (notices Task 4, spec §4): the hub copy carries the
+				// recipient user (NoticeChangedInternal — routing metadata,
+				// never wire); the stream delivers ONLY to the notice user's
+				// own principal, and the DELIVERED frame is the wire shape
+				// (the user stripped — a notice event never crosses to another
+				// principal's stream, and its wire carries no user).
+				case "notice.changed": {
+					// SAFETY: every notice.changed the hub sees comes from the
+					// notices service, which always attaches the recipient user
+					// (NoticeChangedInternal) — the wire union's member omits it
+					// because the DELIVERED frame never carries it.
+					const internal = event as unknown as NoticeChangedInternal;
+					if (principal.user !== internal.user) return undefined;
+					return {
+						type: "notice.changed",
+						ids: internal.ids,
+						change: internal.change,
+					};
+				}
 				// An unknown member is NEVER delivered — deny by construction,
 				// not by enumerating the leak shapes. The satisfies check keeps
 				// this arm exhaustive: a new HostEventWire member without a

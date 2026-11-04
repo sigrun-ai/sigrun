@@ -74,7 +74,12 @@ test("valid noticeActions bind under the slug", async () => {
 			(entry) => entry.extension === "acme-notes",
 		);
 		expect(binding).toBeDefined();
-		expect(Object.keys(binding?.actions ?? {})).toEqual(["ping", "hold"]);
+		expect(Object.keys(binding?.actions ?? {})).toEqual([
+			"ping",
+			"hold",
+			"fail",
+			"slow",
+		]);
 		expect(typeof binding?.actions.ping).toBe("function");
 		expect(typeof binding?.actions.hold).toBe("function");
 	});

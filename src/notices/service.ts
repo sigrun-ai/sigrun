@@ -35,7 +35,6 @@
 import { ACTION_TIMEOUT_MS } from "../server/surfaces/service.js";
 import { ActionDedup } from "../server/surfaces/dedup.js";
 import { ActionRateLimit } from "../server/surfaces/rate-limit.js";
-import type { ActionResponse } from "../server/surfaces/service.js";
 import type { Principal, UserNoticeActionResult } from "../extension.js";
 import type {
 	NoticeActionResponse,
@@ -68,21 +67,18 @@ export type NoticeActionAnswer = {
 	readonly body: NoticeActionResponse | { readonly error: string };
 };
 
-/**
- * The dedup table for notice actions (spec §4): keyed by the client
- * requestId, like the surface service's — same-notice retries replay
- * the first result. The shared `ActionDedup` is typed on the surface
- * `ActionResponse`; Task 4 makes it generic — until then the notice
- * body crosses as a cast (both are the `{ok, ...}` result shape).
- */
-type NoticeDedup = ActionDedup;
-
 export class NoticesService {
 	private readonly stores = new Map<string, NoticeStore>();
-	private readonly dedup: NoticeDedup = new ActionDedup();
+	private readonly dedup = new ActionDedup<NoticeActionResponse>();
 	private readonly rateLimit = new ActionRateLimit();
+	private readonly actionTimeoutMs: number;
 
-	constructor(private readonly deps: NoticesServiceDeps) {}
+	constructor(
+		private readonly deps: NoticesServiceDeps,
+		options?: { readonly actionTimeoutMs?: number },
+	) {
+		this.actionTimeoutMs = options?.actionTimeoutMs ?? ACTION_TIMEOUT_MS;
+	}
 
 	/**
 	 * Post one notice as `owner` (the calling extension's slug): shape
@@ -204,6 +200,25 @@ export class NoticesService {
 		requestId?: string,
 	): Promise<NoticeActionAnswer> {
 		const user = principal.user;
+		// 1. Rate-limit: per PRINCIPAL across all notices (spec §4). A
+		//    user-less principal's bucket is the empty string — a
+		//    service-token caller gets rate-limited like any other.
+		if (!this.rateLimit.take("notices", "actions", user ?? "")) {
+			return { status: 429, body: { error: "rate_limited" } };
+		}
+		// 2. Dedup BEFORE the notice lookup (an ok:true handler dismisses
+		//    the notice, so a retry must still replay the FIRST result).
+		//    The composite carries the user: one user's requestId never
+		//    replays another user's result.
+		const composite = `notice\u0001${user ?? ""}\u0001${id}\u0001${actionId}`;
+		if (requestId !== undefined) {
+			const hit = this.dedup.check(requestId, composite, actionId);
+			if (hit !== undefined && hit !== null) {
+				return { status: 200, body: hit.result };
+			}
+		}
+		// 3. The notice lookup (foreign / unknown / user-less → 404, never
+		//    403 — a foreign id never reveals existence).
 		if (user === undefined) {
 			return { status: 404, body: { error: "notice_not_found" } };
 		}
@@ -211,6 +226,7 @@ export class NoticesService {
 		if (notice === undefined) {
 			return { status: 404, body: { error: "notice_not_found" } };
 		}
+		// 4. The action find: missing or not kind:"extension" → 400.
 		const action = notice.actions?.find(
 			(entry): entry is Extract<UserNoticeAction, { kind: "extension" }> =>
 				entry.id === actionId && entry.kind === "extension",
@@ -218,35 +234,15 @@ export class NoticesService {
 		if (action === undefined) {
 			return { status: 400, body: { error: "unknown_action" } };
 		}
-		if (!this.rateLimit.take("notices", notice.owner, user)) {
-			return { status: 429, body: { error: "rate_limited" } };
-		}
+		// 5. The binding find (the owning extension's declared handlers).
 		const handler = this.deps.opened.noticeActionBindings.find(
 			(binding) => binding.extension === notice.owner,
 		)?.actions[action.name];
 		if (handler === undefined) {
 			return { status: 409, body: { error: "notice_action_unavailable" } };
 		}
+		// 6. The handler call, racing the action timeout.
 		const payload: JsonObject = action.payload ?? {};
-		const fingerprint = JSON.stringify({
-			notice: notice.id,
-			action: actionId,
-			payload,
-		});
-		const composite = `notice${notice.id}${actionId}`;
-		if (requestId !== undefined) {
-			const hit = this.dedup.check(requestId, composite, fingerprint);
-			if (hit !== undefined && hit !== null) {
-				// SAFETY: the dedup table is typed on the surface
-				// `ActionResponse`, but this composite only ever stored the
-				// notice answer (the cast below at `record`); the read is the
-				// same shape that was written. Task 4 generalizes the table.
-				return {
-					status: 200,
-					body: hit.result as unknown as NoticeActionResponse,
-				};
-			}
-		}
 		const controller = new AbortController();
 		const result = await this.invokeWithTimeout(
 			() =>
@@ -270,15 +266,7 @@ export class NoticesService {
 					}
 				: result;
 		if (requestId !== undefined) {
-			// SAFETY: the dedup table types on the surface `ActionResponse`;
-			// the notice body is the same {ok, ...} result shape (Task 4
-			// generalizes the table).
-			this.dedup.record(
-				requestId,
-				composite,
-				fingerprint,
-				body as unknown as ActionResponse,
-			);
+			this.dedup.record(requestId, composite, actionId, body);
 		}
 		return { status: 200, body };
 	}
@@ -356,7 +344,7 @@ export class NoticesService {
 				new Promise<{ kind: "timedout" }>((resolve) => {
 					timer = setTimeout(
 						() => resolve({ kind: "timedout" }),
-						ACTION_TIMEOUT_MS,
+						this.actionTimeoutMs,
 					);
 				}),
 			]);

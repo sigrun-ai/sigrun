@@ -107,6 +107,11 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["POST", "/v1/image"],
 	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
 	["GET", "/v1/interactions"],
+	// The notices routes (notices Task 4, spec §3/§4).
+	["GET", "/v1/notices"],
+	["POST", "/v1/notices/:id/dismiss"],
+	["POST", "/v1/notices/dismiss-all"],
+	["POST", "/v1/notices/:id/actions/:actionId"],
 	["POST", "/v1/conversations"],
 	["GET", "/v1/conversations"],
 	["POST", "/v1/conversations/import"],
@@ -422,6 +427,10 @@ describe("server route table", () => {
 				"/v1/me/extensions/:slug/secrets/:key",
 				"/v1/me/extensions/:slug/settings",
 				"/v1/me/services",
+				"/v1/notices",
+				"/v1/notices/:id/actions/:actionId",
+				"/v1/notices/:id/dismiss",
+				"/v1/notices/dismiss-all",
 				"/v1/users",
 				"/v1/users/:user",
 				"/v1/users/invites",
