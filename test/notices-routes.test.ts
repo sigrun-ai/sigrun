@@ -65,7 +65,9 @@ interface TestRig {
 async function bootRig(options?: {
 	readonly extensionSpecifiers?: readonly string[];
 	readonly noticeActionTimeoutMs?: number;
-	readonly listen?: boolean;
+	readonly auth?: "token" | "none";
+	/** Seed alice only (the naive-auth rig: multi-user refuses boot). */
+	readonly skipBob?: boolean;
 }): Promise<TestRig> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-notices-routes-"));
 	const faux = fauxProvider({
@@ -82,13 +84,13 @@ async function bootRig(options?: {
 		SIGRUN_CACHE_DIR: join(dir, "cache"),
 		SIGRUN_STATE_DIR: join(dir, "state"),
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
-		SIGRUN_AUTH: "token",
+		SIGRUN_AUTH: options?.auth ?? "token",
 		SIGRUN_API_TOKEN: "service-token-for-notices-route-tests",
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: join(dir, "config"),
 	});
 	const identity = await seededIdentity(dir, "alice");
-	if (identity.users.get("bob") === undefined) {
+	if (options?.skipBob !== true && identity.users.get("bob") === undefined) {
 		await identity.users.add({ user: "bob", admin: false, source: "cli" });
 	}
 	const opened = await openHarness(config, {
@@ -133,11 +135,6 @@ afterAll(async () => {
 /** The authorization header for one rig user. */
 function auth(rig: TestRig, user: "alice" | "bob"): Record<string, string> {
 	return { authorization: `Bearer ${rig.tokens[user]}` };
-}
-
-/** The service token's header (user-less principal). */
-function serviceAuth(): Record<string, string> {
-	return { authorization: "Bearer service-token-for-notices-route-tests" };
 }
 
 /** Post one notice as the fixture extension (via the service). */
@@ -222,9 +219,41 @@ class EventsConnection {
 		return this.events.filter((frame) => frame.event === "notice.changed");
 	}
 
+	/** Every parsed frame so far (the waitFor predicate's source). */
+	eventsSoFar(): readonly HostFrame[] {
+		return [...this.events];
+	}
+
 	/** Destroy the socket — the SSE request otherwise never ends. */
 	close(): void {
 		this.#request?.destroy();
+	}
+}
+
+/**
+ * Resolves once `predicate` accepts one of the stream's frames (the
+ * events-stream.test.ts waitFor pattern: wait on the condition, never
+ * a fixed sleep). `timeoutMs` bounds the wait so a missing frame fails
+ * the test rather than hanging it.
+ */
+async function waitFor(
+	stream: EventsConnection,
+	predicate: (frame: HostFrame) => boolean,
+	timeoutMs = 15_000,
+): Promise<HostFrame> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const found = stream.eventsSoFar().find(predicate);
+		if (found !== undefined) return found;
+		const remaining = deadline - Date.now();
+		if (remaining <= 0) {
+			throw new Error(
+				`timed out after ${timeoutMs}ms; events so far: ${JSON.stringify(
+					stream.eventsSoFar().map((frame) => frame.event),
+				)}`,
+			);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 }
 
@@ -235,66 +264,63 @@ class EventsConnection {
 test("foreign notice is invisible on every route and event", { timeout: 30_000 }, async () => {
 	const rig = await bootRig({
 		extensionSpecifiers: [NOTES_SPECIFIER],
-		listen: true,
 	});
 	cleanups.push(rig.close);
+	await rig.app.listen({ port: 0, host: "127.0.0.1" });
+	const address = rig.app.server.address();
+	if (address === null || typeof address === "string") {
+		throw new Error("listen did not bind a port");
+	}
+	const port = address.port;
+	const aliceStream = new EventsConnection(port, auth(rig, "alice"));
+	const bobStream = new EventsConnection(port, auth(rig, "bob"));
+	await aliceStream.open();
+	await bobStream.open();
 	try {
-		await rig.app.listen({ port: 0, host: "127.0.0.1" });
-		const address = rig.app.server.address();
-		if (address === null || typeof address === "string") {
-			throw new Error("listen did not bind a port");
+		const id = await postNotice(rig, {
+			actions: [
+				{ id: "go", label: "Go", kind: "extension", name: "ping" },
+			],
+		});
+		// Bob's routes: the foreign id 404s everywhere.
+		for (const [method, url] of [
+			["POST", `/v1/notices/${id}/dismiss`],
+			["POST", `/v1/notices/${id}/actions/go`],
+		] as const) {
+			const response = await rig.app.inject({
+				method,
+				url,
+				headers: { ...auth(rig, "bob"), "content-type": "application/json" },
+				payload: {},
+			});
+			expect(response.statusCode).toBe(404);
+			expect(response.json()).toEqual({ error: "notice_not_found" });
 		}
-		const port = address.port;
-		const aliceStream = new EventsConnection(port, auth(rig, "alice"));
-		const bobStream = new EventsConnection(port, auth(rig, "bob"));
-		await aliceStream.open();
-		await bobStream.open();
-		try {
-			const id = await postNotice(rig, {
-				actions: [
-					{ id: "go", label: "Go", kind: "extension", name: "ping" },
-				],
-			});
-			// Let every stream's frames drain.
-			await new Promise((resolve) => setTimeout(resolve, 500));
-			// Bob's routes: the foreign id 404s everywhere.
-			for (const [method, url] of [
-				["POST", `/v1/notices/${id}/dismiss`],
-				["POST", `/v1/notices/${id}/actions/go`],
-			] as const) {
-				const response = await rig.app.inject({
-					method,
-					url,
-					headers: { ...auth(rig, "bob"), "content-type": "application/json" },
-					payload: {},
-				});
-				expect(response.statusCode).toBe(404);
-				expect(response.json()).toEqual({ error: "notice_not_found" });
-			}
-			const bobGet = await rig.app.inject({
-				method: "GET",
-				url: "/v1/notices",
-				headers: auth(rig, "bob"),
-			});
-			expect(bobGet.statusCode).toBe(200);
-			expect(bobGet.json()).toEqual({ notices: [] });
-			// The event: alice's stream saw it; bob's never does.
-			const aliceFrames = aliceStream.noticeFrames();
-			expect(aliceFrames).toHaveLength(1);
-			expect(aliceFrames[0]?.data).toEqual({
-				type: "notice.changed",
-				ids: [id],
-				change: "posted",
-			});
-			expect(aliceFrames[0]?.data.user).toBeUndefined();
-			expect(bobStream.noticeFrames()).toHaveLength(0);
-		} finally {
-			aliceStream.close();
-			bobStream.close();
-			await new Promise((resolve) => setTimeout(resolve, 10));
-		}
+		const bobGet = await rig.app.inject({
+			method: "GET",
+			url: "/v1/notices",
+			headers: auth(rig, "bob"),
+		});
+		expect(bobGet.statusCode).toBe(200);
+		expect(bobGet.json()).toEqual({ notices: [] });
+		// The event: alice's stream saw it; bob's never does. Wait on the
+		// condition (the events-stream waitFor pattern), never a fixed
+		// sleep.
+		const aliceFrame = await waitFor(
+			aliceStream,
+			(frame) => frame.event === "notice.changed",
+		);
+		expect(aliceFrame.data).toEqual({
+			type: "notice.changed",
+			ids: [id],
+			change: "posted",
+		});
+		expect(aliceFrame.data.user).toBeUndefined();
+		expect(bobStream.noticeFrames()).toHaveLength(0);
 	} finally {
-		// close rides the cleanups registration.
+		aliceStream.close();
+		bobStream.close();
+		await new Promise((resolve) => setTimeout(resolve, 10));
 	}
 });
 
@@ -303,22 +329,39 @@ test("foreign notice is invisible on every route and event", { timeout: 30_000 }
 // ---------------------------------------------------------------------------
 
 test("user-less principal: GET → []", async () => {
-	const rig = await bootRig({ extensionSpecifiers: [NOTES_SPECIFIER] });
+	// The naive loopback posture (SIGRUN_AUTH "none") stamps
+	// `principal.user === undefined` when no X-Sigrun-User header rides
+	// (pipeline.ts stage 5/6): THE user-less shape. A service-token rig
+	// never is — its principal carries `service.user`.
+	const rig = await bootRig({
+		extensionSpecifiers: [NOTES_SPECIFIER],
+		auth: "none",
+		// The naive loopback posture refuses a multi-user boot (the
+		// multi-user gate): this rig seeds alice only.
+		skipBob: true,
+	});
 	cleanups.push(rig.close);
-	// A user-less principal never sees another user's pile.
+	// A user-less principal never sees another user's pile (the post
+	// lands in alice's store through the service, off the HTTP path).
 	await postNotice(rig, {});
 	const response = await rig.app.inject({
 		method: "GET",
 		url: "/v1/notices",
-		headers: serviceAuth(),
 	});
 	expect(response.statusCode).toBe(200);
 	expect(response.json()).toEqual({ notices: [] });
-	// And its action POST is the same 404 a foreign id is.
+	// Its dismiss is the same 404 a foreign id is.
+	const dismiss = await rig.app.inject({
+		method: "POST",
+		url: "/v1/notices/some-id/dismiss",
+	});
+	expect(dismiss.statusCode).toBe(404);
+	expect(dismiss.json()).toEqual({ error: "notice_not_found" });
+	// And its action POST is the same 404.
 	const action = await rig.app.inject({
 		method: "POST",
 		url: "/v1/notices/some-id/actions/go",
-		headers: { ...serviceAuth(), "content-type": "application/json" },
+		headers: { "content-type": "application/json" },
 		payload: {},
 	});
 	expect(action.statusCode).toBe(404);
@@ -444,6 +487,35 @@ test("an extension action ok:true clears; keep:true keeps; ok:false keeps and re
 	);
 });
 
+test("handler throws maps the message and keeps the notice", async () => {
+	const rig = await bootRig({ extensionSpecifiers: [NOTES_SPECIFIER] });
+	cleanups.push(rig.close);
+	rig.app.sigrunContext.notices.setRateLimitDisabled(true);
+	const id = await postNotice(rig, {
+		actions: [
+			{ id: "boom", label: "Boom", kind: "extension", name: "explode" },
+		],
+	});
+	const response = await rig.app.inject({
+		method: "POST",
+		url: `/v1/notices/${id}/actions/boom`,
+		headers: { ...auth(rig, "alice"), "content-type": "application/json" },
+		payload: {},
+	});
+	expect(response.statusCode).toBe(200);
+	expect(response.json()).toEqual({
+		ok: false,
+		error: { message: "kaboom" },
+	});
+	// The threw branch keeps the notice.
+	const listed = await rig.app.inject({
+		method: "GET",
+		url: "/v1/notices",
+		headers: auth(rig, "alice"),
+	});
+	expect(listed.json().notices.map((notice: { id: string }) => notice.id)).toContain(id);
+});
+
 test("handler timeout keeps the notice", async () => {
 	const rig = await bootRig({
 		extensionSpecifiers: [NOTES_SPECIFIER],
@@ -474,8 +546,10 @@ test("handler timeout keeps the notice", async () => {
 		headers: auth(rig, "alice"),
 	});
 	expect(listed.json().notices.map((notice: { id: string }) => notice.id)).toContain(id);
-	// Give the abandoned handler time to settle; the notice still stays.
-	await new Promise((resolve) => setTimeout(resolve, 100));
+	// Give the abandoned handler time to settle (the fixture settles at
+	// 200 ms; the wait must pass it so a late dismiss WOULD show) — the
+	// notice still stays.
+	await new Promise((resolve) => setTimeout(resolve, 250));
 	const after = await rig.app.inject({
 		method: "GET",
 		url: "/v1/notices",

@@ -6,7 +6,8 @@
  * answers `{ok: true, keep: true}`. Task 4 adds `fail` (a deliberate
  * ok:false — the error-return shape) and `slow` (settles after ~200 ms,
  * past the test rig's injected 50 ms timeout — the abandoned-handler
- * shape).
+ * shape); the fix round adds `explode` (THROWS — the threw branch, the
+ * service maps the Error's message onto the ok:false wire shape).
  */
 
 import { defineExtension } from "@earendil-works/pi-durable";
@@ -36,6 +37,9 @@ export default function createFixtureNoticeActions() {
 			},
 			async fail() {
 				return { ok: false, error: { message: "deliberate failure" } };
+			},
+			async explode() {
+				throw new Error("kaboom");
 			},
 			async slow() {
 				await new Promise((resolve) => setTimeout(resolve, 200));

@@ -78,6 +78,7 @@ test("valid noticeActions bind under the slug", async () => {
 			"ping",
 			"hold",
 			"fail",
+			"explode",
 			"slow",
 		]);
 		expect(typeof binding?.actions.ping).toBe("function");
