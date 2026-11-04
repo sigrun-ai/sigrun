@@ -256,6 +256,7 @@ what core does with each, and where its rules are documented:
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
+| `noticeActions` | `{ readonly [name: string]: UserNoticeActionHandler }` | the handler names this extension's notice `extension` buttons may dispatch; a malformed entry quarantines | ["Notices"](#notices-a-transient-message-for-one-user) |
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
 | `channels` | `readonly ChannelContribution[]` | chat-platform adapters the gateway engine drives; channel-id collisions across extensions quarantine the later loader | ["Channel adapters"](#channel-adapters) |
 | `gateway` | `GatewayEngine` | the ONE gateway engine (supervises every channel adapter); a second declarer quarantines — and never pair it with `health` | ["Gateway engines"](#gateway-engines) |
@@ -335,9 +336,9 @@ every method — the routes' 404 analog.
 ### The host bridge: fail-fast when no server runs
 
 The bridged host members (`conversations`, `users`, `accounts`, `access`,
-`identity`, `curation`, `jobs`, `models`, `commands`, `notify`,
-`surfaces`) run the server's shared ops through a bridge `createServer`
-binds at boot.
+`identity`, `curation`, `jobs`, `models`, `commands`, `notices`,
+`notify`, `surfaces`) run the server's shared ops through a bridge
+`createServer` binds at boot.
 What a call on a not-yet-bound bridge does depends on whether a server
 is EXPECTED in the process:
 
@@ -1227,6 +1228,180 @@ from a tool execute or hook (never the factory body); clear with
 `host.clearAmbient`. One slot key is owned by exactly one extension —
 allocation, not silent composition.
 
+## Notices: a transient message for ONE user
+
+A **notice** is a short message aimed at one directory user: a title,
+an optional one-line body, and up to three buttons. It is the third
+way to tell someone something, and the only one that is *personal* —
+the notice names its recipient, core enforces that only that user ever
+reads it, acts on it, or is told it changed, and it is never shared,
+never copied into a fork.
+
+| | **notices** (`host.notices`) | **ambient** (`host.setAmbient`) | **notifications** (`host.notify`) |
+|---|---|---|---|
+| audience | ONE directory user, enforced by core | everyone who can see the conversation | the recipients' declared notifier channels (Signal, Discord, …) |
+| lifetime | transient — cleared by dealing with it (below), never persisted past that | persistent conversation state until its owner clears or replaces it; copied into forks | an external delivery; core keeps no copy |
+| surface | the web UI (bell, pane, inline, peek) and the TUI (inline line, count, overlay) | the conversation's statusline / footer / panel | outside sigrun entirely |
+| use it for | "your curator learned a skill", "job X failed", "approve this" | a statusline slot, a panel widget, shared read-mostly state | an explicit alert to a person away from sigrun |
+
+If the message is *for a person about their own work*, post a notice.
+If it is *about the conversation and for whoever looks*, use ambient.
+If it must *leave sigrun*, use `host.notify`.
+
+### Posting, clearing, listing
+
+```js
+const { id } = await host.notices.post({
+	user: "alice",
+	conversationId: 42,        // present → a conversation notice (inline above its composer)
+	key: "review:7f3a",        // extension-scoped replace key
+	title: "Learned: prefers the date-based audit log",
+	body: "Open the curator view to review or undo.",
+	tone: "accent",            // the blocks Tone union; default "neutral"
+	actions: [
+		{
+			id: "undo",
+			label: "Undo",
+			kind: "extension",
+			name: "undoReview",     // declared in this factory result's noticeActions
+			payload: { reviewId: "7f3a" },
+			confirm: "Undo every change this review made?",
+		},
+		{ id: "review", label: "Review", kind: "navigate",
+		  target: { view: { extension: "curator", id: "curator", params: { review: "7f3a" } } } },
+	],
+});
+
+await host.notices.clear({ user: "alice", key: "review:7f3a" }); // or { user, id }
+const mine = await host.notices.list("alice");                    // THIS extension's notices only
+```
+
+`post` validates fail-loud: it **throws**, naming the field
+(`actions[0].url: must be an https URL`), on any bound in the table
+below, on an unknown recipient, on a non-https `open` URL, on duplicate
+action ids, on an `extension` action naming a handler you did not
+declare, or on a `conversationId` / `navigate` conversation target the
+recipient cannot see. There is nobody to address on an ownerless
+install, so `post` rejects there — a notice needs a directory user.
+`clear` and `list` are **owner-scoped**: they only ever touch your own
+extension's notices, never another's.
+
+**Keys replace, and a replace mints a NEW id.** Posting an existing
+`(extension, user, key)` replaces that notice — the replacement gets a
+fresh id, so a stale click on the old one answers 404 and can never hit
+the newer content. The replacement may even change `conversationId`.
+
+### The limits
+
+The `NOTICE_LIMITS` table (exported from `@sigrun/shared/notices`):
+
+| field | bound |
+|---|---|
+| `title` | 1–200 characters (one line) |
+| `body` | 0–1000 characters of plain text |
+| `actions` | at most 3 per notice |
+| `label` | 1–40 characters |
+| `payload` | 4096 bytes of canonical JSON |
+| `confirm` | ≤ 200 characters |
+| `url` (`open`) | ≤ 2048 characters, **https only** |
+| `key` | `/^[a-z0-9._:-]{1,128}$/` |
+| action `id` | `/^[a-z0-9-]{1,32}$/`, unique within the notice |
+| pile | 10 notices per extension, 50 in total per user |
+
+**Payloads are NOT secret.** A notice's `payload` and `confirm` ride
+`GET /v1/notices` to the client, so anything you put there is visible
+to whoever can read that user's notices — and to a compromised client.
+Treat a payload as a parameter, never as a credential. Core keeps the
+stored payload and hands it to your handler; the client never sends it
+back.
+
+### `noticeActions`: the buttons that run your code
+
+A factory result may declare `noticeActions` — the handlers an
+`extension` action may name, keyed by name
+(`/^[A-Za-z][A-Za-z0-9-]{0,31}$/`; a malformed entry quarantines the
+extension at load):
+
+```js
+noticeActions: {
+	async undoReview(ctx, payload) {
+		// ctx.principal is the clicking request's principal, verbatim.
+		if (ctx.principal.user !== ctx.notice.user) {
+			return { ok: false, error: { message: "not your notice" } };
+		}
+		const undone = await host.curation.undoReview(ctx.principal.user, payload.reviewId);
+		return { ok: true, message: `Undid ${undone} change(s)` };
+	},
+},
+```
+
+`ctx` is `{principal, notice, signal}`; the handler receives the stored
+payload as its second argument. The answer is
+`{ok: true, keep?, message?, navigate?}` or
+`{ok: false, error: {message}}`. On `ok: true` core clears the notice
+unless you set `keep: true`; on `ok: false` (or a timeout) the notice
+stays and the client shows your message. The route answers
+`{ok, message?, navigate?}` — routes run under the same 10 s action
+timeout and surface-action dedup/rate-limit primitives as surface
+actions, with an optional client `requestId`.
+
+Two rules, both mandatory:
+
+- **Authorize with `ctx.principal`.** A notice button is aimed at one
+  user but the handler runs as **whoever clicks it**. Decide with
+  `ctx.principal` (and verify `ctx.principal.user === ctx.notice.user`
+  when the action must belong to the notice's owner). Never authorize
+  from `payload` — it was client-visible.
+- **Be idempotent.** A handler that outlives the 10 s timeout keeps
+  running after core has stopped waiting (the client already got
+  `timed out`), so a retry can run it twice. Make effects
+  repeat-safe.
+
+### What clears a notice (always by its user only)
+
+1. **Dismiss** — the ✕ on the notice, inline, in the pane, or on the
+   peek.
+2. **The user's next prompt** in the conversation (conversation notices
+   only; app-wide ones stay). Core clears every one of that user's
+   notices for a conversation when a submission attributed to them is
+   admitted — web submits, steers, chat answers, and extension/gateway
+   submits on their behalf all count. **Job runs and curator internal
+   runs are exempt**: a scheduled run is not the user dealing with the
+   notice. Another user's prompt clears nothing of yours.
+3. **A `navigate` or `open` button** — the client runs it, then calls
+   dismiss.
+4. **An `extension` button** that answers `ok: true` without `keep`.
+5. **Clear all** in the pane.
+6. **Your extension's `clear`** (`host.notices.clear`).
+7. **The caps** (10 per extension, 50 per user): posting past a cap
+   drops the oldest — that extension's oldest first, then the user's
+   overall.
+8. **The user is deleted** — their notices file is removed with them.
+
+Nothing expires on a timer. An **archived** conversation keeps its
+notices and its link still opens it. A **revoked share** is different:
+`GET /v1/notices` re-checks visibility on every read and drops — and
+removes from disk — conversation notices the reader can no longer see,
+so a revoked conversation's name never lingers. A **fork** never copies
+notices. If your extension is unloaded, quarantined, or replaced, its
+notices stay and remain dismissible, but its `extension` buttons answer
+`409 notice_action_unavailable` until a loaded extension under the same
+slug declares the handler again.
+
+**Wire:** `GET /v1/notices` (the caller's own pile, newest first; a
+principal without a directory user gets `{notices: []}`),
+`POST /v1/notices/{id}/dismiss` (204), `POST /v1/notices/dismiss-all`
+(204), and `POST /v1/notices/{id}/actions/{actionId}` (200 / 400
+`unknown_action` / 409 `notice_action_unavailable` / 429). A foreign,
+unknown, or user-less id answers **404, never 403** — another user's
+notice never reveals that it exists. The `notice.changed` event
+(`{ids, change: "posted" | "cleared"}`) is delivered ONLY to that
+user's own streams.
+
+**Storage:** `<dataDir>/users/<user>/notices.json`, written atomically
+and re-validated on load; the `data` backup section archives it. Your
+extension never touches the file — `host.notices` is the only writer.
+
 ## Idle workers: `wakeOn` only
 
 A factory result may also declare `workers` — in-process handlers woken
@@ -1506,6 +1681,11 @@ packages precedence as skills; a template whose name collides with a
 core or extension command is skipped with one warning.
 
 ## Sending notifications
+
+`host.notify` is the OUTWARD channel: it reaches a person through their
+configured notifiers. For something the user should deal with inside
+sigrun's own UI, post a [notice](#notices-a-transient-message-for-one-user) instead —
+different audience, different lifetime.
 
 An extension sends an explicit notice with `host.notify(input)`. The
 notice goes to every declared notifier as a `NotificationEvent` with

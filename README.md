@@ -1299,6 +1299,34 @@ curl -X PATCH localhost:3000/v1/users/<u> \
   -d '{"workspace": "<userArea>/workspace"}'
 ```
 
+## Notices
+
+A **notice** is a short message from an extension aimed at you alone:
+a title, a line or two of text, and up to three buttons (open a view,
+open a link, or run an action such as Undo) — the curator's
+"Learned: …" line is the first one you will see. Notices are per-user,
+never shared, and never copied into a fork. The **bell** —
+at the top of the rail on desktop, in the tab header on phones, and as
+a count in the TUI's status bar — opens the **notices pane**: a docked
+panel on the Chats tab and a slide-over on every other tab, newest
+first, with ✕ per notice and a Clear all. A conversation's own notices
+appear inline above the composer, and a new one **peeks** by the bell
+for six seconds (not when its conversation is already on screen),
+staying put while you hover it — several arriving
+together merge into "N new notices". In the TUI the newest notice for
+the open conversation (else the newest app-wide one) is a line above
+the editor (`alt+d` standard, `gx` vim, `M-d` emacs dismisses it), the
+status bar carries the count, and the overlay opens with `ctrl+g`
+(standard), `gN` (vim), or `M-N` (emacs).
+
+What clears a notice: its ✕, **your next prompt in that conversation**,
+a button that navigates or opens a link, an extension button that
+succeeds, Clear all, the extension that posted it, or — when the pile
+outgrows 10 notices from one extension or 50 in total — eviction of the
+oldest. Nothing expires on a timer, and another user's prompt never
+clears yours. A revoked share drops that conversation's notices on
+your next read; an archived conversation keeps its own.
+
 ## Jobs
 
 A job is a schedule plus an action, durable by construction — one
@@ -1440,6 +1468,10 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   (SSE streaming views included). A submission body is
   `{"input": "..."}` (or a `{"input": [parts]}` array of
   text/image/file content parts).
+- `GET /v1/notices`, `POST /v1/notices/{id}/dismiss`,
+  `POST /v1/notices/dismiss-all`,
+  `POST /v1/notices/{id}/actions/{actionId}` — the caller's own notices
+  (see [Notices](#notices)); a foreign id answers 404.
 - `GET /v1/providers` — per-provider readiness, statuses only (never
   credentials); `GET /v1/auth/check` is the deprecated alias.
 - `GET /v1/onboarding`, `POST /v1/onboarding/claim` — the unclaimed

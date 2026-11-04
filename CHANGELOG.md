@@ -51,6 +51,34 @@ fresh-eyes clean-room install verification.
 ## [Unreleased]
 
 ### Added
+- **Core notices** — a per-user message channel with buttons. An
+  extension posts a short notice to ONE directory user through
+  `host.notices` (`post`/`clear`/`list`); `noticeActions` on the factory
+  result declares the handlers its `extension` buttons may name. A
+  notice is title + body + up to three actions (`navigate`, `open` —
+  https only, `extension`), bounded by `NOTICE_LIMITS` and capped at 10
+  per extension / 50 per user. Nothing expires on a timer: a notice
+  clears on its ✕, the user's next prompt in that conversation, a
+  navigate/open button, a successful extension action, Clear all, the
+  posting extension's `clear`, or eviction past a cap. Nobody but the
+  addressed user ever sees one (a foreign id answers 404, never 403),
+  forks never copy them, and a revoked share drops that conversation's
+  notices on the next read. `GET /v1/notices`,
+  `POST /v1/notices/{id}/dismiss`, `POST /v1/notices/dismiss-all`,
+  `POST /v1/notices/{id}/actions/{actionId}`, and the user-only
+  `notice.changed` event. Store: `<dataDir>/users/<user>/notices.json`
+  (inside the `data` backup section).
+- **Notices UI** — a bell with a count on every tab (rail on desktop,
+  tab header on phones), a notices pane that docks on Chats and slides
+  over every other tab, an inline stack above the composer (at most
+  three, then "N more"), and a 6 s peek that never takes focus. The TUI
+  gains an inline line, a status-bar count, and an overlay
+  (`ctrl+g` / `gN` / `M-N`).
+- **Ambient buttons work (webui).** The webui's ambient renderer now
+  dispatches `navigate` and `open` actions (links open with
+  `rel="noopener noreferrer"`) instead of dropping them. The TUI's
+  ambient dispatcher is wired the same way but has no production caller
+  yet.
 - **Views are tabs (webui).** The webui shell registers views as rail
   tabs with remembered routes; the chat view keeps the conversation
   list and right panel to itself. Below the tablet breakpoint a phone
