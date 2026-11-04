@@ -33,7 +33,7 @@
  *   implementation and this contract cannot drift silently.
  */
 
-import type { AssistantMessage, Provider } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Provider, TSchema } from "@earendil-works/pi-ai";
 import type {
 	ConversationDocToken,
 	ConversationId,
@@ -1755,6 +1755,77 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly gateway?: GatewayEngine;
 	/** Declared surfaces — views and panels (UI-blocks U3, spec §7.1; the service lands in Task 2). */
 	readonly surfaces?: SurfacesContribution;
+}
+
+/**
+ * A published hook (knowledge plan, Task 1): a named, schema-validated
+ * call one extension publishes for OTHER extensions to invoke through
+ * the core registry (the extension-to-extension seam). `name` must
+ * match `/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/` (at least one dot,
+ * at most 128 chars). `run` receives the validated payload plus the
+ * {@link PublishedHookCall} context and resolves with the result.
+ */
+export interface PublishedHook {
+	readonly name: string;
+	readonly description?: string;
+	readonly input: TSchema;
+	readonly output?: TSchema;
+	run(payload: unknown, call: PublishedHookCall): Promise<unknown>;
+}
+
+/**
+ * The call context a published hook's `run` sees: the calling extension's
+ * name plus the resolved identity. `user` comes from the conversation's
+ * acting user when a `conversationId` is given, else the caller's
+ * declared user; a caller-declared user that disagrees with the
+ * conversation owner is rejected before the provider ever runs.
+ */
+export interface PublishedHookCall {
+	readonly caller: string;
+	readonly user: string | undefined;
+	readonly conversationId: ConversationId | undefined;
+	readonly abortSignal: AbortSignal | undefined;
+}
+
+/**
+ * The outcome of one registry call. `absent` — no provider owns the
+ * name. `ok` — the provider ran and produced a valid result. `rejected`
+ * — the call never ran (oversize/unstringifiable payload, schema
+ * mismatch, or identity disagreement). `failed` — the provider ran (or
+ * was interrupted) and could not deliver: `threw`, `timeout`, `aborted`,
+ * `bad-output`, `too-large`, or `too-deep` (depth bound).
+ */
+export type PublishedHookResult =
+	| { status: "absent" }
+	| { status: "ok"; provider: string; value: unknown }
+	| {
+			status: "rejected";
+			provider: string;
+			errors: { path: string; message: string }[];
+	  }
+	| {
+			status: "failed";
+			provider: string;
+			reason:
+				| "threw"
+				| "timeout"
+				| "aborted"
+				| "bad-output"
+				| "too-large"
+				| "too-deep";
+			error: string;
+	  };
+
+/**
+ * One extension's declaration of a published hook, in loader order.
+ * `builtin` marks core-bundled extensions: when a configured extension
+ * shadows a built-in the warning names replacing the built-in instead
+ * of reordering the extension list.
+ */
+export interface PublishedHookDeclaration {
+	readonly extension: string;
+	readonly builtin: boolean;
+	readonly hook: PublishedHook;
 }
 
 /**
