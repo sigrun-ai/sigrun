@@ -135,3 +135,15 @@ describe("help overlay", () => {
 		expect(shown.component).toBeDefined();
 	});
 });
+
+describe("help overlay — notices rows (notices Task 8)", () => {
+	test("every keymap's help table lists the notice actions", () => {
+		for (const keymap of [createStandardKeymap(), createEmacsKeymap(), createVimKeymap()]) {
+			const { tui, shown } = stubTui();
+			showHelp(tui, keymap);
+			const text = shown.component!.render(120).join("\n");
+			expect(text).toContain("notices");
+			expect(text).toContain("dismiss");
+		}
+	});
+});

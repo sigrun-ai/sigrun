@@ -37,8 +37,10 @@
 
 import type { Component } from "@earendil-works/pi-tui";
 import type {
+	Action as BlockAction,
 	Block,
 	CollectionBlock,
+	CoreTarget,
 	JsonObject,
 	JsonValue,
 } from "@sigrun/shared/blocks";
@@ -81,6 +83,28 @@ export class AmbientChrome implements Component {
 
 	/** Rendered-state changes (the app requests a repaint). */
 	onChanged?: () => void;
+	/** A `navigate` action's core target (the app routes it — notices
+	 *  Task 8: ambient navigate actions route like notice actions). */
+	onNavigate?: (target: CoreTarget) => void;
+	/** An `open` action's URL (the app prints it — the TUI has no browser). */
+	onOpenUrl?: (url: string) => void;
+
+	/**
+	 * Route an ambient block action (notices Task 8): `navigate` and
+	 * `open` are client-side actions the read-only render context cannot
+	 * answer, so the app dispatches them here. Every other action is a
+	 * no-op (ambient surfaces are read-only).
+	 */
+	dispatchAmbientAction(action: BlockAction): void {
+		if (action.type === "navigate") {
+			if (action.target !== undefined) this.onNavigate?.(action.target);
+			return;
+		}
+		if (action.type === "open") {
+			this.onOpenUrl?.(action.url);
+			return;
+		}
+	}
 
 	constructor(client: SigrunClient, options: { theme?: TuiTheme } = {}) {
 		this.#client = client;

@@ -24,6 +24,8 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "ctrl+n", action: "new conversation" },
 	{ keys: "ctrl+t", action: "cycle thinking" },
 	{ keys: "ctrl+o", action: "answer interaction" },
+	{ keys: "ctrl+g", action: "notices" },
+	{ keys: "alt+d", action: "dismiss newest notice" },
 	{ keys: "ctrl+l", action: "redraw" },
 	{ keys: "ctrl+c", action: "quit" },
 	{ keys: "tab / shift+tab", action: "cycle focus" },
@@ -59,6 +61,11 @@ export function createStandardKeymap(): Keymap {
 		if (matchesKey(data, Key.ctrl("n"))) return { type: "new-conversation" };
 		if (matchesKey(data, Key.ctrl("t"))) return { type: "cycle-thinking" };
 		if (matchesKey(data, Key.ctrl("o"))) return { type: "answer-interaction" };
+		// Notices Task 8: ctrl+g (the notices overlay — a control code,
+		// never typed text) and alt+d (dismiss the inline notice; M-d is
+		// readline's kill-word, a chord reserved readline never sends).
+		if (matchesKey(data, Key.ctrl("g"))) return { type: "notices.open" };
+		if (data === "\x1bd") return { type: "notices.dismissNewest" };
 		if (matchesKey(data, Key.ctrl("l"))) return { type: "redraw" };
 		if (matchesKey(data, Key.ctrl("c"))) return { type: "quit" };
 		if (matchesKey(data, Key.tab) || matchesKey(data, "tab")) {

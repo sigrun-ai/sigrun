@@ -64,7 +64,12 @@ export type Action =
 	/** Next calendar range (]). */
 	| { readonly type: "blocks.rangeNext" }
 	/** Return the calendar range to today (t). */
-	| { readonly type: "blocks.today" };
+	| { readonly type: "blocks.today" }
+	// Notices Task 8: the user-notice surface (inline line + overlay).
+	/** Open the notices overlay. */
+	| { readonly type: "notices.open" }
+	/** Dismiss the newest notice (the inline line's notice). */
+	| { readonly type: "notices.dismissNewest" };
 
 /** The dispatch surface {@link TuiApp} implements. */
 export interface ActionHost {

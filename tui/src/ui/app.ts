@@ -61,7 +61,7 @@ import {
 } from "@earendil-works/pi-tui";
 import type { ConversationViewWire, ModelEntry, SigrunClient, SlashCommand, WhenBusyMode } from "../api.js";
 import { SigrunApiError } from "../api.js";
-import type { JsonObject } from "@sigrun/shared/blocks";
+import type { CoreTarget, JsonObject } from "@sigrun/shared/blocks";
 import {
 	ExtSurfaceHub,
 	surfaceKeyHash,
@@ -83,6 +83,7 @@ import {
 	SlashCatalog,
 } from "./composer.js";
 import { AmbientChrome } from "./ambient.js";
+import { NoticeChrome } from "./notices.js";
 import { ConversationPane } from "./conversation-pane.js";
 import { InteractionPrompter } from "./interactions.js";
 import { SettingsView } from "./settings.js";
@@ -244,6 +245,8 @@ export class TuiApp implements Component, ActionHost {
 	readonly interactions: InteractionPrompter;
 	/** The ambient seam's chrome zones (Task 8; zero height when empty). */
 	readonly ambient: AmbientChrome;
+	/** The user-notice surface (notices Task 8; zero height when empty). */
+	readonly notices: NoticeChrome;
 
 	readonly #body = new HStack();
 	readonly #layout = new VStack();
@@ -327,6 +330,10 @@ export class TuiApp implements Component, ActionHost {
 			client,
 			theme === undefined ? undefined : { theme },
 		);
+		this.notices = new NoticeChrome(
+			client,
+			theme === undefined ? undefined : { theme },
+		);
 
 		this.#body.addChild(this.sidebar, {
 			basis: options.sidebarWidth ?? 24,
@@ -342,6 +349,7 @@ export class TuiApp implements Component, ActionHost {
 		this.#layout.addChild(this.#body, { basis: "auto" });
 		this.#layout.addChild(this.interactions, { basis: "auto" });
 		this.#layout.addChild(this.ambient, { basis: "auto" });
+		this.#layout.addChild(this.notices, { basis: "auto" });
 
 		// Seam state changes repaint; answer failures are user-initiated,
 		// so they land as pane error lines (background polls fail quiet).
@@ -349,6 +357,19 @@ export class TuiApp implements Component, ActionHost {
 		this.interactions.onChanged = repaint;
 		this.ambient.onChanged = repaint;
 		this.interactions.onError = (message) => this.pane.showError(message);
+		// Notices Task 8: list changes repaint AND update the status-bar
+		// count; action results print as pane notices; `open` prints the
+		// URL (the TUI has no browser); navigate routes through the app's
+		// core-target router (shared with ambient actions).
+		this.notices.onChanged = () => {
+			this.#paintNoticeCount();
+			repaint();
+		};
+		this.notices.onResult = (text) => this.pane.showNotice(text);
+		this.notices.onOpenUrl = (url) => this.pane.showNotice(url);
+		this.notices.onNavigate = (target) => void this.navigateCoreTarget(target);
+		this.ambient.onNavigate = (target) => void this.navigateCoreTarget(target);
+		this.ambient.onOpenUrl = (url) => this.pane.showNotice(url);
 
 		this.sidebar.onSelect = (selection) => {
 			if (selection === "new") {
@@ -527,6 +548,34 @@ export class TuiApp implements Component, ActionHost {
 		return this.#busy;
 	}
 
+	/** Route a core navigation target (notices Task 8): a notice or
+	 *  ambient action's `navigate` — conversations select, settings
+	 *  opens the view, views open the ext surface, jobs flash (the TUI
+	 *  has no job page). Failures land as pane errors. */
+	async navigateCoreTarget(target: CoreTarget): Promise<void> {
+		try {
+			if ("conversation" in target) {
+				await this.selectConversation(target.conversation);
+			} else if ("settings" in target) {
+				await this.openSettings();
+			} else if ("view" in target) {
+				await this.openExtView(target.view.extension, target.view.id, target.view.params);
+			} else if ("job" in target) {
+				this.pane.showNotice(`job: ${target.job}`);
+			}
+		} catch (error: unknown) {
+			this.pane.showError(describeCommandError("navigate", error));
+		}
+	}
+
+	/** Feed the notice count to the status bar's `notices:N` segment,
+	 *  merged into the steady snapshot (a flash preserves it). */
+	#paintNoticeCount(): void {
+		const base = this.#statusSnapshot;
+		if (this.#statusBar === undefined || base === undefined) return;
+		this.#statusBar.set({ ...base, notices: this.notices.notices.length });
+	}
+
 	/**
 	 * The launcher's sink: the status bar it mounted (flashes, help, and
 	 * the search overlay render through it). `set` also snapshots the
@@ -597,6 +646,9 @@ export class TuiApp implements Component, ActionHost {
 	 */
 	async refresh(): Promise<void> {
 		await this.sidebar.refresh();
+		// Notices Task 8: the count rides the boot refresh too (quiet —
+		// the chrome keeps its last list on a fetch failure).
+		void this.notices.refresh().catch(() => {});
 		if (this.#activeId === undefined) {
 			const first = this.sidebar.rows[0];
 			if (first !== undefined) {
@@ -677,6 +729,7 @@ export class TuiApp implements Component, ActionHost {
 			);
 			this.interactions.setConversation(id);
 			this.ambient.setConversation(id);
+			this.notices.setConversation(id);
 		} finally {
 			this.editor.disableSubmit = false;
 		}
@@ -1244,6 +1297,19 @@ export class TuiApp implements Component, ActionHost {
 				return;
 			case "help":
 				this.#openHelp();
+				return;
+			case "notices.open": {
+				if (this.#overlayOpen) return;
+				this.#overlayOpen = true;
+				this.notices.openOverlay(this.#tui, {
+					onClose: () => {
+						this.#overlayOpen = false;
+					},
+				});
+				return;
+			}
+			case "notices.dismissNewest":
+				await this.notices.dismissNewest();
 				return;
 			case "command-line":
 				this.editor.setText("/");

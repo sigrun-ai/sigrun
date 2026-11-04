@@ -309,6 +309,7 @@ export async function launchTuiShell(
 		{ component: body, grow: 1 },
 		{ component: app.interactions, basis: "auto" },
 		{ component: app.ambient, basis: "auto" },
+		{ component: app.notices, basis: "auto" },
 		{ component: app.editor, basis: "auto" },
 		{ component: statusBar, basis: 1 },
 	]);
@@ -341,6 +342,9 @@ export async function launchTuiShell(
 					app.interactions.kick();
 				} else if (event.type === "ambient.changed") {
 					app.ambient.kick(event.conversationId);
+				} else if (event.type === "notice.changed") {
+					// Notices Task 8: the user-only notice feed refetches the pile.
+					app.notices.kick();
 				} else if (event.type === "surface.changed") {
 					// U3 Task 5: fan the EXT surface event out to the open view's
 					// transport (the hub matches slug+id+k). The CHAT shape (U5
@@ -359,7 +363,12 @@ export async function launchTuiShell(
 			// entry's stream — open ext-view transports send it as
 			// X-Sigrun-Stream. A reconnect's new id re-registers on the
 			// next fetch.
-			onHello: (streamId) => app.setEventsStreamId(streamId),
+			onHello: (streamId) => {
+				app.setEventsStreamId(streamId);
+				// Notices Task 8: a reconnect heals the pile (the hello
+				// refetch — same posture as the webui's refetch token).
+				app.notices.kick();
+			},
 		},
 		{
 			baseUrl: options.baseUrl,

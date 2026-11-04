@@ -166,3 +166,28 @@ describe("standard keymap — overlay", () => {
 		expect(keymap.handle("\x03", open)).toEqual({ type: "quit" });
 	});
 });
+
+describe("standard keymap — notices (notices Task 8)", () => {
+	test("ctrl+g opens the notices overlay in every focus", () => {
+		const keymap = createStandardKeymap();
+		for (const focus of FOCUSES) {
+			expect(keymap.handle("\x07", ctx({ focus }))).toEqual({ type: "notices.open" });
+		}
+	});
+
+	test("alt+d dismisses the newest inline notice in every focus", () => {
+		const keymap = createStandardKeymap();
+		for (const focus of FOCUSES) {
+			expect(keymap.handle("\x1bd", ctx({ focus }))).toEqual({
+				type: "notices.dismissNewest",
+			});
+		}
+	});
+
+	test("describe() lists the two notice actions", () => {
+		const keymap = createStandardKeymap();
+		const text = keymap.describe().map((row) => `${row.keys} ${row.action}`).join("\n");
+		expect(text).toContain("notices");
+		expect(text).toContain("dismiss");
+	});
+});

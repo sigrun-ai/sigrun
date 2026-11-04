@@ -317,3 +317,21 @@ describe("vim app wiring", () => {
 		expect(configureCalls).toEqual([{ id: 7, patch: { model: "faux/m2" } }]);
 	});
 });
+
+describe("vim keymap — notices (notices Task 8)", () => {
+	test("gN opens the notices overlay; gx dismisses the newest inline notice", () => {
+		const keymap = createVimKeymap();
+		keymap.handle("\x1b", ctx()); // → normal
+		expect(keymap.handle("g", ctx())).toBe("consume");
+		expect(keymap.handle("N", ctx())).toEqual({ type: "notices.open" });
+		expect(keymap.handle("g", ctx())).toBe("consume");
+		expect(keymap.handle("x", ctx())).toEqual({ type: "notices.dismissNewest" });
+	});
+
+	test("describe() lists the two notice actions", () => {
+		const keymap = createVimKeymap();
+		const text = keymap.describe().map((row) => `${row.keys} ${row.action}`).join("\n");
+		expect(text).toContain("notices");
+		expect(text).toContain("dismiss");
+	});
+});

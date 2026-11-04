@@ -30,6 +30,8 @@ export interface StatusBarState {
 	readonly thinking?: string;
 	/** 0-100; absent → no ctx segment. */
 	readonly contextPct?: number;
+	/** The caller's notice count (notices Task 8); absent → no segment. */
+	readonly notices?: number;
 	readonly hints: readonly string[];
 	/** Transient notice; replaces the hints for 4 s. */
 	readonly message?: string;
@@ -56,6 +58,8 @@ function rightCluster(state: StatusBarState): string {
 	if (state.model !== undefined) parts.push(state.model);
 	if (state.thinking !== undefined) parts.push(state.thinking);
 	if (state.contextPct !== undefined) parts.push(`ctx ${Math.round(state.contextPct)}%`);
+	if (state.notices !== undefined && state.notices > 0)
+		parts.push(`notices:${state.notices}`);
 	const head = parts.join(SEPARATOR);
 	const tail = state.commandLine ?? state.message ?? state.hints.join(" ");
 	return tail === "" ? head : `${head}${SEPARATOR}${tail}`;

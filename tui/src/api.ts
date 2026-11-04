@@ -19,6 +19,10 @@
 
 import type { CommandRunResponse, CommandsResponse } from "@sigrun/shared/commands";
 import type {
+	NoticeActionResponse,
+	NoticesResponse,
+} from "@sigrun/shared/notices";
+import type {
 	JobsResponse,
 	JobRunResponse,
 } from "@sigrun/shared/views";
@@ -86,6 +90,12 @@ export type {
 export type { JobsResponse, JobRunResponse } from "@sigrun/shared/views";
 export type { ExtensionsResponse, ExtensionInfo, ExtensionSurfaceInfo } from "@sigrun/shared/views";
 export type { SessionMeta, SessionMetaPatch } from "@sigrun/shared/session-meta";
+export type {
+	UserNotice,
+	UserNoticeAction,
+	NoticesResponse,
+	NoticeActionResponse,
+} from "@sigrun/shared/notices";
 
 /**
  * One answer to a pending interaction (the ONE generic route's body).
@@ -468,5 +478,29 @@ export class SigrunClient {
 	/** `GET /v1/jobs/:id/revisions` — the job's revisions, newest first. */
 	listJobRevisions(id: string): Promise<JobRevisionsResponse> {
 		return this.#get(`/v1/jobs/${encodeURIComponent(id)}/revisions`);
+	}
+
+	/** `GET /v1/notices` — the caller's notices, newest first (notices Task 8). */
+	listNotices(): Promise<NoticesResponse> {
+		return this.#get("/v1/notices");
+	}
+
+	/** `POST /v1/notices/:id/dismiss` — 204; a stale id 404s (callers refetch). */
+	dismissNotice(id: string): Promise<void> {
+		return this.#send("POST", `/v1/notices/${encodeURIComponent(id)}/dismiss`, {});
+	}
+
+	/** `POST /v1/notices/dismiss-all` — clear the caller's pile (204). */
+	dismissAllNotices(): Promise<void> {
+		return this.#send("POST", "/v1/notices/dismiss-all", {});
+	}
+
+	/** `POST /v1/notices/:id/actions/:actionId` — run an extension action. */
+	runNoticeAction(id: string, actionId: string): Promise<NoticeActionResponse> {
+		return this.#send(
+			"POST",
+			`/v1/notices/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`,
+			{},
+		);
 	}
 }

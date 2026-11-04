@@ -80,6 +80,8 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "ctrl+l", action: "redraw" },
 	{ keys: "ctrl+c", action: "abort run (busy)" },
 	{ keys: "g?", action: "key reference" },
+	{ keys: "gN", action: "notices" },
+	{ keys: "gx", action: "dismiss newest notice" },
 	{ keys: "ZZ / :q", action: "quit" },
 	{ keys: "m", action: "pick up (block surface)" },
 	{ keys: "enter", action: "drop (block surface)" },
@@ -127,6 +129,11 @@ export function createVimKeymap(options?: VimKeymapOptions): VimKeymap {
 				if (prefix.key === "g" && data === "g") return { type: "edge", to: "top" };
 				// g? is vim normal's help key — "?" stays search-backward.
 				if (prefix.key === "g" && data === "?") return { type: "help" };
+				// Notices Task 8: gN / gx are the notice surface (vim's own
+				// gx open-under-cursor doesn't exist here — the TUI has no
+				// browser; the notice dismiss claims the key).
+				if (prefix.key === "g" && data === "N") return { type: "notices.open" };
+				if (prefix.key === "g" && data === "x") return { type: "notices.dismissNewest" };
 				if (prefix.key === "Z" && data === "Z") return { type: "quit" };
 				if (prefix.key === "z" && data === "a") return { type: "toggle-fold" };
 			}

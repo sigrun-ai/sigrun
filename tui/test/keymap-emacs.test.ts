@@ -206,3 +206,18 @@ describe("emacs keymap — invariants", () => {
 		expect(keymap.describe().some((row) => row.keys.includes("C-b"))).toBe(false);
 	});
 });
+
+describe("emacs keymap — notices (notices Task 8)", () => {
+	test("M-N opens the notices overlay; M-d dismisses the newest inline notice", () => {
+		const keymap = createEmacsKeymap();
+		expect(keymap.handle("\x1bN", ctx())).toEqual({ type: "notices.open" });
+		expect(keymap.handle("\x1bd", ctx())).toEqual({ type: "notices.dismissNewest" });
+	});
+
+	test("describe() lists the two notice actions", () => {
+		const keymap = createEmacsKeymap();
+		const text = keymap.describe().map((row) => `${row.keys} ${row.action}`).join("\n");
+		expect(text).toContain("notices");
+		expect(text).toContain("dismiss");
+	});
+});

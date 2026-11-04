@@ -38,6 +38,8 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "C-o", action: "answer interaction" },
 	{ keys: "C-l", action: "redraw" },
 	{ keys: "C-h", action: "key reference" },
+	{ keys: "M-N", action: "notices" },
+	{ keys: "M-d", action: "dismiss newest notice" },
 	{ keys: "M-m", action: "pick up (block surface)" },
 	{ keys: "enter", action: "drop (block surface)" },
 	{ keys: "C-g", action: "cancel move (block surface)" },
@@ -134,6 +136,11 @@ export function createEmacsKeymap(): Keymap {
 			if (data === "\x0f") return { type: "answer-interaction" };
 			if (data === "\x0c") return { type: "redraw" };
 			if (data === "\x08") return { type: "help" };
+			// Notices Task 8: M-N / M-d are the notice surface in every
+			// focus — the emacs dismiss keys are upper/lower meta-letters
+			// readline never sends (C-g stays the cancel key).
+			if (data === "\x1bN") return { type: "notices.open" };
+			if (data === "\x1bd") return { type: "notices.dismissNewest" };
 			if (ctx.focus === "composer") return "pass";
 			// Outside the composer: the transcript/list actions.
 			if (data === "\x1bw") return { type: "copy" };

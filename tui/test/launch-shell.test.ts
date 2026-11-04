@@ -105,13 +105,15 @@ describe("launchTuiShell (C1b fullscreen shell)", () => {
 		).rejects.toThrow("no server in tests");
 		expect(root).toBeInstanceOf(VStack);
 		const entries = stackEntries(root as unknown as VStack);
-		// body grow 1, interactions auto, ambient auto, composer auto, status bar 1.
-		expect(entries).toHaveLength(5);
-		const [body, interactions, ambient, composer, status] = entries;
+		// body grow 1, interactions auto, ambient auto, notices auto (notices
+		// Task 8), composer auto, status bar 1.
+		expect(entries).toHaveLength(6);
+		const [body, interactions, ambient, notices, composer, status] = entries;
 		expect(body?.component).toBeInstanceOf(HStack);
 		expect(body?.grow).toBe(1);
 		expect(interactions?.basis).toBe("auto");
 		expect(ambient?.basis).toBe("auto");
+		expect(notices?.basis).toBe("auto");
 		expect(composer?.basis).toBe("auto");
 		expect(status?.component).toBeInstanceOf(StatusBar);
 		expect(status?.basis).toBe(1);
