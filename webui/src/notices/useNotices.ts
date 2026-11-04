@@ -74,14 +74,16 @@ export function useNotices(
 
 	const dismiss = useCallback(
 		async (id: string): Promise<void> => {
-			await client.dismissNotice(id);
+			// A stale click after a keyed replace 404s (Review Focus 2): the
+			// refetch heals the pile either way, so never skip it.
+			await client.dismissNotice(id).catch(() => undefined);
 			await refetch().catch(() => undefined);
 		},
 		[client, refetch],
 	);
 
 	const dismissAll = useCallback(async (): Promise<void> => {
-		await client.dismissAllNotices();
+		await client.dismissAllNotices().catch(() => undefined);
 		await refetch().catch(() => undefined);
 	}, [client, refetch]);
 

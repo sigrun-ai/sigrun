@@ -33,9 +33,6 @@ export function NoticeCard(props: {
 	readonly notice: UserNotice;
 	/** The conversation's display name (the meta line links to it). */
 	readonly conversationName?: string;
-	/** True while an extension action POST is in flight (buttons disable). */
-	readonly busy?: boolean;
-	/** A transient result line (the 4 s message/error); managed here. */
 	readonly run: (
 		notice: UserNotice,
 		action: UserNoticeAction,
@@ -55,7 +52,7 @@ export function NoticeCard(props: {
 		return () => clearTimeout(timer);
 	}, [result]);
 
-	const busy = props.busy === true || pending;
+	const busy = pending;
 	const runAction = (action: UserNoticeAction): void => {
 		if (action.kind === "extension") {
 			if (

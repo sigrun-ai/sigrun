@@ -69,7 +69,23 @@ export function NoticesPane(props: {
 			const target = (event as { target?: unknown }).target;
 			if (target === null || target === undefined) return;
 			const root = rootRef.current;
-			if (root !== null && !root.contains(target)) onClose();
+			if (root !== null && !root.contains(target)) {
+				// The bell is a keep-open region: a click on it TOGGLES (the
+				// bell's own click handler owns that) — without this, the
+				// outside-click close and the bell's toggle reopen cancel out
+				// and the bell goes inert while the overlay is open. Test
+				// fakes carry the same closest() shape.
+				const closest = (
+					target as { closest?: (selector: string) => unknown }
+				).closest;
+				if (
+					typeof closest === "function" &&
+					closest.call(target, '[data-rail-section="notices"]') !== null
+				) {
+					return;
+				}
+				onClose();
+			}
 		};
 		doc.addEventListener("keydown", onKey);
 		doc.addEventListener("mousedown", onDown);

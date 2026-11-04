@@ -466,6 +466,37 @@ describe("App shell", () => {
 		}
 	});
 
+	test("on a non-Chats tab the bell opens the overlay; clicking the bell CLOSES it (never toggles back open)", async () => {
+		const { client, createEventSource } = makeHarness();
+		try {
+			// Boot onto the settings route (a non-Chats tab).
+			resetLocationHashForTest("#/settings");
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			const bell = () =>
+				renderer.root.findByProps({ "data-rail-section": "notices" });
+			const overlay = () =>
+				renderer.root.findAllByProps({
+					className: "notices-pane notices-pane-overlay",
+				});
+			expect(overlay()).toHaveLength(0);
+			await act(async () => {
+				(bell().props as { onClick: () => unknown }).onClick();
+			});
+			expect(overlay()).toHaveLength(1);
+			// The bell again: the overlay CLOSES (the keep-open region keeps
+			// the pane's outside-click close from racing the toggle — the
+			// net inert bug this pins).
+			await act(async () => {
+				(bell().props as { onClick: () => unknown }).onClick();
+			});
+			expect(overlay()).toHaveLength(0);
+		} finally {
+			resetLocationHashForTest();
+		}
+	});
+
 	test("the old top-bar accent select (and theme controls) are gone", async () => {
 		const { client, createEventSource } = makeHarness();
 		const renderer = await renderAsync(

@@ -176,7 +176,7 @@
 /* The peek: a compact card sliding in near the bell (top-left). */
 .notice-peek {
 	position: fixed;
-	top: 8px;
+	top: 52px;
 	left: 60px;
 	display: flex;
 	gap: 8px;

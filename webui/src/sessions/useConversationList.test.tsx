@@ -222,6 +222,40 @@ describe("useConversationList", () => {
 		expect(text()).toContain("Chart corrections");
 	});
 
+	test("notices Task 6: a notice.changed frame fires the onNoticeChanged option", async () => {
+		const harness = makeHarness();
+		let fired = 0;
+		let api: UseConversationListResult | undefined;
+		const capture = (next: UseConversationListResult) => {
+			api = next;
+		};
+		function NoticeHost() {
+			const result = useConversationList(harness.client, {
+				busy: false,
+				createEventSource: harness.createEventSource,
+				onNoticeChanged: () => {
+					fired += 1;
+				},
+			});
+			useEffect(() => capture(result));
+			return null;
+		}
+		await renderAsync(<NoticeHost />);
+		void api;
+		expect(fired).toBe(0);
+		await act(async () => {
+			harness.events.emit(
+				"notice.changed",
+				JSON.stringify({ type: "notice.changed", ids: ["n-1"], change: "posted" }),
+			);
+			await Promise.resolve();
+		});
+		expect(fired).toBe(1);
+		// A notice.changed nudge does NOT refetch the conversation list
+		// (App's notices pile owns that freshness).
+		expect(harness.calls()).toBe(1);
+	});
+
 	test("W3: a conversation.created event also refetches", async () => {
 		const harness = makeHarness();
 		const { emit } = await renderHost(harness, false);

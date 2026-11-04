@@ -2,7 +2,7 @@
  * AmbientPanels navigate seam (notices Task 6): an ambient `navigate`
  * button routes through the shell's navigate seam passed as the
  * `onNavigate` prop; `open` stays channel-local in the block renderer
- * (a noopener new tab, never dispatched).
+ * (a noopener,noreferrer new tab, never dispatched — spec §9).
  */
 
 import { act, createElement as h } from "react";
@@ -96,7 +96,7 @@ describe("AmbientPanels navigate seam", () => {
 			button.props.onClick();
 		});
 		expect(opened).toEqual([
-			{ url: "https://docs.example.invalid/", target: "_blank", features: "noopener" },
+			{ url: "https://docs.example.invalid/", target: "_blank", features: "noopener,noreferrer" },
 		]);
 		vi.unstubAllGlobals();
 	});

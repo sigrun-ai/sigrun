@@ -141,4 +141,32 @@ describe("NoticesPane", () => {
 		});
 		expect(closed).toBe(1);
 	});
+
+	test("a mousedown inside the bell does NOT close the overlay (the bell toggles it)", () => {
+		const doc = makeDocument();
+		vi.stubGlobal("document", doc);
+		let closed = 0;
+		renderWithNodes(
+			h(NoticesPane, {
+				...baseProps([notice({ id: "n-1" })]),
+				variant: "overlay",
+				onClose: () => (closed += 1),
+			}),
+		);
+		// The bell subtree's target: closest() finds the bell's
+		// data-rail-section="notices" wrapper.
+		const bellTarget = {
+			closest: (selector: string) =>
+				selector === '[data-rail-section="notices"]' ? {} : null,
+		};
+		act(() => {
+			doc.fire("mousedown", { target: bellTarget });
+		});
+		expect(closed).toBe(0);
+		// An outside target still closes (the selector finds nothing).
+		act(() => {
+			doc.fire("mousedown", { target: { closest: () => null } });
+		});
+		expect(closed).toBe(1);
+	});
 });

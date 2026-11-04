@@ -527,7 +527,7 @@ describe("BlockView: actions", () => {
 		act(() => {
 			findByLabel(renderer, "Open console").props.onClick();
 		});
-		expect(open).toHaveBeenCalledWith("https://example.invalid/console", "_blank", "noopener");
+		expect(open).toHaveBeenCalledWith("https://example.invalid/console", "_blank", "noopener,noreferrer");
 		act(() => {
 			findByLabel(renderer, "Bad open").props.onClick();
 		});

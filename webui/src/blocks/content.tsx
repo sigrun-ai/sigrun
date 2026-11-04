@@ -369,7 +369,7 @@ export function ActionButtonRow(props: {
 					open?: (url: string, target: string, features: string) => unknown;
 				}
 			).open;
-			opener?.(url, "_blank", "noopener");
+			opener?.(url, "_blank", "noopener,noreferrer");
 			return;
 		}
 		if (action.type === "submit" || action.type === "restart") {
