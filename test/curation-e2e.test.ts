@@ -22,7 +22,7 @@
  *     task ledger, so a mixed-conversation digest write is known-noop
  *     and deliberately not tested here);
  *  3. alice runs 10 model calls → a fork review creates `acme-deploy`
- *     and a USER.md entry → ONE ambient notice → undo from the curator
+ *     and a USER.md entry → ONE core notice → undo from the curator
  *     VIEW reverts both;
  *  4. bob's conversations never show alice's skill or memory, before
  *     or after;
@@ -243,7 +243,7 @@ async function submit(
  * Await an observable effect (bounded): polls `probe` every 50 ms until
  * it returns non-undefined, 20 s deadline. The async-review seam — the
  * per-user queue lives inside the extension, so the suite waits on
- * effects (file existence, ambient records), never internals.
+ * effects (file existence, the notice pile), never internals.
  */
 async function waitFor<T>(
 	probe: () => Promise<T | undefined>,
@@ -518,18 +518,27 @@ describe("the end-to-end curator path (curator built-in + memory-markdown)", () 
 				"USER.md",
 			),
 		).toContain(USER_ENTRY);
-		// ONE ambient notice on the conversation.
+		// ONE core notice for alice, on that conversation (Task 9: the
+		// curator posts a per-user notice and retired its ambient record).
 		const notice = await waitFor(async () => {
 			const response = await app.inject({
 				method: "GET",
-				url: `/v1/conversations/${id}/ambient`,
+				url: "/v1/notices",
 				headers: auth(server.tokens, "alice"),
 			});
 			expect(response.statusCode).toBe(200);
-			const rows = response.json().ambient as { key: string }[];
-			return rows.find((row) => row.key === "curator.notice");
-		}, "the curator.notice ambient record");
-		expect(notice).toBeDefined();
+			const rows = response.json().notices as {
+				key?: string;
+				owner: string;
+				conversationId?: number;
+				title: string;
+			}[];
+			return rows.find(
+				(row) => row.owner === "curator" && row.conversationId === id,
+			);
+		}, "the curator notice");
+		expect(notice?.title).toContain("Learned:");
+		expect(notice?.key).toMatch(/^review:/);
 		// The view groups the review's two changes under one review id...
 		const before = await viewData(server, "alice");
 		expect(
