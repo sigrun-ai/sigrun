@@ -205,6 +205,10 @@ export function registerEventRoutes(
 						treeRev: event.treeRev,
 					};
 				}
+				// Task 4: `notice.changed` is withheld until the notices service
+				// delivers it to its user's own streams.
+				case "notice.changed":
+					return undefined;
 				// An unknown member is NEVER delivered — deny by construction,
 				// not by enumerating the leak shapes. The satisfies check keeps
 				// this arm exhaustive: a new HostEventWire member without a

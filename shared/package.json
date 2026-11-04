@@ -44,6 +44,10 @@
 			"types": "./dist/access.d.ts",
 			"default": "./dist/access.js"
 		},
+		"./notices": {
+			"types": "./dist/notices.d.ts",
+			"default": "./dist/notices.js"
+		},
 		"./auth": {
 			"types": "./dist/auth.d.ts",
 			"default": "./dist/auth.js"

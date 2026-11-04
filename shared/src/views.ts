@@ -1163,4 +1163,10 @@ export type HostEventWire =
 			readonly conversationId: number;
 			readonly entryId: string;
 			readonly rev: number;
+		}
+	| {
+			/** Notices (notices spec §4): one user's notice set changed. The wire shape carries NO `user` — the hub-internal copy does, and the events route delivers only to streams whose principal IS that user. A keyed replace emits `cleared [oldId]` then `posted [newId]`; dismiss-all emits one `cleared` carrying every id. */
+			readonly type: "notice.changed";
+			readonly ids: readonly string[];
+			readonly change: "posted" | "cleared";
 		};

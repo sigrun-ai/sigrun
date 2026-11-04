@@ -51,6 +51,10 @@ function classifyDelivery(event: HostEventWire): EventDelivery {
 		// Host machinery: never principal-facing.
 		case "taskSettled":
 			return "never";
+		// Task 4: the notices service delivers `notice.changed` to the
+		// notice user's own streams; until then the route withholds it.
+		case "notice.changed":
+			return "never";
 			// U3 Task 4: delivered only to streams in the watcher registry
 			// with stored access ≠ none (the events route's own registry read).
 			// U5 Task 2: the CHAT shape joins the conversation-scoped class
