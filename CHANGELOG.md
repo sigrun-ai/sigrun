@@ -5,6 +5,49 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-11-04
+
+Core notices: a per-user notice system for extensions. An extension posts a short notice
+(title, body, tone, up to 3 actions) to ONE directory user; only that user ever sees it,
+by route or by event; it clears on dismiss, the user's own next prompt in the conversation,
+acting on it, clear-all, eviction past the caps, or deleting the user (the file is removed
+and a re-created username starts empty). Notices are transient by design — nothing expires
+on a timer.
+
+### Core
+
+- `host.notices` (`post`/`clear`/`list`, extension-scoped keys, capped 10 per extension and
+  50 per user), the `noticeActions` factory field (handlers run with the clicker's
+  principal, idempotent, 10s timeout, dedup + rate limit reusing the surface-action
+  primitives), `/v1/notices` routes (404-never-403 for foreign ids; `GET` prunes notices
+  whose conversation share was revoked), and the user-only `notice.changed` event.
+- Storage: one stamped, atomically-written `notices.json` per user under
+  `<dataDir>/users/<user>/` (backup-archived by the existing `data` section); invalid
+  entries are dropped on load; the agent sandbox cannot write it.
+- Ambient `navigate`/`open` buttons work in the web UI (the no-op dispatcher is gone;
+  `open` uses `noopener noreferrer`).
+
+### Web UI
+
+- Bell with a count (rail on desktop, every tab's header on phones), a notices pane
+  (docked right panel on Chats, overlay on other tabs, full-height sheet on phones),
+  inline notices above the composer (max 3, then "N more"), and a 6s peek (pause on
+  hover, arrivals merge, none for an on-screen conversation's notice or while the tab
+  is hidden).
+
+### TUI
+
+- Inline notice line above the editor, `notices:N` in the status bar, and an overlay
+  with dismiss, Clear-all-free navigation, and the buttons (`open` prints the URL; no
+  peek — the count is the announcement).
+
+### Companions
+
+- ext-curator 0.3.0 (published first): the "Learned: …" review notice moved onto core
+  notices with Undo as an extension action on the notice; ext-gateway 0.1.16 widened its
+  `@sigrun/shared` peer to the 0.8.0 line (0.1.15 is a dead scar — tagged before its fake
+  host carried `SigrunHost.notices`, CI failed against core main).
+
 ## [0.7.0] - 2026-11-04
 
 The polish pass: three waves of behaviour fixes, the full deferred-minors sweep, and a
