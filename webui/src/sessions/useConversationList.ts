@@ -101,6 +101,9 @@ function subscribeHostEvents(
 		rev: number;
 	}) => void,
 	createEventSource?: ListEventSourceFactory,
+	/** Notices Task 6: the user-only `notice.changed` event refetches the
+	 *  notices pile (a per-client shape — App bumps a token). */
+	onNoticeChanged?: () => void,
 ): () => void {
 	// The native EventSource exists only in the browser; the hook's unit
 	// tests (and any non-DOM host) inject the factory seam. Absent BOTH,
@@ -207,6 +210,11 @@ function subscribeHostEvents(
 				// a malformed frame is a dropped nudge
 			}
 		});
+		// notice.changed (notices Task 6): user-only; App's notices pile
+		// refetches on it. A malformed/absent handler is a dropped nudge.
+		if (onNoticeChanged !== undefined) {
+			source.addEventListener("notice.changed", () => onNoticeChanged());
+		}
 		// The hello frame (U3 Task 4): each (re)connect carries a NEW
 		// streamId; the handler owns the visible-surface re-fetch.
 		source.addEventListener("hello", (event: { data: string }) => {
@@ -258,6 +266,10 @@ export function useConversationList(
 	}) => void;
 	/** Test seam: the surface fetch's transport (defaults to the ambient fetch). */
 	fetchImpl?: typeof fetch;
+	/** Notices Task 6: `notice.changed` frames fire this (App bumps the
+	 *  notices refetch token; reconnect hello + tab visibility are the
+	 *  hook's own reloads, which App observes for the same bump). */
+	onNoticeChanged?: () => void;
 	},
 ): UseConversationListResult {
 	const busy = options.busy;
@@ -392,8 +404,9 @@ export function useConversationList(
 			options.onSurfaceChanged,
 			options.onChatChanged,
 			options.createEventSource,
+			options.onNoticeChanged,
 		);
-	}, [reload, onHello, options.createEventSource, options.onSurfaceChanged, options.onChatChanged]);
+	}, [reload, onHello, options.createEventSource, options.onSurfaceChanged, options.onChatChanged, options.onNoticeChanged]);
 
 	// The busy → idle transition: an immediate reload plus a settle reload
 	// 5 s later (auto names land at run settlement, shortly after idle).

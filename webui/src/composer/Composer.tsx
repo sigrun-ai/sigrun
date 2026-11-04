@@ -50,7 +50,10 @@ import {
 	type SigrunClient,
 	type SubmissionInputPart,
 } from "../api";
-import { AmbientPanels } from "../entries/AmbientPanels";
+import { AmbientPanels, type AmbientNavigate } from "../entries/AmbientPanels";
+import { InlineNotices } from "../notices/InlineNotices";
+import type { CoreTarget } from "@sigrun/shared/blocks";
+import type { UserNotice, UserNoticeAction } from "@sigrun/shared/notices";
 import { InteractionCards } from "../entries/InteractionCards";
 import type {
 	AmbientWire,
@@ -282,6 +285,19 @@ export function Composer(props: {
 	 * transcript but cannot submit, steer, or attach.
 	 */
 	readonly readOnly?: boolean;
+	/** Notices Task 6: the active conversation's notices render above the
+	 *  composer (the 3 newest, then "N more" opens the pane). */
+	readonly inlineNotices?: readonly UserNotice[];
+	readonly noticeRun?: (
+		notice: UserNotice,
+		action: UserNoticeAction,
+		onNavigate: (target: CoreTarget) => void,
+	) => Promise<unknown>;
+	readonly noticeDismiss?: (id: string) => void;
+	/** The "N more" button opens the notices pane (App's seam). */
+	readonly onOpenNoticesPane?: () => void;
+	/** The shell's navigate seam for the ambient panels' buttons. */
+	readonly onAmbientNavigate?: AmbientNavigate;
 }) {
 	const { client, conversationId, view, onNavigate, onOpenSettings, enterToSend = false, readOnly = false } =
 		props;
@@ -828,7 +844,16 @@ export function Composer(props: {
 	return (
 		<>
 			<div className="composer">
-				<AmbientPanels surfaces={ambient} />
+				{(props.inlineNotices ?? []).length > 0 && (
+					<InlineNotices
+						notices={props.inlineNotices ?? []}
+						run={props.noticeRun ?? (async () => undefined)}
+						dismiss={props.noticeDismiss ?? (() => {})}
+						onNavigate={props.onAmbientNavigate ?? (() => {})}
+						onOpenPane={props.onOpenNoticesPane ?? (() => {})}
+					/>
+				)}
+				<AmbientPanels surfaces={ambient} onNavigate={props.onAmbientNavigate} />
 				<InteractionCards
 					conversationId={conversationId}
 					interactions={interactions}

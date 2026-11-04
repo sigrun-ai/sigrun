@@ -1,0 +1,205 @@
+/* Notices (Task 6): the bell badge, the pane (docked + overlay), the
+   cards, the inline strip, and the peek. Tones ride the existing accent
+   palette via the left stripe. */
+
+.rail-bell {
+	position: relative;
+}
+.rail-bell-badge {
+	position: absolute;
+	top: 2px;
+	right: 2px;
+	background: var(--bad, #c0533a);
+	color: #fff;
+	border-radius: 8px;
+	font-size: 10px;
+	line-height: 1.2;
+	padding: 1px 5px;
+	pointer-events: none;
+}
+
+/* The pane (docked fills the right-panel host; the overlay docks right). */
+.notices-pane {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	padding: 8px;
+	overflow-y: auto;
+	min-height: 0;
+}
+.notices-pane-overlay {
+	position: fixed;
+	top: 0;
+	right: 0;
+	bottom: 0;
+	width: min(360px, 90vw);
+	background: var(--surface, #222229);
+	border-left: 1px solid var(--border, #333);
+	box-shadow: -8px 0 24px rgb(0 0 0 / 35%);
+	z-index: 40;
+}
+.notices-pane-head {
+	display: flex;
+	justify-content: space-between;
+	align-items: baseline;
+	margin: 0 0 2px;
+	font-size: 13px;
+	font-weight: 600;
+}
+.notices-pane-clear {
+	border: 0;
+	background: none;
+	color: var(--text-dim, #888);
+	font-size: 11px;
+	cursor: pointer;
+	padding: 0;
+}
+.notices-pane-clear:hover {
+	color: var(--text, #ddd);
+}
+.notices-pane-empty {
+	color: var(--text-dim, #888);
+	font-size: 12px;
+}
+
+/* One notice card (pane stack, inline strip, and — restyled — the peek). */
+.notice-card {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border-radius: 6px;
+	padding: 6px 8px;
+	background: var(--card, #2d2d36);
+	border: 1px solid var(--border, #333);
+	border-left-width: 3px;
+}
+.notice-tone-neutral { border-left-color: var(--accent, #6a7ab0); }
+.notice-tone-accent { border-left-color: var(--accent, #6a7ab0); }
+.notice-tone-info { border-left-color: var(--accent, #6a7ab0); }
+.notice-tone-good { border-left-color: var(--good, #5aa36a); }
+.notice-tone-warn { border-left-color: var(--warn, #d0a040); }
+.notice-tone-bad { border-left-color: var(--bad, #c0533a); }
+.notice-card-row {
+	display: flex;
+	justify-content: space-between;
+	align-items: flex-start;
+	gap: 8px;
+}
+.notice-card-title {
+	font-size: 12px;
+}
+.notice-card-close {
+	border: 0;
+	background: none;
+	color: var(--text-dim, #999);
+	cursor: pointer;
+	padding: 0 2px;
+	font-size: 11px;
+}
+.notice-card-body {
+	margin: 0;
+	font-size: 12px;
+	color: var(--text, #dde);
+	white-space: pre-wrap;
+}
+.notice-card-meta {
+	margin: 0;
+	font-size: 10px;
+	color: var(--text-dim, #888);
+}
+.notice-card-conversation {
+	border: 0;
+	background: none;
+	color: var(--accent, #6a7ab0);
+	cursor: pointer;
+	padding: 0;
+	font-size: inherit;
+	text-decoration: underline;
+}
+.notice-card-actions {
+	display: flex;
+	gap: 6px;
+	flex-wrap: wrap;
+}
+.notice-card-action,
+.notice-peek-action {
+	border: 1px solid var(--border-strong, #667);
+	border-radius: 4px;
+	background: none;
+	color: var(--text, #cde);
+	font-size: 11px;
+	padding: 1px 6px;
+	cursor: pointer;
+}
+.notice-card-action:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+.notice-card-result {
+	margin: 0;
+	font-size: 11px;
+	color: var(--accent, #6a7ab0);
+}
+
+/* The inline strip above the composer. */
+.inline-notices {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	margin: 0 10px 6px;
+}
+.inline-notices .notice-card {
+	flex-direction: row;
+	align-items: center;
+	gap: 8px;
+	padding: 6px 8px;
+}
+.inline-notices .notice-card-row {
+	flex: 1;
+	align-items: center;
+}
+.inline-notices .notice-card-body,
+.inline-notices .notice-card-meta {
+	display: none;
+}
+.inline-notices-more {
+	align-self: flex-start;
+	border: 0;
+	background: none;
+	color: var(--accent, #6a7ab0);
+	font-size: 11px;
+	cursor: pointer;
+	padding: 0 2px;
+}
+
+/* The peek: a compact card sliding in near the bell (top-left). */
+.notice-peek {
+	position: fixed;
+	top: 8px;
+	left: 60px;
+	display: flex;
+	gap: 8px;
+	align-items: center;
+	background: var(--card, #30364f);
+	border: 1px solid var(--accent, #6a7ab0);
+	border-radius: 8px;
+	padding: 6px 8px;
+	box-shadow: 0 6px 18px rgb(0 0 0 / 50%);
+	font-size: 12px;
+	z-index: 50;
+}
+.notice-peek-body {
+	border: 0;
+	background: none;
+	color: var(--text, #eef);
+	cursor: pointer;
+	padding: 0;
+	font-size: 12px;
+}
+.notice-peek-close {
+	border: 0;
+	background: none;
+	color: var(--text-dim, #999);
+	cursor: pointer;
+	padding: 0 2px;
+}

@@ -77,6 +77,10 @@ import { usePrefs, type PrefsState } from "./settings/usePrefs";
 import type { EventSourceFactory } from "./stream";
 import { useTheme } from "./theme/useTheme";
 import { useConversationView } from "./useConversationView";
+import { useNotices } from "./notices/useNotices";
+import { NoticesPane } from "./notices/NoticesPane";
+import { NoticePeek } from "./notices/NoticePeek";
+import { Bell } from "./notices/Bell";
 import { useStickToBottom } from "./useStickToBottom";
 import { WorkspaceBrowser } from "./workspace/WorkspaceBrowser";
 
@@ -101,7 +105,8 @@ const PANEL_STORAGE_KEY = "sigrun.panel";
  *  types; keep the two in sync by hand. */
 const RESTART_READYZ_DEADLINE_MS = 60_000;
 
-/** Load the persisted panel mode; garbage/absent → null (closed). */
+/** Load the persisted panel mode; garbage/absent → null (closed). The
+ *  notices pane (Task 6) is NEVER persisted — it's chrome, not state. */
 function loadPanel(): PanelMode | null {
 	const stored = (
 		globalThis as { localStorage?: { getItem(key: string): string | null } }
@@ -117,6 +122,9 @@ function loadPanel(): PanelMode | null {
 }
 
 function persistPanel(mode: PanelMode | null): void {
+	// The notices pane is chrome: no persistence (a reload reopens the
+	// last REAL panel, never the notices pane).
+	if (mode === "notices") return;
 	try {
 		(globalThis as { localStorage?: Storage }).localStorage?.setItem(
 			PANEL_STORAGE_KEY,
@@ -618,6 +626,13 @@ function AppShell(options: AppOptions = {}) {
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
 	// the sidebar's owner-only Share… action, rendered as an overlay.
 	const [shareFor, setShareFor] = useState<number | null>(null);
+	// Notices Task 6: the shell's ONE notices hook — the bell count, the
+	// pane, the inline strip, and the peek all read its rows. The refetch
+	// token bumps on notice.changed (the hook option above), a reconnect
+	// hello (list.streamId flips), and tab visibility (both effects below).
+	const [noticeRefetchToken, setNoticeRefetchToken] = useState(0);
+	const [noticeOverlayOpen, setNoticeOverlayOpen] = useState(false);
+	const [noticeScrollTo, setNoticeScrollTo] = useState<string | null>(null);
 	// The action-failure strip (rename/fork/new/export/compact). A SUCCESS
 	// of any later action clears it — a stale failure must not outlive the
 	// next thing that worked.
@@ -660,6 +675,12 @@ function AppShell(options: AppOptions = {}) {
 	const list = useConversationList(client, {
 		busy: view?.steer.busy ?? false,
 		createEventSource: options.createEventSource,
+		// Notices Task 6: a `notice.changed` frame bumps the notices
+		// refetch token (the pile refetches on the same freshness triggers
+		// as this list — reconnect hello + tab visibility included).
+		onNoticeChanged: useCallback(() => {
+			setNoticeRefetchToken((token) => token + 1);
+		}, []),
 		// U3 Task 5: `surface.changed` rides the SAME source into the ext
 		// hub (the open surface page's transport fires its onChanged).
 		onSurfaceChanged: useCallback(
@@ -985,13 +1006,60 @@ function AppShell(options: AppOptions = {}) {
 		)?.refreshMs;
 	}, [extRoute, railExtEntries]);
 
+	// The shell-level core-target navigation seam (notices Task 6):
+	// extracted from onExtNavigate's target branch — notice actions, the
+	// ambient panels, and ext surfaces all route a CoreTarget through it
+	// (conversation / job / settings / view). NO hash entry for the pane
+	// itself — targets route exactly like an ext navigate.
+	const navigateTarget = useCallback(
+		(target: CoreTarget): void => {
+			if ("conversation" in target && typeof target.conversation === "number") {
+				const next: Route = { kind: "chat", conversationId: target.conversation };
+				applyRoute(next, routeHash(next));
+				onSelect(target.conversation);
+				return;
+			}
+			if ("job" in target) {
+				// Tabs+skills Task 6: the JobsPanel is gone — a job
+				// target routes to the Jobs TAB carrying the id in the
+				// surface params (the core/jobs view's `job` selection).
+				const next: Route = {
+					kind: "ext",
+					slug: "core",
+					id: "jobs",
+					params: { job: target.job },
+				};
+				applyRoute(next, routeHash(next));
+				return;
+			}
+			if ("settings" in target) {
+				const settingsSection = (target as { settings?: unknown }).settings;
+				navigateSettings(
+					typeof settingsSection === "string" && settingsSection !== ""
+						? settingsSection
+						: undefined,
+				);
+				return;
+			}
+			if ("view" in target && target.view !== null && typeof target.view === "object") {
+				const view = target.view as { extension: string; id: string; params?: JsonObject };
+				const next: Route = {
+					kind: "ext",
+					slug: view.extension,
+					id: view.id,
+					params: view.params ?? {},
+				};
+				applyRoute(next, routeHash(next));
+			}
+		},
+		[applyRoute, onSelect, navigateSettings],
+	);
+
 	// The extension-surface navigate seam (spec §6.1): shared by the
 	// view page and the panel host. Params-only re-renders the current
-	// surface with new params; a core target routes (conversation /
-	// job / settings / view).
+	// surface with new params; a core target routes through navigateTarget.
 	const onExtNavigate = useCallback(
 		(action: { params?: JsonObject; target?: CoreTarget }): void => {
-			const target = action.target;
 			if (action.params !== undefined) {
 				if (extRoute === null) return;
 				const next: Route = {
@@ -1003,49 +1071,91 @@ function AppShell(options: AppOptions = {}) {
 				applyRoute(next, routeHash(next));
 				return;
 			}
+			const target = action.target;
 			if (target !== undefined && target !== null && typeof target === "object") {
-				if ("conversation" in target && typeof target.conversation === "number") {
-					const next: Route = { kind: "chat", conversationId: target.conversation };
-					applyRoute(next, routeHash(next));
-					onSelect(target.conversation);
-					return;
-				}
-				if ("job" in target) {
-					// Tabs+skills Task 6: the JobsPanel is gone — a job
-					// target routes to the Jobs TAB carrying the id in the
-					// surface params (the core/jobs view's `job` selection).
-					const next: Route = {
-						kind: "ext",
-						slug: "core",
-						id: "jobs",
-						params: { job: target.job },
-					};
-					applyRoute(next, routeHash(next));
-					return;
-				}
-				if ("settings" in target) {
-					const settingsSection = (target as { settings?: unknown }).settings;
-					navigateSettings(
-						typeof settingsSection === "string" && settingsSection !== ""
-							? settingsSection
-							: undefined,
-					);
-					return;
-				}
-				if ("view" in target && target.view !== null && typeof target.view === "object") {
-					const view = target.view as { extension: string; id: string; params?: JsonObject };
-					const next: Route = {
-						kind: "ext",
-						slug: view.extension,
-						id: view.id,
-						params: view.params ?? {},
-					};
-					applyRoute(next, routeHash(next));
-				}
+				navigateTarget(target);
 			}
 		},
-		[extRoute, onSelect, navigateSettings, applyRoute],
+		[extRoute, applyRoute, navigateTarget],
 	);
+
+	// Notices Task 6: the shell's notices hook + its freshness triggers.
+	// The refetch token bumps on notice.changed (the list option above),
+	// on a reconnect hello (a NEW streamId), and on tab visibility — the
+	// SAME triggers the conversation list already observes.
+	const notices = useNotices(client, { refetchToken: noticeRefetchToken });
+	const previousStreamIdRef = useRef<string | undefined>(undefined);
+	useEffect(() => {
+		if (
+			previousStreamIdRef.current !== undefined &&
+			list.streamId !== undefined &&
+			list.streamId !== previousStreamIdRef.current
+		) {
+			setNoticeRefetchToken((token) => token + 1);
+		}
+		previousStreamIdRef.current = list.streamId;
+	}, [list.streamId]);
+	useEffect(() => {
+		const doc = (
+			globalThis as {
+				document?: {
+					visibilityState?: string;
+					addEventListener?: (type: string, listener: () => void) => void;
+					removeEventListener?: (type: string, listener: () => void) => void;
+				};
+			}
+		).document;
+		if (doc?.addEventListener === undefined) return undefined;
+		const onVisibility = (): void => {
+			if (doc.visibilityState === "visible") {
+				setNoticeRefetchToken((token) => token + 1);
+			}
+		};
+		doc.addEventListener("visibilitychange", onVisibility);
+		return () => doc.removeEventListener?.("visibilitychange", onVisibility);
+	}, []);
+
+	// The conversation name a notice card's meta line links to (from the
+	// lifted list rows — the ONE name spelling).
+	const noticeConversationName = useCallback(
+		(id: number): string | undefined => {
+			const row = list.rows.find((one) => one.id === id);
+			return row === undefined
+				? undefined
+				: displayName(row);
+		},
+		[list.rows],
+	);
+
+	// The bell: toggles the notices pane — docked (the Chats tab's
+	// right-panel mode) or the right-edge overlay elsewhere. Opening the
+	// docked pane closes outline/workspace/ext panel (the mode is
+	// exclusive); opening EITHER pane clears any ext panel tab.
+	const openNoticesPane = useCallback(
+		(scrollTo?: string): void => {
+			setNoticeScrollTo(scrollTo ?? null);
+			if (route.kind === "chat") {
+				setPanel("notices");
+				setExtPanel(null);
+				// persistPanel skips "notices" — chrome, never persisted.
+			} else {
+				setNoticeOverlayOpen(true);
+			}
+		},
+		[route.kind],
+	);
+	const toggleNoticesPane = useCallback((): void => {
+		if (route.kind === "chat") {
+			onPanel("notices");
+			if (panel !== "notices") setExtPanel(null);
+		} else {
+			setNoticeOverlayOpen((open) => !open);
+		}
+	}, [route.kind, onPanel, panel]);
+
+	// The rail's Bell props (count + active + toggle), one bundle.
+	const noticesPaneOpen =
+		route.kind === "chat" ? panel === "notices" : noticeOverlayOpen;
 
 	// The conversation select ALSO writes the hash (tabs Task 1: the
 	// chat route CARRIES the conversation id — browser back returns to
@@ -1323,6 +1433,13 @@ function AppShell(options: AppOptions = {}) {
 					extViewEntries={railExtEntries}
 					onMoveExtView={onMoveExtView}
 					onLogout={onSignOut}
+					bell={
+						<Bell
+							count={notices.notices.length}
+							active={noticesPaneOpen}
+							onToggle={toggleNoticesPane}
+						/>
+					}
 				/>
 				{list.error !== null && (
 					<p className="side-error" role="alert">
@@ -1371,6 +1488,19 @@ function AppShell(options: AppOptions = {}) {
 			// column — an ext surface renders full width; the Chats tab adds
 			// the transcript column, its composer dock, and the right panel.
 		<main className="main-column">
+			{/* The notices peek (Task 6): a new arrival slides in near the
+			    bell — never for the on-screen conversation's notice, never
+			    while the tab is hidden. */}
+			<NoticePeek
+				arrivals={notices.arrivals}
+				visibleConversationId={
+					route.kind === "chat" ? activeId : null
+				}
+				run={notices.run}
+				dismiss={(id) => void notices.dismiss(id)}
+				onNavigate={navigateTarget}
+				onOpenPane={openNoticesPane}
+			/>
 			{/* The chat header renders ONLY on the Chats tab (spec §1,
 			    whole-branch review I4): its panel toggles and conversation
 			    title are dead weight over the Skills/Jobs/ext tabs, and its
@@ -1447,6 +1577,17 @@ function AppShell(options: AppOptions = {}) {
 								list.rows.find((row) => row.id === activeId)?.access ===
 								"read"
 							}
+							inlineNotices={
+								activeId === null
+									? []
+									: notices.notices.filter(
+											(one) => one.conversationId === activeId,
+										)
+							}
+							noticeRun={notices.run}
+							noticeDismiss={(id) => void notices.dismiss(id)}
+							onOpenNoticesPane={() => openNoticesPane()}
+							onAmbientNavigate={navigateTarget}
 						/>
 					</footer>
 				</div>
@@ -1487,6 +1628,23 @@ function AppShell(options: AppOptions = {}) {
 							onClose={closePanel}
 					/>
 				}
+				notices={
+					<NoticesPane
+						variant="docked"
+						notices={notices.notices}
+						conversationName={noticeConversationName}
+						run={notices.run}
+						dismiss={(id) => void notices.dismiss(id)}
+						dismissAll={() => void notices.dismissAll()}
+						onNavigate={(target) => {
+							navigateTarget(target);
+							// A card's conversation link LEAVES the pane — the
+							// docked pane closes as the route moves.
+							if ("conversation" in target) closePanel();
+						}}
+						scrollTo={noticeScrollTo}
+					/>
+				}
 			/>
 			)}
 				</div>
@@ -1507,6 +1665,24 @@ function AppShell(options: AppOptions = {}) {
 					className="panel-backdrop"
 					onClick={closePanel}
 					aria-hidden="true"
+				/>
+			)}
+			{/* The non-Chats tabs' notices overlay (Task 6): a fixed
+			    right-edge pane — outside click / Escape / the bell close it. */}
+			{route.kind !== "chat" && noticeOverlayOpen && (
+				<NoticesPane
+					variant="overlay"
+					notices={notices.notices}
+					conversationName={noticeConversationName}
+					run={notices.run}
+					dismiss={(id) => void notices.dismiss(id)}
+					dismissAll={() => void notices.dismissAll()}
+					onClose={() => setNoticeOverlayOpen(false)}
+					onNavigate={(target) => {
+						navigateTarget(target);
+						setNoticeOverlayOpen(false);
+					}}
+					scrollTo={noticeScrollTo}
 				/>
 			)}
 			{/* The ≤900px bottom tab bar (tabs+skills Task 2): CSS hides it

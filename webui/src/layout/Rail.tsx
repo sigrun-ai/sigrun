@@ -22,6 +22,7 @@
  * `backup: <status>`.
  */
 
+import type { ReactNode } from "react";
 import type { IconName } from "@sigrun/shared/blocks";
 import type { MetaResponse, WhoamiResponse } from "../api";
 import { Icon } from "../blocks/icons";
@@ -127,6 +128,9 @@ export function Rail(props: {
 	/** Keyboard reorder (Alt+ArrowUp/Down on a focused ext entry): App
 	 *  owns the saved-order state. */
 	readonly onMoveExtView?: (key: string, delta: -1 | 1) => void;
+	/** Bell at the top of the rail (notices Task 6): App passes its
+	 *  notices bundle (count + pane toggle + open state). */
+	readonly bell?: ReactNode;
 }) {
 	const { meta, identity, onLogout } = props;
 	const { onOpenGallery } = props;
@@ -149,6 +153,7 @@ export function Rail(props: {
 	const coreViews = coreViewEntries(meta);
 	return (
 		<nav className="rail" aria-label="sections">
+			{props.bell}
 			<span className="rail-brand" title="sigrun">
 				<BrandMark />
 			</span>

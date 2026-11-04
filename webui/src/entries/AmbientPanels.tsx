@@ -25,10 +25,12 @@
  * interaction records). `details` renders collapsed, never interpreted.
  */
 
-import type { ReactNode } from "react";
+import { useMemo, type ReactNode } from "react";
 import type {
+	Action,
 	Block,
 	CollectionBlock,
+	CoreTarget,
 	JsonObject,
 	JsonValue,
 } from "@sigrun/shared/blocks";
@@ -40,17 +42,30 @@ import {
 } from "../blocks/context";
 import { ContainerWidth } from "../blocks/width";
 
+/** The ambient action seam (notices Task 6): ambient blocks stay
+ *  read-only for surface state, but `navigate` buttons ROUTE through
+ *  the shell's navigate seam (`open` is already channel-local in the
+ *  block renderer — it opens a noopener new tab without dispatching).
+ *  Every other action type remains a no-op (ambient surfaces don't
+ *  take answers). */
+export type AmbientNavigate = (target: CoreTarget) => void;
+
+function makeAmbientActions(onNavigate?: AmbientNavigate) {
+	return {
+		dispatch: (action: Action): void => {
+			if (action.type === "navigate" && action.target !== undefined) {
+				onNavigate?.(action.target);
+			}
+		},
+		access: "read" as const,
+		viewState: {} as JsonObject,
+		serverErrors: {} as Readonly<Record<string, string>>,
+		setView: (): void => {},
+	};
+}
+
 /** Ambient bodies never bind (the ruling): the data document is empty. */
 const EMPTY_DATA: JsonObject = {};
-
-/** The renderer's standalone actions context (read-only). */
-const AMBIENT_ACTIONS = {
-	dispatch: (): void => {},
-	access: "read" as const,
-	viewState: {} as JsonObject,
-	serverErrors: {} as Readonly<Record<string, string>>,
-	setView: (): void => {},
-};
 
 /** The quiet fold for the drop overflow: mark the tail rows quiet so
  *  the collection's own "N more" toggle carries them (the panel's
@@ -114,15 +129,24 @@ function budgetTree(surface: AmbientWire, root: Block): Block {
 }
 
 /** Render one ambient body (already placement-legal). */
-function AmbientBody(props: { surface: AmbientWire }): ReactNode {
+function AmbientBody(props: {
+	surface: AmbientWire;
+	onNavigate?: AmbientNavigate;
+}): ReactNode {
 	const body = props.surface.body;
+	// The actions context memoizes per navigate seam (the same-object
+	// rule keeps the tree from re-rendering per frame).
+	const actions = useMemo(
+		() => makeAmbientActions(props.onNavigate),
+		[props.onNavigate],
+	);
 	if (body === undefined) return null;
 	const root = budgetTree(props.surface, body.root);
 	return (
 		<SurfaceDataContext.Provider
 			value={{ data: EMPTY_DATA, locale: navigator.language }}
 		>
-			<SurfaceActionsContext.Provider value={AMBIENT_ACTIONS}>
+			<SurfaceActionsContext.Provider value={actions}>
 				<ContainerWidth>
 					<BlockView block={root} />
 				</ContainerWidth>
@@ -132,7 +156,10 @@ function AmbientBody(props: { surface: AmbientWire }): ReactNode {
 }
 
 /** One ambient surface in its envelope. */
-export function AmbientPanel(props: { surface: AmbientWire }): ReactNode {
+export function AmbientPanel(props: {
+	surface: AmbientWire;
+	onNavigate?: AmbientNavigate;
+}): ReactNode {
 	const { surface } = props;
 	if (surface.body === undefined && surface.details === undefined) {
 		return null;
@@ -143,7 +170,7 @@ export function AmbientPanel(props: { surface: AmbientWire }): ReactNode {
 			data-key={surface.key}
 			data-place={surface.place}
 		>
-			<AmbientBody surface={surface} />
+			<AmbientBody surface={surface} onNavigate={props.onNavigate} />
 			{surface.details !== undefined && (
 				<details className="ambient-details">
 					<summary>details</summary>
@@ -157,13 +184,20 @@ export function AmbientPanel(props: { surface: AmbientWire }): ReactNode {
 /** The ambient zone: one panel per surface key, stable order. */
 export function AmbientPanels(props: {
 	surfaces: readonly AmbientWire[];
+	/** The shell's navigate seam (notices Task 6): ambient `navigate`
+	 *  actions route here; omitted → they no-op (the old behavior). */
+	onNavigate?: AmbientNavigate;
 }): ReactNode {
 	const { surfaces } = props;
 	if (surfaces.length === 0) return null;
 	return (
 		<div className="ambient-panels">
 			{surfaces.map((surface) => (
-				<AmbientPanel key={surface.key} surface={surface} />
+				<AmbientPanel
+					key={surface.key}
+					surface={surface}
+					onNavigate={props.onNavigate}
+				/>
 			))}
 		</div>
 	);

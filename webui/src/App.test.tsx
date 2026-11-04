@@ -195,6 +195,7 @@ function makeHarness(init?: {
 			}
 		} else if (input === "/v1/models") body = { models: [] };
 		else if (input === "/v1/jobs") body = { jobs: [] };
+		else if (input === "/v1/notices") body = { notices: [] };
 		else if (input === "/v1/extensions") body = { extensions: [] };
 		else if (input === "/v1/auth/accounts") {
 			// The accounts cove (the boot deep-link test's target section).
@@ -431,6 +432,38 @@ describe("App shell", () => {
 		await clickPanel(renderer, "workspace");
 		panel = renderer.root.findByProps({ className: "right-panel" });
 		expect(panel.props["data-panel"]).toBe("workspace");
+	});
+
+	test("the bell opens the notices pane as a Chats panel mode — no history entry, not persisted; clicking again closes", async () => {
+		const { client, createEventSource } = makeHarness();
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			const before = locationHash();
+			const bell = renderer.root.findByProps({ "data-rail-section": "notices" });
+			await act(async () => {
+				(bell.props as { onClick: () => unknown }).onClick();
+			});
+			const panel = renderer.root.findByProps({ className: "right-panel" });
+			expect(panel.props["data-panel"]).toBe("notices");
+			// The pane's open state is chrome: the hash never moved (no
+			// history entry) and the persisted panel key never saw
+			// "notices" (persistPanel skips it).
+			expect(locationHash()).toBe(before);
+			expect(panel.props["aria-label"]).toBe("notices panel");
+			// The empty pile renders the empty state.
+			expect(textContent(renderer.toJSON())).toContain("No notices");
+			// Clicking the bell again closes the pane.
+			await act(async () => {
+				(renderer.root.findByProps({ "data-rail-section": "notices" }).props as { onClick: () => unknown }).onClick();
+			});
+			expect(
+				renderer.root.findAllByProps({ className: "right-panel" }),
+			).toHaveLength(0);
+		} finally {
+			resetLocationHashForTest();
+		}
 	});
 
 	test("the old top-bar accent select (and theme controls) are gone", async () => {

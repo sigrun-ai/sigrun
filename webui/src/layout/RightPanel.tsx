@@ -10,7 +10,7 @@
 import type { ReactNode } from "react";
 import type { ExtViewEntry } from "./extViews";
 
-export type PanelMode = "outline" | "workspace";
+export type PanelMode = "outline" | "workspace" | "notices";
 
 export function RightPanel(props: {
 	/** The open mode, or null when the panel is closed. */
@@ -31,6 +31,10 @@ export function RightPanel(props: {
 	readonly extContent?: ReactNode;
 	/** Opens an extension panel tab. */
 	readonly onOpenExtPanel?: (slug: string, id: string) => void;
+	/** Notices Task 6: the notices pane's content (rendered when
+	 *  mode === "notices"; opening it closes the outline/workspace/ext
+	 *  panel — the shell's mode state owns that exclusivity). */
+	readonly notices?: ReactNode;
 }) {
 	const { mode, outline, workspace } = props;
 	const extPanels = props.extPanels ?? [];
@@ -72,7 +76,9 @@ export function RightPanel(props: {
 					? null
 					: mode === "outline"
 						? outline
-						: workspace}
+						: mode === "notices"
+							? props.notices
+							: workspace}
 		</aside>
 	);
 }

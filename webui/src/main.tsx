@@ -2,6 +2,8 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { AuthGate } from "./auth/AuthGate";
 import "./app.css";
+import "./notices/notices.css";
+
 
 // The bundle's entry document guarantees the mount point (index.html); a
 // missing one is a broken bundle, so fail loud rather than render nothing.

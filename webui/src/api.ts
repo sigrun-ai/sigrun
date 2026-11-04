@@ -77,6 +77,20 @@ import type {
 	JobWire,
 } from "@sigrun/shared/jobs";
 import type { Sharing } from "@sigrun/shared/access";
+import type {
+	NoticeActionResponse,
+	NoticesResponse,
+} from "@sigrun/shared/notices";
+
+/** The notices channel wire shapes (notices spec §1/§4) — the shared
+ *  leaf's contract module, re-exported so the notices UI and the server
+ *  agree. */
+export type {
+	UserNotice,
+	UserNoticeAction,
+	NoticesResponse,
+	NoticeActionResponse,
+} from "@sigrun/shared/notices";
 
 export type {
 	MetaResponse,
@@ -629,6 +643,22 @@ export interface SigrunClient {
 	): Promise<JobRunsResponse>;
 	/** One job's revisions, newest first (`GET /v1/jobs/:id/revisions`). */
 	listJobRevisions(id: string): Promise<JobRevisionsResponse>;
+	/** The caller's notices, newest first (`GET /v1/notices`). */
+	listNotices(): Promise<NoticesResponse>;
+	/** Dismiss one notice (`POST /v1/notices/:id/dismiss`, 204/404). */
+	dismissNotice(id: string): Promise<void>;
+	/** Clear the pile (`POST /v1/notices/dismiss-all`, 204). */
+	dismissAllNotices(): Promise<void>;
+	/**
+	 * Run one notice action (`POST /v1/notices/:id/actions/:actionId`;
+	 * notices Task 4). `body.requestId` rides the idempotence field when
+	 * the caller has one (a double-click retry).
+	 */
+	runNoticeAction(
+		id: string,
+		actionId: string,
+		body?: { readonly requestId?: string },
+	): Promise<NoticeActionResponse>;
 }
 
 /** The fetch surface the client needs (the real thing or a test stub). */
@@ -1015,5 +1045,15 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			get<JobRevisionsResponse>(
 				`/v1/jobs/${encodeURIComponent(id)}/revisions`,
 			),
+		listNotices: () => get<NoticesResponse>("/v1/notices"),
+		dismissNotice: (id) =>
+			sendVoid("POST", `/v1/notices/${encodeURIComponent(id)}/dismiss`, {}),
+		dismissAllNotices: () => sendVoid("POST", "/v1/notices/dismiss-all", {}),
+		runNoticeAction: (id, actionId, body) =>
+			send(
+				"POST",
+				`/v1/notices/${encodeURIComponent(id)}/actions/${encodeURIComponent(actionId)}`,
+				body ?? {},
+			) as Promise<NoticeActionResponse>,
 	};
 }
