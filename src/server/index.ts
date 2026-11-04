@@ -37,6 +37,8 @@ import { LoginFlows } from "./login/flows.js";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "./session-meta.js";
+import { NoticesService } from "../notices/service.js";
+import { visibleToUser } from "./visibility.js";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import type { OpenedHarness } from "../harness/boot.js";
@@ -255,6 +257,27 @@ export async function createServer(
 	// effective method list), and the boot env (the settings routes'
 	// `effective` block reads it).
 	const sse = new SseRegistry();
+	// The notices service (notices Task 3): over the per-user store files,
+	// with `visibleToUser` as its arbitrary-user visibility answer and the
+	// hub as its notice.changed sink (the events route's notice.changed
+	// case narrows delivery to the notice user's own streams).
+	const noticesService = new NoticesService({
+		opened,
+		userArea: (user) => join(opened.extensionStores.roots.dataDir, "users", user),
+		visible: (conversationId, user) =>
+			visibleToUser(
+				// SAFETY: `visibleToUser` reads only `opened` off the context
+				// (its own doc); the full ServerContext does not exist yet.
+				{ opened } as ServerContext,
+				conversationId as ConversationId,
+				user,
+			),
+		publish: (event) => {
+			opened.events.publish(event);
+		},
+		now: () => new Date(),
+		log: (line) => console.warn(line),
+	});
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};
@@ -431,6 +454,7 @@ export async function createServer(
 		publishSettingsChanged: opened.publishSettingsChanged,
 		watchersByConversation: new Map(),
 		surfaces: surfacesService,
+		notices: noticesService,
 		sse,
 		imageProxy: { cache: imageCache, deps: imageDeps, key: imageKey },
 		...(options?.gateway === undefined ? {} : { gateway: options.gateway }),

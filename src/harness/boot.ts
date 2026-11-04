@@ -42,6 +42,7 @@ import {
 	type ExtensionChannelBinding,
 	type ExtensionCommandBinding,
 	type ExtensionGatewayBinding,
+	type ExtensionNoticeActionBinding,
 	type ExtensionNotifierBinding,
 	type ExtensionOutcome,
 	type LoginProviderBinding,
@@ -466,6 +467,13 @@ export interface OpenedHarness {
 	 * extensions contribute nothing.
 	 */
 	readonly notifierBindings: readonly ExtensionNotifierBinding[];
+	/**
+	 * Declared notice-action handlers (notices Task 3): one binding per
+	 * extension whose factory result carried `noticeActions` — the notices
+	 * service's handler registry and declared-handler post gate.
+	 * Quarantined extensions contribute nothing.
+	 */
+	readonly noticeActionBindings: readonly ExtensionNoticeActionBinding[];
 	/**
 	 * Channel adapters the loaded extensions declared (gateway C1, spec
 	 * §7): one binding per extension whose factory result carried
@@ -1464,6 +1472,7 @@ export async function openHarness(
 		lifecycleBindings,
 		workerBindings,
 		curationBindings,
+		noticeActionBindings,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -2331,6 +2340,7 @@ export async function openHarness(
 		},
 		extensionRoutes: routeBindings,
 		extensionCommands: commandBindings,
+		noticeActionBindings,
 		extensionSurfaces: surfaceBindings,
 		extensionSettingsSections: settingsSectionBindings,
 		notifierBindings,

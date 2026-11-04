@@ -100,6 +100,7 @@ import type {
 	SigrunLifecycleHandlers,
 	SurfaceDef,
 	SurfacesContribution,
+	UserNoticeActionHandler,
 	UserService,
 	WebuiBundleContribution,
 } from "../extension.js";
@@ -233,6 +234,18 @@ export interface ExtensionCommandBinding {
 	/** The slug identity (the merged catalog entry's `extension` field). */
 	readonly extension: string;
 	readonly commands: readonly ExtensionCommandContribution[];
+}
+
+/**
+ * `noticeActions` handlers retained from one extension factory result
+ * (notices Task 3) — slug-attributed, every name grammar-checked and every
+ * value a function. The notices service reads these as its handler
+ * registry and its declared-handler post gate.
+ */
+export interface ExtensionNoticeActionBinding {
+	/** The extension slug (the posting owner). */
+	readonly extension: string;
+	readonly actions: Readonly<Record<string, UserNoticeActionHandler>>;
 }
 
 /**
@@ -431,6 +444,12 @@ export interface LoadedExtensions {
 	 */
 	readonly curationBindings: readonly ExtensionCurationBinding[];
 	/**
+	 * `noticeActions` handlers from factory results (notices Task 3), one
+	 * entry per loaded extension that carried the field; quarantined
+	 * extensions contribute none. Boot threads them onto `OpenedHarness`.
+	 */
+	readonly noticeActionBindings: readonly ExtensionNoticeActionBinding[];
+	/**
 	 * Declared jobs from factory results (jobs §8.3 — the `extension`
 	 * source), one entry per loaded extension whose result carried `jobs`;
 	 * quarantined extensions contribute none. Boot reconciliation folds
@@ -576,6 +595,8 @@ export interface ResolvedExtension {
 	readonly workers?: readonly ExtensionWorker[];
 	/** Curation targets (curator P7), validated fail-loud. */
 	readonly curationTargets?: readonly CurationTarget[];
+	/** Present only when the factory result carried `noticeActions` (validated). */
+	readonly noticeActions?: Readonly<Record<string, UserNoticeActionHandler>>;
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
 	readonly providers?: readonly ProviderContribution[];
 	/** Login providers (multi-user M3b), validated fail-loud. */
@@ -681,7 +702,8 @@ type LoaderReadKeys =
 	| "surfaces"
 	| "perUserTools"
 	| "userServices"
-	| "curationTargets";
+	| "curationTargets"
+	| "noticeActions";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -872,6 +894,46 @@ function validateWorkers(value: unknown): readonly ExtensionWorker[] | undefined
  * does not register) and the cross-extension duplicate qualified id
  * live in the load loop, where the registry and the slug are known.
  */
+
+/**
+ * The notice-action handler-name grammar (notices Task 3): the key a
+ * posted notice's `extension` action names, and the loader's per-key
+ * check on the factory field.
+ */
+const NOTICE_ACTION_NAME_RE = /^[A-Za-z][A-Za-z0-9-]{0,31}$/;
+
+/**
+ * `noticeActions` must be a plain object whose keys satisfy the
+ * handler-name grammar and whose values are functions (notices Task 3);
+ * anything else quarantines the extension — an extension that THINKS it
+ * serves notice buttons must not silently lose them.
+ */
+function validateNoticeActions(
+	value: unknown,
+): Readonly<Record<string, UserNoticeActionHandler>> | undefined {
+	if (value === undefined) return undefined;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a noticeActions field that is not a plain object",
+		);
+	}
+	const actions: Record<string, UserNoticeActionHandler> = {};
+	for (const [name, handler] of Object.entries(value)) {
+		if (!NOTICE_ACTION_NAME_RE.test(name)) {
+			throw new Error(
+				`extension factory returned a noticeActions entry with an invalid name "${name}"`,
+			);
+		}
+		if (typeof handler !== "function") {
+			throw new Error(
+				`extension factory returned a noticeActions entry "${name}" that is not a function`,
+			);
+		}
+		actions[name] = handler as UserNoticeActionHandler;
+	}
+	return actions;
+}
+
 function validateCurationTargets(
 	value: unknown,
 ): readonly CurationTarget[] | undefined {
@@ -2216,6 +2278,9 @@ async function resolvedFromFactory(
 	// qualified-id duplicate check runs in the load loop where the slug
 	// and the already-claimed ids are known).
 	const curationTargets = validateCurationTargets(candidate.curationTargets);
+	// Notice actions (notices Task 3): a plain object of name → handler,
+	// every name grammar-checked; a malformed entry quarantines.
+	const noticeActions = validateNoticeActions(candidate.noticeActions);
 	return {
 		...(candidate.perUserTools === undefined
 			? {}
@@ -2257,6 +2322,7 @@ async function resolvedFromFactory(
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
 		...(workers === undefined ? {} : { workers }),
 		...(curationTargets === undefined ? {} : { curationTargets }),
+		...(noticeActions === undefined ? {} : { noticeActions }),
 		...(providers === undefined ? {} : { providers }),
 		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
@@ -2552,6 +2618,7 @@ const workerBindings: ExtensionWorkerBinding[] = [];
 // entry per loaded extension whose result carried them — boot folds
 // these into the ONE CurationRegistry (src/curation/targets.ts).
 const curationBindings: ExtensionCurationBinding[] = [];
+const noticeActionBindings: ExtensionNoticeActionBinding[] = [];
 const userServiceBindings: { extension: string; services: readonly UserService[]; packageDir: string }[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
@@ -3002,6 +3069,12 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						workers: resolved.workers,
 					});
 				}
+				if (resolved.noticeActions !== undefined) {
+					noticeActionBindings.push({
+						extension: slug,
+						actions: resolved.noticeActions,
+					});
+				}
 				if (resolved.curationTargets !== undefined) {
 					curationBindings.push({
 						extension: slug,
@@ -3135,6 +3208,7 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		lifecycleBindings,
 		workerBindings,
 		curationBindings,
+		noticeActionBindings,
 		jobBindings,
 		routeBindings,
 		commandBindings,

@@ -81,6 +81,23 @@ export interface HostBridge {
 		input: Parameters<SigrunHost["notify"]>[0],
 	) => Promise<void>;
 	/**
+	 * The notices seam's server side (notices Task 3): the seam host's
+	 * `notices` member delegates here — the slug is the CALLING
+	 * extension's (the seam host knows it; the bridge takes it as an
+	 * argument), and the service enforces the owner scoping.
+	 */
+	readonly notices: {
+		post(
+			slug: string,
+			input: Parameters<SigrunHost["notices"]["post"]>[0],
+		): Promise<{ id: string }>;
+		clear(
+			slug: string,
+			selector: { user: string; key: string } | { user: string; id: string },
+		): Promise<void>;
+		list(slug: string, user: string): ReturnType<SigrunHost["notices"]["list"]>;
+	};
+	/**
 	 * The curation surface (curator P6, A9): the boot-built host —
 	 * `OpenedHarness.curationHost` verbatim (the ONE instance; every
 	 * seam host exposes the same object through this bridge).
@@ -399,6 +416,15 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 		},
 	},
 	notify: (slug, input) => notifyExtension(ctx, slug, input),
+	// Notices Task 3: the calling extension's slug is the posting owner
+	// (the service enforces the owner scoping); rejections surface to the
+	// caller as rejected promises, the same fail-loud posture as ambient
+	// writes.
+	notices: {
+		post: (slug, input) => ctx.notices.post(slug, input),
+		clear: (slug, selector) => ctx.notices.clear(slug, selector),
+		list: (slug, user) => ctx.notices.listForExtension(slug, user),
+	},
 	surfaces: {
 		// UI-blocks U3 Task 4 (spec §7.3): the same bumpRev the actions
 		// route takes — the rev advance and the hub event are one step.

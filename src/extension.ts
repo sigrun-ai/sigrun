@@ -53,7 +53,21 @@ import type {
 	AmbientPlace,
 	AmbientRecord,
 } from "@sigrun/shared/ambient";
-import type { Action, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
+import type { Action, CoreTarget, DataOps, IconName, Tree } from "@sigrun/shared/blocks";
+import type {
+	UserNotice,
+	UserNoticeInput,
+} from "@sigrun/shared/notices";
+
+// The per-user notices channel (notices Task 3): the shared wire types,
+// re-exported so extensions import them from the ONE contract module.
+export type {
+	NoticeActionResponse,
+	NoticesResponse,
+	UserNotice,
+	UserNoticeAction,
+	UserNoticeInput,
+} from "@sigrun/shared/notices";
 import type { InteractionAnswer, InteractionRecord } from "@sigrun/shared/interactions";
 import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
 import type {
@@ -772,6 +786,42 @@ export interface ExtensionCommandContribution {
 export type RunSettledOutcome =
 	| { readonly status: "answered" }
 	| { readonly status: "unanswered"; readonly reason: string };
+
+// ---------------------------------------------------------------------------
+// Per-user notices (notices Task 3 — the `host.notices` surface + the
+// `noticeActions` factory field)
+// ---------------------------------------------------------------------------
+
+/**
+ * The context a `noticeActions` handler runs with: who clicked, the notice
+ * as stored (its `owner` is the handler's own slug), and the dispatch
+ * deadline's signal (the 10 s action timeout).
+ */
+export interface UserNoticeActionContext {
+	readonly principal: Principal;
+	readonly notice: UserNotice;
+	readonly signal: AbortSignal;
+}
+
+/**
+ * What a notice action answers (notices spec §4): `ok` clears the notice
+ * unless `keep: true`; `message` shows in the client, `navigate` moves it
+ * to a core target. A failure keeps the notice and shows the error.
+ */
+export type UserNoticeActionResult =
+	| {
+			readonly ok: true;
+			readonly keep?: boolean;
+			readonly message?: string;
+			readonly navigate?: CoreTarget;
+	  }
+	| { readonly ok: false; readonly error: { readonly message: string } };
+
+/** One declared notice action handler (the `noticeActions` value shape). */
+export type UserNoticeActionHandler = (
+	ctx: UserNoticeActionContext,
+	payload: JsonObject,
+) => Promise<UserNoticeActionResult>;
 
 /** One explicit notification an extension sends through `host.notify`. */
 export interface ExtensionNoticeInput {
@@ -1511,6 +1561,24 @@ export interface SigrunHost {
 	 */
 	notify(input: ExtensionNoticeInput): Promise<void>;
 
+	/**
+	 * The per-user notices channel (notices spec §2): post, clear and list
+	 * THIS extension's notices. `post` validates the input (fail-loud — a
+	 * rejection throws `Error("<field>: <message>")` naming the offending
+	 * field), checks the recipient exists and can see every conversation
+	 * the notice names (`conversationId` and any `navigate` conversation
+	 * target), and stores it. `clear` is owner-scoped: another extension's
+	 * notice is never touched. `list` reads only this extension's notices
+	 * for the user.
+	 */
+	readonly notices: {
+		post(input: UserNoticeInput): Promise<{ id: string }>;
+		clear(
+			selector: { user: string; key: string } | { user: string; id: string },
+		): Promise<void>;
+		list(user: string): Promise<readonly UserNotice[]>;
+	};
+
 	/** The user directory (admin wire form; emails are admin material). */
 	readonly users: {
 		list(): Promise<readonly DirectoryUserWire[]>;
@@ -1651,6 +1719,15 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	 * target without `undo` fails the load.
 	 */
 	readonly curationTargets?: readonly CurationTarget[];
+	/**
+	 * Declared notice action handlers (notices Task 3): the names a posted
+	 * notice's `extension` actions may name, keyed by handler name
+	 * (`/^[A-Za-z][A-Za-z0-9-]{0,31}$/`). A malformed entry quarantines the
+	 * extension at load.
+	 */
+	readonly noticeActions?: {
+		readonly [name: string]: UserNoticeActionHandler;
+	};
 	/** Declared jobs (the only time-based scheduler); read-only through the API under `ext:<slug>:<name>` ids. */
 	readonly jobs?: readonly JobSpec[];
 	/** HTTP routes mounted at `/v1/ext/<slug>/<path>` (lands in Task 2). */

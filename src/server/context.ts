@@ -23,6 +23,7 @@ import type { FetchDeps } from "./images/fetch.js";
 import type { Principal } from "./auth/principal.js";
 import type { WebuiBundle } from "./static.js";
 import type { SurfaceService } from "./surfaces/service.js";
+import type { NoticesService } from "../notices/service.js";
 import { SseRegistry } from "./sse-registry.js";
 import type { GatewayHandle } from "./gateway.js";
 import type { ManagedPaths } from "../sandbox/grants.js";
@@ -141,6 +142,13 @@ export interface ServerContext {
 	 * and Task 4's watcher registry read it.
 	 */
 	readonly surfaces: SurfaceService;
+	/**
+	 * The notices service (notices Task 3): mediation between the per-user
+	 * store files and every caller — the extension `host.notices` surface
+	 * (via the host bridge), the `/v1/notices` routes (Task 4), and the
+	 * user-removal path. Built once in `createServer`.
+	 */
+	readonly notices: NoticesService;
 	/**
 	 * The image-proxy wiring (UI-blocks U7 Task 3, spec §11.2): the
 	 * on-disk LRU cache (`<cacheDir>/images/`), the fetch deps (the

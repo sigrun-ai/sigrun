@@ -183,6 +183,8 @@ export interface SeamHost {
 	readonly jobs: SigrunHost["jobs"];
 	/** Send one explicit extension notice; validates, then enqueues delivery. */
 	readonly notify: SigrunHost["notify"];
+	/** The per-user notices channel (notices Task 3); binds lazily. */
+	readonly notices: SigrunHost["notices"];
 	/** The user directory (§9.7): list/get in admin wire form. */
 	readonly users: SigrunHost["users"];
 	/**
@@ -868,6 +870,28 @@ export function createSeamHost(
 		},
 		async notify(input) {
 			return (await hostBridge("notify")).notify(identity.name, input);
+		},
+		// Notices Task 3: the per-user notices channel — the bridge owns
+		// every body, the seam host supplies its slug (the notify pattern).
+		notices: {
+			async post(input) {
+				return (await hostBridge("notices.post")).notices.post(
+					identity.name,
+					input,
+				);
+			},
+			async clear(selector) {
+				return (await hostBridge("notices.clear")).notices.clear(
+					identity.name,
+					selector,
+				);
+			},
+			async list(user) {
+				return (await hostBridge("notices.list")).notices.list(
+					identity.name,
+					user,
+				);
+			},
 		},
 		// The surfaces seam (UI-blocks U3 Task 4): `changed` awaits the
 		// bridge (so a factory-body call waits, never resolves early) and
