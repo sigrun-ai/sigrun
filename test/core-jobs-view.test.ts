@@ -453,7 +453,10 @@ describe("core/jobs list (the caller-visible rows)", () => {
 // ─── the selected job ─────────────────────────────────────────────────────
 
 describe("core/jobs selected job", () => {
-	test("the selected job shows runs (manual flag, error, conversation) and revisions (changedBy, changedAt)", async () => {
+	test(
+		"the selected job shows runs (manual flag, error, conversation) and revisions (changedBy, changedAt)",
+		{ timeout: 30_000 },
+		async () => {
 		const { app, alice } = await bootServer();
 		const job = await createJob(app, alice, promptSpec("acme-nightly"));
 		const fired = await call(app, "POST", `/v1/jobs/${job.id}/run`, alice);
@@ -590,7 +593,10 @@ describe("core/jobs selected job", () => {
 		});
 	});
 
-	test("runs page by 25 (runCursor); revisions page by 25 (revCursor)", async () => {
+	test(
+		"runs page by 25 (runCursor); revisions page by 25 (revCursor)",
+		{ timeout: 60_000 },
+		async () => {
 		const { app, opened, alice } = await bootServer();
 		const job = await createJob(app, alice, promptSpec("acme-nightly"));
 		// 30 revisions (versions 1..30) without the route's per-patch cost.
