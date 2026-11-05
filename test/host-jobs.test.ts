@@ -310,8 +310,11 @@ describe("host.jobs.isJobRun", () => {
 		// While the job fire's run is live its input carries the job: prefix.
 		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
 		if (conversation === undefined) throw new Error("conversation vanished");
-		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(true);
-		releaseJob();
+		try {
+			await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(true);
+		} finally {
+			releaseJob();
+		}
 		await conversation.waitForIdle(BACKGROUND_CONTEXT);
 		// Settled: the run.inputs read is empty and the meta carries no
 		// jobId (the conversation predates the fire) — an ordinary run in

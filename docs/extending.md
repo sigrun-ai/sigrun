@@ -964,9 +964,6 @@ interactive tool (see "Interactive tools") calls it in execute and refuses
 when true — a job firing into an EXISTING conversation is not covered by
 the creation-time filter, and a run must never wait on a human.
 
-The HTTP `POST /v1/conversations` route does not accept this option: it
-still takes no body fields.
-
 ## Interactive tools
 
 A factory result may declare `interactiveTools` — the names of tools it
@@ -999,6 +996,9 @@ therefore guard its own execute with `host.jobs.isJobRun(conversationId,
 context)` and refuse (telling the model to escalate instead) when it
 returns true — a run must never wait on a human that isn't there. The
 same guard covers a conversation whose `jobId` stamp makes it a job run.
+
+The HTTP `POST /v1/conversations` route does not accept the `job` option:
+it still takes no body fields.
 
 ## HTTP routes
 

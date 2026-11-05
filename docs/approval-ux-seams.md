@@ -389,6 +389,7 @@ Shipped in core + webui (commits bcd4423 + webui commit):
 - `src/harness/seam-host.ts`: the host context (factory arity-1, kinds
   write gate, owner allocation).
 - Server: `GET/POST /v1/conversations/:id/interactions(/:callId/answer)`,
+  `POST /v1/conversations/:id/interactions/:callId/decline`,
   `GET /v1/conversations/:id/interactions/:callId`, `GET .../ambient`,
   `/v1/meta seam`.
 - Webui: `InteractionCards` + `AmbientPanels` render the record's

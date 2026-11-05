@@ -591,6 +591,11 @@ export function createSeamHost(
 					// the question before it is ever shown. Reuses applyDecline's
 					// single definition of the settled shape.
 					Object.assign(existing, record);
+					// A self-declared-terminal seed (the extension passed a
+					// non-pending status) must NOT survive the assign: the
+					// queued human message declined it, so applyDecline stamps
+					// declinedVia/answeredBy on a pending baseline.
+					Object.assign(existing, { status: "pending" });
 					applyDecline(existing, "message", Date.now(), preDeclineUser);
 					// No index entry — it is not pending. Sweep any secret
 					// delivery staged for this record (defensive).
@@ -634,7 +639,8 @@ export function createSeamHost(
 			}, context);
 		},
 
-		async settleInteraction(conversationId, callId, status, context) {			context = toDurableContext(context);
+		async settleInteraction(conversationId, callId, status, context) {
+			context = toDurableContext(context);
 			const h = await harness(context);
 			// The sweep (Review Focus 4) is INSIDE the commit, applied only on
 			// the terminal transition: sweeping before the pending check would

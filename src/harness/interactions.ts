@@ -597,8 +597,8 @@ export function takeSecretDelivery(
 
 /**
  * Record one interaction's true-answer delivery WITHOUT settling the
- * record (ask-user Task 1 tests; Task 2's message path): the same table
- * `applyAnswer` writes, for callers that hold the answer out of band.
+ * record. @internal test-only (ask-user tests stage deliveries out of
+ * band); production writes go through `applyAnswer`.
  */
 export function recordSecretDelivery(
 	conversationId: ConversationId,

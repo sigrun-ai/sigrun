@@ -42,16 +42,16 @@ import {
 	type AmbientRecord,
 } from "../../harness/ambient.js";
 import {
-InteractionDoc,
-InteractionsIndexDoc,
-answerFromBody,
-applyAnswer,
-applyDecline,
-asInteractionRecord,
-indexSettled,
-maskedAnswerValues,
-sweepSecretDelivery,
-type InteractionRecord,
+	InteractionDoc,
+	InteractionsIndexDoc,
+	answerFromBody,
+	applyAnswer,
+	applyDecline,
+	asInteractionRecord,
+	indexSettled,
+	maskedAnswerValues,
+	sweepSecretDelivery,
+	type InteractionRecord,
 } from "../../harness/interactions.js";
 import { loadConversation } from "../conversation-handler.js";
 import type { ServerContext } from "../context.js";

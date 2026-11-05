@@ -1151,11 +1151,11 @@ describe("TuiApp interactions", () => {
 		// (review): if handleKey ever consumes alt+s again, the keymap
 		// never sees it and the decline no-ops.
 		const keymap = createStandardKeymap();
-		if (!app.handleKeybinding("\x1bs")) {
-			const result = keymap.handle("\x1bs", app.keyContext());
-			expect(result).toEqual({ type: "decline-interaction" });
-			if (result !== "pass" && result !== "consume") await app.dispatch(result);
-		}
+		const seamReturned = app.handleKeybinding("\x1bs");
+		expect(seamReturned).toBe(false); // the seam must pass the chord through
+		const result = keymap.handle("\x1bs", app.keyContext());
+		expect(result).toEqual({ type: "decline-interaction" });
+		if (result !== "pass" && result !== "consume") await app.dispatch(result);
 		await flush();
 		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
 		app.dispose();
