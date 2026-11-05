@@ -299,6 +299,13 @@ async function firePrompt(
 		if (prior === undefined) {
 			await deps.harness.commit(async (tx) => {
 				await tx.doc(JobRunDoc, fireKey, run);
+				// The job stamp mirrors the "new" path (fire.ts below): the
+				// runSettled observer finds the run to settle BY this field,
+				// and the job-state section reads it. Client patchMeta can
+				// never set jobId (400 invalid_field); only the fire's own
+				// commit writes it.
+				const meta = await tx.doc(SessionMetaDoc, conversationId as ConversationId);
+				meta.jobId = id;
 			}, context);
 			await patchJob(deps.harness, id, (draft) => {
 				draft.lastRun = run;
