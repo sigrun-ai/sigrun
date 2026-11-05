@@ -1,7 +1,7 @@
 /**
  * The app shell (B2, UI refresh): the section rail + conversation sidebar
  * (one drawer below 900px), the chat pane under ChatHeader, and the
- * mode-switchable RightPanel — over the composer footer.
+ * selection-switchable RightPanel — over the composer footer.
  *
  * The active conversation id is App state: `SessionList.onSelect` flips
  * it, and the view hook re-drives (a fresh stream opens; the stale one

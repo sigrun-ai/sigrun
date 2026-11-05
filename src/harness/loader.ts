@@ -1297,9 +1297,11 @@ function validateSurfaces(
 					`extension factory returned a surface "${def.id}" whose perConversation is not a boolean`,
 				);
 			}
-			// The flag is a PANEL property: a view/settings section cannot be
-			// attached to a conversation, so declaring it there is a
-			// declaration the host would silently ignore — fail loud.
+			// The flag is a PANEL property: a view cannot be attached to a
+			// conversation, so declaring it there is a declaration the host
+			// would silently ignore — fail loud. (The settings-section list is
+			// validated separately by `validateSettingsSections`, which does
+			// not read this flag.)
 			if (def?.perConversation !== undefined && expected !== "panel") {
 				throw new Error(
 					`extension factory returned a surface "${def.id}" declares perConversation but is not a panel`,

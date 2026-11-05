@@ -2062,7 +2062,9 @@ Do **not** declare `instanceKey` on a per-conversation panel — the
 default (`canonicalJson(params)`) keys each conversation's instance,
 and the webui routes live updates by the same canonical params.
 Publish per conversation with `host.surfaces.changed(id,
-canonicalJson({ conversationId }))`; declare `data()` so the refetch
+canonicalJson({ conversationId }))` — `canonicalJson` is a runtime
+export of `@sigrun/shared/blocks` (the builders above come from
+`@sigrun/sigrun/blocks`); declare `data()` so the refetch
 costs a data call, not a full render.
 
 ### `page.selection`: compact drill-in
