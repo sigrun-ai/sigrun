@@ -34,6 +34,7 @@ import {
 	InteractionDoc,
 	InteractionsIndexDoc,
 	applyAnswer,
+	applyDecline,
 	asInteractionRecord,
 	indexPending,
 	indexSettled,
@@ -130,6 +131,18 @@ export interface SeamHost {
 		callId: string,
 		status: "skipped" | "expired" | "cancelled",
 		context: Context,
+	): Promise<boolean>;
+	/**
+	 * Decline a pending DECLINABLE interaction as a human (ask-user Task
+	 * 1): status "skipped", `declinedVia: "button"`. `opts.user` names
+	 * the declining human (the same attribution `answerInteraction`
+	 * stamps); false when the record is not pending or not declinable.
+	 */
+	declineInteraction(
+		conversationId: ConversationId,
+		callId: string,
+		context: Context,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/** Inspect one record WITHOUT consuming the one-shot secret delivery
 	 *  (the stored projection, masked; safe to repeat). */
@@ -537,8 +550,7 @@ export function createSeamHost(
 			}, context);
 		},
 
-		async settleInteraction(conversationId, callId, status, context) {
-			context = toDurableContext(context);
+		async settleInteraction(conversationId, callId, status, context) {			context = toDurableContext(context);
 			const h = await harness(context);
 			// The sweep (Review Focus 4) is INSIDE the commit, applied only on
 			// the terminal transition: sweeping before the pending check would
@@ -558,6 +570,32 @@ export function createSeamHost(
 				const mutable = draft as unknown as Record<string, unknown>;
 				mutable.status = status;
 				mutable.settledAt = Date.now();
+				const index = await tx.doc(InteractionsIndexDoc);
+				indexSettled(index, conversationId, callId);
+				sweepSecretDelivery(conversationId, callId);
+				return true;
+			}, context);
+		},
+
+		async declineInteraction(conversationId, callId, context, opts) {
+			context = toDurableContext(context);
+			const h = await harness(context);
+			// Same commit shape as settleInteraction: the sweep lands INSIDE
+			// the commit and only on the applied terminal transition.
+			return await h.commit(async (tx) => {
+				const draft = await tx.doc(
+					InteractionDoc,
+					conversationId,
+					callId,
+					callId,
+				);
+				const outcome = applyDecline(
+					draft,
+					"button",
+					Date.now(),
+					opts?.user,
+				);
+				if (outcome !== "declined") return false;
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexSettled(index, conversationId, callId);
 				sweepSecretDelivery(conversationId, callId);

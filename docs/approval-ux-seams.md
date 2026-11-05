@@ -337,6 +337,37 @@ Two event surfaces extend the seam (2026-10-23, gateway C5/C6):
   nothing. Channels/edit-your-prompt-message consumers use it to
   resolve delivered prompts (edit the message to the outcome).
 
+## Declinable records (2026-11-05, ask-user Task 1)
+
+A record may carry `declinable: true` (the only legal value — `false`
+fails validation). A declinable record can be DECLINED by a human
+instead of answered: the decline is a first-class peer of the answer,
+never an auto-answer (nothing ever answers or declines on the human's
+behalf — a decline is always a deliberate human act).
+
+- **The flag.** `declinable: true` on the seed record. Absent means NOT
+  declinable. `declinedVia` ("button" | "message") is set by the
+  decline path on the terminal record; any other value fails validation.
+- **The route.** `POST /v1/conversations/:id/interactions/:callId/decline`
+  (write access, like the answer route). 200 returns
+  `{callId, status: "skipped", declinedVia: "button"}`; errors are
+  404 `no_such_interaction`, 404 `not_pending`, 409 `not_declinable`.
+  A decline writes `status: "skipped"`, `answeredBy: "human"`,
+  `answeredByUser` (the declining principal), `declinedVia: "button"`,
+  maintains the pending index, and sweeps the record's unread secret
+  delivery — all inside the same commit, as `settleInteraction` does.
+- **The host method.** `host.declineInteraction(conversationId, callId,
+  context, opts?)` declines via `"button"` and returns `true` on the
+  applied transition, `false` when the record is not pending or not
+  declinable. `opts.user` names the declining human (the same
+  attribution `answerInteraction` stamps).
+- **The event.** `interactionSettled` carries `declinedVia` on a
+  declined record, so a consumer can render "declined by the human"
+  distinctly from other skips.
+- **The message path (Task 2).** An admitted message whose text declines
+  the pending question settles the record with `declinedVia: "message"`
+  through the same commit shape (index + secret sweep included).
+
 ## Implementation status (2026-10-14)
 
 Shipped in core + webui (commits bcd4423 + webui commit):

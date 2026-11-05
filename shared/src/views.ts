@@ -385,6 +385,13 @@ export interface InteractionAnswered {
 	readonly answer: InteractionAnswer;
 }
 
+/** The response of `POST .../interactions/:callId/decline`. */
+export interface InteractionDeclined {
+	readonly callId: string;
+	readonly status: "skipped";
+	readonly declinedVia: "button";
+}
+
 // ─── Ambient seam wire types ─────────────────────────────────────────────
 
 /** One ambient surface on the wire (envelope + body + details). */

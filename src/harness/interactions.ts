@@ -187,6 +187,12 @@ export function validateInteraction(value: unknown): string | null {
 	if (r.answeredBy !== undefined && r.answeredBy !== "human" && r.answeredBy !== "extension") {
 		return "answeredBy must be 'human' or 'extension'";
 	}
+	if (r.declinable !== undefined && r.declinable !== true) {
+		return "declinable must be true when present";
+	}
+	if (r.declinedVia !== undefined && r.declinedVia !== "button" && r.declinedVia !== "message") {
+		return "declinedVia must be 'button' or 'message'";
+	}
 	if (r.body !== undefined) {
 		// Ruling 16 (no compatibility layer): legacy-shaped bodies (objects
 		// keyed text/options/fields/diff rather than {v, root}) fail HERE,
@@ -480,6 +486,35 @@ export function applyAnswer(
 }
 
 /**
+ * The committed decline for one record (ask-user Task 1): status
+ * `"skipped"` with `declinedVia`, `answeredBy: "human"` (declining is a
+ * human act — nothing auto-declines) and `answeredByUser` when given.
+ * Returns `"declined"` on the applied transition, `"not_pending"` when
+ * the record is already terminal (first-wins), `"not_declinable"` when
+ * the record carries no `declinable: true` flag. The draft is mutated in
+ * place — this runs inside the caller's commit.
+ */
+export function applyDecline(
+	draft: StoredInteractionRecord,
+	via: "button" | "message",
+	now: number,
+	user?: string,
+): "declined" | "not_pending" | "not_declinable" {
+	if (draft.status !== "pending") return "not_pending";
+	if (draft.declinable !== true) return "not_declinable";
+	// SAFETY: the draft's declared shape is readonly; the doc family's
+	// tracked-draft write pattern mutates through a structural record view
+	// (every key below exists on the stored record by construction).
+	const mutable = draft as unknown as Record<string, unknown>;
+	mutable.status = "skipped";
+	mutable.settledAt = now;
+	mutable.answeredBy = "human";
+	if (user !== undefined) mutable.answeredByUser = user;
+	mutable.declinedVia = via;
+	return "declined";
+}
+
+/**
  * Take one interaction's secret delivery (the extension-only read path):
  * the TRUE answer when a secret was answered and never yet read — the
  * entry is deleted by this very read (one-shot). The HTTP GETs NEVER call
@@ -490,6 +525,19 @@ export function takeSecretDelivery(
 	callId: string,
 ): InteractionAnswer | undefined {
 	return secretDeliveries.take(conversationId, callId);
+}
+
+/**
+ * Record one interaction's true-answer delivery WITHOUT settling the
+ * record (ask-user Task 1 tests; Task 2's message path): the same table
+ * `applyAnswer` writes, for callers that hold the answer out of band.
+ */
+export function recordSecretDelivery(
+	conversationId: ConversationId,
+	callId: string,
+	answer: InteractionAnswer,
+): void {
+	secretDeliveries.record(conversationId, callId, answer);
 }
 
 /**

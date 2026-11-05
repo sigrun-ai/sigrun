@@ -215,6 +215,10 @@ export type ExtensionLifecyclePayload = {
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
 		/** The answering user (C5 attribution), when a human answered. */
 		readonly answeredByUser?: string;
+		/** How a DECLINE landed (ask-user Task 1/2): "button" via the decline
+		 *  route/host method, "message" via an admitted decline message. Set
+		 *  only on a declined ("skipped") record. */
+		readonly declinedVia?: "button" | "message";
 		/** The STORED (masked-by-construction) answer values — render-safe. */
 		readonly answer?: Readonly<Record<string, unknown>>;
 		readonly owner?: string;
@@ -1397,6 +1401,18 @@ export interface SigrunHost {
 		callId: string,
 		status: "skipped" | "expired" | "cancelled",
 		context: HandlerContext,
+	): Promise<boolean>;
+	/**
+	 * Decline a pending DECLINABLE interaction as a human (ask-user Task
+	 * 1): status "skipped", `declinedVia: "button"`. `opts.user` names
+	 * the declining human (the same attribution `answerInteraction`
+	 * stamps); false when the record is not pending or not declinable.
+	 */
+	declineInteraction(
+		conversationId: ConversationId,
+		callId: string,
+		context: HandlerContext,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/**
 	 * Inspect one interaction record WITHOUT consuming anything: returns

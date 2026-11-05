@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Declinable interaction records: `declinable: true` marks a pending record declinable;
+  `POST /v1/conversations/:id/interactions/:callId/decline` (write access) settles it
+  `skipped` with `declinedVia: "button"` (404 `no_such_interaction` / 404 `not_pending` /
+  409 `not_declinable`); `host.declineInteraction(conversationId, callId, context, {user})`
+  is the extension-side peer; `interactionSettled` payloads carry `declinedVia`. Declining
+  sweeps the record's unread secret delivery inside the same commit.
+
 ## [0.8.0] - 2026-11-04
 
 Core notices: a per-user notice system for extensions. An extension posts a short notice
