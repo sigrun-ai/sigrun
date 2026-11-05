@@ -264,6 +264,7 @@ describe("the whole knowledge plan (research → review → record → recall)",
 			//  3-5. the review fork: knowledge_find, knowledge_record, final text.
 			//  6.   the NEW conversation's turn (its request carries the block —
 			//      the factory asserts it and returns the final answer).
+			//  7.   bob's negative-control conversation (a plain answer).
 			const RECORD_ARGS: JsonObject = {
 				inquiry: { question: "a vet for Biscuit's knee" },
 				types: [
@@ -294,11 +295,6 @@ describe("the whole knowledge plan (research → review → record → recall)",
 			};
 
 			let injectedBlock: string | undefined;
-			// The scripted model, in strict order (continued from above):
-			//  1-2. alice's research conversation (acme/search + answer).
-			//  3-5. the review fork (knowledge_find, knowledge_record, done).
-			//  6.   alice's new conversation (captures the injected block).
-			//  7.   bob's negative-control conversation (a plain answer).
 			const server = await bootServer([
 				fauxAssistantMessage(
 					[fauxToolCall("acme/search", { query: "northside vet exam fee" })],
@@ -377,7 +373,10 @@ describe("the whole knowledge plan (research → review → record → recall)",
 				await server.app.hostBridge.curation.modelCallsSince(
 					first as never,
 				),
-			).toBeLessThan(10);
+				// Two calls (the tool call + the answer) — the exact count pins
+				// the below-threshold premise; < 10 alone would stay green if
+				// the curator's default threshold ever dropped to ≤ 2.
+			).toBe(2);
 
 			// 3. the curator reports: ONE core notice for alice on this
 			//    conversation, titled with the record's `recorded …` summary.
@@ -435,28 +434,34 @@ describe("the whole knowledge plan (research → review → record → recall)",
 				"bob",
 			);
 			expect(controlSettled.status).toBe("done");
-			await new Promise((resolve) => setTimeout(resolve, 2_000));
-			const controlNotices = await app.inject({
-				method: "GET",
-				url: "/v1/notices",
-				headers: auth(server.tokens, "bob"),
-			});
-			expect(controlNotices.statusCode).toBe(200);
-			const bobPile = controlNotices.json().notices as {
-				owner: string;
-				conversationId?: number;
-			}[];
-			expect(
-				bobPile.filter(
-					(row) => row.owner === "curator" && row.conversationId === control,
-				),
-			).toEqual([]);
+			// Poll for the same window the positive control waits (20 s cap,
+			// the settled-notice grace in between), asserting the absence
+			// HELD over time rather than at one instant.
+			const graceOver = Date.now() + 2_000;
+			let bobPile: { owner: string; conversationId?: number }[] = [];
+			while (Date.now() < graceOver) {
+				const controlNotices = await app.inject({
+					method: "GET",
+					url: "/v1/notices",
+					headers: auth(server.tokens, "bob"),
+				});
+				expect(controlNotices.statusCode).toBe(200);
+				bobPile = controlNotices.json().notices as {
+					owner: string;
+					conversationId?: number;
+				}[];
+				expect(
+					bobPile.filter(
+						(row) => row.owner === "curator" && row.conversationId === control,
+					),
+				).toEqual([]);
+				await new Promise((resolve) => setTimeout(resolve, 250));
+			}
 			expect(injectedBlock).toContain("Northside");
 			expect(injectedBlock).toMatch(/\bd:\d+/);
 
 			// 5. undoReview through the notice action (payload {reviewId} —
 			//    the notice key is `review:<reviewId>`).
-			const reviewId = notice.key!.slice("review:".length);
 			const notices = await app.inject({
 				method: "GET",
 				url: "/v1/notices",
