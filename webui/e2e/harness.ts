@@ -411,11 +411,13 @@ async function bootOnDir(
 		app.sse?.endAll?.();
 		await app.close();
 		// The event-bus ordered shutdown runs BEFORE the harness closes
-		// (src/serve.ts's createShutdown order, mirrored by
-		// test/gateway/harness.ts): `harnessShutdown` handlers fire here —
-		// without this, an e2e restart test would pass for the wrong
-		// reason (the ask-user restart case relies on the handler flipping
-		// its flag so the record stays pending).
+		// (mirroring src/serve.ts's createShutdown ordering for the steps
+		// this composition has — serve.ts also stops the provider refresh
+		// between the two, inert in the e2e faux boot; the same order is
+		// mirrored by test/gateway/harness.ts): `harnessShutdown` handlers
+		// fire here — without this, an e2e restart test would pass for the
+		// wrong reason (the ask-user restart case relies on the handler
+		// flipping its flag so the record stays pending).
 		await opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT);
 		await opened.harness.close(BACKGROUND_CONTEXT);
 	};

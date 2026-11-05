@@ -19,11 +19,13 @@
  *    unit tests while the wire event carries a different shape.
  * 2. Typing `neither, use sqlite` while a question waits: the composer
  *    placeholder reads "Sending a message declines the open question"
- *    first; the card shows "Declined — replied in chat"; the tool
- *    result carries the message-decline sentence; the user bubble
+ *    first; the card settles away (settled records leave the pending
+ *    list — core Task 1 design; the "Declined — replied in chat"
+ *    chrome text is pinned by the Task 5 component unit tests); the
+ *    tool result carries the message-decline sentence; the user bubble
  *    FOLLOWS it.
- * 3. The Decline button settles the card "Declined" and the tool
- *    result carries the button-decline sentence.
+ * 3. The Decline button settles the card away (same pending-list
+ *    rule) and the tool result carries the button-decline sentence.
  * 4. RESTART (Review Focus 1): while a question waits,
  *    `E2EServer.restart()` re-boots on the SAME storage (post-restart
  *    faux responses passed in); the card is still pending after the
