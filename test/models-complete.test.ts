@@ -169,6 +169,63 @@ describe("completeOnce", () => {
 		).rejects.toThrow(/error|aborted/i);
 	});
 
+	test("an empty model spec throws the parse error", async () => {
+		const { models } = stubModels(["faux/default-1"]);
+		await expect(
+			completeOnce(
+				{
+					models,
+					defaultModel: DEFAULT_MODEL,
+					readSettings: () => ({ namingModel: "faux/utility" }) as SettingsFile,
+				},
+				{ model: "", prompt: "hello" },
+			),
+		).rejects.toThrow(/non-empty model spec/);
+	});
+
+	test("input.signal aborts a stalled provider promptly", async () => {
+		// The stall fake never settles: without a caller-abort arm the
+		// race hangs until timeoutMs (60s here) even though the caller
+		// aborted 20ms in.
+		const { models, calls } = stubModels(["faux/m"], () => new Promise(() => {}));
+		const controller = new AbortController();
+		const call = completeOnce(
+			{
+				models,
+				defaultModel: DEFAULT_MODEL,
+				readSettings: () => ({}) as SettingsFile,
+			},
+			{ model: "faux/m", prompt: "hello", signal: controller.signal },
+		);
+		const expectation = expect(call).rejects.toThrow(
+			/aborted by the caller/,
+		);
+		setTimeout(() => controller.abort(), 20);
+		// Promptness proof: the rejection must land well before the 60s timeout.
+		const promptness = new Promise((_, reject) =>
+			setTimeout(() => reject(new Error("abort did not bound the wait")), 2000),
+		);
+		await Promise.race([expectation, promptness]);
+		expect(calls).toHaveLength(1);
+	});
+
+	test("an already-aborted signal rejects without starting the request", async () => {
+		const { models, calls } = stubModels(["faux/m"]);
+		const controller = new AbortController();
+		controller.abort();
+		await expect(
+			completeOnce(
+				{
+					models,
+					defaultModel: DEFAULT_MODEL,
+					readSettings: () => ({}) as SettingsFile,
+				},
+				{ model: "faux/m", prompt: "hello", signal: controller.signal },
+			),
+		).rejects.toThrow(/aborted by the caller/);
+		expect(calls).toHaveLength(0);
+	});
+
 	test("the host bridge delegates with the live settings", async () => {
 		// The bridge passes a live settings reader into completeOnce — a
 		// settings change between calls must take effect without a restart.

@@ -4,19 +4,23 @@
  * generalized into a host surface (skill-card generation is the first
  * consumer).
  *
- * Model resolution (binding): an explicit `input.model` wins; else the
- * live settings' `namingModel` when it is a string (`false` counts as
- * unset); else the boot default model. The chosen ref must be SERVED —
+ * Model resolution (binding): an explicit `input.model` — ANY defined
+ * string, so a `\"\"` fails the parse rather than falling through — wins;
+ * else the live settings' `namingModel` when it is a string (`false`
+ * counts as unset); else the boot default model. The settings read is
+ * lazy (only when no explicit model). The chosen ref must be SERVED —
  * an unserved model throws `UnservedModelError` naming it, never a
  * silent fallback.
  *
  * Failure posture: throws on an unserved model, a timeout (default
- * {@link DEFAULT_COMPLETE_TIMEOUT_MS} ms), or a `stopReason` of
+ * {@link DEFAULT_COMPLETE_TIMEOUT_MS} ms), a caller abort
+ * (`input.signal` — bound, not just forwarded: the race rejects even
+ * when the provider ignores its signal, and an already-aborted signal
+ * rejects before the request starts), or a `stopReason` of
  * `error`/`aborted` — never resolves silently. The `Promise.race`, not
  * the abort signal alone, bounds the wait: a provider that ignores the
  * abort is abandoned without wedging the chain (the race keeps its
- * late rejection handled). `input.signal` aborts the completion from
- * the caller side; the completion's own abort fires on timeout.
+ * late rejection handled).
  */
 
 import type {
@@ -73,22 +77,38 @@ export async function completeOnce(
 	deps: CompleteDeps,
 	input: CompleteInput,
 ): Promise<{ text: string; model: string }> {
-	const settings = deps.readSettings();
 	const ref: ModelRef =
 		input.model !== undefined
 			? parseModelSpec(input.model, "model")
-			: typeof settings.namingModel === "string"
-				? parseModelSpec(settings.namingModel, "namingModel")
-				: deps.defaultModel;
+			: (() => {
+					// Lazy settings read: an explicit model never touches the file.
+					const settings = deps.readSettings();
+					return typeof settings.namingModel === "string"
+						? parseModelSpec(settings.namingModel, "namingModel")
+						: deps.defaultModel;
+				})();
 	const model: Model<Api> = requireServedModel(deps.models, ref);
 	const key = `${ref.provider}/${ref.modelId}`;
 	const timeoutMs = input.timeoutMs ?? DEFAULT_COMPLETE_TIMEOUT_MS;
 	const controller = new AbortController();
-	// A caller-side abort aborts the completion too (either source wins).
-	const unlinkCaller =
+	// A caller-side abort BOUNDS the wait: the race rejects promptly even
+	// when the provider ignores its signal (the request itself still gets
+	// the abort, best-effort cancellation of the underlying call). An
+	// already-aborted signal rejects before the request is started.
+	if (input.signal?.aborted) {
+		throw new Error("the completion was aborted by the caller");
+	}
+	let rejectCallerAbort: ((error: Error) => void) | undefined;
+	const callerAborted =
 		input.signal === undefined
 			? undefined
-			: linkAbort(input.signal, controller);
+			: new Promise<never>((_, reject) => {
+					rejectCallerAbort = reject;
+				});
+	const unlinkCaller =
+		input.signal === undefined || rejectCallerAbort === undefined
+			? undefined
+			: linkAbort(input.signal, controller, rejectCallerAbort);
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	const timedOut = new Promise<never>((_, reject) => {
 		timer = setTimeout(() => {
@@ -99,21 +119,23 @@ export async function completeOnce(
 	});
 	let message: AssistantMessage;
 	try {
-		message = await Promise.race([
-			deps.models.completeSimple(
-				model,
-				{
-					...(input.systemPrompt === undefined
-						? {}
-						: { systemPrompt: input.systemPrompt }),
-					messages: [
-						{ role: "user", content: input.prompt, timestamp: Date.now() },
-					],
-				},
-				{ signal: controller.signal },
-			),
-			timedOut,
-		]);
+		const request = deps.models.completeSimple(
+			model,
+			{
+				...(input.systemPrompt === undefined
+					? {}
+					: { systemPrompt: input.systemPrompt }),
+				messages: [
+					{ role: "user", content: input.prompt, timestamp: Date.now() },
+				],
+			},
+			{ signal: controller.signal },
+		);
+		message = await Promise.race(
+			callerAborted === undefined
+				? [request, timedOut]
+				: [request, timedOut, callerAborted],
+		);
 	} finally {
 		if (timer !== undefined) clearTimeout(timer);
 		unlinkCaller?.();
@@ -139,16 +161,22 @@ function textOf(content: AssistantMessage["content"]): string {
 		.join("");
 }
 
-/** Abort `target` when `source` aborts; returns the unlink. */
+/**
+ * Abort `target` when `source` aborts and reject the race arm via
+ * `rejectRace` (the bounding arm: the race rejects even when the
+ * request ignores the abort). Callers must handle an already-aborted
+ * `source` BEFORE the request is started (completeOnce does). Returns
+ * the unlink.
+ */
 function linkAbort(
 	source: AbortSignal,
 	target: AbortController,
+	rejectRace: (error: Error) => void,
 ): () => void {
-	if (source.aborted) {
+	const fail = () => {
 		target.abort();
-		return () => {};
-	}
-	const onAbort = () => target.abort();
-	source.addEventListener("abort", onAbort, { once: true });
-	return () => source.removeEventListener("abort", onAbort);
+		rejectRace(new Error("the completion was aborted by the caller"));
+	};
+	source.addEventListener("abort", fail, { once: true });
+	return () => source.removeEventListener("abort", fail);
 }
