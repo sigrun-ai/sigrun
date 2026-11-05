@@ -146,8 +146,8 @@ test("the convo panel follows the open conversation", async ({ page }) => {
 	const panel = page.locator(
 		'[data-ext-panel="fixture-surfaces-e2e/convo"]',
 	);
-	// A is the boot default (the root conversation 1).
-	const a = 1;
+	// A is the boot default: the harness root conversation.
+	const a = server.conversationId;
 	await expect(panel).toContainText(`conversation ${a} bump 0`);
 	// The real in-app switch: click B's sidebar row (each row carries
 	// data-conversation-id). The panel follows the open conversation.
