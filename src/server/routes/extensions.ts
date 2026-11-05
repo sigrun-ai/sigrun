@@ -117,6 +117,11 @@ export function registerExtensionRoutes(
 										...(def.sharedData === true
 											? { sharedData: true }
 											: {}),
+										// The per-conversation opt-in (sparse: present only
+										// when the panel opted in).
+										...(def.perConversation === true
+											? { perConversation: true }
+											: {}),
 									})),
 							}),
 				};

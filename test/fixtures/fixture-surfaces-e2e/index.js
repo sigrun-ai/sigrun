@@ -10,7 +10,7 @@
  * the e2e asserts their render carries no drag affordance.
  */
 
-import { bind, card, collection, page, stack, stat, tree } from "@sigrun/sigrun/blocks";
+import { bind, card, collection, markdown, page, stack, stat, tree } from "@sigrun/sigrun/blocks";
 
 /** The mutable shared board (the e2e drives the `move` action). */
 const board = {
@@ -22,6 +22,9 @@ const board = {
 
 /** Users who load READ-ONLY (no drag handles) — the e2e's bob context. */
 export const readOnlyUsers = new Set();
+
+/** Per-conversation bump counters for the `convo` panel (todo Task 3). */
+const convoBumps = new Map();
 
 const boardTree = tree(
 	page({
@@ -63,6 +66,30 @@ function accessOf(principal, fallback) {
 	const user = principal === undefined ? undefined : principal.user;
 	return readOnlyUsers.has(user) ? "read" : fallback;
 }
+
+/** The convo panel's line: `conversation <id> bump <n>` (params-bound),
+ *  or `no conversation` when the params carry no id. */
+function convoLine(params) {
+	const id =
+		params !== null &&
+		typeof params === "object" &&
+		typeof params.conversationId === "number"
+			? params.conversationId
+			: undefined;
+	if (id === undefined) return "no conversation";
+	return `conversation ${id} bump ${convoBumps.get(id) ?? 0}`;
+}
+
+/** The convo tree: a `page` whose `main` is one markdown block bound to
+ *  the data document's `/line` (todo Task 3; no `instanceKey` — the
+ *  webui routes live updates by canonicalJson(params)). */
+const convoTree = tree(
+	page({
+		id: "convo",
+		title: "Convo",
+		main: [markdown({ text: bind("/line") })],
+	}),
+);
 
 export default function createFixtureSurfacesE2E(host) {
 	return {
@@ -116,8 +143,55 @@ export default function createFixtureSurfacesE2E(host) {
 					}),
 					data: async () => ({ data: { open: board.cards.length }, access: "read" }),
 				},
+				{
+					// todo Task 3: a per-conversation panel. NO `instanceKey`
+					// (the default canonicalJson(params) keys each conversation's
+					// instance, and the webui routes live updates by the same
+					// canonical params).
+					id: "convo",
+					title: "Convo",
+					icon: "list",
+					placement: "panel",
+					perConversation: true,
+					render: async (ctx) => ({
+						tree: convoTree,
+						data: { line: convoLine(ctx.params) },
+						access: accessOf(ctx.principal, "read"),
+					}),
+					data: async (ctx) => ({
+						data: { line: convoLine(ctx.params) },
+						access: accessOf(ctx.principal, "read"),
+					}),
+				},
 			],
 		},
+		routes: [
+			{
+				// Bump one conversation's counter and publish that instance's
+				// change (the params-keyed routing delivers it to the open
+				// panel watching that conversation).
+				method: "POST",
+				path: "bump",
+				auth: "user",
+				handler: async (request) => {
+					const body = await request.json();
+					const conversationId = body?.conversationId;
+					if (typeof conversationId !== "number") {
+						return Response.json(
+							{ error: "conversationId must be a number" },
+							{ status: 400 },
+						);
+					}
+					const next = (convoBumps.get(conversationId) ?? 0) + 1;
+					convoBumps.set(conversationId, next);
+					host.surfaces.changed(
+						"convo",
+						JSON.stringify({ conversationId }),
+					);
+					return Response.json({ conversationId, bump: next });
+				},
+			},
+		],
 	};
 }
 
@@ -128,4 +202,5 @@ export function resetBoard() {
 		{ id: "c2", title: "Second card", status: "doing" },
 	];
 	readOnlyUsers.clear();
+	convoBumps.clear();
 }

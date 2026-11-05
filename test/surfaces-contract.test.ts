@@ -100,6 +100,8 @@ interface SurfaceRow {
 	readonly title: string;
 	readonly icon: string;
 	readonly placement: string;
+	readonly sharedData?: boolean;
+	readonly perConversation?: boolean;
 }
 
 /** One injected request; returns status + parsed body. */
@@ -172,6 +174,14 @@ describe("surfaces contract (U3 Task 1)", () => {
 				sharedData: true,
 			},
 			{ id: "stats", title: "Acme stats", icon: "chart", placement: "panel" },
+			// The opted-in panel: attached with the open conversation's id.
+			{
+				id: "convo",
+				title: "Acme convo",
+				icon: "list",
+				placement: "panel",
+				perConversation: true,
+			},
 		]);
 		// Extensions that declared none carry no surfaces field (the sparse
 		// inventory rule — version/builtin behave the same).
@@ -290,6 +300,84 @@ describe("surfaces contract (U3 Task 1)", () => {
 				}),
 			}),
 		).rejects.toThrow('surface "board" whose sharedData is not a boolean');
+	});
+
+	test("a non-boolean perConversation quarantines naming the field", () => {
+		return expect(
+			resolveExtension({
+				default: () => ({
+					extension: { name: "surfaces-bad-per-convo", hooks: [], tools: [] },
+					surfaces: {
+						panels: [
+							{
+								id: "convo",
+								title: "Convo",
+								icon: "list",
+								placement: "panel",
+								perConversation: "yes",
+								render: async () => ({
+									tree: { v: 1, root: { type: "page", title: "c", main: [] } },
+									data: {},
+									access: "read",
+								}),
+							},
+						],
+					},
+				}),
+			}),
+		).rejects.toThrow('surface "convo" whose perConversation is not a boolean');
+	});
+
+	test("perConversation on a view quarantines naming the surface", () => {
+		return expect(
+			resolveExtension({
+				default: () => ({
+					extension: { name: "surfaces-per-convo-view", hooks: [], tools: [] },
+					surfaces: {
+						views: [
+							{
+								id: "board",
+								title: "Board",
+								icon: "board",
+								placement: "view",
+								perConversation: true,
+								render: async () => ({
+									tree: { v: 1, root: { type: "page", title: "b", main: [] } },
+									data: {},
+									access: "read",
+								}),
+							},
+						],
+					},
+				}),
+			}),
+		).rejects.toThrow('surface "board" declares perConversation but is not a panel');
+	});
+
+	test("/v1/meta projects perConversation for opted-in panels only", async () => {
+		const { app, adminToken } = await server();
+		const response = await call(app, {
+			method: "GET",
+			url: "/v1/meta",
+			token: adminToken,
+		});
+		expect(response.status).toBe(200);
+		const extensions = (
+			response.body as {
+				extensions: Array<{
+					name: string;
+					surfaces?: readonly SurfaceRow[];
+				}>;
+			}
+		).extensions;
+		const fixture = extensions.find(
+			(entry) => entry.name === "fixture-surfaces",
+		);
+		const convo = fixture?.surfaces?.find((row) => row.id === "convo");
+		expect(convo?.perConversation).toBe(true);
+		// Sparse: a panel that did not opt in carries no key at all.
+		const stats = fixture?.surfaces?.find((row) => row.id === "stats");
+		expect(stats).not.toHaveProperty("perConversation");
 	});
 
 	test("a route path under surfaces/ quarantines naming the route", async () => {

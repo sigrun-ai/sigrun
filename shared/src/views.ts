@@ -812,6 +812,11 @@ export interface ExtensionSurfaceInfo {
 	 *  answer with `ops` and NO `data` — channels fall back to a full
 	 *  fetch (ops folding is U1). Absent → per-instance data. */
 	readonly sharedData?: boolean;
+	/** The panel opts in to per-conversation attachment: channels attach
+	 *  it with `params: { conversationId }` of the OPEN conversation. The
+	 *  id is client-supplied — the extension must check access. Absent
+	 *  (the sparse rule) → the panel is not conversation-scoped. */
+	readonly perConversation?: true;
 }
 
 /** The `GET /v1/extensions` payload (spec §7.7). */

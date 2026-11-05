@@ -1982,6 +1982,91 @@ ambient envelope carries no data document, so every value in the tree
 is a literal — a binding is allowed only inside a collection's item
 template (`bind("./label")` against a literal `items` array).
 
+### Panels
+
+A `placement: "panel"` surface renders in the webui's right panel and
+opens from a **header toggle** (one icon per declared panel, beside the
+Outline and Workspace toggles) — an installed panel stays closed until
+the user opens it.
+
+Panels are conversation-blind by default: they attach with empty params
+and never refetch when the user switches conversations. Declare
+**`perConversation: true`** to make the panel follow the open
+conversation: the channel attaches with
+`params: { conversationId: <open conversation id> }` (empty params while
+nothing is open), refetches on every switch, and routes `changed`
+events by the instance key.
+
+The id is **client-supplied** — treat it as untrusted. Before rendering
+or acting on it, load the conversation's meta and check the caller's
+access, returning `access: "none"` when the caller may not see that
+conversation:
+
+```ts check
+import { bind, markdown, page, tree } from "@sigrun/sigrun/blocks";
+import type {
+	SigrunHost,
+	SurfaceContext,
+	SurfaceRenderResult,
+} from "@sigrun/sigrun/extension";
+
+export function convoNoteRender(
+	host: SigrunHost,
+): (ctx: SurfaceContext) => Promise<SurfaceRenderResult> {
+	return async (ctx): Promise<SurfaceRenderResult> => {
+		const id = ctx.params.conversationId;
+		if (typeof id === "number") {
+			// The client sent the id — check the CALLER's access to the
+			// conversation before rendering anything derived from it. The
+			// wire's params carry plain numbers; `meta` takes the branded
+			// id, so the cast re-labels it. `meta` THROWS for an unknown
+			// id — a stale or foreign conversationId must answer `none`,
+			// never surface_failed.
+			try {
+				const meta = await host.conversations.meta(
+					id as Parameters<SigrunHost["conversations"]["meta"]>[0],
+				);
+				const access = await host.access.accessOf(ctx.principal, meta);
+				if (access === "none") {
+					return {
+						tree: tree(page({ id: "note", title: "Note", main: [] })),
+						data: {},
+						access: "none",
+					};
+				}
+			} catch {
+				// Unknown/stale id — same verdict, never surface_failed.
+				return {
+					tree: tree(page({ id: "note", title: "Note", main: [] })),
+					data: {},
+					access: "none",
+				};
+			}
+		}
+		return {
+			tree: tree(
+				page({
+					id: "note",
+					title: "Note",
+					main: [markdown({ text: bind("/note") })],
+				}),
+			),
+			data: { note: "…" },
+			access: "read",
+		};
+	};
+}
+```
+
+Do **not** declare `instanceKey` on a per-conversation panel — the
+default (`canonicalJson(params)`) keys each conversation's instance,
+and the webui routes live updates by the same canonical params.
+Publish per conversation with `host.surfaces.changed(id,
+canonicalJson({ conversationId }))` — `canonicalJson` is a runtime
+export of `@sigrun/shared/blocks` (the builders above come from
+`@sigrun/sigrun/blocks`); declare `data()` so the refetch
+costs a data call, not a full render.
+
 ### `page.selection`: compact drill-in
 
 A `page` may carry **`selection: {selected, back}`** — a

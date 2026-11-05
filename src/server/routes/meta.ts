@@ -87,6 +87,12 @@ export function registerMetaRoutes(
 								// The §7.3 shared-data flag: channels refetch
 								// fully when a since fetch answers ops-only.
 								...(def.sharedData === true ? { sharedData: true } : {}),
+								// The per-conversation opt-in: channels attach the
+								// panel with the open conversation's id (sparse —
+								// present only when the panel opted in).
+								...(def.perConversation === true
+									? { perConversation: true }
+									: {}),
 							})),
 							}),
 				};

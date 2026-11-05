@@ -119,9 +119,63 @@ test("a read-access principal sees the board with NO drag handles", async ({
 	await context.close();
 });
 
-test("the stats panel registers one right-panel tab", async ({ page }) => {
+test("the stats panel opens from its header toggle and renders", async ({
+	page,
+}) => {
 	await page.goto(server.url);
-	// The panel tabs render on the right panel (one per declared panel).
-	const tab = page.locator('[data-panel-tab="ext:fixture-surfaces-e2e/stats"]');
-	await expect(tab).toBeVisible();
+	// Panels are header toggles (todo Task 2): an installed panel stays
+	// CLOSED until its toggle is clicked — the tab strip is gone.
+	const toggle = page.locator('[data-panel="ext:fixture-surfaces-e2e/stats"]');
+	await expect(toggle).toBeVisible();
+	await toggle.click();
+	// The panel host renders the stats surface's content.
+	await expect(
+		page.locator('[data-ext-panel="fixture-surfaces-e2e/stats"]'),
+	).toBeVisible();
+});
+
+test("the convo panel follows the open conversation", async ({ page }) => {
+	// Create B BEFORE the page boots so the boot lists it; the boot
+	// default picks the root row (conversation 1) — that is A.
+	const createB = await page.request.post(`${server.url}/v1/conversations`, {
+		data: {},
+	});
+	const b = ((await createB.json()) as { id: number }).id;
+	await page.goto(server.url);
+	await page.locator('[data-panel="ext:fixture-surfaces-e2e/convo"]').click();
+	const panel = page.locator(
+		'[data-ext-panel="fixture-surfaces-e2e/convo"]',
+	);
+	// A is the boot default: the harness root conversation.
+	const a = server.conversationId;
+	await expect(panel).toContainText(`conversation ${a} bump 0`);
+	// The real in-app switch: click B's sidebar row (each row carries
+	// data-conversation-id). The panel follows the open conversation.
+	await page
+		.locator(`li[data-conversation-id="${b}"] .session-select`)
+		.click();
+	await expect(panel).toContainText(`conversation ${b} bump 0`);
+	await expect(panel).not.toContainText(`conversation ${a} bump 0`);
+});
+
+test("a changed event reaches the open convo panel", async ({ page }) => {
+	const create = await page.request.post(`${server.url}/v1/conversations`, {
+		data: {},
+	});
+	const b = ((await create.json()) as { id: number }).id;
+	await page.goto(`${server.url}/#/c/${b}`);
+	await page.locator('[data-panel="ext:fixture-surfaces-e2e/convo"]').click();
+	const panel = page.locator(
+		'[data-ext-panel="fixture-surfaces-e2e/convo"]',
+	);
+	await expect(panel).toContainText(`conversation ${b} bump 0`);
+	// POST bump for b: the fixture publishes surface.changed for the
+	// {conversationId: b} instance; the open panel refetches WITHOUT a
+	// reload and shows the bumped line.
+	const bumped = await page.request.post(
+		`${server.url}/v1/ext/fixture-surfaces-e2e/bump`,
+		{ data: { conversationId: b } },
+	);
+	expect(bumped.ok()).toBe(true);
+	await expect(panel).toContainText(`conversation ${b} bump 1`);
 });

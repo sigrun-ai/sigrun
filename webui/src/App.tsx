@@ -1,7 +1,7 @@
 /**
  * The app shell (B2, UI refresh): the section rail + conversation sidebar
  * (one drawer below 900px), the chat pane under ChatHeader, and the
- * mode-switchable RightPanel — over the composer footer.
+ * selection-switchable RightPanel — over the composer footer.
  *
  * The active conversation id is App state: `SessionList.onSelect` flips
  * it, and the view hook re-drives (a fresh stream opens; the stale one
@@ -17,8 +17,10 @@
  * conversation list (B3's `useConversationList` — one hook owns the rows
  * the sidebar, the header, and the transcript all read).
  *
- * Shell state: `panel` (Outline/Workspace, persisted under
- * `sigrun.panel`; clicking the active mode closes it), `drawerOpen` (the
+ * Shell state: `panelKey` (the ONE right-panel selection —
+ * Outline/Workspace/an ext panel/notices, panelSelection.ts; clicking
+ * the active key closes it; the notices pane is chrome — never
+ * persisted), `drawerOpen` (the
  * ≤900px rail+sidebar drawer). Settings is a main-pane PAGE on the hash
  * router (0.4.0 Task 4): `#/settings` / `#/settings/<section>`, with
  * back/forward riding the browser history. The theme hook (mode/palette/
@@ -54,12 +56,18 @@ import {
 	ChatTransportContext,
 	type AttachChatTransport,
 } from "./entries/chatTransportContext";
-import { ChatHeader, type PanelMode } from "./layout/ChatHeader";
+import { ChatHeader } from "./layout/ChatHeader";
 import { BottomBar } from "./layout/BottomBar";
 import { Rail } from "./layout/Rail";
 import { RightPanel } from "./layout/RightPanel";
 import {
-	extPanelEntries,
+	loadPanelKey,
+	resolvePanel,
+	savePanelKey,
+	togglePanel,
+	type PanelKey,
+} from "./layout/panelSelection";
+import { extPanelEntries,
 	extViewEntries,
 	coreViewEntries,
 	loadRailOrder,
@@ -96,44 +104,12 @@ type Boot =
 /** The default client (same-origin); tests inject a stub-backed one. */
 const defaultClient = createClient();
 
-const PANEL_STORAGE_KEY = "sigrun.panel";
-
 /** §13.3: how long the restart-recovery poll waits for /readyz before
  *  surfacing a stalled restart as a refusal (never a silent hang).
  *  DUPLICATE of the tui's `RESTART_READYZ_DEADLINE_MS`
  *  (tui/src/ui/app.ts) — the tui consumes only `@sigrun/shared` wire
  *  types; keep the two in sync by hand. */
 const RESTART_READYZ_DEADLINE_MS = 60_000;
-
-/** Load the persisted panel mode; garbage/absent → null (closed). The
- *  notices pane (Task 6) is NEVER persisted — it's chrome, not state. */
-function loadPanel(): PanelMode | null {
-	const stored = (
-		globalThis as { localStorage?: { getItem(key: string): string | null } }
-	).localStorage;
-	try {
-		const value = stored?.getItem(PANEL_STORAGE_KEY) ?? null;
-		return value === "outline" || value === "workspace"
-			? value
-			: null;
-	} catch {
-		return null;
-	}
-}
-
-function persistPanel(mode: PanelMode | null): void {
-	// The notices pane is chrome: no persistence (a reload reopens the
-	// last REAL panel, never the notices pane).
-	if (mode === "notices") return;
-	try {
-		(globalThis as { localStorage?: Storage }).localStorage?.setItem(
-			PANEL_STORAGE_KEY,
-			mode ?? "none",
-		);
-	} catch {
-		// A failing store (private browsing) keeps the panel session-only.
-	}
-}
 
 /** The chronological-transcript pref (the tool-visibility fix): persisted
  * like the panel mode; absent/garbage → the grouped default. */
@@ -576,7 +552,7 @@ function AppShell(options: AppOptions = {}) {
 		}
 	}, [restart]);
 	const [activeId, setActiveId] = useState<number | null>(null);
-	const [panel, setPanel] = useState<PanelMode | null>(loadPanel);
+	const [panelKey, setPanelKey] = useState<PanelKey | null>(loadPanelKey);
 	const [timeline, setTimeline] = useState<boolean>(loadTimeline);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	// Re-render token for hash-driven section switches (the section itself
@@ -621,8 +597,10 @@ function AppShell(options: AppOptions = {}) {
 	// `slug/id` keys — discovered at render time (a load's 404), the rail
 	// entry disappears at once (§6.5's "no rail entry").
 	const [hiddenExtSurfaces] = useState<readonly string[]>([]);
-	// The open extension PANEL tab's `slug/id` key (RightPanel state).
-	const [extPanel, setExtPanel] = useState<string | null>(null);
+	// todo Task 2: ONE right-panel selection state — an ext panel is a
+	// selection key (`ext:<slug>/<id>`), not separate state; the ChatHeader
+	// toggles own open/close (no in-panel tab strip). The active ext
+	// selection's parts derive below.
 	// The share editor's target conversation (W1 Task 8, spec §5.9): set by
 	// the sidebar's owner-only Share… action, rendered as an overlay.
 	const [shareFor, setShareFor] = useState<number | null>(null);
@@ -738,28 +716,68 @@ function AppShell(options: AppOptions = {}) {
 	}, [extRoute, extKey, extKeyHash, extHub, list.streamId]);
 
 	// The open extension PANEL's transport (spec §7.1/§7.3): created ONLY
-	// while a panel tab is active — closing the panel drops the transport
-	// (no cadence, no watcher keepalive for a hidden panel).
+	// while an ext panel is the RESOLVED selection (todo Task 2 R2) — a
+	// stale stored key (a removed panel) behaves exactly like a closed
+	// panel: no event key, no transport, no visible-surface registration,
+	// no backdrop. Closing the panel drops the transport (no cadence, no
+	// watcher keepalive for a hidden panel).
+	const panelSelectionResolved = useMemo(
+		() =>
+			boot.status === "ready"
+				? resolvePanel(
+						panelKey,
+						extPanelEntries(boot.meta.extensions),
+					)
+				: panelKey,
+		[panelKey, boot],
+	);
+	const activeExtKey = panelSelectionResolved !== null && panelSelectionResolved.startsWith("ext:")
+		? panelSelectionResolved
+		: null;
 	const extPanelParts = useMemo(() => {
-		if (extPanel === null) return null;
-		const [slug, id] = extPanel.split("/");
+		if (activeExtKey === null) return null;
+		const [slug, id] = activeExtKey.slice("ext:".length).split("/");
 		if (slug === undefined || id === undefined || slug === "" || id === "") {
 			return null;
 		}
 		return { slug, id };
-	}, [extPanel]);
+	}, [activeExtKey]);
+	// The panel's instance params (todo Task 3): an opted-in
+	// (perConversation) panel attaches with the OPEN conversation's id,
+	// a plain panel always {}. `panelParamsKey` (the canonical STRING) is
+	// the single dependency of the hash effect, the transport memo, and
+	// the visible-surface registration below — never `activeId` and never
+	// a freshly-built object — so a plain panel does NOT refetch when the
+	// active conversation switches (the string is unchanged, the memos
+	// and effects don't re-run).
+	const panelParams: JsonObject = useMemo((): JsonObject => {
+		if (activeExtKey === null || boot.status !== "ready") return {};
+		const entry = extPanelEntries(boot.meta.extensions).find(
+			(one) => `ext:${one.slug}/${one.id}` === activeExtKey,
+		);
+		if (entry?.perConversation === true && activeId !== null) {
+			return { conversationId: activeId };
+		}
+		return {};
+	}, [activeExtKey, boot, activeId]);
+	const panelParamsKey = useMemo(() => canonicalJson(panelParams), [panelParams]);
 	const [extPanelKeyHash, setExtPanelKeyHash] = useState<{
 		readonly forKey: string;
 		readonly hash: string;
 	} | null>(null);
+	// The hash gate keys on selection AND params: while the new
+	// instance's hash is pending (a conversation switch on an opted-in
+	// panel) the transport stays undefined — the host unmounts instead
+	// of loading the OLD conversation's instance.
+	const extPanelInstanceKey = `${activeExtKey ?? ""}:${panelParamsKey}`;
 	useEffect(() => {
 		if (extPanelParts === null) {
 			setExtPanelKeyHash(null);
 			return;
 		}
 		let alive = true;
-		const forKey = extPanel ?? "";
-		void eventKeyWeb(extPanelParts.slug, extPanelParts.id, canonicalJson({})).then(
+		const forKey = extPanelInstanceKey;
+		void eventKeyWeb(extPanelParts.slug, extPanelParts.id, panelParamsKey).then(
 			(hash) => {
 				if (alive) setExtPanelKeyHash({ forKey, hash });
 			},
@@ -767,12 +785,12 @@ function AppShell(options: AppOptions = {}) {
 		return () => {
 			alive = false;
 		};
-	}, [extPanelParts, extPanel]);
+	}, [extPanelParts, extPanelInstanceKey, panelParamsKey]);
 	const extPanelTransport = useMemo(() => {
 		if (
 			extPanelParts === null ||
 			extPanelKeyHash === null ||
-			extPanelKeyHash.forKey !== extPanel
+			extPanelKeyHash.forKey !== extPanelInstanceKey
 		) {
 			return undefined;
 		}
@@ -780,11 +798,16 @@ function AppShell(options: AppOptions = {}) {
 			{
 				slug: extPanelParts.slug,
 				id: extPanelParts.id,
+				// Parsed from the canonical key (the memo's dep), never a
+				// freshly-built object: the transport's identity tracks the
+				// key STRING, so a plain panel keeps ONE transport across a
+				// conversation switch (no refetch).
+				params: JSON.parse(panelParamsKey) as JsonObject,
 				...(list.streamId === undefined ? {} : { streamId: list.streamId }),
 			},
 			extPanelKeyHash.hash,
 		);
-	}, [extPanelParts, extPanel, extPanelKeyHash, extHub, list.streamId]);
+	}, [extPanelParts, extPanelInstanceKey, panelParamsKey, extPanelKeyHash, extHub, list.streamId]);
 
 	// Visible-surface registration (spec §7.3's re-registration rule):
 	// the open ext page remounts on a stream change (its key joins
@@ -797,11 +820,18 @@ function AppShell(options: AppOptions = {}) {
 			list.noteSurfaceVisible(extRoute.slug, extRoute.id, extRoute.params);
 		}
 		if (extPanelParts !== null) {
-			list.noteSurfaceVisible(extPanelParts.slug, extPanelParts.id);
+			// The SAME instance params as the transport (todo Task 3): a
+			// reconnect refetches the conversation instance actually shown.
+			list.noteSurfaceVisible(
+				extPanelParts.slug,
+				extPanelParts.id,
+				JSON.parse(panelParamsKey) as JsonObject,
+			);
 		}
 		// extKey re-runs the effect when the route's params change
-		// identity (extRoute is memoized by the router).
-	}, [extRoute, extKey, extPanelParts, list.streamId, list.noteSurfaceVisible]);
+		// identity (extRoute is memoized by the router); panelParamsKey
+		// does the same for the panel's conversation instance.
+	}, [extRoute, extKey, extPanelParts, panelParamsKey, list.streamId, list.noteSurfaceVisible]);
 	// The active panel's declared refresh cadence (§7.1): read from the
 	// meta projection's panel rows (never a second fetch).
 	const panelRefreshMs = useMemo(() => {
@@ -851,17 +881,18 @@ function AppShell(options: AppOptions = {}) {
 		setRoute(next);
 	}, [tabMemory]);
 
-	// Panel toggling: clicking the ACTIVE mode closes the panel (null).
-	const onPanel = useCallback((mode: PanelMode) => {
-		setPanel((current) => {
-			const next = current === mode ? null : mode;
-			persistPanel(next);
+	// Panel toggling (todo Task 2): clicking the ACTIVE key closes the
+	// panel (null); the notices key never persists (savePanelKey skips it).
+	const onPanel = useCallback((key: PanelKey) => {
+		setPanelKey((current) => {
+			const next = togglePanel(current, key);
+			savePanelKey(next);
 			return next;
 		});
 	}, []);
 	const closePanel = useCallback(() => {
-		setPanel(null);
-		persistPanel(null);
+		setPanelKey(null);
+		savePanelKey(null);
 	}, []);
 
 	// The popstate listener: browser back/forward re-parses the hash
@@ -1128,16 +1159,15 @@ function AppShell(options: AppOptions = {}) {
 	);
 
 	// The bell: toggles the notices pane — docked (the Chats tab's
-	// right-panel mode) or the right-edge overlay elsewhere. Opening the
-	// docked pane closes outline/workspace/ext panel (the mode is
-	// exclusive); opening EITHER pane clears any ext panel tab.
+	// right-panel selection) or the right-edge overlay elsewhere. Opening
+	// the docked pane replaces the outline/workspace/ext selection (one
+	// selection model — panelSelection.ts).
 	const openNoticesPane = useCallback(
 		(scrollTo?: string): void => {
 			setNoticeScrollTo(scrollTo ?? null);
 			if (route.kind === "chat") {
-				setPanel("notices");
-				setExtPanel(null);
-				// persistPanel skips "notices" — chrome, never persisted.
+				setPanelKey("notices");
+				// savePanelKey skips "notices" — chrome, never persisted.
 			} else {
 				setNoticeOverlayOpen(true);
 			}
@@ -1147,15 +1177,14 @@ function AppShell(options: AppOptions = {}) {
 	const toggleNoticesPane = useCallback((): void => {
 		if (route.kind === "chat") {
 			onPanel("notices");
-			if (panel !== "notices") setExtPanel(null);
 		} else {
 			setNoticeOverlayOpen((open) => !open);
 		}
-	}, [route.kind, onPanel, panel]);
+	}, [route.kind, onPanel]);
 
 	// The rail's Bell props (count + active + toggle), one bundle.
 	const noticesPaneOpen =
-		route.kind === "chat" ? panel === "notices" : noticeOverlayOpen;
+		route.kind === "chat" ? panelKey === "notices" : noticeOverlayOpen;
 
 	// The conversation select ALSO writes the hash (tabs Task 1: the
 	// chat route CARRIES the conversation id — browser back returns to
@@ -1545,7 +1574,8 @@ function AppShell(options: AppOptions = {}) {
 						return !on;
 					})
 				}
-				panel={panel}
+				panel={panelKey}
+				extPanels={extPanelEntries(boot.meta.extensions)}
 				onPanel={onPanel}
 				onRename={onRename}
 				onExport={onExport}
@@ -1647,17 +1677,16 @@ function AppShell(options: AppOptions = {}) {
 			    every other tab's surface is full width. */}
 			{route.kind === "chat" && (
 			<RightPanel
-				mode={panel}
-				extPanels={extPanelEntries(boot.meta.extensions)}
-				activeExtPanel={extPanel}
-				onOpenExtPanel={(slug, id) => {
-					setExtPanel(`${slug}/${id}`);
-				}}
+				selection={panelSelectionResolved}
 				{...(extPanelParts !== null && extPanelTransport !== undefined
 					? {
 							extContent: (
 								<ExtPanelHost
-									key={extPanel}
+									// Keyed on the instance: a conversation switch
+									// REMOUNTS the host, so a late response for the
+									// previous conversation can never land (useSurface's
+									// doLoad has no stale-response guard).
+									key={`${activeExtKey}:${panelParamsKey}`}
 									slug={extPanelParts.slug}
 									id={extPanelParts.id}
 									transport={extPanelTransport}
@@ -1717,7 +1746,7 @@ function AppShell(options: AppOptions = {}) {
 			    WIDTH at that size — there is no outside to tap, and the
 			    backdrop would only overlay the header and swallow the
 			    bell's close toggle — so the notices panel skips it. */}
-			{panel !== null && panel !== "notices" && (
+			{panelSelectionResolved !== null && panelSelectionResolved !== "notices" && (
 				<div
 					className="panel-backdrop"
 					onClick={closePanel}

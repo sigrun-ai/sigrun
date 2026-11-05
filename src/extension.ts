@@ -1189,6 +1189,12 @@ export interface SurfaceDef<P extends "view" | "panel" | "settings"> {
 	readonly placement: P;
 	/** Data is identical for every principal with access (§7.3). */
 	readonly sharedData?: boolean;
+	/** Panels only: the channels attach this panel with
+	 *  `params: { conversationId }` of the OPEN conversation, so one
+	 *  instance follows the conversation the user is in. The id is
+	 *  client-supplied — the extension must check the caller's access to
+	 *  that conversation before rendering or acting on it. */
+	readonly perConversation?: boolean;
 	/** Channels refetch data on this interval while visible (min 5000). */
 	readonly refreshMs?: number;
 	/** §7.3; default: canonical JSON of params. The principal argument

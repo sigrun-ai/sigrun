@@ -15,6 +15,7 @@ import {
 	type MetaResponse,
 } from "./api";
 import { PINNED_SCHEMA_VERSION } from "./schema-version";
+import { memoryStorage } from "./layout/extViews";
 import type { EventSourceFactory } from "./stream";
 import {
 	makeEntry,
@@ -455,7 +456,7 @@ describe("App shell", () => {
 			expect(panel.props["data-panel"]).toBe("notices");
 			// The pane's open state is chrome: the hash never moved (no
 			// history entry) and the persisted panel key never saw
-			// "notices" (persistPanel skips it).
+			// "notices" (savePanelKey skips it).
 			expect(locationHash()).toBe(before);
 			expect(panel.props["aria-label"]).toBe("notices panel");
 			// The empty pile renders the empty state.
@@ -1767,9 +1768,9 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 		);
 		const extCalls = () =>
 			calls.filter((one) => one.input.includes("/v1/ext/fixture-surfaces/surfaces/stats"));
-		// Open the panel tab (the panel host loads its surface).
+		// Open the panel via its header toggle (the panel host loads its surface).
 		const tab = renderer.root.findByProps({
-			"data-panel-tab": "ext:fixture-surfaces/stats",
+			"data-panel": "ext:fixture-surfaces/stats",
 		});
 		await act(async () => {
 			(tab.props as { onClick: () => void }).onClick();
@@ -1826,6 +1827,344 @@ describe("App surface re-registration (U3 final-review fix wave)", () => {
 		}
 	});
 });
+});
+
+describe("App right-panel selection model (todo Task 2)", () => {
+	// The panel-row variant: `todos` as a PANEL surface.
+	function panelMeta(): MetaResponse {
+		return makeMeta({
+			extensions: [
+				{
+					name: "fixture-todo",
+					status: "ok",
+					surfaces: [
+						{ id: "todos", title: "Todos", icon: "list", placement: "panel" },
+					],
+				},
+			],
+		});
+	}
+
+	test("an installed panel extension does not open the panel", async () => {
+		const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// The header carries the extension toggle…
+		expect(
+			renderer.root.findAllByProps({ "data-panel": "ext:fixture-todo/todos" })
+				.length,
+		).toBe(1);
+		// …but the panel itself stays CLOSED (no stored key).
+		expect(
+			renderer.root.findAllByProps({ className: "right-panel" }),
+		).toHaveLength(0);
+	});
+
+	test("switching from an extension panel back to outline renders the outline", async () => {
+		const { client, createEventSource } = makeHarness({ meta: panelMeta() });
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		await act(async () => {
+			(
+				renderer.root.findByProps({
+					"data-panel": "ext:fixture-todo/todos",
+				}).props as { onClick: () => void }
+			).onClick();
+		});
+		let panel = renderer.root.findByProps({ className: "right-panel" });
+		expect(panel.props["data-panel"]).toBe("ext");
+		// The outline toggle replaces the ext selection under data-panel=outline.
+		await act(async () => {
+			(
+				renderer.root.findByProps({ "data-panel": "outline" }).props as {
+					onClick: () => void;
+				}
+			).onClick();
+		});
+		panel = renderer.root.findByProps({ className: "right-panel" });
+		expect(panel.props["data-panel"]).toBe("outline");
+		// The ext toggle is no longer pressed.
+		expect(
+			renderer.root.findByProps({ "data-panel": "ext:fixture-todo/todos" })
+				.props["aria-pressed"],
+		).toBe(false);
+	});
+
+	test("a stored ext key for a removed panel falls back to closed", async () => {
+		// A REAL storage stub — the webui vitest runs in node, where
+		// globalThis.localStorage is undefined (an optional setItem would
+		// no-op and the test would prove nothing).
+		const store = memoryStorage();
+		store.setItem("sigrun.panel", "ext:gone/panel");
+		(globalThis as { localStorage?: Storage }).localStorage = store;
+		try {
+			const { client, createEventSource, calls } = makeHarness({
+				meta: panelMeta(),
+			});
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// The stale key resolved to CLOSED: no right panel…
+			expect(
+				renderer.root.findAllByProps({ className: "right-panel" }),
+			).toHaveLength(0);
+			// …and no surface request was issued for the removed panel (the
+			// resolved selection — not the raw stored key — drives the
+			// transport attach).
+			expect(
+				calls.filter((one) => one.input.includes("/v1/ext/gone/")),
+			).toHaveLength(0);
+		} finally {
+			delete (globalThis as { localStorage?: Storage }).localStorage;
+		}
+	});
+});
+
+describe("App per-conversation panel params (todo Task 3)", () => {
+	// One extension with TWO panels: `convo` opts in to perConversation,
+	// `stats` stays plain. The harness serves two conversations (1 + 2);
+	// the surface fetch records its ?params= per conversation.
+	function convoMeta(): MetaResponse {
+		return makeMeta({
+			extensions: [
+				{
+					name: "fixture-convo",
+					status: "ok",
+					surfaces: [
+						{
+							id: "convo",
+							title: "Convo",
+							icon: "list",
+							placement: "panel",
+							perConversation: true,
+						},
+						{ id: "plain", title: "Stats", icon: "chart", placement: "panel" },
+					],
+				},
+			],
+		});
+	}
+
+	// The ext transports fetch via globalThis.fetch (the hub has no fetch
+	// wired in); stub it to the harness's FetchLike for /v1/ext.
+	function stubGlobalFetch(fetchImpl: FetchLike): () => void {
+		const original = globalThis.fetch;
+		globalThis.fetch = (async (input: unknown, init?: unknown) => {
+			const url = typeof input === "string" ? input : String(input);
+			if (url.startsWith("/v1/ext/")) {
+				return fetchImpl(url, init as Parameters<FetchLike>[1]);
+			}
+			return original(input as URL, init as RequestInit);
+		}) as typeof fetch;
+		return () => {
+			globalThis.fetch = original;
+		};
+	}
+
+	// Surface fetches for ONE surface id, with the decoded params object.
+	function surfaceParams(calls: readonly Call[], id: string): Record<string, unknown>[] {
+		return calls
+			.filter((one) => one.input.includes(`/surfaces/${id}`))
+			.map((one) => {
+				const query = one.input.split("?")[1] ?? "";
+				const raw = new URLSearchParams(query).get("params");
+				return raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>);
+			});
+	}
+
+	// A params-aware convo stub: each surface request answers a tree
+	// whose markdown text is `conversation <id>` (or `no conversation`).
+	// When `deferFirst` is set, conversation 1's response is HELD until
+	// the test resolves it — the late-response pinning (todo Task 3
+	// review I1).
+	function convoStub(
+		fetchImpl: FetchLike,
+		calls: Call[],
+	): { fetchImpl: FetchLike; holdFirst: { resolve: (() => void) | undefined } } {
+		const holdFirst: { resolve: (() => void) | undefined } = {
+			resolve: undefined,
+		};
+		const wrapped: FetchLike = (input, init2) => {
+			const url = String(input);
+			if (url.includes("/surfaces/convo")) {
+				// Record like the harness does — the wrapped fetchImpl never
+				// sees convo requests, so `calls` must gain them here.
+				calls.push({ input: url, method: init2?.method, body: init2?.body });
+				const raw = new URLSearchParams(url.split("?")[1] ?? "").get("params");
+				const params =
+					raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>);
+				const id = params.conversationId;
+				const text =
+					typeof id === "number" ? `conversation ${id}` : "no conversation";
+				const body = {
+					tree: {
+						v: 1,
+						root: {
+							type: "page",
+							id: "convo",
+							title: "Convo",
+							main: [{ type: "markdown", text }],
+						},
+					},
+					data: {},
+					rev: 1,
+					treeRev: 1,
+					access: "write",
+				};
+				const respond = () =>
+					Promise.resolve({
+						ok: true,
+						status: 200,
+						json: () => Promise.resolve(body),
+						text: () => Promise.resolve(JSON.stringify(body)),
+					});
+				// Hold ONLY conversation 1's response: the late-response test
+				// resolves it AFTER the switch, and the host must not render it.
+				if (id === 1) {
+					return new Promise((resolve) => {
+						holdFirst.resolve = () => resolve(respond());
+					}) as ReturnType<FetchLike>;
+				}
+				return respond() as ReturnType<FetchLike>;
+			}
+			return fetchImpl(input, init2);
+		};
+		return { fetchImpl: wrapped, holdFirst };
+	}
+
+	test("opted-in panel attaches with the open conversationId", async () => {
+		const { client, createEventSource, calls, fetchImpl } = makeHarness({
+			meta: convoMeta(),
+		});
+		const restoreFetch = stubGlobalFetch(fetchImpl);
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// Boot selects conversation 1; switch to conversation 2 first so the
+			// asserted id is a REAL switch target, not the boot default.
+			await clickConversation(renderer, "Moor line inspection");
+			await act(async () => {
+				(
+					renderer.root.findByProps({
+						"data-panel": "ext:fixture-convo/convo",
+					}).props as { onClick: () => void }
+				).onClick();
+			});
+			await vi.waitFor(() => {
+				expect(surfaceParams(calls, "convo").length).toBeGreaterThan(0);
+			});
+			for (const params of surfaceParams(calls, "convo")) {
+				expect(params).toEqual({ conversationId: 2 });
+			}
+		} finally {
+			restoreFetch();
+			// The click above left `#/c/2` in the module-level hash fallback;
+			// the next test must boot on the chat default.
+			resetLocationHashForTest();
+		}
+	});
+
+	test("opted-in panel refetches with the new conversationId on switch — a late response for the old conversation cannot land", async () => {
+		const base = makeHarness({ meta: convoMeta() });
+		const { client, createEventSource, calls } = base;
+		// Params-aware convo stub with conversation 1's response HELD.
+		const { fetchImpl, holdFirst } = convoStub(base.fetchImpl, calls);
+		const restoreFetch = stubGlobalFetch(fetchImpl);
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			// The boot default id is test-order dependent (the module-level
+			// hash fallback); click 1 explicitly so the switch is 1 → 2.
+			await clickConversation(renderer, "Tide table rewrite");
+			await act(async () => {
+				(
+					renderer.root.findByProps({
+						"data-panel": "ext:fixture-convo/convo",
+					}).props as { onClick: () => void }
+				).onClick();
+			});
+			// Conversation 1 attached (its request is HELD by the stub).
+			await vi.waitFor(() => {
+				expect(surfaceParams(calls, "convo")).toContainEqual({
+					conversationId: 1,
+				});
+			});
+			expect(holdFirst.resolve).toBeDefined();
+			// Switch 1 → 2: the transport re-attaches with the NEW id. The
+			// refetch chain runs through an ASYNC hash (eventKeyWeb) and a
+			// host remount; poll the REQUEST (the whole chain's observable
+			// end) instead of sleeping a fixed window.
+			await clickConversation(renderer, "Moor line inspection");
+			await vi.waitFor(() => {
+				expect(surfaceParams(calls, "convo").at(-1)).toEqual({
+					conversationId: 2,
+				});
+			});
+			// Conversation 2's response is NOT held: its render lands.
+			await vi.waitFor(() => {
+				expect(textContent(renderer.toJSON())).toContain("conversation 2");
+			});
+			// NOW conversation 1's late response arrives. The composite
+			// ExtPanelHost key remounted the host, so the late response
+			// resolves against the UNMOUNTED conversation-1 instance and
+			// cannot land: the body stays conversation 2's.
+			await act(async () => {
+				holdFirst.resolve?.();
+			});
+			const body = textContent(renderer.toJSON());
+			expect(body).toContain("conversation 2");
+			expect(body).not.toContain("conversation 1");
+		} finally {
+			restoreFetch();
+			// The clicks above left `#/c/2` in the module-level hash fallback;
+			// the next test must boot on the chat default.
+			resetLocationHashForTest();
+		}
+	});
+
+	test("plain panel keeps empty params across a switch", async () => {
+		const { client, createEventSource, calls, fetchImpl } = makeHarness({
+			meta: convoMeta(),
+		});
+		const restoreFetch = stubGlobalFetch(fetchImpl);
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await act(async () => {
+				(
+					renderer.root.findByProps({
+						"data-panel": "ext:fixture-convo/plain",
+					}).props as { onClick: () => void }
+				).onClick();
+			});
+			await vi.waitFor(() => {
+				expect(surfaceParams(calls, "plain").length).toBeGreaterThan(0);
+			});
+			const before = surfaceParams(calls, "plain").length;
+			await clickConversation(renderer, "Moor line inspection");
+			// A switch changes nothing for a plain panel. Give any refetch a
+			// bounded window to appear: poll for ~300 ms, failing fast if the
+			// count ever moves; the whole async chain (state, the eventKeyWeb
+			// hash, the remount) resolves in far less.
+			const deadline = Date.now() + 300;
+			while (Date.now() < deadline) {
+				await act(async () => {
+					await new Promise((resolve) => setTimeout(resolve, 25));
+				});
+				expect(surfaceParams(calls, "plain")).toHaveLength(before);
+			}
+			for (const params of surfaceParams(calls, "plain")) {
+				expect(params).toEqual({});
+			}
+		} finally {
+			restoreFetch();
+		}
+	});
 });
 
 describe("App restart surface (UI-blocks U4 Task 2, spec §13.3)", () => {
