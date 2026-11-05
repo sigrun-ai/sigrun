@@ -64,6 +64,20 @@ export type InteractionRecord = {
 	 */
 	readonly answeredByUser?: string;
 	/**
+	 * Decline affordance (ask-user Task 1, spec §5.2): `true` marks the
+	 * record declinable — a human may skip it without answering (the
+	 * decline route / `host.declineInteraction`). Absent or omitted means
+	 * NOT declinable; `false` fails validation (the flag is `true`-only).
+	 */
+	readonly declinable?: true;
+	/**
+	 * How the record was declined (ask-user Task 1/2): "button" via the
+	 * decline route or host method, "message" via an admitted decline
+	 * message. Set only on a `skipped` decline; absent on every other
+	 * terminal status.
+	 */
+	readonly declinedVia?: "button" | "message";
+	/**
 	 * The interaction body: a block tree (placement `interaction` — a
 	 * root `form` whose `submit` is the answer). Legacy-shaped bodies
 	 * fail validation (ruling 16).

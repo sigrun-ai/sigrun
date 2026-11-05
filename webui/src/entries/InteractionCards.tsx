@@ -63,6 +63,7 @@ export function InteractionCard(props: {
 	);
 	const record = settled ?? interaction;
 	const pending = record.status === "pending" && settled === undefined;
+	const [declining, setDeclining] = useState(false);
 
 	const transport = useMemo(
 		() =>
@@ -104,6 +105,47 @@ export function InteractionCard(props: {
 		[record, conversationId, client, pending, onAnswered, onError],
 	);
 
+	/** Decline (ask-user spec §5.2): the button lives in the card chrome
+	 *  (outside the block tree), so it is present on EVERY stepper step —
+	 *  the form's own submit exists only on the review step. Same write
+	 *  gating as submit: pending + declinable + write access. A 404
+	 *  `not_pending` refetches the record (the mid-stepper settle path);
+	 *  any other failure reports loud and stays writable. */
+	const decline = (): void => {
+		if (!pending || record.declinable !== true || declining) return;
+		setDeclining(true);
+		client
+			.declineInteraction(conversationId, record.callId)
+			.then(() => {
+				setSettled({
+					...record,
+					status: "skipped",
+					settledAt: Date.now(),
+					declinedVia: "button",
+				});
+				onAnswered?.(record.callId);
+			})
+			.catch((cause: unknown) => {
+				setDeclining(false);
+				const message =
+					cause instanceof Error ? cause.message : String(cause);
+				// The settle raced the click (expiry, another channel): the
+				// same refetch path as a raced submit — a genuinely settled
+				// record swaps in read-only; a still-pending one reports and
+				// stays writable.
+				client
+					.getInteraction(conversationId, record.callId)
+					.then((fresh: InteractionWire) => {
+						if (fresh.status === "pending") {
+							onError?.(message);
+							return;
+						}
+						setSettled(fresh);
+					})
+					.catch(() => onError?.(message));
+			});
+	};
+
 	return (
 		<div className="interaction-card" data-kind={record.kind}>
 			<div className="interaction-card-title">
@@ -113,8 +155,22 @@ export function InteractionCard(props: {
 				)}
 				{!pending && (
 					<span className="interaction-status" data-status={record.status}>
-						{record.status}
+						{record.status === "skipped" && record.declinedVia !== undefined
+							? record.declinedVia === "message"
+								? "Declined — replied in chat"
+								: "Declined"
+							: record.status}
 					</span>
+				)}
+				{pending && record.declinable === true && (
+					<button
+						type="button"
+						className="interaction-decline"
+						disabled={declining}
+						onClick={decline}
+					>
+						Decline
+					</button>
 				)}
 			</div>
 			{transport !== undefined && record.body !== undefined && (

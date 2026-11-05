@@ -79,6 +79,9 @@ export function registerSubmissionRoutes(
 					? {}
 					: { user: request.principal.user }),
 				...(body.whenBusy === undefined ? {} : { whenBusy: body.whenBusy }),
+				// Ask-user Task 2: a human's message through the HTTP submit
+				// route declines pending declinable questions (spec §5.3).
+				declinesQuestions: true,
 				...( (request.query as Record<string, unknown> | undefined)?.waitMs ===
 				undefined
 					? {}

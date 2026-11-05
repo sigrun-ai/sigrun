@@ -77,6 +77,7 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: ":", action: "command line" },
 	{ keys: "ctrl+p", action: "conversation picker" },
 	{ keys: "ctrl+o", action: "answer interaction" },
+	{ keys: "alt+s", action: "decline interaction (answer mode)" },
 	{ keys: "ctrl+l", action: "redraw" },
 	{ keys: "ctrl+c", action: "abort run (busy)" },
 	{ keys: "g?", action: "key reference" },
@@ -158,6 +159,9 @@ export function createVimKeymap(options?: VimKeymapOptions): VimKeymap {
 			return ctx.busy ? { type: "cancel-run" } : "consume";
 		}
 		if (matchesKey(data, Key.ctrl("o"))) return { type: "answer-interaction" };
+		// Ask-user Task 5: alt+s declines the armed interaction (the app
+		// gates the action to answer mode + a declinable record).
+		if (matchesKey(data, Key.alt("s"))) return { type: "decline-interaction" };
 		return "pass";
 	};
 

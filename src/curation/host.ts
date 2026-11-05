@@ -66,6 +66,12 @@ export interface CurationHostDeps {
 	};
 	/** The boot default model (digest runs' fallback). */
 	readonly defaultModel: { readonly provider: string; readonly modelId: string };
+	/**
+	 * The loaded extensions' interactive tool names (ask-user Task 3,
+	 * spec §6), threaded into every run producer the host drives. Absent
+	 * on hand-built test deps (no hiding — the pre-feature behavior).
+	 */
+	readonly interactiveTools?: ReadonlySet<string>;
 	/** The per-user curation wiring (the boot `curationOf`). */
 	readonly stores: (
 		user: string | undefined,
@@ -141,8 +147,15 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 		deadline: number,
 	): Promise<CurationRunResult> => {
 		const remaining = Math.max(1, deadline - Date.now());
+		const runDeps = {
+			harness,
+			registry,
+			...(deps.interactiveTools === undefined
+				? {}
+				: { interactiveTools: deps.interactiveTools }),
+		};
 		return await digestRunRun(
-			{ harness, registry },
+			runDeps,
 			user,
 			{
 				instruction: input,
@@ -296,7 +309,13 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 		},
 
 		async forkReview(id, opts): Promise<CurationRunResult> {
-			const result = await forkReviewRun({ harness, registry }, id, opts);
+			const result = await forkReviewRun({
+				harness,
+				registry,
+				...(deps.interactiveTools === undefined
+					? {}
+					: { interactiveTools: deps.interactiveTools }),
+			}, id, opts);
 			// C5: after a COMPLETED review, tell every served target the
 			// review consumed its hints — the target's signal to retire
 			// them (errors caught and logged; a target never blocks the
@@ -326,7 +345,13 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 
 		async digestRun(user, opts): Promise<CurationRunResult> {
 			return await digestRunRun(
-				{ harness, registry },
+				{
+					harness,
+					registry,
+					...(deps.interactiveTools === undefined
+						? {}
+						: { interactiveTools: deps.interactiveTools }),
+				},
 				user,
 				opts,
 				deps.defaultModel,

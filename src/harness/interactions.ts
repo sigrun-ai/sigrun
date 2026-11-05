@@ -34,10 +34,11 @@
  */
 
 import { defineDoc, defineDocFamily } from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import type {
 	ConversationDocFamilyToken,
 	ConversationId,
+	Harness,
 	JsonObject,
 } from "@earendil-works/pi-durable";
 import type {
@@ -141,6 +142,30 @@ export const InteractionsIndexDoc = defineDoc<InteractionsIndex>({
 	initial: () => ({ pending: {} }),
 });
 
+/**
+ * The queued human-message ledger (conversation singleton): when a human's
+ * message is admitted while a conversation is busy (status "queued"), it
+ * is recorded here keyed by submissionId. `seedInteraction` consults this
+ * before committing a declinable record, so a question seeded after the
+ * human's message is immediately declined. The record lives only while the
+ * submission is queued; once placed or settled the entry is dropped by
+ * `seedInteraction`'s commit, keeping the doc small.
+ */
+export type QueuedHumanInputs = {
+	/** submissionId (numeric string) -> the submitting user, when known. */
+	readonly byId: Record<string, { readonly user?: string }>;
+};
+
+export const QueuedHumanInputsDoc = defineDoc<QueuedHumanInputs>({
+	kind: "sigrun.interactions.queued-human-inputs",
+	version: 1,
+	scope: "conversation",
+	checkpointWhen: () => false,
+	history: "latest",
+	fork: "current",
+	initial: () => ({ byId: {} }),
+});
+
 /** Terminal statuses: answering one of these is a no-op (first wins).
  * Exported for the event bus (W3 Task 4): the `interaction.pending` /
  * `interaction.settled` host-event split derives from the SAME set — one
@@ -186,6 +211,12 @@ export function validateInteraction(value: unknown): string | null {
 	}
 	if (r.answeredBy !== undefined && r.answeredBy !== "human" && r.answeredBy !== "extension") {
 		return "answeredBy must be 'human' or 'extension'";
+	}
+	if (r.declinable !== undefined && r.declinable !== true) {
+		return "declinable must be true when present";
+	}
+	if (r.declinedVia !== undefined && r.declinedVia !== "button" && r.declinedVia !== "message") {
+		return "declinedVia must be 'button' or 'message'";
 	}
 	if (r.body !== undefined) {
 		// Ruling 16 (no compatibility layer): legacy-shaped bodies (objects
@@ -480,6 +511,78 @@ export function applyAnswer(
 }
 
 /**
+ * The committed decline for one record (ask-user Task 1): status
+ * `"skipped"` with `declinedVia`, `answeredBy: "human"` (declining is a
+ * human act — nothing auto-declines) and `answeredByUser` when given.
+ * Returns `"declined"` on the applied transition, `"not_pending"` when
+ * the record is already terminal (first-wins), `"not_declinable"` when
+ * the record carries no `declinable: true` flag. The draft is mutated in
+ * place — this runs inside the caller's commit.
+ */
+export function applyDecline(
+	draft: StoredInteractionRecord,
+	via: "button" | "message",
+	now: number,
+	user?: string,
+): "declined" | "not_pending" | "not_declinable" {
+	if (draft.status !== "pending") return "not_pending";
+	if (draft.declinable !== true) return "not_declinable";
+	// SAFETY: the draft's declared shape is readonly; the doc family's
+	// tracked-draft write pattern mutates through a structural record view
+	// (every key below exists on the stored record by construction).
+	const mutable = draft as unknown as Record<string, unknown>;
+	mutable.status = "skipped";
+	mutable.settledAt = now;
+	mutable.answeredBy = "human";
+	if (user !== undefined) mutable.answeredByUser = user;
+	mutable.declinedVia = via;
+	return "declined";
+}
+
+/**
+ * The admitted-message decline (ask-user Task 2): a human's message
+ * admitted through `submitOp` declines every PENDING declinable record in
+ * the conversation (`via: "message"`), in one commit, right after
+ * admission. Only the seam host's own kinds are in scope — the index
+ * lists every pending record, and the seed's `interactionKinds` gate
+ * already restricted what can be pending, but the draft read re-checks
+ * `declinable` so a record without the flag is never touched.
+ *
+ * Returns the callIds that transitioned. The caller (submitOp) passes
+ * `user` (the submitting principal's user, when identified); an
+ * unidentified submitter still declines, just without attribution.
+ */
+export async function declinePendingOnMessage(
+	harness: Harness,
+	conversationId: ConversationId,
+	user: string | undefined,
+	now: number,
+	context: Context,
+): Promise<readonly string[]> {
+	return await harness.commit(async (tx) => {
+		const index = await tx.doc(InteractionsIndexDoc);
+		const pending = index.pending[String(conversationId)] ?? [];
+		if (pending.length === 0) return [];
+		const declined: string[] = [];
+		for (const callId of pending) {
+			const draft = await tx.doc(
+				InteractionDoc,
+				conversationId,
+				callId,
+				callId,
+			);
+			const outcome = applyDecline(draft, "message", now, user);
+			if (outcome === "declined") {
+				indexSettled(index, conversationId, callId);
+				sweepSecretDelivery(conversationId, callId);
+				declined.push(callId);
+			}
+		}
+		return declined;
+	}, context);
+}
+
+/**
  * Take one interaction's secret delivery (the extension-only read path):
  * the TRUE answer when a secret was answered and never yet read — the
  * entry is deleted by this very read (one-shot). The HTTP GETs NEVER call
@@ -490,6 +593,19 @@ export function takeSecretDelivery(
 	callId: string,
 ): InteractionAnswer | undefined {
 	return secretDeliveries.take(conversationId, callId);
+}
+
+/**
+ * Record one interaction's true-answer delivery WITHOUT settling the
+ * record. @internal test-only (ask-user tests stage deliveries out of
+ * band); production writes go through `applyAnswer`.
+ */
+export function recordSecretDelivery(
+	conversationId: ConversationId,
+	callId: string,
+	answer: InteractionAnswer,
+): void {
+	secretDeliveries.record(conversationId, callId, answer);
 }
 
 /**

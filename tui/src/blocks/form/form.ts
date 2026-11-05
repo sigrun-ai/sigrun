@@ -95,6 +95,24 @@ export function stepperSections(
 	return allChoice ? sections : null;
 }
 
+/** The unanswered REQUIRED choices of the stepper (the review names
+ *  them and holds the submit — §7.2 of the ask-user design). Answered
+ *  means choiceValueText yields text (absent/""/[]/{other: ""} do not
+ *  count). */
+function unansweredSections(
+	sections: readonly SectionBlock[],
+	ctx: BlockCtx,
+	values: JsonObject,
+): readonly SectionBlock[] {
+	return sections.filter((section) => {
+		for (const field of sectionFields(section)) {
+			if (field.type !== "choice" || field.required !== true) continue;
+			if (choiceValueText(field, ctx, values[field.name] ?? null) === "") return true;
+		}
+		return false;
+	});
+}
+
 /** The answerable fields of a stepper section (every field the review
  *  summarizes — §9.1's review step covers ALL of a section's fields,
  *  not only the choice). */
@@ -376,6 +394,9 @@ export class FormComponent implements Component {
 				const summary = answers.filter((text) => text !== "").join(", ");
 				lines.push(truncate(`  ${title}: ${summary}`, width));
 			});
+			for (const section of unansweredSections(sections, this.#ctx, this.#values)) {
+				lines.push(truncate(`Not answered yet: ${bindText(section.title, this.#ctx)}`, width));
+			}
 			if (!this.#readOnly && !this.#submitted) {
 				lines.push(truncate(`> [ ${this.#submitLabel} ]`, width));
 			}
@@ -512,6 +533,9 @@ export class FormComponent implements Component {
 				return;
 			}
 			if (data === "\r" && !this.#submitted) {
+				// The review holds the submit while a required question is
+				// unanswered (§7.2) — Enter is ignored, not an error.
+				if (unansweredSections(sections, this.#ctx, this.#values).length > 0) return;
 				if (this.#submit()) this.#submitted = true;
 			}
 			return;

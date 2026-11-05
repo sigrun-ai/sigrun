@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Declinable interaction records: `declinable: true` marks a pending record declinable;
+  `POST /v1/conversations/:id/interactions/:callId/decline` (write access) settles it
+  `skipped` with `declinedVia: "button"` (404 `no_such_interaction` / 404 `not_pending` /
+  409 `not_declinable`); `host.declineInteraction(conversationId, callId, context, {user})`
+  is the extension-side peer; `interactionSettled` payloads carry `declinedVia`. Declining
+  sweeps the record's unread secret delivery inside the same commit.
+- Interactive tools: a factory result's `interactiveTools` names the registered tools that
+  need a human present. Core hides them in job-run conversations (`conversation: "new"`
+  fires, `host.conversations.create({job})`) and curator runs (digest agents exclude them;
+  every run's `allow` list loses them with one warning; fork reviews keep them listed for
+  prompt-cache parity and the gate blocks a call instead). `host.jobs.isJobRun` tells an
+  interactive tool's execute whether the current run is job-driven (a job firing into an
+  existing conversation is not covered by the creation-time filter — refuse there).
+
 ## [0.8.0] - 2026-11-04
 
 Core notices: a per-user notice system for extensions. An extension posts a short notice

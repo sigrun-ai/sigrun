@@ -1,0 +1,11 @@
+{
+	"name": "fixture-declinable",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension for declinable interaction records (ask-user Task 1): declares the decl.ask kind, captures its seam host on globalThis.__declinableHost, and records every interactionSettled payload on globalThis.__declinableSettled. Host runtime modules (pi-durable) are dev-dependencies only (the provider-plugins posture): the loader's host-module links provide them.",
+	"main": "index.js",
+	"exports": "./index.js",
+	"devDependencies": {
+		"@earendil-works/pi-durable": "*"
+	}
+}

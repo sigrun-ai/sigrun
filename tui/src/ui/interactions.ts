@@ -208,6 +208,12 @@ export class InteractionPrompter implements Component {
 			this.#changed();
 			return true;
 		}
+		// The decline chord is the KEYMAP's (decline-interaction action,
+		// dispatched by the launcher): pass it through so the keymap sees
+		// it — the surface fall-through below would swallow it and the
+		// chord would never fire (review fix; the same ownership rule as
+		// the prompt's other action keys).
+		if (matchesKey(data, Key.alt("s"))) return false;
 		this.#ensureSurface(top);
 		if (this.#surface === undefined) {
 			this.#exitAnswer();
@@ -376,6 +382,64 @@ export class InteractionPrompter implements Component {
 		this.#answerCallId = undefined;
 	}
 
+	/**
+	 * Decline the armed interaction (ask-user spec §5.2 — the keymap's
+	 *  `decline-interaction` action routes here). Gated exactly like the
+	 *  affordance: answer mode armed on the top record, and the record is
+	 *  declinable. Success exits answer mode (the list poll drops the
+	 *  settled record). A 404 `not_pending` — the record settled under
+	 *  the user's fingers — refetches through
+	 *  {@link SigrunClient.getInteraction} and swaps the settled envelope
+	 *  in read-only (the mid-edit settle path); any other failure reports
+	 *  loud and keeps the card writable.
+	 */
+	async decline(): Promise<void> {
+		const top = this.#pending[0];
+		if (!this.#answerMode || top === undefined) return;
+		if (this.#answerCallId !== top.callId) return;
+		if (top.declinable !== true) return;
+		const id = this.#conversationId;
+		if (id === undefined) return;
+		try {
+			await this.#client.declineInteraction(id, top.callId);
+		} catch (cause) {
+			const isNotPending =
+				typeof cause === "object" &&
+				cause !== null &&
+				(cause as { status?: unknown }).status === 404;
+			if (!isNotPending) {
+				this.onError?.(describeCommandError("decline", cause));
+				this.#changed();
+				return;
+			}
+			// 404 not_pending: the settle raced the user. Refetch; a still-
+			// pending record must NOT wedge the card read-only.
+			try {
+				const fresh = await this.#client.getInteraction(id, top.callId);
+				if (this.#surface?.record.callId !== top.callId) return;
+				if (fresh.status === "pending") {
+					this.onError?.(
+						describeCommandError("decline", cause),
+					);
+					this.#changed();
+					return;
+				}
+				this.#surface =
+					this.#surface === undefined
+						? undefined
+						: { ...this.#surface, settled: fresh, access: "read" };
+				this.#surface?.state.setAccess("read");
+			} catch {
+				this.onError?.(describeCommandError("decline", cause));
+				this.#changed();
+				return;
+			}
+		}
+		this.#exitAnswer();
+		void this.#refresh();
+		this.#changed();
+	}
+
 	/** Generation-guarded, coalesced fetch of the pending list. */
 	async #refresh(): Promise<void> {
 		const id = this.#conversationId;
@@ -452,12 +516,20 @@ export class InteractionPrompter implements Component {
 		if (top === undefined) return [];
 		const lines: string[] = [];
 		const shown = this.#surface?.settled ?? top;
+		// Settled declines name their outcome (spec §5.2's "declined" /
+		// "declined — replied in chat"), never the raw 'skipped'.
+		const statusText =
+			shown.status === "skipped" && shown.declinedVia !== undefined
+				? shown.declinedVia === "message"
+					? "declined — replied in chat"
+					: "declined"
+				: shown.status;
 		const suffix =
 			this.#answerMode
 				? " — answering"
 				: shown.status === "pending"
 					? ""
-					: ` — ${shown.status}`;
+					: ` — ${statusText}`;
 		lines.push(`[interaction] ${shown.kind}${suffix}`);
 		if (top.body !== undefined) {
 			this.#ensureSurface(top);
@@ -474,7 +546,9 @@ export class InteractionPrompter implements Component {
 		if (top.body !== undefined) {
 			lines.push(
 				this.#answerMode
-					? "1-9 answer · Tab next · esc cancel"
+					? top.declinable === true
+						? "1-9 answer · alt+s decline · Tab next · esc cancel"
+						: "1-9 answer · Tab next · esc cancel"
 					: "ctrl+o to answer",
 			);
 		}

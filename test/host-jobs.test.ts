@@ -39,6 +39,7 @@ interface TestServer {
 	readonly opened: OpenedHarness;
 	readonly app: Awaited<ReturnType<typeof createServer>>;
 	readonly aliceToken: string;
+	readonly faux: ReturnType<typeof fauxProvider>;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -84,7 +85,7 @@ async function bootServer(): Promise<TestServer> {
 		await opened.harness.close(BACKGROUND_CONTEXT).catch(() => {});
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { opened, app, aliceToken };
+	return { opened, app, aliceToken, faux };
 }
 
 function channelHost(opened: OpenedHarness): SeamHost & SigrunHost {
@@ -264,3 +265,67 @@ describe("host.conversations.create({job})", () => {
 		expect(response.json()).toEqual({ error: "invalid_body" });
 	});
 });
+
+describe("host.jobs.isJobRun", () => {
+	test("is true for a job-created conversation (the jobId stamp)", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const job = await createAliceJob(opened);
+		const id = await host.conversations.create({ owner: "alice", job: job.id });
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(true);
+	});
+
+	test("is true while a fixed-conversation job's input is the current run's input; false for an ordinary run in the same conversation", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		// A long-running ordinary conversation the fixed-conversation job
+		// fires INTO (the creation-time filter cannot cover this shape).
+		const id = await host.conversations.create({ owner: "alice" });
+		const spec: JobSpec = {
+			name: "nightly-check",
+			schedule: { every: "60s" },
+			action: {
+				kind: "prompt",
+				prompt: "check the state",
+				conversation: id as unknown as number,
+			},
+		};
+		const job = await opened.jobs.createApi(spec, "alice");
+		// Window discipline: the job's generation awaits a gate the test
+		// holds, so live.run.inputs is present when the assertion reads it
+		// (an ungated faux answer settles the run inside the awaited reads
+		// and the liveness assertion flakes).
+		let releaseJob: () => void = () => {};
+		const jobGate = new Promise<void>((resolve) => {
+			releaseJob = resolve;
+		});
+		faux.setResponses([
+			async () => {
+				await jobGate;
+				return fauxAssistantMessage("job answer");
+			},
+			fauxAssistantMessage("user answer"),
+		]);
+		await opened.jobs.runNow(job.id);
+		// While the job fire's run is live its input carries the job: prefix.
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation vanished");
+		try {
+			await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(true);
+		} finally {
+			releaseJob();
+		}
+		await conversation.waitForIdle(BACKGROUND_CONTEXT);
+		// Settled: the run.inputs read is empty and the meta carries no
+		// jobId (the conversation predates the fire) — an ordinary run in
+		// the same conversation is NOT a job run.
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(false);
+		const submission = await conversation.submit(
+			{ type: "input", content: "an ordinary user turn" },
+			BACKGROUND_CONTEXT,
+		);
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(false);
+		await submission.wait(BACKGROUND_CONTEXT);
+	});
+});
+

@@ -553,7 +553,7 @@ describe("longtext (§5.6)", () => {
 	});
 });
 
-function stepperForm(): FormBlock {
+function stepperForm(init?: { sizeRequired?: boolean }): FormBlock {
 	return {
 		type: "form",
 		bind: "/answers",
@@ -584,6 +584,7 @@ function stepperForm(): FormBlock {
 						type: "choice",
 						name: "size",
 						label: "Size",
+						...(init?.sizeRequired === true ? { required: true } : {}),
 						options: [
 							{ id: "s", label: "Small" },
 							{ id: "l", label: "Large" },
@@ -619,6 +620,30 @@ describe("interaction stepper (§9.1)", () => {
 		expect(captured).toHaveLength(1);
 		expect(captured[0]?.action).toEqual({ type: "submit", name: "answer" });
 		expect(captured[0]?.payload).toEqual({ values: { color: "blue", size: "s" }, rev: 0 });
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+	});
+
+	test("unanswered required questions hold the review submit (Enter ignored)", () => {
+		const { ctx, captured } = makeCtx({});
+		const form = formOf(stepperForm({ sizeRequired: true }), ctx, { interaction: true });
+		form.handleInput(DOWN); // blue
+		form.handleInput(ENTER); // select blue
+		form.handleInput(TAB); // to step 2 (leave size unanswered)
+		form.handleInput(TAB); // to the review — navigation stays free
+		let text = form.render(100).join("\n");
+		expect(text).toContain("Review");
+		expect(text).toContain("Pick a color: Blue");
+		expect(text).toContain("Not answered yet: Pick a size");
+		form.handleInput(ENTER); // ignored while the list is non-empty
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(0);
+		// Back to the size step, answer, then Enter submits.
+		form.handleInput("\x1b[A"); // Up returns to the last step
+		form.handleInput(ENTER); // select Small
+		form.handleInput(TAB); // review
+		text = form.render(100).join("\n");
+		expect(text).not.toContain("Not answered yet");
 		form.handleInput(ENTER);
 		expect(captured).toHaveLength(1);
 	});

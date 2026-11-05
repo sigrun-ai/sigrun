@@ -34,6 +34,7 @@ import type {
 	InteractionWire,
 	InteractionList as InteractionListWire,
 	InteractionAnswered as InteractionAnsweredWire,
+	InteractionDeclined as InteractionDeclinedWire,
 	AmbientList as AmbientListWire,
 	ConversationSummary,
 	ConversationList,
@@ -97,6 +98,7 @@ export type {
 	InteractionWire,
 	InteractionList as InteractionListWire,
 	InteractionAnswered as InteractionAnsweredWire,
+	InteractionDeclined as InteractionDeclinedWire,
 	AmbientWire,
 	AmbientList as AmbientListWire,
 	ConversationSummary,
@@ -538,6 +540,17 @@ export interface SigrunClient {
 			readonly values: Readonly<Record<string, unknown>>;
 		},
 	): Promise<InteractionAnsweredWire>;
+	/**
+	 * Decline a pending declinable interaction (ask-user spec §5.2): the
+	 * record settles `skipped` with `declinedVia: "button"`. A 404
+	 * `not_pending` means it settled under the user's fingers (the
+	 * channel refetches and renders the settled record); a 409
+	 * `not_declinable` means the record never offered Decline.
+	 */
+	declineInteraction(
+		conversationId: number,
+		callId: string,
+	): Promise<InteractionDeclinedWire>;
 	/** The conversation's ambient surfaces (`GET .../ambient`). */
 	listAmbient(conversationId: number): Promise<AmbientListWire>;
 	/** The effective settings (`GET /v1/settings`; absent file = `{}`). */
@@ -953,6 +966,12 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}/answer`,
 				answer,
 			) as Promise<InteractionAnsweredWire>,
+		declineInteraction: (conversationId, callId) =>
+			send(
+				"POST",
+				`/v1/conversations/${conversationId}/interactions/${encodeURIComponent(callId)}/decline`,
+				{},
+			) as Promise<InteractionDeclinedWire>,
 		listAmbient: (conversationId) =>
 			get<AmbientListWire>(`/v1/conversations/${conversationId}/ambient`),
 		getSettings: () => get<SettingsWire>("/v1/settings"),

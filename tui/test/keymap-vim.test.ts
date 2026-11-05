@@ -48,6 +48,11 @@ describe("vim keymap — insert mode", () => {
 		expect(keymap.handle("\x1b", ctx({ autocompleteOpen: true }))).toBe("pass");
 		expect(keymap.mode).toBe("insert");
 	});
+
+	test("alt+s is the decline affordance in insert (alt+d is readline kill-word; ask-user Task 5)", () => {
+		const keymap = createVimKeymap();
+		expect(keymap.handle("\x1bs", ctx())).toEqual({ type: "decline-interaction" });
+	});
 });
 
 describe("vim keymap — normal mode", () => {

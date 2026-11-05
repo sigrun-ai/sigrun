@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
 import { TuiApp } from "../src/ui/app.js";
 import { InteractionPrompter } from "../src/ui/interactions.js";
+import { createStandardKeymap } from "../src/keymaps/standard.js";
 import {
 	SigrunApiError,
 	type ConversationList,
@@ -105,17 +106,31 @@ function interaction(
 		/** Raw tree override (children ignored when set). */
 		tree?: unknown;
 		details?: Record<string, unknown>;
+		/** Ask-user Task 5: the decline affordance flag. */
+		declinable?: true;
+		/** Settled envelopes (Task 5): status + declinedVia. */
+		status?: InteractionWire["status"];
+		declinedVia?: "button" | "message";
 	},
 ): InteractionWire {
 	return {
 		kind: init?.kind ?? "acme.confirm",
 		callId,
-		status: "pending",
+		status: init?.status ?? "pending",
 		createdAt: 1,
+		...(init?.status !== undefined && init.status !== "pending"
+			? { settledAt: 2 }
+			: {}),
+		...(init?.declinable === true ? { declinable: true } : {}),
+		...(init?.declinedVia === undefined ? {} : { declinedVia: init.declinedVia }),
 		body: init?.tree ?? (init?.children === undefined ? undefined : formTree(init.children)),
 		...(init?.details === undefined ? {} : { details: init.details }),
 	} as unknown as InteractionWire;
 }
+
+/** The decline chord (alt+s — alt+d is the notices dismiss). Matches the
+ *  keymap bindings in src/keymaps/{standard,vim,emacs}.ts. */
+const DECLINE_KEY = "\x1bs";
 
 /** A one-question gate tree (markdown + a decision choice). */
 function gateChildren(
@@ -140,12 +155,15 @@ interface AnswerCall {
 function stubClient(init?: {
 	/** The answer stub's behavior (default: resolves answered). */
 	answerResult?: () => Promise<unknown>;
+	/** The decline stub's behavior (default: resolves skipped/button). */
+	declineResult?: () => Promise<unknown>;
 	/** listInteractions stub behavior; default serves the mutable list. */
 	listResult?: () => Promise<InteractionList>;
 	/** getInteraction stub behavior (the settle-refetch path). */
 	getResult?: (callId: string) => Promise<InteractionWire>;
 }) {
 	const answerCalls: AnswerCall[] = [];
+	const declineCalls: { id: number; callId: string }[] = [];
 	const getCalls: { id: number; callId: string }[] = [];
 	let listCalls = 0;
 	let ambientCalls = 0;
@@ -200,6 +218,19 @@ function stubClient(init?: {
 			ambientCalls += 1;
 			return Promise.resolve({ ambient: [] });
 		},
+		declineInteraction(id: number, callId: string) {
+			declineCalls.push({ id, callId });
+			const result =
+				init?.declineResult !== undefined
+					? init.declineResult()
+					: Promise.resolve({ callId, status: "skipped", declinedVia: "button" });
+			// The settle lands only on success: a rejected decline leaves the
+			// record pending, exactly like the server's first-settle-wins.
+			return Promise.resolve(result).then((value) => {
+				pending = pending.filter((record) => record.callId !== callId);
+				return value;
+			});
+		},
 		submit(id: number) {
 			return Promise.resolve({ id: 1, conversationId: id, type: "user", status: "answered" });
 		},
@@ -207,6 +238,7 @@ function stubClient(init?: {
 	return {
 		client: client as unknown as SigrunClient,
 		answerCalls,
+		declineCalls,
 		getCalls,
 		watchCalls,
 		watchRegistry,
@@ -834,6 +866,204 @@ describe("InteractionPrompter", () => {
 	});
 });
 
+// ─── Decline (ask-user Task 5, spec §5.2) ──────────────────────────────
+// alt+d was taken (standard/emacs dismiss-newest-notice + the editor's
+// delete-word-forward); the decline key is alt+s in all three keymaps.
+// The keymap maps it to the `decline-interaction` action, which the app
+// dispatches to InteractionPrompter.decline().
+
+describe("InteractionPrompter decline", () => {
+	test("in answer mode on a declinable record, decline() calls declineInteraction", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("pick one", [
+					{ id: "yes", label: "Yes" },
+					{ id: "no", label: "No" },
+				]),
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		expect(prompter.beginAnswer()).toBe(true);
+		// The decline key is the KEYMAP's (decline-interaction action):
+		// the prompter passes it through while armed (the launcher's
+		// keymap dispatch owns it) — swallowing it here would leave the
+		// chord unreachable (review fix).
+		expect(prompter.handleKey(DECLINE_KEY)).toBe(false);
+		await prompter.decline();
+		await flush();
+		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
+		// The decline settles the card: answer mode exits and the item
+		// clears on the next list (the stub's stateful pending set).
+		expect(prompter.answerMode).toBe(false);
+		expect(prompter.render(60).join("\n")).not.toContain("pick one");
+		prompter.dispose();
+	});
+
+	test("decline() on a NON-declinable record does nothing (no decline call, still answering)", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				children: gateChildren("pick one", [{ id: "yes", label: "Yes" }]),
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		expect(prompter.beginAnswer()).toBe(true);
+		await prompter.decline();
+		await flush();
+		expect(stub.declineCalls).toEqual([]);
+		expect(prompter.answerMode).toBe(true);
+		prompter.dispose();
+	});
+
+	test("decline() outside answer mode does nothing", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("pick one", [{ id: "yes", label: "Yes" }]),
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		expect(prompter.answerMode).toBe(false);
+		await prompter.decline();
+		await flush();
+		expect(stub.declineCalls).toEqual([]);
+		prompter.dispose();
+	});
+
+	test("the strip's hint includes 'alt+s decline' only for declinable records", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("declinable prompt", [{ id: "a", label: "A" }]),
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		// The chord acts only in answer mode, so only the ARMED hint
+		// advertises it (review fix: the idle hint must not promise a
+		// no-op).
+		expect(prompter.render(60).join("\n")).not.toContain("alt+s decline");
+		expect(prompter.beginAnswer()).toBe(true);
+		expect(prompter.render(60).join("\n")).toContain("alt+s decline");
+		// A non-declinable top drops the hint.
+		stub.setPending([
+			interaction("c2", {
+				children: gateChildren("plain prompt", [{ id: "a", label: "A" }]),
+			}),
+		]);
+		await prompter.kickAndWait();
+		const lines = prompter.render(60).join("\n");
+		expect(lines).toContain("plain prompt");
+		expect(lines).not.toContain("alt+s decline");
+		prompter.dispose();
+	});
+
+	test("a settled declined record renders 'declined' / 'declined — replied in chat'", async () => {
+		// The settle-refetch path serves the settled envelope (a decline
+		// raced the user): the header names the outcome, not raw 'skipped'.
+		const settledButton = interaction("c1", {
+			status: "skipped",
+			declinedVia: "button",
+			children: gateChildren("pick one", [{ id: "yes", label: "Yes" }]),
+		});
+		const stub = stubClient({
+			answerResult: () =>
+				Promise.reject(
+					new SigrunApiError("POST", "/v1/conversations/1/interactions/c1/answer", 404, {
+						error: "not_pending",
+					}),
+				),
+			getResult: () => Promise.resolve(settledButton),
+		});
+		stub.setPending([
+			interaction("c1", {
+				children: gateChildren("pick one", [{ id: "yes", label: "Yes" }]),
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		prompter.handleKey("1");
+		await flush();
+		expect(prompter.render(60).join("\n")).toContain("declined");
+		prompter.dispose();
+
+		// declinedVia message renders the "replied in chat" phrasing.
+		const settledMessage = interaction("c2", {
+			status: "skipped",
+			declinedVia: "message",
+			children: gateChildren("pick two", [{ id: "yes", label: "Yes" }]),
+		});
+		const stub2 = stubClient({
+			answerResult: () =>
+				Promise.reject(
+					new SigrunApiError("POST", "/v1/conversations/1/interactions/c2/answer", 404, {
+						error: "not_pending",
+					}),
+				),
+			getResult: () => Promise.resolve(settledMessage),
+		});
+		stub2.setPending([
+			interaction("c2", {
+				children: gateChildren("pick two", [{ id: "yes", label: "Yes" }]),
+			}),
+		]);
+		const prompter2 = new InteractionPrompter(stub2.client);
+		prompter2.setConversation(1);
+		await flush();
+		prompter2.beginAnswer();
+		prompter2.handleKey("1");
+		await flush();
+		expect(prompter2.render(60).join("\n")).toContain("declined — replied in chat");
+		prompter2.dispose();
+	});
+
+	test("a decline 404 not_pending refetches and renders the settled record", async () => {
+		const settled = interaction("c1", {
+			status: "answered",
+			children: gateChildren("pick one", [{ id: "yes", label: "Yes" }]),
+		});
+		const stub = stubClient({
+			declineResult: () =>
+				Promise.reject(
+					new SigrunApiError("POST", "/v1/conversations/1/interactions/c1/decline", 404, {
+						error: "not_pending",
+					}),
+				),
+			getResult: () => Promise.resolve(settled),
+		});
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("pick one", [{ id: "yes", label: "Yes" }]),
+			}),
+		]);
+		const prompter = new InteractionPrompter(stub.client);
+		prompter.setConversation(1);
+		await flush();
+		prompter.beginAnswer();
+		await prompter.decline();
+		await flush();
+		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
+		expect(stub.getCalls).toEqual([{ id: 1, callId: "c1" }]);
+		expect(prompter.render(60).join("\n")).toContain("answered");
+		expect(prompter.answerMode).toBe(false);
+		prompter.dispose();
+	});
+});
+
 // ─── App integration ────────────────────────────────────────────────────
 
 describe("TuiApp interactions", () => {
@@ -892,6 +1122,67 @@ describe("TuiApp interactions", () => {
 		const { app } = await boot();
 		await flush();
 		expect(app.handleKeybinding("\x0f")).toBe(false);
+		app.dispose();
+	});
+
+	test("alt+s in answer mode declines through the REAL key-routing path (raw chord in, keymap dispatch out)", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("gate", [
+					{ id: "allow", label: "Allow" },
+					{ id: "deny", label: "Deny" },
+				]),
+			}),
+		]);
+		const app = new TuiApp(stub.client, {
+			tui: fakeTui,
+			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
+		});
+		await app.refresh();
+		await flush();
+		expect(app.handleKeybinding("\x0f")).toBe(true); // ctrl+o arms answer mode
+		expect(app.interactions.answerMode).toBe(true);
+		// The RAW chord through the launcher's real routing: the app's
+		// pre-keymap seam returns false (the prompter passes the chord
+		// through), then the keymap maps it to decline-interaction and
+		// dispatch runs it. Regression guard for the swallowed-chord bug
+		// (review): if handleKey ever consumes alt+s again, the keymap
+		// never sees it and the decline no-ops.
+		const keymap = createStandardKeymap();
+		const seamReturned = app.handleKeybinding("\x1bs");
+		expect(seamReturned).toBe(false); // the seam must pass the chord through
+		const result = keymap.handle("\x1bs", app.keyContext());
+		expect(result).toEqual({ type: "decline-interaction" });
+		if (result !== "pass" && result !== "consume") await app.dispatch(result);
+		await flush();
+		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
+		app.dispose();
+	});
+
+	test("alt+s in answer mode on a declinable record declines (the action routes through dispatch)", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("gate", [
+					{ id: "allow", label: "Allow" },
+					{ id: "deny", label: "Deny" },
+				]),
+			}),
+		]);
+		const app = new TuiApp(stub.client, {
+			tui: fakeTui,
+			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
+		});
+		await app.refresh();
+		await flush();
+		expect(app.handleKeybinding("\x0f")).toBe(true); // ctrl+o arms answer mode
+		// The keymap turns alt+s into the decline action; dispatch runs it.
+		await app.dispatch({ type: "decline-interaction" });
+		await flush();
+		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
 		app.dispose();
 	});
 
