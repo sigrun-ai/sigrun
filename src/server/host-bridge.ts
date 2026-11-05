@@ -295,6 +295,20 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					state: job.state,
 				};
 			},
+			async activeRun(conversationId) {
+				const jobs = await opened.jobs.list();
+				let best: { jobId: string; owner: string | undefined; startedAt: string } | undefined;
+				for (const job of jobs) {
+					const run = job.lastRun;
+					if (run === undefined) continue;
+					if (run.outcome !== "running") continue;
+					if (run.conversationId !== Number(conversationId)) continue;
+					if (best !== undefined && run.startedAt <= best.startedAt) continue;
+					best = { jobId: job.id, owner: job.owner, startedAt: run.startedAt };
+				}
+				// startedAt is the tiebreak only — the wire shape is {jobId, owner}.
+				return best === undefined ? undefined : { jobId: best.jobId, owner: best.owner };
+			},
 		},
 		users: {
 			// The directory in wire form (emails are admin material; the

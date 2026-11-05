@@ -1587,6 +1587,20 @@ export interface SigrunHost {
 	/** Read-only job lookup; retired and unknown ids resolve to `undefined`. */
 	readonly jobs: {
 		get(id: string): Promise<HostJobInfo | undefined>;
+		/**
+		 * The job whose fire is CURRENTLY running in this conversation:
+		 * the job with `lastRun.outcome === "running"` and
+		 * `lastRun.conversationId === conversationId` — `undefined` when no
+		 * job fire is running there. `owner` is the EFFECTIVE owner (the
+		 * same value `get` returns: an ownerless or orphaned job resolves
+		 * to the primary admin). Two matching runs resolve to the newest
+		 * `startedAt`.
+		 */
+		activeRun(
+			conversationId: ConversationId,
+		): Promise<
+			{ readonly jobId: string; readonly owner: string | undefined } | undefined
+		>;
 	};
 
 	/**

@@ -942,6 +942,14 @@ if (job !== undefined) {
 resolves to the primary admin. A retired job resolves to `undefined`, just
 like an unknown id.
 
+`host.jobs.activeRun(conversationId)` answers "is a job fire running in
+this conversation right now": it returns `{jobId, owner}` for the job
+whose latest run has outcome `"running"` in that conversation, or
+`undefined` when nothing is running there. The `owner` is the same
+effective owner `get` reports. When two fires match (rare — the fire
+machinery skips overlaps per job, but two different jobs can share one
+conversation) the newest `startedAt` wins.
+
 Passing `job` to `host.conversations.create` requires the requested
 `owner` to equal that effective owner exactly (two absent owners count as
 equal). An unknown, retired, or owner-mismatched job throws a
