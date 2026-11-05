@@ -41,9 +41,10 @@
  * internals.
  */
 
+import { existsSync } from "node:fs";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -63,22 +64,51 @@ import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 /**
- * The three real worktree builds, loaded by file path (the plan's Task
- * 12 rule). Each is a pathToFileURL of the entry's dist/index.js — the
- * same-URL module identity the curation-e2e memory entry established.
- * The curator entry's package name (@sigrun/ext-curator) matches the
- * built-in specifier, so the replacement rule swaps the built-in
- * curator for THIS build.
+ * The three sibling builds (recall + knowledge are OPTIONAL-family
+ * siblings — not built-ins, so core's CI family-checkout does not
+ * provide them), loaded by file path. Each is a pathToFileURL of the
+ * entry's dist/index.js — the same-URL module identity the curation-e2e
+ * memory entry established. The curator entry's package name
+ * (@sigrun/ext-curator) matches the built-in specifier, so the
+ * replacement rule swaps the built-in curator for THIS build.
+ *
+ * The sibling layout is a local-dev concern: walk up from this file
+ * until all three repos' manifests exist (the provider-plugins-e2e
+ * locatePluginRoot pattern); when they are absent (CI, a stranger's
+ * clone) the suite SKIPS — the curator replacement itself stays covered
+ * by test/builtins-wiring.test.ts.
  */
+const KNOWLEDGE_FAMILY = ["sigrun-recall", "sigrun-knowledge"] as const;
+function locateFamilyRoot(): string | undefined {
+	let dir = import.meta.dirname;
+	for (let hops = 0; hops < 8; hops++) {
+		if (
+			KNOWLEDGE_FAMILY.every((name) =>
+				existsSync(join(dir, name, "package.json")),
+			)
+		) {
+			return dir;
+		}
+		const parent = dirname(dir);
+		if (parent === dir) return undefined;
+		dir = parent;
+	}
+	return undefined;
+}
+const familyRoot = locateFamilyRoot();
+const SKIPPED = familyRoot === undefined;
+
 const CURATOR_ENTRY = pathToFileURL(
 	join(import.meta.dirname, "..", "..", "sigrun-ext-curator", "dist", "index.js"),
 ).href;
-const RECALL_ENTRY = pathToFileURL(
-	join(import.meta.dirname, "..", "..", "sigrun-recall", "dist", "index.js"),
-).href;
-const KNOWLEDGE_ENTRY = pathToFileURL(
-	join(import.meta.dirname, "..", "..", "sigrun-knowledge", "dist", "index.js"),
-).href;
+const RECALL_ENTRY =
+	familyRoot === undefined
+		? ""
+		: pathToFileURL(join(familyRoot, "sigrun-recall", "dist", "index.js")).href;
+const KNOWLEDGE_ENTRY =
+	familyRoot === undefined
+		? ""
+		: pathToFileURL(join(familyRoot, "sigrun-knowledge", "dist", "index.js")).href;
 const RESEARCH_ENTRY = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-research", "index.js"),
 ).href;
@@ -240,7 +270,7 @@ async function recallSearch(
 	return result.value as never;
 }
 
-describe("the whole knowledge plan (research → review → record → recall)", () => {
+describe.skipIf(SKIPPED)("the whole knowledge plan (research → review → record → recall)", () => {
 	test(
 		"alice's research settle reviews via wantsReview, records knowledge, injects it in a new conversation, and undo removes it",
 		{ timeout: 90_000 },
