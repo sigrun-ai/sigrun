@@ -1175,6 +1175,28 @@ describe("Composer empty state (no conversation)", () => {
 		expect(composerTextarea(renderer).props.placeholder).toBe("Message…");
 	});
 
+	test("the decline notice beats the busy placeholder — a question is pending WHILE a run is live", async () => {
+		// A declinable question exists exactly when the model is mid-run
+		// (the tool is waiting on the answer), so `busy` must not mask
+		// the decline sentence (review fix; Task 10 e2e case 2 asserts
+		// this end-to-end).
+		const { client } = makeHarness({
+			interactions: [
+				{
+					kind: "fixture.ask",
+					callId: "c1",
+					status: "pending",
+					createdAt: 1,
+					declinable: true,
+				},
+			],
+		});
+		const renderer = await renderComposer(client, makeView({ steer: { busy: true, queued: 0 } }));
+		expect(composerTextarea(renderer).props.placeholder).toBe(
+			"Sending a message declines the open question",
+		);
+	});
+
 	test("first send with no conversation creates, submits, then navigates", async () => {
 		const { calls, client } = makeHarness();
 		const navigated: number[] = [];

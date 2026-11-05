@@ -135,9 +135,9 @@ export function createEmacsKeymap(): Keymap {
 			if (data === "\x1bp") return { type: "prompt-jump", delta: -1 };
 			if (data === "\x1bn") return { type: "prompt-jump", delta: 1 };
 			if (data === "\x0f") return { type: "answer-interaction" };
-		// Ask-user Task 5: M-s declines the armed interaction (M-d stays
-		// the notices dismiss; the app gates decline to answer mode).
-		if (data === "\x1bs") return { type: "decline-interaction" };
+			// Ask-user Task 5: M-s declines the armed interaction (M-d stays
+			// the notices dismiss; the app gates decline to answer mode).
+			if (data === "\x1bs") return { type: "decline-interaction" };
 			if (data === "\x0c") return { type: "redraw" };
 			if (data === "\x08") return { type: "help" };
 			// Notices Task 8: M-N / M-d are the notice surface in every

@@ -208,6 +208,12 @@ export class InteractionPrompter implements Component {
 			this.#changed();
 			return true;
 		}
+		// The decline chord is the KEYMAP's (decline-interaction action,
+		// dispatched by the launcher): pass it through so the keymap sees
+		// it — the surface fall-through below would swallow it and the
+		// chord would never fire (review fix; the same ownership rule as
+		// the prompt's other action keys).
+		if (matchesKey(data, Key.alt("s"))) return false;
 		this.#ensureSurface(top);
 		if (this.#surface === undefined) {
 			this.#exitAnswer();
@@ -543,9 +549,7 @@ export class InteractionPrompter implements Component {
 					? top.declinable === true
 						? "1-9 answer · alt+s decline · Tab next · esc cancel"
 						: "1-9 answer · Tab next · esc cancel"
-					: top.declinable === true
-						? "ctrl+o to answer · alt+s decline"
-						: "ctrl+o to answer",
+					: "ctrl+o to answer",
 			);
 		}
 		return lines;

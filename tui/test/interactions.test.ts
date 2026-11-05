@@ -30,6 +30,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
 import { TuiApp } from "../src/ui/app.js";
 import { InteractionPrompter } from "../src/ui/interactions.js";
+import { createStandardKeymap } from "../src/keymaps/standard.js";
 import {
 	SigrunApiError,
 	type ConversationList,
@@ -887,11 +888,11 @@ describe("InteractionPrompter decline", () => {
 		prompter.setConversation(1);
 		await flush();
 		expect(prompter.beginAnswer()).toBe(true);
-		// The decline key is the keymap's (decline-interaction action): the
-		// prompter consumes it while armed (it must NOT reach the form
-		// underneath) and the launcher's keymap dispatch routes the action
-		// to prompter.decline().
-		expect(prompter.handleKey(DECLINE_KEY)).toBe(true);
+		// The decline key is the KEYMAP's (decline-interaction action):
+		// the prompter passes it through while armed (the launcher's
+		// keymap dispatch owns it) — swallowing it here would leave the
+		// chord unreachable (review fix).
+		expect(prompter.handleKey(DECLINE_KEY)).toBe(false);
 		await prompter.decline();
 		await flush();
 		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
@@ -949,6 +950,11 @@ describe("InteractionPrompter decline", () => {
 		const prompter = new InteractionPrompter(stub.client);
 		prompter.setConversation(1);
 		await flush();
+		// The chord acts only in answer mode, so only the ARMED hint
+		// advertises it (review fix: the idle hint must not promise a
+		// no-op).
+		expect(prompter.render(60).join("\n")).not.toContain("alt+s decline");
+		expect(prompter.beginAnswer()).toBe(true);
 		expect(prompter.render(60).join("\n")).toContain("alt+s decline");
 		// A non-declinable top drops the hint.
 		stub.setPending([
@@ -1116,6 +1122,42 @@ describe("TuiApp interactions", () => {
 		const { app } = await boot();
 		await flush();
 		expect(app.handleKeybinding("\x0f")).toBe(false);
+		app.dispose();
+	});
+
+	test("alt+s in answer mode declines through the REAL key-routing path (raw chord in, keymap dispatch out)", async () => {
+		const stub = stubClient();
+		stub.setPending([
+			interaction("c1", {
+				declinable: true,
+				children: gateChildren("gate", [
+					{ id: "allow", label: "Allow" },
+					{ id: "deny", label: "Deny" },
+				]),
+			}),
+		]);
+		const app = new TuiApp(stub.client, {
+			tui: fakeTui,
+			watch: stubWatch(stub.watchRegistry, stub.watchCalls),
+		});
+		await app.refresh();
+		await flush();
+		expect(app.handleKeybinding("\x0f")).toBe(true); // ctrl+o arms answer mode
+		expect(app.interactions.answerMode).toBe(true);
+		// The RAW chord through the launcher's real routing: the app's
+		// pre-keymap seam returns false (the prompter passes the chord
+		// through), then the keymap maps it to decline-interaction and
+		// dispatch runs it. Regression guard for the swallowed-chord bug
+		// (review): if handleKey ever consumes alt+s again, the keymap
+		// never sees it and the decline no-ops.
+		const keymap = createStandardKeymap();
+		if (!app.handleKeybinding("\x1bs")) {
+			const result = keymap.handle("\x1bs", app.keyContext());
+			expect(result).toEqual({ type: "decline-interaction" });
+			if (result !== "pass" && result !== "consume") await app.dispatch(result);
+		}
+		await flush();
+		expect(stub.declineCalls).toEqual([{ id: 1, callId: "c1" }]);
 		app.dispose();
 	});
 

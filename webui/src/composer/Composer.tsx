@@ -845,7 +845,10 @@ export function Composer(props: {
 
 	// Ask-user Task 5 (spec §5.3 polish): a pending DECLINABLE question
 	// settles as declined when the user sends a message — the placeholder
-	// says so before they type.
+	// says so before they type. Precedence: readOnly suppresses it (the
+	// user cannot send at all); it must beat `busy` — a question is
+	// pending precisely WHILE the run is live, the state the notice
+	// exists for.
 	const declinePending = interactions.some(
 		(i) => i.status === "pending" && i.declinable === true,
 	);
@@ -937,10 +940,10 @@ export function Composer(props: {
 					placeholder={
 						readOnly
 							? "Read-only (shared with you)"
-							: busy
-								? "Steer the running session…"
-								: declinePending
-									? "Sending a message declines the open question"
+							: declinePending
+								? "Sending a message declines the open question"
+								: busy
+									? "Steer the running session…"
 									: "Message…"
 					}
 					value={draft.text}
