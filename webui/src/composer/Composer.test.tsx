@@ -82,6 +82,9 @@ function makeHarness(init?: {
 	readonly draftText?: string;
 	readonly draftAttachments?: string[];
 	readonly models?: readonly ModelEntry[];
+	/** The pending interactions served at /v1/conversations/:id/interactions
+	 *  (ask-user Task 5: a declinable record flips the composer placeholder). */
+	readonly interactions?: readonly unknown[];
 	/** The commands served on every GET /v1/commands AFTER the mount fetch
 	 *  (the live-catalog fix round: a template appearing mid-session). */
 	readonly laterCommands?: readonly unknown[];
@@ -114,6 +117,9 @@ function makeHarness(init?: {
 						: { commands: COMMANDS };
 		}
 		else if (input.endsWith("/meta")) body = meta;
+		else if (input.endsWith("/interactions")) {
+			body = { interactions: init?.interactions ?? [] };
+		}
 
 		else if (input.includes("/uploads/")) {
 			// The raw PUT: the name rides the route param (percent-encoded).
@@ -1131,6 +1137,42 @@ describe("Composer empty state (no conversation)", () => {
 		expect(send.props["aria-disabled"]).toBe(true); // nothing typed yet
 		await typeText(renderer, "hello there");
 		expect(sendButton(renderer).props["aria-disabled"]).toBe(false);
+	});
+
+	// Ask-user Task 5 (spec §5.3's webui polish): a pending DECLINABLE
+	// interaction flips the placeholder — a typed message settles it as
+	// declined, so the composer says so before the user types.
+	test("a pending declinable interaction flips the placeholder to the decline notice", async () => {
+		const { client } = makeHarness({
+			interactions: [
+				{
+					kind: "fixture.ask",
+					callId: "c1",
+					status: "pending",
+					createdAt: 1,
+					declinable: true,
+				},
+			],
+		});
+		const renderer = await renderComposer(client, makeView());
+		expect(composerTextarea(renderer).props.placeholder).toBe(
+			"Sending a message declines the open question",
+		);
+	});
+
+	test("a pending NON-declinable interaction leaves the placeholder unchanged", async () => {
+		const { client } = makeHarness({
+			interactions: [
+				{
+					kind: "fixture.gate",
+					callId: "c1",
+					status: "pending",
+					createdAt: 1,
+				},
+			],
+		});
+		const renderer = await renderComposer(client, makeView());
+		expect(composerTextarea(renderer).props.placeholder).toBe("Message…");
 	});
 
 	test("first send with no conversation creates, submits, then navigates", async () => {

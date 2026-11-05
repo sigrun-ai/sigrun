@@ -843,6 +843,13 @@ export function Composer(props: {
 		(sending && !busy) ||
 		(draft.text.trim() === "" && draft.attachments.length === 0);
 
+	// Ask-user Task 5 (spec §5.3 polish): a pending DECLINABLE question
+	// settles as declined when the user sends a message — the placeholder
+	// says so before they type.
+	const declinePending = interactions.some(
+		(i) => i.status === "pending" && i.declinable === true,
+	);
+
 	return (
 		<>
 			<div className="composer">
@@ -932,7 +939,9 @@ export function Composer(props: {
 							? "Read-only (shared with you)"
 							: busy
 								? "Steer the running session…"
-								: "Message…"
+								: declinePending
+									? "Sending a message declines the open question"
+									: "Message…"
 					}
 					value={draft.text}
 					disabled={readOnly}

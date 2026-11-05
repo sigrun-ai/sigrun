@@ -38,6 +38,10 @@ export type Action =
 	| { readonly type: "search"; readonly direction: "forward" | "backward" }
 	| { readonly type: "search-next"; readonly reverse: boolean }
 	| { readonly type: "answer-interaction" }
+	/** Ask-user Task 5 (spec §5.2): decline the armed interaction record
+	 *  (alt+s in every keymap — alt+d is the notices dismiss). Acts ONLY
+	 *  in answer mode on a declinable record. */
+	| { readonly type: "decline-interaction" }
 	| { readonly type: "cancel-run" }
 	| { readonly type: "redraw" }
 	| { readonly type: "quit" }

@@ -42,6 +42,7 @@ import type {
 	ConversationList,
 	ConversationViewWire,
 	InteractionAnswered,
+	InteractionDeclined,
 	InteractionList,
 	InteractionWire,
 	MetaResponse,
@@ -66,6 +67,7 @@ export type {
 	ConversationSummary,
 	ConversationViewWire,
 	InteractionAnswered,
+	InteractionDeclined,
 	InteractionList,
 	InteractionWire,
 	MetaResponse,
@@ -359,6 +361,22 @@ export class SigrunClient {
 			"POST",
 			`/v1/conversations/${id}/interactions/${encodeURIComponent(callId)}/answer`,
 			answer,
+		);
+	}
+
+	/** `POST .../interactions/:callId/decline` — decline a pending
+	 *  declinable record (ask-user spec §5.2; settles `skipped` with
+	 *  `declinedVia: "button"`). A 404 `not_pending` means the record
+	 *  settled under the user's fingers — the caller refetches through
+	 *  {@link getInteraction} (the mid-stepper settle path). */
+	declineInteraction(
+		id: number,
+		callId: string,
+	): Promise<InteractionDeclined> {
+		return this.#send(
+			"POST",
+			`/v1/conversations/${id}/interactions/${encodeURIComponent(callId)}/decline`,
+			{},
 		);
 	}
 

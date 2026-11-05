@@ -24,6 +24,7 @@ const BINDINGS: readonly { keys: string; action: string }[] = [
 	{ keys: "ctrl+n", action: "new conversation" },
 	{ keys: "ctrl+t", action: "cycle thinking" },
 	{ keys: "ctrl+o", action: "answer interaction" },
+	{ keys: "alt+s", action: "decline interaction (answer mode)" },
 	{ keys: "ctrl+g", action: "notices" },
 	{ keys: "alt+d", action: "dismiss newest notice" },
 	{ keys: "ctrl+l", action: "redraw" },
@@ -61,6 +62,10 @@ export function createStandardKeymap(): Keymap {
 		if (matchesKey(data, Key.ctrl("n"))) return { type: "new-conversation" };
 		if (matchesKey(data, Key.ctrl("t"))) return { type: "cycle-thinking" };
 		if (matchesKey(data, Key.ctrl("o"))) return { type: "answer-interaction" };
+		// Ask-user Task 5: alt+s declines the armed interaction (answer
+		// mode only — the app gates the action; outside answer mode this
+		// falls through as a no-op). alt+d stays the notices dismiss.
+		if (matchesKey(data, Key.alt("s"))) return { type: "decline-interaction" };
 		// Notices Task 8: ctrl+g (the notices overlay — a control code,
 		// never typed text) and alt+d (dismiss the inline notice; M-d is
 		// readline's kill-word, a chord reserved readline never sends).

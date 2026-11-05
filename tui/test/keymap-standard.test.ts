@@ -43,6 +43,13 @@ describe("standard keymap — globals", () => {
 		}
 	});
 
+	test("alt+s is the decline affordance (alt+d is the notices dismiss; ask-user Task 5)", () => {
+		const keymap = createStandardKeymap();
+		for (const focus of FOCUSES) {
+			expect(keymap.handle("\x1bs", ctx({ focus }))).toEqual({ type: "decline-interaction" });
+		}
+	});
+
 	test("tab cycles focus forward, shift+tab backward", () => {
 		const keymap = createStandardKeymap();
 		expect(keymap.handle("\t", ctx())).toEqual({ type: "focus-cycle", direction: 1 });

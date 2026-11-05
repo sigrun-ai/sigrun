@@ -1285,6 +1285,10 @@ export class TuiApp implements Component, ActionHost {
 			case "answer-interaction":
 				if (!this.interactions.answerMode) this.interactions.beginAnswer();
 				return;
+			case "decline-interaction":
+				// Gated inside: answer mode + a declinable record only.
+				await this.interactions.decline();
+				return;
 			case "cancel-run":
 				this.#abortActive();
 				return;
