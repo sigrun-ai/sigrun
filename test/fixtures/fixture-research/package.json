@@ -1,0 +1,7 @@
+{
+	"name": "acme-research",
+	"version": "0.0.0",
+	"description": "Test fixture: the fake acme/search research tool.",
+	"type": "module",
+	"main": "index.js"
+}
