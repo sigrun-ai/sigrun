@@ -178,15 +178,6 @@ fresh-eyes clean-room install verification.
   conversation before rendering or acting on it.
 
 ### Changed
-- Extension panels open from **header toggles** (one icon per declared
-  panel, beside Outline and Workspace) instead of right-panel tabs; an
-  installed panel stays closed until the user opens it.
-
-### Fixed
-- An installed extension panel no longer locks the right panel open and
-  no longer auto-opens its surface.
-
-### Changed
 - **The curation seal**: workspaces and grants that sit inside or
   contain a user's `curation/` tree are rejected; boot revalidates
   stored records and names each failing one loudly. A user whose
@@ -195,6 +186,13 @@ fresh-eyes clean-room install verification.
   History tamper-resistance holds under active sandbox isolation; a
   single-user install without isolation runs the agent unsandboxed
   (the existing trust model).
+- Extension panels open from **header toggles** (one icon per declared
+  panel, beside Outline and Workspace) instead of right-panel tabs; an
+  installed panel stays closed until the user opens it.
+
+### Fixed
+- An installed extension panel no longer locks the right panel open and
+  no longer auto-opens its surface.
 
 ## [0.6.0] - 2026-11-02
 

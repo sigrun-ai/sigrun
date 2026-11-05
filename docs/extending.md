@@ -2019,11 +2019,23 @@ export function convoNoteRender(
 			// The client sent the id — check the CALLER's access to the
 			// conversation before rendering anything derived from it. The
 			// wire's params carry plain numbers; `meta` takes the branded
-			// id, so the cast re-labels it.
-			const meta = await host.conversations.meta(
-				id as Parameters<SigrunHost["conversations"]["meta"]>[0],
-			);
-			if ((await host.access.accessOf(ctx.principal, meta)) === "none") {
+			// id, so the cast re-labels it. `meta` THROWS for an unknown
+			// id — a stale or foreign conversationId must answer `none`,
+			// never surface_failed.
+			try {
+				const meta = await host.conversations.meta(
+					id as Parameters<SigrunHost["conversations"]["meta"]>[0],
+				);
+				const access = await host.access.accessOf(ctx.principal, meta);
+				if (access === "none") {
+					return {
+						tree: tree(page({ id: "note", title: "Note", main: [] })),
+						data: {},
+						access: "none",
+					};
+				}
+			} catch {
+				// Unknown/stale id — same verdict, never surface_failed.
 				return {
 					tree: tree(page({ id: "note", title: "Note", main: [] })),
 					data: {},

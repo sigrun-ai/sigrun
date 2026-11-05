@@ -135,27 +135,25 @@ test("the stats panel opens from its header toggle and renders", async ({
 });
 
 test("the convo panel follows the open conversation", async ({ page }) => {
-	await page.goto(server.url);
-	// Conversation A: create one via the server (POST /v1/conversations)
-	// so its id is KNOWN, then open it by hash. The boot default is A.
-	const createA = await page.request.post(`${server.url}/v1/conversations`, {
-		data: {},
-	});
-	const a = ((await createA.json()) as { id: number }).id;
+	// Create B BEFORE the page boots so the boot lists it; the boot
+	// default picks the root row (conversation 1) — that is A.
 	const createB = await page.request.post(`${server.url}/v1/conversations`, {
 		data: {},
 	});
 	const b = ((await createB.json()) as { id: number }).id;
-	await page.goto(`${server.url}/#/c/${a}`);
+	await page.goto(server.url);
 	await page.locator('[data-panel="ext:fixture-surfaces-e2e/convo"]').click();
 	const panel = page.locator(
 		'[data-ext-panel="fixture-surfaces-e2e/convo"]',
 	);
+	// A is the boot default (the root conversation 1).
+	const a = 1;
 	await expect(panel).toContainText(`conversation ${a} bump 0`);
-	// Switching conversations re-attaches the panel with the new id. The
-	// panel selection persists (localStorage), so a RELOAD onto B's
-	// deep link reopens the panel against B.
-	await page.goto(`${server.url}/#/c/${b}`);
+	// The real in-app switch: click B's sidebar row (each row carries
+	// data-conversation-id). The panel follows the open conversation.
+	await page
+		.locator(`li[data-conversation-id="${b}"] .session-select`)
+		.click();
 	await expect(panel).toContainText(`conversation ${b} bump 0`);
 	await expect(panel).not.toContainText(`conversation ${a} bump 0`);
 });

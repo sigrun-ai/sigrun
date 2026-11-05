@@ -1974,6 +1974,66 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 			});
 	}
 
+	// A params-aware convo stub: each surface request answers a tree
+	// whose markdown text is `conversation <id>` (or `no conversation`).
+	// When `deferFirst` is set, conversation 1's response is HELD until
+	// the test resolves it — the late-response pinning (todo Task 3
+	// review I1).
+	function convoStub(
+		fetchImpl: FetchLike,
+		calls: Call[],
+	): { fetchImpl: FetchLike; holdFirst: { resolve: (() => void) | undefined } } {
+		const holdFirst: { resolve: (() => void) | undefined } = {
+			resolve: undefined,
+		};
+		const wrapped: FetchLike = (input, init2) => {
+			const url = String(input);
+			if (url.includes("/surfaces/convo")) {
+				// Record like the harness does — the wrapped fetchImpl never
+				// sees convo requests, so `calls` must gain them here.
+				calls.push({ input: url, method: init2?.method, body: init2?.body });
+				const raw = new URLSearchParams(url.split("?")[1] ?? "").get("params");
+				const params =
+					raw === null ? {} : (JSON.parse(raw) as Record<string, unknown>);
+				const id = params.conversationId;
+				const text =
+					typeof id === "number" ? `conversation ${id}` : "no conversation";
+				const body = {
+					tree: {
+						v: 1,
+						root: {
+							type: "page",
+							id: "convo",
+							title: "Convo",
+							main: [{ type: "markdown", text }],
+						},
+					},
+					data: {},
+					rev: 1,
+					treeRev: 1,
+					access: "write",
+				};
+				const respond = () =>
+					Promise.resolve({
+						ok: true,
+						status: 200,
+						json: () => Promise.resolve(body),
+						text: () => Promise.resolve(JSON.stringify(body)),
+					});
+				// Hold ONLY conversation 1's response: the late-response test
+				// resolves it AFTER the switch, and the host must not render it.
+				if (id === 1) {
+					return new Promise((resolve) => {
+						holdFirst.resolve = () => resolve(respond());
+					}) as ReturnType<FetchLike>;
+				}
+				return respond() as ReturnType<FetchLike>;
+			}
+			return fetchImpl(input, init2);
+		};
+		return { fetchImpl: wrapped, holdFirst };
+	}
+
 	test("opted-in panel attaches with the open conversationId", async () => {
 		const { client, createEventSource, calls, fetchImpl } = makeHarness({
 			meta: convoMeta(),
@@ -2001,13 +2061,17 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 			}
 		} finally {
 			restoreFetch();
+			// The click above left `#/c/2` in the module-level hash fallback;
+			// the next test must boot on the chat default.
+			resetLocationHashForTest();
 		}
 	});
 
-	test("opted-in panel refetches with the new conversationId on switch", async () => {
-		const { client, createEventSource, calls, fetchImpl } = makeHarness({
-			meta: convoMeta(),
-		});
+	test("opted-in panel refetches with the new conversationId on switch — a late response for the old conversation cannot land", async () => {
+		const base = makeHarness({ meta: convoMeta() });
+		const { client, createEventSource, calls } = base;
+		// Params-aware convo stub with conversation 1's response HELD.
+		const { fetchImpl, holdFirst } = convoStub(base.fetchImpl, calls);
 		const restoreFetch = stubGlobalFetch(fetchImpl);
 		try {
 			const renderer = await renderAsync(
@@ -2023,26 +2087,37 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 					}).props as { onClick: () => void }
 				).onClick();
 			});
+			// Conversation 1 attached (its request is HELD by the stub).
 			await vi.waitFor(() => {
-				expect(surfaceParams(calls, "convo").length).toBeGreaterThan(0);
+				expect(surfaceParams(calls, "convo")).toContainEqual({
+					conversationId: 1,
+				});
 			});
-			const before = surfaceParams(calls, "convo").length;
-			expect(surfaceParams(calls, "convo").at(-1)).toEqual({
-				conversationId: 1,
-			});
+			expect(holdFirst.resolve).toBeDefined();
 			// Switch 1 → 2: the transport re-attaches with the NEW id. The
 			// refetch chain runs through an ASYNC hash (eventKeyWeb) and a
-			// host remount — flush it inside act so the update settles before
-			// the count assertion polls.
+			// host remount; poll the REQUEST (the whole chain's observable
+			// end) instead of sleeping a fixed window.
 			await clickConversation(renderer, "Moor line inspection");
-			await act(async () => {
-				await new Promise((resolve) => setTimeout(resolve, 200));
-			});
 			await vi.waitFor(() => {
-				expect(surfaceParams(calls, "convo").length).toBeGreaterThan(before);
+				expect(surfaceParams(calls, "convo").at(-1)).toEqual({
+					conversationId: 2,
+				});
 			});
-			const last = surfaceParams(calls, "convo").at(-1);
-			expect(last).toEqual({ conversationId: 2 });
+			// Conversation 2's response is NOT held: its render lands.
+			await vi.waitFor(() => {
+				expect(textContent(renderer.toJSON())).toContain("conversation 2");
+			});
+			// NOW conversation 1's late response arrives. The composite
+			// ExtPanelHost key remounted the host, so the late response
+			// resolves against the UNMOUNTED conversation-1 instance and
+			// cannot land: the body stays conversation 2's.
+			await act(async () => {
+				holdFirst.resolve?.();
+			});
+			const body = textContent(renderer.toJSON());
+			expect(body).toContain("conversation 2");
+			expect(body).not.toContain("conversation 1");
 		} finally {
 			restoreFetch();
 			// The clicks above left `#/c/2` in the module-level hash fallback;
@@ -2072,10 +2147,17 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 			});
 			const before = surfaceParams(calls, "plain").length;
 			await clickConversation(renderer, "Moor line inspection");
-			// A switch changes nothing for a plain panel: no refetch, and
-			// every recorded request carried the default-instance params.
-			await act(async () => {});
-			expect(surfaceParams(calls, "plain")).toHaveLength(before);
+			// A switch changes nothing for a plain panel. Give any refetch a
+			// bounded window to appear: poll for ~300 ms, failing fast if the
+			// count ever moves; the whole async chain (state, the eventKeyWeb
+			// hash, the remount) resolves in far less.
+			const deadline = Date.now() + 300;
+			while (Date.now() < deadline) {
+				await act(async () => {
+					await new Promise((resolve) => setTimeout(resolve, 25));
+				});
+				expect(surfaceParams(calls, "plain")).toHaveLength(before);
+			}
 			for (const params of surfaceParams(calls, "plain")) {
 				expect(params).toEqual({});
 			}

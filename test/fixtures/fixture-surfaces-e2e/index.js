@@ -83,15 +83,13 @@ function convoLine(params) {
 /** The convo tree: a `page` whose `main` is one markdown block bound to
  *  the data document's `/line` (todo Task 3; no `instanceKey` — the
  *  webui routes live updates by canonicalJson(params)). */
-function convoTreeFor(params) {
-	return tree(
-		page({
-			id: "convo",
-			title: "Convo",
-			main: [markdown({ text: bind("/line") })],
-		}),
-	);
-}
+const convoTree = tree(
+	page({
+		id: "convo",
+		title: "Convo",
+		main: [markdown({ text: bind("/line") })],
+	}),
+);
 
 export default function createFixtureSurfacesE2E(host) {
 	return {
@@ -156,7 +154,7 @@ export default function createFixtureSurfacesE2E(host) {
 					placement: "panel",
 					perConversation: true,
 					render: async (ctx) => ({
-						tree: convoTreeFor(ctx.params),
+						tree: convoTree,
 						data: { line: convoLine(ctx.params) },
 						access: accessOf(ctx.principal, "read"),
 					}),
