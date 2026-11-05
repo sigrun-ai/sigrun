@@ -71,24 +71,10 @@ import { seededIdentity } from "./helpers/identity.js";
  * curator for THIS build.
  */
 const CURATOR_ENTRY = pathToFileURL(
-	join(
-		import.meta.dirname,
-		"..",
-		"..",
-		"sigrun-ext-curator-knowledge",
-		"dist",
-		"index.js",
-	),
+	join(import.meta.dirname, "..", "..", "sigrun-ext-curator", "dist", "index.js"),
 ).href;
 const RECALL_ENTRY = pathToFileURL(
-	join(
-		import.meta.dirname,
-		"..",
-		"..",
-		"sigrun-recall-knowledge",
-		"dist",
-		"index.js",
-	),
+	join(import.meta.dirname, "..", "..", "sigrun-recall", "dist", "index.js"),
 ).href;
 const KNOWLEDGE_ENTRY = pathToFileURL(
 	join(import.meta.dirname, "..", "..", "sigrun-knowledge", "dist", "index.js"),
