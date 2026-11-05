@@ -104,6 +104,9 @@ export function jobWireOf(
 		id,
 		name: record.spec.name,
 		source: record.source,
+		...(record.spec.description === undefined
+			? {}
+			: { description: record.spec.description }),
 		...(owner === undefined ? {} : { owner }),
 		...(record.sharing === undefined
 			? {}

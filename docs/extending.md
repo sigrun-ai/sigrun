@@ -1005,9 +1005,15 @@ export default function createMyExtension() {
 
 Each entry is a full job spec (the §8.2 grammar of the core design doc:
 `name`, exactly one of `cron`+optional `timezone` / `every` / `at`, and a
-`prompt` or `task` action). Extension-declared jobs are read-only through
-the API — edit the extension to change them. A malformed declaration
-( bad grammar, duplicate names) quarantines the extension at load.
+`prompt` or `task` action). A spec may also carry `description` — an
+optional human-readable summary, at most 500 characters, shown in the
+Jobs view; core trims whitespace and drops a blank value. An invalid
+`description` (over 500 characters, or not a string) is a validation
+error like any other: a settings.json job fails boot naming `jobs`, and
+an extension declaration quarantines the extension. Extension-declared
+jobs are read-only through the API — edit the extension to change them.
+A malformed declaration ( bad grammar, duplicate names) quarantines the
+extension at load.
 
 A `prompt` action may carry `deliver: string[]` — gateway delivery
 targets (spec §8.0 C7): an optional array of 1–8 strings, each 1–256

@@ -309,6 +309,16 @@ async function waitNoLiveTasks(
 // ─── Stage 1: sources and reconciliation ───────────────────────────────────
 
 describe("file jobs — declared in settings.json", () => {
+	test("a file job with a 501-char description fails boot naming jobs", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-rec-"));
+		await writeSettings(dir, {
+			jobs: [tickSpec({ description: "x".repeat(501) })],
+		});
+		await expect(bootRig({ dir })).rejects.toMatchObject({
+			field: "jobs",
+		});
+	});
+
 	test("boot with a file job → one record (source file) and one live task", async () => {
 		const rig = await bootRig({
 			settings: { jobs: [tickSpec()] },

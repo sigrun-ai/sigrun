@@ -146,6 +146,23 @@ describe("validateJobSpec", () => {
 			validateJobSpec({ ...morningBrief, action: { kind: "email", to: "a@b.c" } }),
 		).toMatchObject({ ok: false, field: "action.kind" });
 	});
+
+	it("keeps a trimmed description", () => {
+		expect(validateJobSpec({ ...morningBrief, description: "  acme nightly digest  " }))
+			.toEqual({ ok: true, spec: { ...morningBrief, description: "acme nightly digest" } });
+	});
+
+	it("drops a blank description", () => {
+		const result = validateJobSpec({ ...morningBrief, description: "   " });
+		expect(result.ok && "description" in result.spec).toBe(false);
+	});
+
+	it("rejects a description over 500 chars or not a string", () => {
+		expect(validateJobSpec({ ...morningBrief, description: "x".repeat(501) }))
+			.toMatchObject({ ok: false, field: "description" });
+		expect(validateJobSpec({ ...morningBrief, description: 7 }))
+			.toMatchObject({ ok: false, field: "description" });
+	});
 });
 
 describe("specHash", () => {
