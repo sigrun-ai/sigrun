@@ -456,7 +456,7 @@ describe("App shell", () => {
 			expect(panel.props["data-panel"]).toBe("notices");
 			// The pane's open state is chrome: the hash never moved (no
 			// history entry) and the persisted panel key never saw
-			// "notices" (persistPanel skips it).
+			// "notices" (savePanelKey skips it).
 			expect(locationHash()).toBe(before);
 			expect(panel.props["aria-label"]).toBe("notices panel");
 			// The empty pile renders the empty state.
