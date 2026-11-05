@@ -410,6 +410,13 @@ async function bootOnDir(
 		// browser tab streaming would hang the teardown.
 		app.sse?.endAll?.();
 		await app.close();
+		// The event-bus ordered shutdown runs BEFORE the harness closes
+		// (src/serve.ts's createShutdown order, mirrored by
+		// test/gateway/harness.ts): `harnessShutdown` handlers fire here —
+		// without this, an e2e restart test would pass for the wrong
+		// reason (the ask-user restart case relies on the handler flipping
+		// its flag so the record stays pending).
+		await opened.eventBus.shutdownSequence(BACKGROUND_CONTEXT);
 		await opened.harness.close(BACKGROUND_CONTEXT);
 	};
 	try {
