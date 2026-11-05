@@ -161,6 +161,15 @@ describe("validateDecisionRequest", () => {
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.code).toBe("over_limits");
 	});
+
+	it("a function inside criteria → invalid_request (the whole request is strict JSON)", () => {
+		const result = validateDecisionRequest({
+			state: "acme",
+			questions: { q: { type: "score", criteria: [{ name: "low" }, () => "high"] } },
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe("invalid_request");
+	});
 });
 
 describe("validateDecisionAnswers", () => {
@@ -337,6 +346,91 @@ describe("buildDecisionRegistry", () => {
 		const result = await fixture.registry.evaluate("acme-notes", validRequest(), {});
 		expect(result.ok).toBe(false);
 		if (!result.ok) expect(result.code).toBe("bad_answer");
+	});
+
+	it("three declarations with one id: every prior winner lands in losers", () => {
+		const warnings: string[] = [];
+		const mk = (modelId: string): DecisionProviderContribution => ({
+			id: "acme-judge",
+			models: [{ id: modelId }],
+			evaluate: async () => validAnswers(),
+		});
+		const registry = buildDecisionRegistry(
+			[
+				{ extension: "acme-a", contribution: mk("m1") },
+				{ extension: "acme-b", contribution: mk("m2") },
+				{ extension: "acme-c", contribution: mk("m3") },
+			],
+			{
+				credential: () => CREDENTIAL,
+				readSettings: () => ({}),
+				timeoutCapMs: 15_000,
+				now: Date.now,
+				warn: (message) => warnings.push(message),
+			},
+		);
+		expect(registry.collisions()).toEqual([
+			{ id: "acme-judge", winner: "acme-c", losers: ["acme-a", "acme-b"] },
+		]);
+		expect(warnings.length).toBe(2);
+	});
+
+	it("a pre-aborted caller signal → aborted without calling the provider", async () => {
+		const fixture = makeFixture();
+		const controller = new AbortController();
+		controller.abort();
+		const result = await fixture.registry.evaluate("acme-notes", validRequest(), {
+			signal: controller.signal,
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe("aborted");
+		expect(fixture.calls.length).toBe(0);
+	});
+
+	it("list() returns qualified model names with the provider and status", () => {
+		const fixture = makeFixture({
+			contribution: { readiness: () => ({ status: "ready" }) },
+		});
+		expect(fixture.registry.list()).toEqual([
+			{ model: "acme-judge/judge-1", provider: "acme-judge", status: "ready" },
+		]);
+	});
+
+	it("providers() returns the declaration, models and readiness per id", () => {
+		const fixture = makeFixture({
+			contribution: { label: "Acme Judge", readiness: () => ({ status: "ready" }) },
+		});
+		expect(fixture.registry.providers()).toEqual([
+			{
+				id: "acme-judge",
+				label: "Acme Judge",
+				extension: "acme-ext",
+				models: ["judge-1"],
+				status: "ready",
+			},
+		]);
+	});
+
+	it("resolvedDefault() is the decisionModel setting when set, else the first model", () => {
+		const fixture = makeFixture({ settings: { decisionModel: "acme-judge/judge-9" } });
+		// The setting wins verbatim even when it names an unregistered model.
+		expect(fixture.registry.resolvedDefault()).toBe("acme-judge/judge-9");
+		const unset = makeFixture();
+		expect(unset.registry.resolvedDefault()).toBe("acme-judge/judge-1");
+	});
+
+	it("a non-Error throw that cannot stringify still yields failed (never rejects)", async () => {
+		const fixture = makeFixture({
+			evaluateImpl: async () => {
+				throw Object.create(null); // eslint-disable-line no-throw-literal -- the hostile-throw shape
+			},
+		});
+		const result = await fixture.registry.evaluate("acme-notes", validRequest(), {});
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.code).toBe("failed");
+			expect(result.error).toBe("non-Error throw");
+		}
 	});
 
 	it("two providers with one id: the last wins and one warning names both", async () => {

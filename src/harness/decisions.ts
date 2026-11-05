@@ -164,10 +164,13 @@ export function validateDecisionRequest(value: unknown, limits?: DecisionLimits)
 	if (!requestValidator.Check(value)) {
 		return { ok: false, code: "invalid_request", errors: describeErrors(requestValidator, value) };
 	}
+	// The WHOLE request (state + questions) must be strict JSON — a
+	// function or undefined hiding in criteria/instructions must never
+	// reach the provider.
 	try {
-		assertJsonValue((value as { state: unknown }).state, "/state", 0);
+		assertJsonValue(value, "", 0);
 	} catch (err) {
-		return { ok: false, code: "invalid_request", errors: [{ path: "/state", message: errorMessage(err) }] };
+		return { ok: false, code: "invalid_request", errors: [{ path: "", message: errorMessage(err) }] };
 	}
 	const request = value as DecisionRequest;
 
@@ -328,7 +331,12 @@ interface Entry {
 }
 
 function errorMessage(err: unknown): string {
-	return err instanceof Error ? err.message : String(err);
+	if (err instanceof Error) return err.message;
+	try {
+		return String(err);
+	} catch {
+		return "non-Error throw";
+	}
 }
 
 function readiness(contribution: DecisionProviderContribution): ProviderReadiness["status"] {
@@ -371,7 +379,7 @@ export function buildDecisionRegistry(
 			);
 			const recorded = collisionList.find((c) => c.id === id);
 			if (recorded) {
-				recorded.losers.push(declaration.extension);
+				recorded.losers.push(recorded.winner);
 				recorded.winner = declaration.extension;
 			} else {
 				collisionList.push({
@@ -466,6 +474,14 @@ export function buildDecisionRegistry(
 			controller.abort();
 		};
 		opts.signal?.addEventListener("abort", onCallerAbort, { once: true });
+	// A signal aborted before registration never fires the listener —
+	// fire the handler immediately so the provider is never called.
+	if (opts.signal?.aborted === true) onCallerAbort();
+	if (callerAborted) {
+		clearTimeout(timer);
+		opts.signal?.removeEventListener("abort", onCallerAbort);
+		return { ok: false, code: "aborted", error: "aborted by the caller" };
+	}
 
 		const started = deps.now();
 		let value: DecisionAnswers;

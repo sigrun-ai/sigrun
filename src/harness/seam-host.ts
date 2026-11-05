@@ -898,18 +898,14 @@ export function createSeamHost(
 				request: DecisionRequest,
 				opts: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
 			): Promise<DecisionResult> {
-				const bridge = (await hostBridge("decisions.evaluate")) as HostBridge & {
-					decisions?: SigrunHost["decisions"];
-				};
+				const bridge = await hostBridge("decisions.evaluate");
 				if (bridge.decisions === undefined) {
 					return { ok: false, code: "no_model", error: "no decision provider is registered" };
 				}
 				return bridge.decisions.evaluate(request, opts);
 			},
 			async list() {
-				const bridge = (await hostBridge("decisions.list")) as HostBridge & {
-					decisions?: SigrunHost["decisions"];
-				};
+				const bridge = await hostBridge("decisions.list");
 				if (bridge.decisions === undefined) return [];
 				return bridge.decisions.list();
 			},
