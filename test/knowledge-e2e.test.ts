@@ -71,13 +71,27 @@ import { seededIdentity } from "./helpers/identity.js";
  * curator for THIS build.
  */
 const CURATOR_ENTRY = pathToFileURL(
-	"/home/michaelmacleod/repos/sigrun-ext-curator-knowledge/dist/index.js",
+	join(
+		import.meta.dirname,
+		"..",
+		"..",
+		"sigrun-ext-curator-knowledge",
+		"dist",
+		"index.js",
+	),
 ).href;
 const RECALL_ENTRY = pathToFileURL(
-	"/home/michaelmacleod/repos/sigrun-recall-knowledge/dist/index.js",
+	join(
+		import.meta.dirname,
+		"..",
+		"..",
+		"sigrun-recall-knowledge",
+		"dist",
+		"index.js",
+	),
 ).href;
 const KNOWLEDGE_ENTRY = pathToFileURL(
-	"/home/michaelmacleod/repos/sigrun-knowledge/dist/index.js",
+	join(import.meta.dirname, "..", "..", "sigrun-knowledge", "dist", "index.js"),
 ).href;
 const RESEARCH_ENTRY = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-research", "index.js"),
@@ -280,6 +294,11 @@ describe("the whole knowledge plan (research → review → record → recall)",
 			};
 
 			let injectedBlock: string | undefined;
+			// The scripted model, in strict order (continued from above):
+			//  1-2. alice's research conversation (acme/search + answer).
+			//  3-5. the review fork (knowledge_find, knowledge_record, done).
+			//  6.   alice's new conversation (captures the injected block).
+			//  7.   bob's negative-control conversation (a plain answer).
 			const server = await bootServer([
 				fauxAssistantMessage(
 					[fauxToolCall("acme/search", { query: "northside vet exam fee" })],
@@ -311,6 +330,8 @@ describe("the whole knowledge plan (research → review → record → recall)",
 					injectedBlock = block;
 					return fauxAssistantMessage("I already know: Northside.");
 				},
+				// Bob's negative-control turn: a plain answer, no tools.
+				fauxAssistantMessage("Just chatting back."),
 			]);
 			const { app } = server;
 
@@ -349,6 +370,14 @@ describe("the whole knowledge plan (research → review → record → recall)",
 				"alice",
 			);
 			expect(settled.status).toBe("done");
+			// The review must have fired via wantsReview, NOT the threshold:
+			// the parent's model-call count stays below the curator's
+			// threshold (10) — two calls (the tool call + the answer).
+			expect(
+				await server.app.hostBridge.curation.modelCallsSince(
+					first as never,
+				),
+			).toBeLessThan(10);
 
 			// 3. the curator reports: ONE core notice for alice on this
 			//    conversation, titled with the record's `recorded …` summary.
@@ -393,6 +422,35 @@ describe("the whole knowledge plan (research → review → record → recall)",
 			);
 			expect(again.status).toBe("done");
 			expect(injectedBlock).toBeDefined();
+
+			// Negative control: bob's below-threshold conversation with no
+			// research tool call never produces a curator notice — if a
+			// threshold bug fired reviews anyway, bob's settle would post
+			// one (the scripted response order would also derail).
+			const control = await createConversation(server, "bob");
+			const controlSettled = await submit(
+				server,
+				control,
+				"just a chat",
+				"bob",
+			);
+			expect(controlSettled.status).toBe("done");
+			await new Promise((resolve) => setTimeout(resolve, 2_000));
+			const controlNotices = await app.inject({
+				method: "GET",
+				url: "/v1/notices",
+				headers: auth(server.tokens, "bob"),
+			});
+			expect(controlNotices.statusCode).toBe(200);
+			const bobPile = controlNotices.json().notices as {
+				owner: string;
+				conversationId?: number;
+			}[];
+			expect(
+				bobPile.filter(
+					(row) => row.owner === "curator" && row.conversationId === control,
+				),
+			).toEqual([]);
 			expect(injectedBlock).toContain("Northside");
 			expect(injectedBlock).toMatch(/\bd:\d+/);
 
