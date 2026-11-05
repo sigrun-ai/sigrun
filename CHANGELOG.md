@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Decision providers: a factory result's `decisionProviders` contributes typed-question models
+  (noul / choice / score) keyed in `auth.json` with a `credentialEnv` fallback; credentials write
+  through `PUT/DELETE /v1/providers/:id/credential` (a decision-only id re-reads readiness
+  instead of refreshing). `host.decisions.evaluate` (never throws; validated against the wire
+  schema and the model's limits; a 15 s deadline capped by `server.decisions.timeoutMs` /
+  `SIGRUN_DECISION_TIMEOUT_MS`), the `decisionModel` setting (live), decision entries with
+  `kind` + model ids on `GET /v1/providers`, a `decisions` projection on `GET /v1/meta`, and the
+  opt-in `decision_evaluate` tool (`decisions.tool`, default false). Docs:
+  "Contributing decision providers" in docs/extending.md.
+- `host.jobs.activeRun(conversationId)`: the job whose fire is CURRENTLY running in a
+  conversation (both fire shapes), with its effective owner — the unattended-run marker
+  extensions need to route destructive calls. Fixed-conversation fires settle their runs via the
+  submission's `job:` requestId (no meta stamp; a fire into an existing conversation does not
+  mark its later runs job-driven).
+- `host.models.complete(input)`: one-shot chat completions for extensions (no conversation);
+  explicit model → `namingModel` → default, `role: "utility"`, a 60 s default timeout, both the
+  timer and the caller's signal bounding the wait.
 - Declinable interaction records: `declinable: true` marks a pending record declinable;
   `POST /v1/conversations/:id/interactions/:callId/decline` (write access) settles it
   `skipped` with `declinedVia: "button"` (404 `no_such_interaction` / 404 `not_pending` /
