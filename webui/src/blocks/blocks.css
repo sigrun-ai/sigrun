@@ -1288,6 +1288,52 @@
 .blk-stepper-progress { font-size: 0.875em; color: var(--fg-dim, #888); }
 .blk-stepper-nav { display: flex; gap: 0.5rem; }
 
+/* A form section stacks its fields on the form's rhythm (a plain block
+   container ran each field's help text into the next label). */
+.blk-form .blk-section { display: flex; flex-direction: column; gap: var(--sp-3, 0.75rem); }
+.blk-form .blk-section-title { margin: 0; }
+
+/* Text-like controls wear the theme and stop at a readable width: a model
+   id or a number never needs the whole pane. */
+.blk-field :is(input:not([type="radio"], [type="checkbox"], [type="file"], [type="range"], [type="color"]), textarea, select) {
+	background: var(--bg, #111);
+	border: 1px solid var(--border, #333);
+	border-radius: 6px;
+	box-sizing: border-box;
+	color: var(--text, #ddd);
+	font: inherit;
+	max-width: 32rem;
+	padding: 0.35rem 0.55rem;
+	width: 100%;
+}
+.blk-field textarea { max-width: 48rem; }
+.blk-field :is(input, textarea, select):focus-visible { border-color: var(--accent); outline: none; }
+.blk-daterange input { width: auto; }
+
+/* The submit sizes to its label (a column-flex child stretches by
+   default — it spanned the whole form). */
+.blk-form-submit {
+	align-self: flex-start;
+	background: var(--accent);
+	border: none;
+	border-radius: 6px;
+	color: var(--bg, #111);
+	cursor: pointer;
+	font: inherit;
+	font-weight: 600;
+	padding: 0.35rem 1rem;
+}
+.blk-form[data-mode="inline"] .blk-form-submit { align-self: auto; }
+.blk-stepper-nav button:not(.blk-form-submit) {
+	background: var(--surface-2);
+	border: 1px solid var(--border, #333);
+	border-radius: 6px;
+	color: var(--text, #ddd);
+	cursor: pointer;
+	font: inherit;
+	padding: 0.35rem 0.9rem;
+}
+
 /* ─── page shell (spec §5.1/§12.3) ─────────────────────────────────────── */
 .blk-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
 .blk-page-header {
