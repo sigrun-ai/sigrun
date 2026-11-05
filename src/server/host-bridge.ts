@@ -76,6 +76,12 @@ export interface HostBridge {
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
 	readonly commands: SigrunHost["commands"];
+	/**
+	 * Decision providers (warden Task 5): absent when the process has no
+	 * decision registry — the seam host surfaces `no_model` then (the
+	 * loader/boot wiring lands in Task 6).
+	 */
+	readonly decisions?: SigrunHost["decisions"];
 	/** The extension-notify server side; the seam host supplies its slug. */
 	readonly notify: (
 		slug: string,

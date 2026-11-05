@@ -19,6 +19,10 @@
 
 import type { Context } from "@earendil-works/chord";
 import type { ConversationId, Harness, ToolRegistration } from "@earendil-works/pi-durable";
+import type {
+	DecisionRequest,
+	DecisionResult,
+} from "@sigrun/shared/decisions";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
 import type { Tree } from "@sigrun/shared/blocks";
@@ -217,6 +221,8 @@ export interface SeamHost {
 	readonly publishedHooks: SigrunHost["publishedHooks"];
 	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
 	readonly models: SigrunHost["models"];
+	/** Decision providers (warden Task 5 — the decision-providers spec). */
+	readonly decisions: SigrunHost["decisions"];
 	/** The slash-command surface (gateway C4b): catalog + in-process run. */
 	readonly commands: SigrunHost["commands"];
 	/**
@@ -883,6 +889,29 @@ export function createSeamHost(
 			},
 			async complete(input) {
 				return (await hostBridge("models.complete")).models.complete(input);
+			},
+		},
+		// Warden Task 5: the bridge carries a decision registry once boot
+		// wires one (Task 6); without one `evaluate` surfaces `no_model`.
+		decisions: {
+			async evaluate(
+				request: DecisionRequest,
+				opts: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+			): Promise<DecisionResult> {
+				const bridge = (await hostBridge("decisions.evaluate")) as HostBridge & {
+					decisions?: SigrunHost["decisions"];
+				};
+				if (bridge.decisions === undefined) {
+					return { ok: false, code: "no_model", error: "no decision provider is registered" };
+				}
+				return bridge.decisions.evaluate(request, opts);
+			},
+			async list() {
+				const bridge = (await hostBridge("decisions.list")) as HostBridge & {
+					decisions?: SigrunHost["decisions"];
+				};
+				if (bridge.decisions === undefined) return [];
+				return bridge.decisions.list();
 			},
 		},
 		commands: {
