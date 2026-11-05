@@ -88,6 +88,7 @@ async function getMeta(app: FastifyInstance): Promise<{
 	};
 	backup: { lastSuccessAt?: string };
 	extensions: { name: string; status: string; error?: string }[];
+	publishedHooks: { name: string; provider: string; shadowed: string[] }[];
 	dev: boolean;
 }> {
 	const response = await app.inject({ method: "GET", url: "/v1/meta" });
@@ -633,5 +634,54 @@ describe("GET /v1/meta health.backup (§6.8 marker honesty)", () => {
 		const meta = await getMeta(app);
 		expect(meta.health.backup).toBe("degraded");
 		expect(meta.backup.lastSuccessAt).toBeUndefined();
+	});
+});
+
+// ---------------------------------------------------------------------------
+// GET /v1/meta publishedHooks (knowledge C7, Task 2): the registry projection
+// ---------------------------------------------------------------------------
+
+/** Fixture: the published-hook provider (`acme-recall`, hook `recall.echo`). */
+const FIXTURE_HOOK_PROVIDER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-hook-provider", "index.js"),
+).href;
+
+/** Fixture: the SECOND `recall.echo` provider (shadowed by the first). */
+const FIXTURE_HOOK_PROVIDER_ALT = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-hook-provider-alt", "index.js"),
+).href;
+
+/** Fixture: the duplicate-name provider (quarantines). */
+const FIXTURE_HOOK_PROVIDER_DUP = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-hook-provider-dup", "index.js"),
+).href;
+
+describe("GET /v1/meta publishedHooks", () => {
+	test("no published hooks → an empty list", async () => {
+		const { app } = await bootServer();
+		const meta = await getMeta(app);
+		expect(meta.publishedHooks).toEqual([]);
+	});
+
+	test("two configured providers: the first owns, the second is listed shadowed", async () => {
+		const { app } = await bootServer({
+			extensionSpecifiers: [FIXTURE_HOOK_PROVIDER, FIXTURE_HOOK_PROVIDER_ALT],
+		});
+		const meta = await getMeta(app);
+		expect(meta.publishedHooks).toEqual([
+			{
+				name: "recall.echo",
+				provider: "acme-recall",
+				shadowed: ["acme-recall-alt"],
+			},
+		]);
+	});
+
+	test("a quarantined provider claims nothing", async () => {
+		const { app } = await bootServer({
+			extensionSpecifiers: [FIXTURE_HOOK_PROVIDER_DUP],
+		});
+		const meta = await getMeta(app);
+		expect(meta.publishedHooks).toEqual([]);
 	});
 });

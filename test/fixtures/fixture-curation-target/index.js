@@ -21,6 +21,11 @@
  * - `undos`    — every `undo` call: `{user, changeId}`.
  * - `maintains`— every `maintain` call: `{user, deadline, runs, digestTexts}` — `digestTexts` records the text each `budget.run` resolved with (A9's wiring gate).
  * - `guidanceFor` — the per-user guidance map the target serves.
+ * - `reviewFlags` — the per-user `wantsReview` map (C5; tests flip it).
+ * - `reviewedCalls` — every `reviewed(user, conversationId)` call (C5).
+ * - `reads` — every `notes_read` execute (C5's read tool: declared in
+ *   `readTools`, model-visible for serving, allowed inside a review,
+ *   NEVER wrapped — a call outside a curator run executes verbatim).
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
@@ -47,6 +52,17 @@ export const guidanceFor = {
 	alice: ["Put deploy lessons in the notes target."],
 };
 
+/** The per-user wantsReview answers the target serves (tests may flip). */
+export const reviewFlags = {
+	alice: false,
+};
+
+/** `reviewed` calls: `{user, conversationId}` per call (C5). */
+export const reviewedCalls = [];
+
+/** `notes_read` executes: `{key}` per call (C5's never-wrapped read tool). */
+export const reads = [];
+
 /** Reset every module-side record (tests own their fixtures' state). */
 export function resetTargetFixture() {
 	writes.length = 0;
@@ -55,6 +71,9 @@ export function resetTargetFixture() {
 	undos.length = 0;
 	maintains.length = 0;
 	guidanceFor.alice = ["Put deploy lessons in the notes target."];
+	reviewFlags.alice = false;
+	reviewedCalls.length = 0;
+	reads.length = 0;
 }
 
 const notesWrite = defineTool({
@@ -89,18 +108,35 @@ const notesDirect = defineTool({
 	},
 });
 
+const notesRead = defineTool({
+	name: "notes_read",
+	description: "Read a note (the curation target's read tool).",
+	parameters: Type.Object({
+		key: Type.String({ description: "The note key." }),
+	}),
+	async execute(args) {
+		reads.push({ key: args.key });
+		return { output: [{ type: "text", text: `read: ${args.key}` }] };
+	},
+});
+
 /** Default export: factory returning the extension + its curation target. */
 export default function createFixtureCurationTarget() {
 	return {
 		extension: defineExtension({
 			name: "fixture-curation-target",
-			tools: [notesWrite, notesDirect],
+			tools: [notesWrite, notesDirect, notesRead],
 		}),
 		curationTargets: [
 			{
 				name: "notes",
 				tools: ["notes_write"],
+				readTools: ["notes_read"],
 				guidance: (user) => guidanceFor[user] ?? [],
+				wantsReview: (user) => reviewFlags[user] ?? false,
+				reviewed: (user, conversationId) => {
+					reviewedCalls.push({ user, conversationId });
+				},
 				async undo(user, changeId) {
 					undos.push({ user, changeId });
 				},

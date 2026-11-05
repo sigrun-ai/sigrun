@@ -196,6 +196,10 @@ export function registerMetaRoutes(
 				providers: opened.providerCollisions,
 				commands: commandCatalog.collisions,
 			},
+			// Knowledge C7: the published-hook registry — one row per OWNED
+			// hook name (`provider` is the owner slug; `shadowed` lists the
+			// losing providers). Empty when nothing published.
+			publishedHooks: opened.publishedHooks(),
 		};
 	});
 

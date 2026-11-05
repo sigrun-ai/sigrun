@@ -94,6 +94,19 @@ export interface MemorySeamConfig {
 	queueMax: number;
 }
 
+/**
+ * The published-hook call deadline (knowledge C7, Task 2):
+ * `SIGRUN_PUBLISHED_HOOK_DEADLINE`, over the file's
+ * `server.publishedHookDeadlineMs`, default 30000 ms. Its own knob, NOT
+ * the memory-seam `SIGRUN_HOOK_DEADLINE` (hook calls can sit on the
+ * reply path; the memory knob tunes background handlers). A positive
+ * integer; `parseMemorySeamCount`'s posture (fail loud, `""` is unset).
+ */
+export const PUBLISHED_HOOK_DEADLINE_ENV = "SIGRUN_PUBLISHED_HOOK_DEADLINE";
+
+/** The published-hook deadline default (30 s). */
+export const DEFAULT_PUBLISHED_HOOK_DEADLINE_MS = 30_000;
+
 /** The multi-user execution-jail configuration (M1). */
 export interface IsolationConfig {
 	mode: "auto" | "always" | "off";
@@ -283,6 +296,11 @@ export interface SigrunConfig {
 	 * boot (Tasks 2-5 shipped them as temporary hardcoded constants).
 	 */
 	memorySeam: MemorySeamConfig;
+	/**
+	 * The published-hook call deadline (knowledge C7): the per-call cap
+	 * the registry races the provider's `run` against.
+	 */
+	publishedHookDeadlineMs: number;
 	/** The execution-jail mode, OS-user gate, and worker idle timeout. */
 	isolation: IsolationConfig;
 	/**
@@ -980,7 +998,8 @@ type MemorySeamEnvKey =
 	| "SIGRUN_HOOK_DEADLINE"
 	| "SIGRUN_IDLE_THRESHOLD"
 	| "SIGRUN_WORKER_DEADLINE"
-	| "SIGRUN_QUEUE_MAX";
+	| "SIGRUN_QUEUE_MAX"
+	| "SIGRUN_PUBLISHED_HOOK_DEADLINE";
 
 /**
  * Parse one memory-seam positive-integer knob (the
@@ -1241,6 +1260,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		...(webui === undefined ? {} : { webui }),
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
+		publishedHookDeadlineMs: config.publishedHookDeadlineMs,
 		isolation: { ...config.isolation },
 		providers: { ...config.providers },
 		...(auth === undefined ? {} : { auth }),
@@ -1282,6 +1302,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_IDLE_THRESHOLD` | `memorySeam.idleThresholdMs` |
  * | `SIGRUN_WORKER_DEADLINE` | `memorySeam.workerDeadlineMs` |
  * | `SIGRUN_QUEUE_MAX` | `memorySeam.queueMax` |
+ * | `SIGRUN_PUBLISHED_HOOK_DEADLINE` | `publishedHookDeadlineMs` |
  * | `SIGRUN_ISOLATION` | `isolation.mode` |
  * | `SIGRUN_PROVIDER_REFRESH_MINUTES` | `providers.refreshIntervalMinutes` |
  * | `SIGRUN_BACKUP_*` | `backup` |
@@ -1332,6 +1353,10 @@ export function envServerSection(env: Env): ServerSettings {
 		queueMax: parseMemorySeamCount(env, "SIGRUN_QUEUE_MAX"),
 	});
 	if (memorySeam !== undefined) section.memorySeam = memorySeam;
+	const publishedHookDeadlineMs = parseMemorySeamCount(env, PUBLISHED_HOOK_DEADLINE_ENV);
+	if (publishedHookDeadlineMs !== undefined) {
+		section.publishedHookDeadlineMs = publishedHookDeadlineMs;
+	}
 	const isolationMode = parseIsolationMode(env);
 	if (isolationMode !== undefined) section.isolation = { mode: isolationMode };
 	const refreshIntervalMinutes = parseNonNegativeIntEnv(
@@ -1476,6 +1501,11 @@ export function effectiveServerSection(
 		"memorySeam",
 		"queueMax",
 	]);
+	emit(
+		"publishedHookDeadlineMs",
+		config.publishedHookDeadlineMs,
+		["publishedHookDeadlineMs"],
+	);
 	emit("auth.sessionDays", config.auth.sessionDays, ["auth", "sessionDays"]);
 	emit("isolation.mode", config.isolation.mode, ["isolation", "mode"]);
 	emit("isolation.osUsers", config.isolation.osUsers, ["isolation", "osUsers"]);
@@ -1666,6 +1696,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			server?.backup?.staleAfterHours ?? DEFAULT_BACKUP_STALE_AFTER_HOURS,
 		compaction: parseCompaction(env, server?.compaction),
 		memorySeam: parseMemorySeam(env, server?.memorySeam),
+		publishedHookDeadlineMs:
+			parseMemorySeamCount(env, PUBLISHED_HOOK_DEADLINE_ENV) ??
+			server?.publishedHookDeadlineMs ??
+			DEFAULT_PUBLISHED_HOOK_DEADLINE_MS,
 		isolation: parseIsolation(env, server?.isolation),
 		providers: {
 			refreshIntervalMinutes: parseRefreshIntervalMinutes(

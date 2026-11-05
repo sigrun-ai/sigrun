@@ -174,6 +174,12 @@ export interface ServerSettings {
 		readonly workerDeadlineMs?: number;
 		readonly queueMax?: number;
 	};
+	/**
+	 * The published-hook call deadline (knowledge C7): the per-call cap,
+	 * mirroring `SIGRUN_PUBLISHED_HOOK_DEADLINE` (env wins). Default
+	 * 30000 ms.
+	 */
+	readonly publishedHookDeadlineMs?: number;
 	/** The multi-user execution jail (M1). `mode` and `osUsers` are restart-required. */
 	readonly isolation?: {
 		/** `SIGRUN_ISOLATION` — auto, always, or off; default auto. */

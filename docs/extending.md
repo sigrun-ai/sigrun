@@ -252,6 +252,7 @@ what core does with each, and where its rules are documented:
 | `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
 | `curationTargets` | `readonly CurationTarget[]` | the curator's learnable targets: listed tools are wrapped for review hints, `undo` is required at load (a target without it quarantines) | ["Curation targets"](#curation-targets) |
+| `publishedHooks` | `readonly PublishedHook[]` | named, schema-validated calls other extensions invoke via `host.publishedHooks`; a malformed declaration or uncompilable schema quarantines | ["Published hooks: calling another extension"](#published-hooks-calling-another-extension) |
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
@@ -1442,11 +1443,27 @@ import type {
 	SigrunExtensionResult,
 } from "@sigrun/sigrun/extension";
 
+declare function hasPendingNotes(): boolean;
+declare function clearPendingNotes(): void;
+
 const notes: CurationTarget = {
 	name: "notes",                    // core qualifies it "acme:notes"
 	tools: ["notes_write"],           // registered by THIS extension
+	readTools: ["notes_read"],       // reads: served, never wrapped
 	guidance: (user) =>
 		user === "alice" ? ["Put deploy lessons in the notes target."] : [],
+	// Ask for a review of one conversation (the fork path). Core bounds
+	// each call at 2 s; a throw or timeout counts as `false`.
+	wantsReview: (user, conversationId) => {
+		void user; void conversationId;
+		return hasPendingNotes();
+	},
+	// After a fork review of the conversation COMPLETED (and only then):
+	// retire the hints it consumed. Errors are caught and logged.
+	reviewed: (user, conversationId) => {
+		void user; void conversationId;
+		clearPendingNotes();
+	},
 	async undo(user, changeId, context) {
 		void user; void changeId; void context.abortSignal;
 		// restore the version this change replaced
@@ -1478,15 +1495,40 @@ export default function createAcmeNotes(): SigrunExtensionResult {
 }
 ```
 
-**The wrapping rule.** Only the tools you LIST are intercepted: every
-listed tool's call outside a curator run never executes — the owner's
-own calls are recorded as a review hint (the model is answered "Noted.
-The curator will review this after your reply."), anything else with
-"Not recorded: this is only learned from the owner's own messages."
+**The wrapping rule.** Only the tools you LIST in `tools` are
+intercepted: every listed tool's call outside a curator run never
+executes — the owner's own calls are recorded as a review hint (the
+model is answered "Noted. The curator will review this after your
+reply."), anything else with "Not recorded: this is only learned from
+the owner's own messages."
 A direct "remember this" tool you keep OUTSIDE the target is never
 intercepted, never gated, and never undone by the curator — you own
 that write path and its undo yourself. Inside a curator run the listed
 tools execute for the run's user, confined to the run's allow list.
+
+**Read tools.** Declare pure reads in `readTools` instead: they are
+model-visible for serving (a target is only served when every `tools`
+AND `readTools` name is in the conversation's selection) and allowed
+inside a review, but NEVER wrapped into a hint and never gated — a
+call outside a curator run executes verbatim. A read tool must be
+registered by YOUR extension and disjoint from `tools`; violating
+either quarantines the load. (The built-in knowledge extension's
+`knowledge_find` is the example shape.)
+
+**Review requests.** A target may request a fork review by answering
+true from `wantsReview(user, conversationId)` —
+`host.curation.wantsReview(user, id)` is true when any served target
+answers true. The signal applies to the FORK path only: a
+mixed-authorship conversation (anyone besides the owner spoke) goes to
+the idle digest and `wantsReview` is ignored there. Each target's call
+is bounded at two seconds — a throw or a timeout counts as `false`
+(and logs one line naming your target), so never block on the network
+inside it. When the requested review COMPLETES, core calls
+`reviewed(user, conversationId)` on every served target that declares
+it — after the result is recorded, once per review — so you can retire
+the hints it consumed. It is not called for any other outcome
+(failed, deadline, cancelled) nor for an ownerless conversation, and
+errors are caught and logged: treat it as a hint, not a delivery.
 
 Load requirements, all fail-loud (a violation quarantines the whole
 extension): `undo` is REQUIRED — no undo, no magic; every listed tool
@@ -1536,6 +1578,121 @@ On the wire:
 
 The Skills tab renders this history per skill — 25 entries per page,
 per-file diffs, and one-action restore.
+
+## Published hooks: calling another extension
+
+Extensions call each other without depending on each other: a factory
+result may declare `publishedHooks` — named, schema-validated calls
+this extension offers OTHER extensions through `host.publishedHooks`
+(`recall.index`, `escalation.raise`, …). An absent provider is normal:
+callers must handle it.
+
+**Declaring.** One entry per hook:
+
+```ts check
+import type { PublishedHook, SigrunExtensionResult } from "@sigrun/sigrun/extension";
+
+const recallIndex: PublishedHook = {
+	name: "recall.index",            // dotted lowercase segments
+	description: "index one record",
+	// Schemas are JSON Schema objects (write them with `Type` from
+	// `@earendil-works/pi-ai`, or literal objects as here).
+	input: {
+		type: "object",
+		properties: { id: { type: "string" }, text: { type: "string" } },
+		required: ["id", "text"],
+	},
+	output: { type: "object", properties: { indexed: { type: "boolean" } } },
+	async run(payload, call) {
+		// `payload` passed the declared input schema. `call.caller` is
+		// the calling extension's slug (core-stamped); `call.user` is
+		// the conversation's acting user when the caller passed a
+		// `conversationId`; `call.abortSignal` fires on the deadline
+		// or a caller abort — honor it.
+		return { indexed: true };
+	},
+};
+
+export default function createAcmeRecall(): SigrunExtensionResult {
+	return {
+		// …your extension, plus:
+		publishedHooks: [recallIndex],
+	};
+}
+```
+
+Names match `/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/` (at least one
+dot, at most 128 chars). Core COMPILES each schema once at load; a
+malformed declaration — a bad or duplicate name, a non-object `input`,
+a non-function `run`, or a schema that fails to compile — quarantines
+the extension (fail-loud, like every other contract field).
+
+**Ownership.** One owner per name per instance: configured extensions
+in `extensions[]` order, then built-ins — the first owns the name.
+Shadowed providers still LOAD (only the hook is lost) and boot warns,
+naming the hook, the owner, the shadowed extension, and the fix:
+reorder `extensions[]` when the loser is configured; replace the
+built-in by package name (or remove the owner) when the loser is a
+built-in. Quarantined extensions claim nothing. `GET /v1/meta`'s
+`publishedHooks` lists every owned name with its provider and the
+shadowed list.
+
+**Calling.** On the host, lookup is at call time (load order between
+caller and provider never matters) and `call` NEVER throws:
+
+```ts
+const found = host.publishedHooks.get("recall.index");
+// found: { provider, input, output? } | undefined — the provider's
+// live schema objects (never mutate them).
+const result = await host.publishedHooks.call(
+	"recall.index",
+	{ id: "n1", text: "deploy lesson" },
+	{ user: "alice", conversationId },
+);
+```
+
+`call` NEVER throws. The four statuses:
+
+- `absent` — no provider owns the name.
+- `ok` — the provider ran; `result.provider` names the owner,
+  `result.value` passed the output schema.
+- `rejected` — the call never ran: the payload failed the owner's
+  input schema, is not JSON-serializable, is over the 1 MiB cap, or
+  named a `user` that disagrees with the conversation's acting user.
+  `result.errors` names the bad fields.
+- `failed` — the provider ran (or was interrupted) and could not
+  deliver: `reason` is `threw`, `timeout`, `aborted`, `bad-output`,
+  `too-large` (the result's own 1 MiB cap), or `too-deep`.
+
+**Identity.** Core provides it. `call.caller` is the calling
+extension's slug, stamped at call time. With a `conversationId`,
+`call.user` is the conversation's acting user (core-resolved); a
+caller-passed `user` that disagrees is `rejected`. Without one
+(curation `undo`/`maintain`, a job, a `runSettled` handler), pass the
+user core handed you in that callback.
+
+**The deadline.** `SIGRUN_PUBLISHED_HOOK_DEADLINE` (settings
+`server.publishedHookDeadlineMs`, default 30000 ms) caps every call.
+On timeout or caller abort the result is `failed` and the provider's
+signal fires; a provider that ignores its signal keeps running
+unwatched, the same accepted posture as abandoned workers.
+
+**Depth and size.** A provider may call further hooks (pass your own
+`call.abortSignal` so an outer deadline or cancel stops the inner call
+too); beyond depth 4 the result is `failed` (`too-deep`) — this also
+ends cycles. Payload and result are JSON values, each capped at 1 MiB.
+
+**Never `await` a call inside a factory body.** Loading is still
+running and the registry is not built yet — the awaited call would
+deadlock the load. Stash the host and call later: from a tool's
+`execute`, a lifecycle handler, a worker, or a job. (FIRING a call
+without awaiting is fine — it waits for the registry and resolves
+after loading finishes.)
+
+**Hooks are not tools.** A published hook never reaches the model, is
+never selection-scoped, and the curator's review gate does not apply.
+Payload contracts form by popularity: the owner publishes a schema,
+competitors match it; a breaking change takes a new name.
 
 ## Prompt sections: six keys are reserved
 

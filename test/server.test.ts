@@ -267,6 +267,8 @@ describe("GET /v1/meta", () => {
 			capabilities: { backup: false, channels: [] },
 			seam: { interactions: [], ambient: [] },
 			collisions: { webui: [], providers: [], commands: [] },
+			// Knowledge C7: no published hooks on a bare boot.
+			publishedHooks: [],
 			// tabs+skills Task 4: the reserved `core` slug's views ride meta
 			// (positively pinned in core-views.test.ts too).
 			coreViews: [

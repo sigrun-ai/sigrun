@@ -15,7 +15,7 @@ import { mkdtemp, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -797,6 +797,169 @@ describe("host.curation (curator P6 surface)", () => {
 	});
 });
 
+// ─── C5: review requests and read tools ────────────────────────────────────
+
+describe("host.curation review requests and read tools (C5)", () => {
+	test("a target with readTools is served only when its read tools are model-visible too", { timeout: 30_000 }, async () => {
+		const { app, opened } = await bootServer([
+			fauxAssistantMessage("the owned turn's answer"),
+		]);
+		const curation = app.hostBridge.curation;
+		const id = await ownedConversation(opened, "alice");
+		const served = await curation.targets("alice", id as ConversationId);
+		const notes = served.find(
+			(target) => target.id === "fixture-curation-target:notes",
+		);
+		expect(notes?.tools).toEqual(["notes_write"]);
+		expect(notes?.readTools).toEqual(["notes_read"]);
+		// A conversation whose selection keeps notes_write but drops the
+		// read tool never serves the target: EVERY tools AND readTools
+		// name must be model-visible.
+		const narrowed = await opened.harness.createConversation(
+			{
+				ownership: { kind: "ownerless" },
+				agent: {
+					model: opened.defaultModel,
+					extensions: [{ name: "fixture-curation-target" }],
+					modelTools: {
+						remove: [{ name: "notes_read" } as never],
+					},
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const agent = await narrowed.agent(BACKGROUND_CONTEXT);
+		expect(
+			agent.tools.some((tool) => tool.name === "notes_read"),
+		).toBe(false);
+		expect(
+			agent.tools.some((tool) => tool.name === "notes_write"),
+		).toBe(true);
+		const omitted = await curation.targets(
+			"alice",
+			narrowed.id as ConversationId,
+		);
+		expect(
+			omitted.some((target) => target.id === "fixture-curation-target:notes"),
+		).toBe(false);
+	});
+
+	test("wantsReview: true from one served target → true; a throwing target and a 3 s target count as false", { timeout: 30_000 }, async () => {
+		const { app, opened } = await bootServer([
+			fauxAssistantMessage("the owned turn's answer"),
+		]);
+		const curation = app.hostBridge.curation;
+		const id = await ownedConversation(opened, "alice");
+		// Default: the fixture's wantsReview answers false for alice.
+		expect(await curation.wantsReview("alice", id as ConversationId)).toBe(false);
+		// Bob is unserved (empty guidance) → false regardless of the flag.
+		const fixture = await fixtureModule();
+		fixture.reviewFlags.bob = true;
+		expect(await curation.wantsReview("bob", id as ConversationId)).toBe(false);
+		// One served target answering true flips the aggregate.
+		fixture.reviewFlags.alice = true;
+		expect(await curation.wantsReview("alice", id as ConversationId)).toBe(true);
+		// A throwing target and a 3 s (over-bound) target each count as
+		// false, with one log line naming the target — and the timeout
+		// path must RESOLVE wantsReview at the bound, not at 3 s.
+		const [qualified] = opened.curation.targets();
+		const original = qualified!.wantsReview;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			(qualified as { wantsReview?: unknown }).wantsReview = async () => {
+				throw new Error("boom");
+			};
+			expect(await curation.wantsReview("alice", id as ConversationId)).toBe(false);
+			expect(warn.mock.calls.flat().join(" ")).toContain(
+				"fixture-curation-target:notes",
+			);
+			warn.mockClear();
+			(qualified as { wantsReview?: unknown }).wantsReview =
+				() => new Promise((resolve) => setTimeout(() => resolve(true), 3000));
+			const started = Date.now();
+			expect(await curation.wantsReview("alice", id as ConversationId)).toBe(false);
+			expect(Date.now() - started).toBeLessThan(3000);
+			expect(warn.mock.calls.flat().join(" ")).toContain(
+				"fixture-curation-target:notes",
+			);
+		} finally {
+			(qualified as { wantsReview?: unknown }).wantsReview = original;
+			warn.mockRestore();
+		}
+	});
+
+	test("forkReview completed calls reviewed(owner, id) once per served target; failed and deadline don't", { timeout: 30_000 }, async () => {
+		const { app, opened } = await bootServer([
+			// completed conversation's parent turn
+			fauxAssistantMessage("parent answer"),
+			fauxAssistantMessage("review done"),
+			// failed conversation's parent turn + an erroring review answer
+			fauxAssistantMessage("parent answer"),
+			fauxAssistantMessage("boom", { stopReason: "error", errorMessage: "boom" }),
+			// deadline conversation's parent turn; the review's answer is a
+			// factory sleeping past the driver's 150 ms deadline
+			fauxAssistantMessage("parent answer"),
+			async () => {
+				await new Promise((resolve) => setTimeout(resolve, 2000));
+				return fauxAssistantMessage("too late");
+			},
+		]);
+		const curation = app.hostBridge.curation;
+		const fixture = await fixtureModule();
+		// The module-side record is shared with every other test in this
+		// file (bootServer boots fresh harnesses, not fresh modules) —
+		// drain the calls earlier reviews (undoReview's) already fired.
+		fixture.resetTargetFixture();
+		const runOpts = (reviewId: string, deadlineMs = 20_000) => ({
+			instruction: "Review and record.",
+			allow: ["skill_manage", "notes_write"],
+			maxToolCalls: 8,
+			maxOutputTokens: 8_000,
+			deadlineMs,
+			reviewId,
+		});
+		// completed → reviewed(owner, id) once, with the parent id.
+		const completedParent = await ownedConversation(opened, "alice");
+		const completed = await curation.forkReview(
+			completedParent as ConversationId,
+			runOpts("review-c5-completed"),
+		);
+		expect(completed.status).toBe("completed");
+		expect(fixture.reviewedCalls).toEqual([
+			{ user: "alice", conversationId: completedParent },
+		]);
+		// failed (the run ended unanswered) → no reviewed.
+		const failedParent = await ownedConversation(opened, "alice");
+		const failed = await curation.forkReview(
+			failedParent as ConversationId,
+			runOpts("review-c5-failed"),
+		);
+		expect(failed.status).toBe("failed");
+		expect(fixture.reviewedCalls).toHaveLength(1);
+		// deadline → no reviewed (the driver's own deadline; the parent's
+		// drift watch never fires).
+		const deadlineParent = await ownedConversation(opened, "alice");
+		const slow = curation.forkReview(
+			deadlineParent as ConversationId,
+			runOpts("review-c5-deadline", 150),
+		);
+		const deadlined = await slow;
+		expect(deadlined.status).toBe("deadline");
+		expect(fixture.reviewedCalls).toHaveLength(1);
+		// Ownerless: forkReview refuses before any target is consulted.
+		const ownerless = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const refused = await curation.forkReview(
+			ownerless.id as ConversationId,
+			runOpts("review-c5-ownerless"),
+		);
+		expect(refused.status).toBe("failed");
+		expect(fixture.reviewedCalls).toHaveLength(1);
+	});
+});
+
 // ─── helpers ───────────────────────────────────────────────────────────────
 
 /** Import the fixture module by the SAME URL the loader imported. */
@@ -808,6 +971,8 @@ async function fixtureModule(): Promise<{
 		runs: number;
 		digestTexts: string[];
 	}[];
+	readonly reviewFlags: Record<string, boolean>;
+	readonly reviewedCalls: readonly { user: string; conversationId: number }[];
 	readonly resetTargetFixture: () => void;
 }> {
 	return (await import(TARGET_SPECIFIER)) as unknown as {
@@ -818,6 +983,8 @@ async function fixtureModule(): Promise<{
 			runs: number;
 			digestTexts: string[];
 		}[];
+		readonly reviewFlags: Record<string, boolean>;
+		readonly reviewedCalls: readonly { user: string; conversationId: number }[];
 		readonly resetTargetFixture: () => void;
 	};
 }

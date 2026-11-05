@@ -64,6 +64,10 @@ import {
 	type DeclaredKinds,
 	type SeamHost,
 } from "./seam-host.js";
+import {
+	buildPublishedHookRegistry,
+	type PublishedHookRegistry,
+} from "./published-hooks.js";
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { createJobStateExtension } from "./sections/job-state.js";
@@ -563,6 +567,18 @@ export interface OpenedHarness {
 	 * seam host expose the SAME instance.
 	 */
 	readonly curationHost: import("../extension.js").SigrunCurationHost;
+	/**
+	 * The published-hook registry's listing (knowledge C7): one row per
+	 * OWNED hook name — `{name, provider, shadowed}` — for `/v1/meta`'s
+	 * publishedHooks projection. Empty when nothing published (the
+	 * no-declarer deploy). Boot-owned; reads the registry built right
+	 * after `loadExtensions`.
+	 */
+	readonly publishedHooks: () => readonly {
+		name: string;
+		provider: string;
+		shadowed: readonly string[];
+	}[];
 	/**
 	 * The command-expansion handle (Task 2c): the skills + template root
 	 * sets and the reserved command-name set, all read LIVE. The submit
@@ -1455,6 +1471,21 @@ export async function openHarness(
 	});
 	const bindHarness = (harness: Harness): void => release(harness);
 	const harnessOf = (): Promise<Harness> => harnessPromise;
+	// The published-hook registry slot (knowledge C7): the deferred MUST
+	// exist before `loadExtensions` runs — seam hosts are built inside the
+	// loader's hostContextFactory and close over this slot. Boot builds
+	// the registry from the loader's declarations right after
+	// `loadExtensions` returns and resolves the deferred; a
+	// `host.publishedHooks.call` issued during loading waits on it
+	// (the harnessPromise pattern), a `get` before then reads
+	// `undefined`.
+	let publishRegistryReady!: () => void;
+	const publishedHooksReady = new Promise<void>((resolve) => {
+		publishRegistryReady = resolve;
+	});
+	const publishedHooksSlot: {
+		registry: PublishedHookRegistry | undefined;
+	} = { registry: undefined };
 	// The boot-shared store trio (Task 5): one SecretsStore + one
 	// ExtensionSettingsStore over the roots resolved at the top of boot;
 	// each seam host scopes it to its extension's slug (cheap, no I/O —
@@ -1473,6 +1504,7 @@ export async function openHarness(
 		workerBindings,
 		curationBindings,
 		noticeActionBindings,
+		publishedHookDeclarations,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -1514,7 +1546,9 @@ export async function openHarness(
 					}, sharedStores, {
 						declared: (slug) => perUserSlugs.includes(slug),
 						set: (slug, user, tools) => userTools.set(slug, user, tools),
-					}, userServices);
+					}, userServices, {
+						publishedHooks: { current: publishedHooksSlot, ready: publishedHooksReady },
+					});
 				host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
 				// resolved: the PRE-import call must NOT file (its identity is
@@ -1547,6 +1581,27 @@ export async function openHarness(
 	// wrapping feed (isCurationTool) and the A9 host.curation surface
 	// read it. An empty fold is the no-declarer deploy.
 	const curation = buildCurationRegistry(curationBindings);
+	// The published-hook registry (knowledge C7): built from the loader's
+	// collected declarations the moment `loadExtensions` returns, then the
+	// deferred resolves — a `host.publishedHooks.call` issued from a
+	// factory body (still in flight) proceeds from here. `actingUser`
+	// reads through the harness deferred: a call whose conversation
+	// identity resolves during the load window waits for `Harness.open`
+	// exactly like the other bridged members. Load order between caller
+	// and provider never matters — lookup is at call time.
+	publishedHooksSlot.registry = buildPublishedHookRegistry(
+		publishedHookDeclarations,
+		{
+			actingUser: async (id) => {
+				const h = await harnessPromise;
+				return (await h.snapshot(SessionMetaDoc, id, BACKGROUND_CONTEXT))
+					?.owner;
+			},
+			deadlineMs: config.publishedHookDeadlineMs,
+			warn: (message) => console.warn(message),
+		},
+	);
+	publishRegistryReady();
 	for (const binding of userServiceBindings) {
 		userServices.register(binding.extension, binding.services, binding.packageDir);
 	}
@@ -2350,6 +2405,7 @@ export async function openHarness(
 		curation,
 		curationHost,
 		curationOf,
+		publishedHooks: () => publishedHooksSlot.registry?.listing() ?? [],
 		workspaceRootOf: (owner) => workspaceService?.workspaceRoot(owner),
 		history: { workspace: workspaceHistoryOf },
 		commandExpansion,

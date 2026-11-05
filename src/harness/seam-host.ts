@@ -204,6 +204,17 @@ export interface SeamHost {
 	 * factory-body call WAITS, never a silent drop.
 	 */
 	readonly curation: SigrunHost["curation"];
+	/**
+	 * The published-hook surface (knowledge C7): `get` reads the
+	 * registry-ready slot WITHOUT waiting (`undefined` while loading is
+	 * still running — the factory-body window); `call` AWAITS the
+	 * registry-ready promise (the boot deferred, resolved right after
+	 * `loadExtensions` returns) and delegates with `caller =
+	 * identity.name` read AT CALL TIME — the host is pre-keyed on the
+	 * load specifier and rekeyed in place, so a captured slug would
+	 * stamp the provisional.
+	 */
+	readonly publishedHooks: SigrunHost["publishedHooks"];
 	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
 	readonly models: SigrunHost["models"];
 	/** The slash-command surface (gateway C4b): catalog + in-process run. */
@@ -325,6 +336,19 @@ export function createSeamHost(
 	options?: {
 		/** The pre-bind bridge-wait bound in ms (tests inject a small one). */
 		readonly bridgeDeadlineMs?: number;
+		/**
+		 * The published-hook registry slot (knowledge C7): boot creates the
+		 * deferred BEFORE `loadExtensions` (seam hosts are built inside the
+		 * loader's hostContextFactory) and fills `current` right after,
+		 * then resolves `ready`. `get` reads the slot directly (undefined
+		 * pre-build); `call` awaits `ready`.
+		 */
+		readonly publishedHooks?: {
+			readonly current: {
+				registry: import("./published-hooks.js").PublishedHookRegistry | undefined;
+			};
+			readonly ready: Promise<unknown>;
+		};
 	},
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
@@ -931,6 +955,28 @@ export function createSeamHost(
 							error,
 						);
 					});
+			},
+		},
+
+		// Knowledge C7: the seam's published-hook surface. `get` reads the
+		// slot directly (undefined while loading still runs); `call` waits
+		// for the registry-ready deferred, then delegates with the caller
+		// identity read AT CALL TIME (the host rekeys in place).
+		publishedHooks: {
+			get(name) {
+				return options?.publishedHooks?.current.registry?.get(name);
+			},
+			async call(name, payload, opts) {
+				const slot = options?.publishedHooks;
+				if (slot === undefined) {
+					// No registry wiring (a bare-loader test rig): every name is
+					// absent — `call` never throws.
+					return { status: "absent" };
+				}
+				await slot.ready;
+				const registry = slot.current.registry;
+				if (registry === undefined) return { status: "absent" };
+				return registry.call(identity.name, name, payload, opts);
 			},
 		},
 

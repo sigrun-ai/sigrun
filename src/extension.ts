@@ -33,7 +33,7 @@
  *   implementation and this contract cannot drift silently.
  */
 
-import type { AssistantMessage, Provider } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Provider, TSchema } from "@earendil-works/pi-ai";
 import type {
 	ConversationDocToken,
 	ConversationId,
@@ -390,8 +390,28 @@ export interface CurationTarget {
 	readonly name: string;
 	/** Tools the review may call to write this target; registered by this extension. */
 	readonly tools: readonly string[];
+	/**
+	 * Read-only tools the review may call (knowledge C5): model-visible
+	 * for serving and allowed inside a review, but NEVER wrapped into a
+	 * review hint and never gated — the loader's wrap feed grows from
+	 * `tools` only. Registered by this extension; disjoint from `tools`.
+	 */
+	readonly readTools?: readonly string[];
 	/** Routing guidance for one user; `[]` = unavailable for this user. */
 	guidance(user: string): readonly string[] | Promise<readonly string[]>;
+	/**
+	 * Whether this target wants the conversation reviewed (the fork path
+	 * only — mixed-authorship conversations go to the idle digest). Core
+	 * bounds each call at 2 s; a throw or timeout counts as `false`.
+	 */
+	wantsReview?(user: string, conversationId: ConversationId): boolean | Promise<boolean>;
+	/**
+	 * Called after a fork review of the conversation COMPLETED (after
+	 * the result is recorded) — the target's signal that the review
+	 * consumed its hints. Not called for any other status. Errors are
+	 * caught and logged; a target must not rely on being called.
+	 */
+	reviewed?(user: string, conversationId: ConversationId): void | Promise<void>;
 	/** Revert one change this target reported. Required. */
 	undo(user: string, changeId: string, ctx: HandlerContext): Promise<void>;
 	/** Optional idle maintenance, called by the curator's idle pass. */
@@ -529,6 +549,8 @@ export type CurationEligibility = {
 export type CurationTargetInfo = {
 	readonly id: string;
 	readonly tools: readonly string[];
+	/** The target's declared read tools (C5; absent when it has none). */
+	readonly readTools?: readonly string[];
 	readonly guidance: readonly string[];
 	readonly maintain: boolean;
 };
@@ -585,8 +607,15 @@ export type SigrunCurationHost = {
 	modelCallsSince(id: ConversationId, entryId?: EntryId): Promise<number>;
 	/** Read and clear the conversation's pending review hints (A8's doc). */
 	takeHints(id: ConversationId): Promise<readonly CurationHint[]>;
-	/** Targets whose tools are all in the conversation's selection (no id: all). */
+	/** Targets whose tools (and readTools) are all in the conversation's selection (no id: all). */
 	targets(user: string, id?: ConversationId): Promise<readonly CurationTargetInfo[]>;
+	/**
+	 * Whether any target served for `(user, id)` requests a review (C5):
+	 * `true` when at least one served target's `wantsReview` answers
+	 * true. Each target's call is bounded (2 s); a throw or timeout
+	 * counts as `false`. Fork-path only — the idle digest never asks.
+	 */
+	wantsReview(user: string, id: ConversationId): Promise<boolean>;
 	/** The conversation's model-visible tool names (for the allow-list). */
 	tools(id: ConversationId): Promise<readonly string[]>;
 	/** Fork the conversation at its newest entry and drive the review run. */
@@ -1676,6 +1705,29 @@ export interface SigrunHost {
 	 * for the bridge, never a silent drop.
 	 */
 	readonly curation: SigrunCurationHost;
+
+	/**
+	 * The published-hook surface (knowledge C7): look up a hook another
+	 * extension published (`get` returns `undefined` while loading is
+	 * still running and for unowned names) or call it through the core
+	 * registry. `call` NEVER throws: an unowned name is `absent`, a
+	 * payload the owner's schema rejects is `rejected`, and a provider
+	 * failure is `failed` with a reason. A call issued before loading
+	 * finishes waits for it — never `await` one inside a factory body
+	 * (stash the host; call from a tool, handler, worker, or job).
+	 */
+	readonly publishedHooks: {
+		get(name: string): { provider: string; input: TSchema; output?: TSchema } | undefined;
+		call(
+			name: string,
+			payload: unknown,
+			opts?: {
+				user?: string;
+				conversationId?: ConversationId;
+				abortSignal?: AbortSignal;
+			},
+		): Promise<PublishedHookResult>;
+	};
 }
 
 // ---------------------------------------------------------------------------
@@ -1761,6 +1813,87 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly gateway?: GatewayEngine;
 	/** Declared surfaces — views and panels (UI-blocks U3, spec §7.1; the service lands in Task 2). */
 	readonly surfaces?: SurfacesContribution;
+	/**
+	 * Published hooks (knowledge C7): named, schema-validated calls this
+	 * extension offers OTHER extensions through `host.publishedHooks`.
+	 * Core compiles each schema once at load; a malformed declaration
+	 * (bad name, duplicate within the extension, non-object input,
+	 * non-function `run`, a schema that fails to compile) quarantines
+	 * the extension. The first configured provider of a name owns it;
+	 * configured providers beat built-ins.
+	 */
+	readonly publishedHooks?: readonly PublishedHook[];
+}
+
+/**
+ * A published hook (knowledge plan, Task 1): a named, schema-validated
+ * call one extension publishes for OTHER extensions to invoke through
+ * the core registry (the extension-to-extension seam). `name` must
+ * match `/^[a-z][a-z0-9-]*(\.[a-z][a-z0-9-]*)+$/` (at least one dot,
+ * at most 128 chars). `run` receives the validated payload plus the
+ * {@link PublishedHookCall} context and resolves with the result.
+ */
+export interface PublishedHook {
+	readonly name: string;
+	readonly description?: string;
+	readonly input: TSchema;
+	readonly output?: TSchema;
+	run(payload: unknown, call: PublishedHookCall): Promise<unknown>;
+}
+
+/**
+ * The call context a published hook's `run` sees: the calling extension's
+ * name plus the resolved identity. `user` comes from the conversation's
+ * acting user when a `conversationId` is given, else the caller's
+ * declared user; a caller-declared user that disagrees with the
+ * conversation owner is rejected before the provider ever runs.
+ */
+export interface PublishedHookCall {
+	readonly caller: string;
+	readonly user: string | undefined;
+	readonly conversationId: ConversationId | undefined;
+	readonly abortSignal: AbortSignal | undefined;
+}
+
+/**
+ * The outcome of one registry call. `absent` — no provider owns the
+ * name. `ok` — the provider ran and produced a valid result. `rejected`
+ * — the call never ran (oversize/unstringifiable payload, schema
+ * mismatch, or identity disagreement). `failed` — the provider ran (or
+ * was interrupted) and could not deliver: `threw`, `timeout`, `aborted`,
+ * `bad-output`, `too-large`, or `too-deep` (depth bound).
+ */
+export type PublishedHookResult =
+	| { status: "absent" }
+	| { status: "ok"; provider: string; value: unknown }
+	| {
+			status: "rejected";
+			provider: string;
+			errors: { path: string; message: string }[];
+	  }
+	| {
+			status: "failed";
+			provider: string;
+			reason:
+				| "threw"
+				| "timeout"
+				| "aborted"
+				| "bad-output"
+				| "too-large"
+				| "too-deep";
+			error: string;
+	  };
+
+/**
+ * One extension's declaration of a published hook, in loader order.
+ * `builtin` marks core-bundled extensions: when a configured extension
+ * shadows a built-in the warning names replacing the built-in instead
+ * of reordering the extension list.
+ */
+export interface PublishedHookDeclaration {
+	readonly extension: string;
+	readonly builtin: boolean;
+	readonly hook: PublishedHook;
 }
 
 /**

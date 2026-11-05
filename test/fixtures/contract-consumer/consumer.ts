@@ -13,7 +13,7 @@
 
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { createProvider } from "@earendil-works/pi-ai";
+import { createProvider, Type } from "@earendil-works/pi-ai";
 import type { Provider } from "@earendil-works/pi-ai";
 import type {
 	Access,
@@ -36,6 +36,9 @@ import type {
 	ModelEntry,
 	NotifierContribution,
 	ProviderContribution,
+	PublishedHook,
+	PublishedHookCall,
+	PublishedHookResult,
 	RunSettledEvent,
 	Sharing,
 	SigrunExtensionFactory,
@@ -260,6 +263,27 @@ const hint: CurationHint = {
 };
 void hint.at;
 
+// A published hook (knowledge C7): the field-level pin — schema-carrying,
+// `run` takes the validated payload plus the call context.
+const recallEcho: PublishedHook = {
+	name: "recall.echo",
+	description: "echo the text back",
+	input: Type.Object({ text: Type.String() }),
+	output: Type.Object({ echo: Type.String() }),
+	run: async (payload: unknown, call: PublishedHookCall) => {
+		const caller: string = call.caller;
+		const user: string | undefined = call.user;
+		const conversation: ConversationId | undefined = call.conversationId;
+		const signal: AbortSignal | undefined = call.abortSignal;
+		void caller;
+		void user;
+		void conversation;
+		signal?.throwIfAborted();
+		const text = (payload as { text: string }).text;
+		return { echo: text };
+	},
+};
+
 const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 	void host.stores.secrets;
 	void host.stores.settings;
@@ -301,6 +325,7 @@ const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 		ambientKinds: ["acme"],
 		workers: [worker],
 		curationTargets: [curationTarget],
+		publishedHooks: [recallEcho],
 		jobs: [job],
 		routes: [route],
 		commands: [command],
@@ -378,6 +403,23 @@ const factory: SigrunExtensionFactory = (host: SigrunHost) => {
 
 		const catalog: readonly SlashCommand[] = await host.commands.list();
 		void catalog;
+
+		// Knowledge C7: the published-hook surface — lookup + call, with the
+		// result-union narrowing pinned.
+		const published = host.publishedHooks.get("recall.echo");
+		if (published !== undefined) {
+			const provider: string = published.provider;
+			void provider;
+		}
+		const called: PublishedHookResult = await host.publishedHooks.call(
+			"recall.echo",
+			{ text: "hi" },
+			{ user: "alice", conversationId: created },
+		);
+		if (called.status === "ok") {
+			const value: unknown = called.value;
+			void value;
+		}
 		const runResult: { notice?: string } = await host.commands.run(
 			created,
 			"hello",

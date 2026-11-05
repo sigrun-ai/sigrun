@@ -60,6 +60,7 @@ const META: MetaResponse = {
 	isolation: { mode: "auto", active: false, available: false, abi: 0, osUsers: "off" },
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [], commands: [] },
+		publishedHooks: [],
 };
 
 describe("createClient", () => {
