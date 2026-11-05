@@ -158,6 +158,27 @@ async function call(
 }
 
 /** One surface action dispatch against core/skills. */
+/** Seed a learned skill the way the curator writes one (the view never
+ *  creates learned skills — that root is the curator's). */
+async function seedLearned(
+	opened: OpenedHarness,
+	user: string,
+	name: string,
+	description: string,
+	body: string,
+): Promise<void> {
+	const curation = opened.curationOf(user);
+	if (curation === undefined) throw new Error(`no curation for ${user}`);
+	await curation.store.apply(
+		name,
+		{
+			kind: "create",
+			content: `---\nname: ${name}\ndescription: ${description}\n---\n\n${body}\n`,
+		},
+		{ actor: "curator" },
+	);
+}
+
 async function act(
 	app: FastifyInstance,
 	token: string,
@@ -265,24 +286,12 @@ async function putWorkspaceSkill(
 
 describe("core/skills listing", () => {
 	test("alice sees her workspace and learned, not bob's", async () => {
-		const { app, workspace, alice, bob, dir } = await bootServer();
+		const { app, opened, workspace, alice, bob, dir } = await bootServer();
 		await putWorkspaceSkill(workspace, "acme-deploy", "deploy the acme stack", "Run the deploy.");
 		await putWorkspaceSkill(join(dir, "bob-workspace"), "acme-bob-only", "bob's private skill", "Bob only.");
-		// Alice creates a learned skill; bob creates one of his own.
-		const learnedAlice = await act(app, alice, "create", {
-			where: "learned",
-			name: "acme-alice-notes",
-			description: "alice's notes",
-			body: "Alice's learned notes.",
-		}, {});
-		expect(learnedAlice.status).toBe(200);
-		const learnedBob = await act(app, bob, "create", {
-			where: "learned",
-			name: "acme-bob-notes",
-			description: "bob's notes",
-			body: "Bob's learned notes.",
-		}, {});
-		expect(learnedBob.status).toBe(200);
+		// The curator learned a skill for alice and one for bob.
+		await seedLearned(opened, "alice", "acme-alice-notes", "alice's notes", "Alice's learned notes.");
+		await seedLearned(opened, "bob", "acme-bob-notes", "bob's notes", "Bob's learned notes.");
 
 		const rendered = await view(app, alice);
 		expect(rendered.status).toBe(200);
@@ -391,8 +400,8 @@ describe("core/skills listing", () => {
 // ─── create / save ───────────────────────────────────────────────────────
 
 describe("core/skills create + save", () => {
-	test("create learned and create workspace each commit with author alice", async () => {
-		const { app, opened, alice } = await bootServer();
+	test("create refuses the learned root (it is the curator's) and writes nothing", async () => {
+		const { app, alice } = await bootServer();
 		const learned = await act(app, alice, "create", {
 			where: "learned",
 			name: "acme-learned-skill",
@@ -400,11 +409,14 @@ describe("core/skills create + save", () => {
 			body: "Learned body.",
 		}, {});
 		expect(learned.status).toBe(200);
-		expect(learned.json.ok).toBe(true);
-		expect(learned.json.navigate).toEqual({
-			type: "navigate",
-			params: { skill: "acme-learned-skill", root: "learned" },
-		});
+		expect(learned.json.ok).toBe(false);
+		expect(learned.json.error?.field).toBe("where");
+		const rows = atPointer((await view(app, alice)).json.data, "/skills") as any[];
+		expect(rows.map((row) => row.id)).not.toContain("learned:acme-learned-skill");
+	});
+
+	test("create workspace commits with author alice", async () => {
+		const { app, opened, alice } = await bootServer();
 
 		const workspace = await act(app, alice, "create", {
 			where: "workspace",
@@ -415,14 +427,11 @@ describe("core/skills create + save", () => {
 		expect(workspace.status).toBe(200);
 		expect(workspace.json.ok).toBe(true);
 
-		// Both committed with author alice (the workspace repo's log).
+		// Committed with author alice (the workspace repo's log).
 		const log = await workspaceLog(opened, "alice", "acme-workspace-skill/");
 		expect(log.length).toBeGreaterThanOrEqual(1);
 		expect(log[0]?.summary).toBe("create acme-workspace-skill");
 		expect(log[0]?.author).toBe("alice");
-		// The learned repo's commit (the curation history log).
-		const curation = opened.history.workspace("alice");
-		expect(curation).toBeDefined();
 	});
 
 	test("save edits and commits", async () => {
@@ -630,13 +639,8 @@ describe("core/skills delete + restoreDeleted", () => {
 	});
 
 	test("learned delete archives (the skill moves to the Deleted group with its history intact)", async () => {
-		const { app, alice } = await bootServer();
-		await act(app, alice, "create", {
-			where: "learned",
-			name: "acme-archivable",
-			description: "to be archived",
-			body: "Archivable body.",
-		}, {});
+		const { app, opened, alice } = await bootServer();
+		await seedLearned(opened, "alice", "acme-archivable", "to be archived", "Archivable body.");
 		const deleted = await act(app, alice, "delete", null, {
 			skill: "acme-archivable",
 			root: "learned",
@@ -816,13 +820,8 @@ describe("core/skills history availability + catch-up", () => {
 
 describe("core/skills restoreVersion", () => {
 	test("restoreVersion of an archived learned skill un-archives it", async () => {
-		const { app, alice } = await bootServer();
-		await act(app, alice, "create", {
-			where: "learned",
-			name: "acme-restorable",
-			description: "version one",
-			body: "Version one body.",
-		}, {});
+		const { app, opened, alice } = await bootServer();
+		await seedLearned(opened, "alice", "acme-restorable", "version one", "Version one body.");
 		// The pre-archive state is restoreVersion's target: the create commit.
 		const def = app.surfaces.coreViewDefs.find((one) => one.id === "skills")!;
 		const rendered0 = await def.render({
