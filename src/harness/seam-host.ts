@@ -881,6 +881,9 @@ export function createSeamHost(
 			async list() {
 				return (await hostBridge("models.list")).models.list();
 			},
+			async complete(input) {
+				return (await hostBridge("models.complete")).models.complete(input);
+			},
 		},
 		commands: {
 			async list() {

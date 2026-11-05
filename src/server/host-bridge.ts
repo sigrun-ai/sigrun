@@ -20,6 +20,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
 import { accessOf as accessOfShared } from "@sigrun/shared/access";
 import type { SigrunHost } from "../extension.js";
+import { completeOnce } from "../harness/complete.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
 import { effectiveAdmin } from "../harness/identity/groups.js";
 import { userWire } from "./routes/users.js";
@@ -376,10 +377,22 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			},
 		},
 		// Gateway C4b: the model catalog — the SAME source function the
-		// `GET /v1/models` route serves (one construction, never two).
+		// `GET /v1/models` route serves (one construction, never two) —
+		// plus one-shot completions (warden Task 4), read-live settings
+		// per call so a `namingModel` change applies without a restart.
 		models: {
 			async list() {
 				return listModels(opened);
+			},
+			async complete(input) {
+				return completeOnce(
+					{
+						models: opened.models,
+						defaultModel: opened.defaultModel,
+						readSettings: () => opened.settings.read(),
+					},
+					input,
+				);
 			},
 		},
 		commands: {

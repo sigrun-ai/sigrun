@@ -1681,10 +1681,30 @@ export interface SigrunHost {
 
 	/**
 	 * The served model catalog (gateway C4b): the SAME list `GET
-	 * /v1/models` serves (picker entries — no provider internals).
+	 * /v1/models` serves (picker entries — no provider internals), plus
+	 * one-shot completions with NO conversation (warden Task 4 —
+	 * skill-card generation is the first consumer).
 	 */
 	readonly models: {
 		list(): Promise<readonly ModelEntry[]>;
+		/**
+		 * Run ONE one-shot completion and return its concatenated text
+		 * parts (non-text parts skipped) plus the `provider/id` of the
+		 * model actually used. Model resolution: `input.model` wins;
+		 * else the live settings' `namingModel` when it is a string
+		 * (`false` counts as unset — the utility role's binding); else
+		 * the boot default model. THROWS (never resolves silently) on an
+		 * unserved model (naming it), a timeout (default 60 000 ms), or
+		 * a `stopReason` of `error`/`aborted`.
+		 */
+		complete(input: {
+			readonly model?: string;
+			readonly role?: "utility";
+			readonly systemPrompt?: string;
+			readonly prompt: string;
+			readonly timeoutMs?: number;
+			readonly signal?: AbortSignal;
+		}): Promise<{ readonly text: string; readonly model: string }>;
 	};
 
 	/**

@@ -369,6 +369,26 @@ picker entries (`id`, `provider`, `modelId`, `name`, `contextWindow`,
 through the one shared construction (helpers `listModels`); the two
 surfaces cannot drift.
 
+`host.models.complete(input)` runs ONE one-shot completion with NO
+conversation (skill-card generation, summaries, classification) and
+resolves `{text, model}` — `text` is the concatenated text parts of
+the response (non-text parts skipped), `model` the `provider/id` of
+the model actually used. The input is `{model?, role?, systemPrompt?,
+prompt, timeoutMs?, signal?}`:
+
+- **Model resolution (binding):** an explicit `model`
+  (`provider/model-id` or a bare id) wins; else the live settings'
+  `namingModel` when it is a string — the `role: "utility"` binding
+  (`namingModel: false` counts as unset); else the boot default
+  model. The settings are read LIVE per call, so a `namingModel`
+  change applies without a restart.
+- **Timeout:** `timeoutMs` bounds the whole call, default 60 000 ms;
+  the internal abort links `signal`, so a caller abort fires the
+  completion's abort too.
+- **Failure posture:** it THROWS — never resolves silently — on an
+  unserved model (naming it and the served list), a timeout, or a
+  `stopReason` of `error`/`aborted`.
+
 `host.commands` drives slash commands in-process (chat `/command`
 handling):
 
