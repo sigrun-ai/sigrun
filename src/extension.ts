@@ -50,6 +50,12 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { Access, Sharing } from "@sigrun/shared/access";
 import type {
+	DecisionAnswers,
+	DecisionLimits,
+	DecisionRequest,
+	DecisionResult,
+} from "@sigrun/shared/decisions";
+import type {
 	AmbientPlace,
 	AmbientRecord,
 } from "@sigrun/shared/ambient";
@@ -703,6 +709,47 @@ export interface ProviderReadiness {
  * three-state source `/v1/auth/check` reports verbatim.
  */
 export type ReadinessTracker = () => ProviderReadiness;
+
+// ---------------------------------------------------------------------------
+// Decision providers (warden Task 5 — the decision-providers spec)
+// ---------------------------------------------------------------------------
+
+/** One decision model: a bare id plus optional limits narrower than the built-in caps. */
+export interface DecisionModelInfo {
+	readonly id: string;
+	readonly limits?: DecisionLimits;
+}
+
+/** The context core stamps on every decision-provider call. */
+export interface DecisionContext {
+	/** The bare model id (the `"<provider>/<model>"` spec's second half). */
+	readonly model: string;
+	/** auth.json[id].apiKey, else the ambient `credentialEnv`; never `"default"`. */
+	readonly credential: string | undefined;
+	readonly signal: AbortSignal;
+	/** The calling extension's slug, core-stamped (`"sigrun"` for the core tool). */
+	readonly caller: string;
+}
+
+/**
+ * One decision-provider contribution: typed questions (noul / choice /
+ * score) answered over a JSON state. A factory result carrying only
+ * `decisionProviders` is a valid contributor-only result.
+ */
+export interface DecisionProviderContribution {
+	/** `^[a-z][a-z0-9-]*$`; the auth.json key and the model prefix. */
+	readonly id: string;
+	/** Display name. */
+	readonly label?: string;
+	/** Ambient env fallback core reads when auth.json has no key. */
+	readonly credentialEnv?: string;
+	/** The fixed model list (restart-required). */
+	readonly models: readonly DecisionModelInfo[];
+	/** The chat providers' three-state readiness tracker. */
+	readonly readiness?: ReadinessTracker;
+	/** May throw; core maps a throw to `failed`. */
+	evaluate(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionAnswers>;
+}
 
 /** One provider contribution: a pi-ai `createProvider()` result plus optional boot hints. */
 export interface ProviderContribution {
@@ -1604,6 +1651,21 @@ export interface SigrunHost {
 	readonly jobs: {
 		get(id: string): Promise<HostJobInfo | undefined>;
 		/**
+		 * The job whose fire is CURRENTLY running in this conversation:
+		 * the job with `lastRun.outcome === "running"` and
+		 * `lastRun.conversationId === conversationId` — `undefined` when no
+		 * job fire is running there. `owner` is the EFFECTIVE owner (the
+		 * same value `get` returns: an ownerless or orphaned job resolves
+		 * to the primary admin). Two matching runs resolve to the newest
+		 * `startedAt`.
+		 */
+		activeRun(
+			conversationId: ConversationId,
+		): Promise<
+			{ readonly jobId: string; readonly owner: string | undefined } | undefined
+		>;
+
+		/**
 		 * Whether the conversation's CURRENT run is job-driven (ask-user
 		 * Task 3, spec §6): true when the session meta carries a `jobId`
 		 * (a `conversation: "new"` run), or any input of the conversation's
@@ -1700,10 +1762,47 @@ export interface SigrunHost {
 
 	/**
 	 * The served model catalog (gateway C4b): the SAME list `GET
-	 * /v1/models` serves (picker entries — no provider internals).
+	 * /v1/models` serves (picker entries — no provider internals), plus
+	 * one-shot completions with NO conversation (warden Task 4 —
+	 * skill-card generation is the first consumer).
 	 */
 	readonly models: {
 		list(): Promise<readonly ModelEntry[]>;
+		/**
+		 * Run ONE one-shot completion and return its concatenated text
+		 * parts (non-text parts skipped) plus the `provider/id` of the
+		 * model actually used. Model resolution: `input.model` wins;
+		 * else the live settings' `namingModel` when it is a string
+		 * (`false` counts as unset — the utility role's binding); else
+		 * the boot default model. THROWS (never resolves silently) on an
+		 * unserved model (naming it), a timeout (default 60 000 ms), or
+		 * a `stopReason` of `error`/`aborted`.
+		 */
+		complete(input: {
+			readonly model?: string;
+			readonly role?: "utility";
+			readonly systemPrompt?: string;
+			readonly prompt: string;
+			readonly timeoutMs?: number;
+			readonly signal?: AbortSignal;
+		}): Promise<{ readonly text: string; readonly model: string }>;
+	};
+
+	/**
+	 * Decision providers (warden Task 5 — the decision-providers spec):
+	 * typed questions (noul / choice / score) answered over a JSON state.
+	 * `evaluate` NEVER throws; failures arrive as the `ok: false` half of
+	 * {@link DecisionResult}. Model resolution: `opts.model` wins; else
+	 * the live `decisionModel` setting; else the first model of the
+	 * first-registered decision provider.
+	 */
+	readonly decisions: {
+		evaluate(
+			request: DecisionRequest,
+			opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+		): Promise<DecisionResult>;
+		/** Every decision model, with its provider's readiness status. */
+		list(): Promise<readonly { model: string; provider: string; status: ProviderReadiness["status"] }[]>;
 	};
 
 	/**
@@ -1789,6 +1888,8 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly name?: string;
 	/** Provider contributions, merged into the boot model catalog (last-registered-wins, collisions recorded). */
 	readonly providers?: readonly ProviderContribution[];
+	/** Decision-provider contributions (warden Task 5); last-registered wins per id. */
+	readonly decisionProviders?: readonly DecisionProviderContribution[];
 	/** External identity providers; core qualifies ids as `login:<slug>:<id>`. */
 	readonly loginProviders?: readonly LoginProviderContribution[];
 	/** Webui-bundle contributions; each `dir` anchors at the extension ENTRY's directory. */

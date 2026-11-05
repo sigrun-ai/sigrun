@@ -107,6 +107,19 @@ export const PUBLISHED_HOOK_DEADLINE_ENV = "SIGRUN_PUBLISHED_HOOK_DEADLINE";
 /** The published-hook deadline default (30 s). */
 export const DEFAULT_PUBLISHED_HOOK_DEADLINE_MS = 30_000;
 
+/**
+ * The decision-provider call timeout (warden Task 6):
+ * `SIGRUN_DECISION_TIMEOUT_MS`, over the file's
+ * `server.decisions.timeoutMs`, default 15000 ms — both the default AND
+ * the cap for one `host.decisions.evaluate` call (`min(timeoutMs, cap)`).
+ * A positive integer; `parseMemorySeamCount`'s posture (fail loud,
+ * `""` is unset).
+ */
+export const DECISION_TIMEOUT_ENV = "SIGRUN_DECISION_TIMEOUT_MS";
+
+/** The decision timeout default (15 s). */
+export const DEFAULT_DECISION_TIMEOUT_MS = 15_000;
+
 /** The multi-user execution-jail configuration (M1). */
 export interface IsolationConfig {
 	mode: "auto" | "always" | "off";
@@ -301,6 +314,13 @@ export interface SigrunConfig {
 	 * the registry races the provider's `run` against.
 	 */
 	publishedHookDeadlineMs: number;
+	/**
+	 * The decision-provider knob (warden Task 6): the per-call timeout —
+	 * the default AND cap one `host.decisions.evaluate` call runs under,
+	 * parsed from `SIGRUN_DECISION_TIMEOUT_MS` over the file's
+	 * `server.decisions.timeoutMs` over the default.
+	 */
+	decisions: { timeoutMs: number };
 	/** The execution-jail mode, OS-user gate, and worker idle timeout. */
 	isolation: IsolationConfig;
 	/**
@@ -999,7 +1019,8 @@ type MemorySeamEnvKey =
 	| "SIGRUN_IDLE_THRESHOLD"
 	| "SIGRUN_WORKER_DEADLINE"
 	| "SIGRUN_QUEUE_MAX"
-	| "SIGRUN_PUBLISHED_HOOK_DEADLINE";
+	| "SIGRUN_PUBLISHED_HOOK_DEADLINE"
+	| "SIGRUN_DECISION_TIMEOUT_MS";
 
 /**
  * Parse one memory-seam positive-integer knob (the
@@ -1261,6 +1282,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
 		compaction: { ...config.compaction },
 		memorySeam: { ...config.memorySeam },
 		publishedHookDeadlineMs: config.publishedHookDeadlineMs,
+		decisions: { ...config.decisions },
 		isolation: { ...config.isolation },
 		providers: { ...config.providers },
 		...(auth === undefined ? {} : { auth }),
@@ -1303,6 +1325,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_WORKER_DEADLINE` | `memorySeam.workerDeadlineMs` |
  * | `SIGRUN_QUEUE_MAX` | `memorySeam.queueMax` |
  * | `SIGRUN_PUBLISHED_HOOK_DEADLINE` | `publishedHookDeadlineMs` |
+ * | `SIGRUN_DECISION_TIMEOUT_MS` | `decisions.timeoutMs` |
  * | `SIGRUN_ISOLATION` | `isolation.mode` |
  * | `SIGRUN_PROVIDER_REFRESH_MINUTES` | `providers.refreshIntervalMinutes` |
  * | `SIGRUN_BACKUP_*` | `backup` |
@@ -1356,6 +1379,10 @@ export function envServerSection(env: Env): ServerSettings {
 	const publishedHookDeadlineMs = parseMemorySeamCount(env, PUBLISHED_HOOK_DEADLINE_ENV);
 	if (publishedHookDeadlineMs !== undefined) {
 		section.publishedHookDeadlineMs = publishedHookDeadlineMs;
+	}
+	const decisionTimeoutMs = parseMemorySeamCount(env, DECISION_TIMEOUT_ENV);
+	if (decisionTimeoutMs !== undefined) {
+		section.decisions = { timeoutMs: decisionTimeoutMs };
 	}
 	const isolationMode = parseIsolationMode(env);
 	if (isolationMode !== undefined) section.isolation = { mode: isolationMode };
@@ -1506,6 +1533,10 @@ export function effectiveServerSection(
 		config.publishedHookDeadlineMs,
 		["publishedHookDeadlineMs"],
 	);
+	emit("decisions.timeoutMs", config.decisions.timeoutMs, [
+		"decisions",
+		"timeoutMs",
+	]);
 	emit("auth.sessionDays", config.auth.sessionDays, ["auth", "sessionDays"]);
 	emit("isolation.mode", config.isolation.mode, ["isolation", "mode"]);
 	emit("isolation.osUsers", config.isolation.osUsers, ["isolation", "osUsers"]);
@@ -1700,6 +1731,12 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 			parseMemorySeamCount(env, PUBLISHED_HOOK_DEADLINE_ENV) ??
 			server?.publishedHookDeadlineMs ??
 			DEFAULT_PUBLISHED_HOOK_DEADLINE_MS,
+		decisions: {
+			timeoutMs:
+				parseMemorySeamCount(env, DECISION_TIMEOUT_ENV) ??
+				server?.decisions?.timeoutMs ??
+				DEFAULT_DECISION_TIMEOUT_MS,
+		},
 		isolation: parseIsolation(env, server?.isolation),
 		providers: {
 			refreshIntervalMinutes: parseRefreshIntervalMinutes(

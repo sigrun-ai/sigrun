@@ -687,6 +687,29 @@ export interface MetaResponse {
 		readonly provider: string;
 		readonly shadowed: readonly string[];
 	}[];
+	/**
+	 * The decision-provider seam projection (warden Task 7): the
+	 * registry's providers (id/label/extension/models/status), the
+	 * resolved default model (the live `decisionModel` setting, else the
+	 * first model of the first-registered provider), and the boot-merge
+	 * collision record. Empty arrays and no default on the no-provider
+	 * boot.
+	 */
+	readonly decisions: {
+		readonly providers: readonly {
+			readonly id: string;
+			readonly label?: string;
+			readonly extension: string;
+			readonly models: readonly string[];
+			readonly status: AuthStatus;
+		}[];
+		readonly default?: string;
+		readonly collisions: readonly {
+			readonly id: string;
+			readonly winner: string;
+			readonly losers: readonly string[];
+		}[];
+	};
 }
 
 /**
@@ -720,6 +743,18 @@ export interface AuthCheckProvider {
 	readonly status: AuthStatus;
 	/** How many models the provider currently serves (best-effort count). */
 	readonly models: number;
+	/**
+	 * Warden Task 7: `"chat"` (a chat-catalog provider) or `"decision"` (a
+	 * decision provider from the warden seam). Absent = `"chat"` (older
+	 * servers never carried the field); a chat and a decision provider
+	 * sharing an id stay SEPARATE entries, one of each kind.
+	 */
+	readonly kind?: "chat" | "decision";
+	/**
+	 * The decision provider's bare model ids (warden Task 7) — present
+	 * only on `kind: "decision"` entries (`models` is their count).
+	 */
+	readonly modelIds?: readonly string[];
 	/** The owning contributor's name; absent for the env-degenerate provider. */
 	readonly owner?: string;
 	readonly detail?: string;

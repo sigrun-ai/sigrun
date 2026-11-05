@@ -92,13 +92,36 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 	// auto-namer — a job observation never delays an extension's).
 	const runSettled = async (event: RunSettledEvent): Promise<void> => {
 		try {
+			// The job to settle from, in resolution order:
+			//  1. the session meta's `jobId` (a `conversation: "new"` fire —
+			//     the stamp persists for the conversation's life);
+			//  2. a `job:<fireKey>` requestId on one of the run's inputs (the
+			//     FIXED-conversation fire shape — `jobs/fire.ts` stamps the
+			//     prefix on BOTH shapes; a fire INTO an existing conversation
+			//     deliberately leaves the meta unstamped so later ordinary
+			//     runs there are not job runs, per isJobRun's contract).
+			let jobId: string | undefined;
 			const meta = await deps.harness.snapshot(
 				SessionMetaDoc,
 				event.conversationId,
 				ctx,
 			);
-			const jobId = (meta as { jobId?: unknown } | undefined)?.jobId;
-			if (typeof jobId !== "string") return;
+			const metaJobId = (meta as { jobId?: unknown } | undefined)?.jobId;
+			if (typeof metaJobId === "string") {
+				jobId = metaJobId;
+			} else {
+				for (const id of event.inputs) {
+					const submission = await deps.harness.submission(id, ctx);
+					if (submission === undefined) continue;
+					const record = await submission.status(ctx);
+					const requestId = record.requestId;
+					if (requestId !== undefined && requestId.startsWith("job:")) {
+						jobId = requestId.slice("job:".length).split(":")[0];
+						break;
+					}
+				}
+			}
+			if (jobId === undefined) return;
 			const runs = await listRuns(
 				deps.storage,
 				jobId,

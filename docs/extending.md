@@ -374,6 +374,26 @@ picker entries (`id`, `provider`, `modelId`, `name`, `contextWindow`,
 through the one shared construction (helpers `listModels`); the two
 surfaces cannot drift.
 
+`host.models.complete(input)` runs ONE one-shot completion with NO
+conversation (skill-card generation, summaries, classification) and
+resolves `{text, model}` — `text` is the concatenated text parts of
+the response (non-text parts skipped), `model` the `provider/id` of
+the model actually used. The input is `{model?, role?, systemPrompt?,
+prompt, timeoutMs?, signal?}`:
+
+- **Model resolution (binding):** an explicit `model`
+  (`provider/model-id` or a bare id) wins; else the live settings'
+  `namingModel` when it is a string — the `role: "utility"` binding
+  (`namingModel: false` counts as unset); else the boot default
+  model. The settings are read LIVE per call, so a `namingModel`
+  change applies without a restart.
+- **Timeout:** `timeoutMs` bounds the whole call, default 60 000 ms;
+  the internal abort links `signal`, so a caller abort fires the
+  completion's abort too.
+- **Failure posture:** it THROWS — never resolves silently — on an
+  unserved model (naming it and the served list), a timeout, or a
+  `stopReason` of `error`/`aborted`.
+
 `host.commands` drives slash commands in-process (chat `/command`
 handling):
 
@@ -776,6 +796,86 @@ Reference plugins: [sigrun-provider-ollama](https://github.com/sigrun-ai/sigrun-
 base URL), and [sigrun-provider-bifrost](https://github.com/sigrun-ai/sigrun-provider-bifrost)
 (multi-surface discovery).
 
+## Contributing decision providers
+
+A decision provider answers SMALL STRUCTURED JUDGMENTS — a `noul` (a
+probability), a `choice` over labels, or a `score` over ordered levels —
+through the decision seam, without serving chat models. The factory
+result carries a `decisionProviders` array; like `providers`, a result
+with `decisionProviders` and no `extension` is a valid provider-only
+contributor:
+
+```ts
+export default function acmeJudge() {
+	return {
+		name: "sigrun-acme-judge",
+		decisionProviders: [
+			{
+				id: "acme-judge",
+				label: "Acme Judge",
+				credentialEnv: "ACME_JUDGE_API_KEY",
+				models: [
+					{ id: "judge-1" /*, limits: { maxQuestions: 8 } */ },
+				],
+				async evaluate(request, ctx) {
+					// ctx: { model, credential, signal, caller }
+					return {
+						answers: {
+							/* one answer per request.questions key, matching types */
+						},
+						// usage: { input_tokens, output_tokens } — optional
+					};
+				},
+				readiness() {
+					return { status: "ready" }; // the three-state tracker
+				},
+			},
+		],
+	};
+}
+```
+
+The contract:
+
+- **The wire shape is strict JSON.** `evaluate` receives the VALIDATED
+  `DecisionRequest` (`{state, questions}` — questions keyed records of
+  `noul` | `choice` | `score`) and answers `{answers}`, one answer per
+  question key, each matching its question's type. Probabilities are
+  0..1; a `choice` answer carries the winning label, a confidence, and
+  the full per-label probabilities. The request limits — 32 questions
+  and 64KB of state, narrowed by a model's declared `limits`
+  (`maxQuestions`, `maxInputBytes`, `minChoiceOptions`,
+  `maxScoreLevels`) — are validated BEFORE your code runs; an answer
+  failing the wire schema or missing a question surfaces as a
+  `bad_answer` result.
+- **Credentials resolve through the seam, never your own I/O.** The
+  registry passes the resolved credential as `ctx.credential`:
+  `auth.json[id].apiKey` (a LIVE read — a key written through
+  `PUT /v1/providers/:id/credential` applies with no restart) wins over
+  the ambient `credentialEnv` (an empty env string counts as unset).
+  Neither resolves to `not_configured` — the caller's result, decided
+  by core, never by your tracker. The magic `"default"` auth.json key
+  names the default CHAT provider and never applies to a decision id.
+- **Readiness** is the same three-state tracker the chat providers
+  carry (`not_configured` | `degraded` | `ready`); seed it from
+  credential presence. `GET /v1/providers` lists each decision provider
+  as its own entry — `kind: "decision"`, `modelIds`, `models` the
+  count, `owner` your extension slug — even when its id collides with a
+  chat provider (the entries stay separate, never merged).
+  `GET /v1/meta` projects the seam under `decisions`: `providers`, the
+  resolved `default` (the live `decisionModel` setting, else the first
+  model of the first-registered provider), and the `collisions` record.
+- **Callers** reach you through `host.decisions.evaluate(request,
+  opts)` (your `ctx.caller` is THEIR extension slug — never trust it
+  beyond attribution) or through the core `decision_evaluate` tool.
+  The tool ships only when the boot registry lists ≥ 1 decision model,
+  is gated by `decisions.tool` (default false — read live per call),
+  and stamps caller `"sigrun"`. A judge model should be prepared for
+  arbitrary state and question sets either way.
+- **One provider, many models.** Declare each judge as a `models` entry;
+  callers address them as `<id>/<modelId>`. `decisionModel` in
+  settings.json picks the default without a restart.
+
 ## Contributing webui bundles
 
 An extension can ship a replacement web UI as a **contributed bundle**: a
@@ -946,6 +1046,14 @@ if (job !== undefined) {
 `owner` is the job's **effective** owner: an ownerless or orphaned job
 resolves to the primary admin. A retired job resolves to `undefined`, just
 like an unknown id.
+
+`host.jobs.activeRun(conversationId)` answers "is a job fire running in
+this conversation right now": it returns `{jobId, owner}` for the job
+whose latest run has outcome `"running"` in that conversation, or
+`undefined` when nothing is running there. The `owner` is the same
+effective owner `get` reports. When two fires match (rare — the fire
+machinery skips overlaps per job, but two different jobs can share one
+conversation) the newest `startedAt` wins.
 
 Passing `job` to `host.conversations.create` requires the requested
 `owner` to equal that effective owner exactly (two absent owners count as

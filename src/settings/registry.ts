@@ -162,6 +162,18 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "read per settled run by the auto-namer (src/harness/naming.ts)",
 	},
 	{
+		key: "decisionModel",
+		apply: "live",
+		section: "general",
+		reason: "read per host.decisions.evaluate call by the decision registry (src/harness/decisions.ts)",
+	},
+	{
+		key: "decisions.tool",
+		apply: "live",
+		section: "tools",
+		reason: "read at each decision_evaluate tool call (default off)",
+	},
+	{
 		key: "defaultProvider.baseUrl",
 		apply: "restart",
 		section: "providers",
@@ -359,6 +371,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		apply: "restart",
 		section: "advanced",
 		reason: "the event bus's queue bound is set at open (boot)",
+	},
+	{
+		key: "server.decisions.timeoutMs",
+		apply: "live",
+		section: "providers",
+		reason: "the decision registry reads the settings' timeoutMs per evaluate call (src/harness/decisions.ts)",
 	},
 	{
 		key: "server.providers.refreshIntervalMinutes",

@@ -19,7 +19,12 @@
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
 import { accessOf as accessOfShared } from "@sigrun/shared/access";
+import type {
+	DecisionRequest,
+	DecisionResult,
+} from "@sigrun/shared/decisions";
 import type { SigrunHost } from "../extension.js";
+import { completeOnce } from "../harness/complete.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
 import { effectiveAdmin } from "../harness/identity/groups.js";
 import { userWire } from "./routes/users.js";
@@ -76,6 +81,22 @@ export interface HostBridge {
 	readonly identity: SigrunHost["identity"];
 	readonly models: SigrunHost["models"];
 	readonly commands: SigrunHost["commands"];
+	/**
+	 * Decision providers (warden Task 6): the boot-built registry's
+	 * surface — `evaluate` takes the CALLING extension's slug as its
+	 * first argument (the seam host supplies it, the way `notify` takes
+	 * the slug), so an extension can never claim another identity.
+	 * Absent when the process has no decision registry — the seam host
+	 * surfaces `no_model` then.
+	 */
+	readonly decisions?: {
+		evaluate(
+			slug: string,
+			request: DecisionRequest,
+			opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+		): Promise<DecisionResult>;
+		list(): ReturnType<SigrunHost["decisions"]["list"]>;
+	};
 	/** The extension-notify server side; the seam host supplies its slug. */
 	readonly notify: (
 		slug: string,
@@ -299,6 +320,20 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					state: job.state,
 				};
 			},
+			async activeRun(conversationId) {
+				const jobs = await opened.jobs.list();
+				let best: { jobId: string; owner: string | undefined; startedAt: string } | undefined;
+				for (const job of jobs) {
+					const run = job.lastRun;
+					if (run === undefined) continue;
+					if (run.outcome !== "running") continue;
+					if (run.conversationId !== Number(conversationId)) continue;
+					if (best !== undefined && run.startedAt <= best.startedAt) continue;
+					best = { jobId: job.id, owner: job.owner, startedAt: run.startedAt };
+				}
+				// startedAt is the tiebreak only — the wire shape is {jobId, owner}.
+				return best === undefined ? undefined : { jobId: best.jobId, owner: best.owner };
+			},
 			async isJobRun(conversationId) {
 				// The detection reads COMMITTED durable state (session meta,
 				// the live doc, submission records) — it never participates in
@@ -378,10 +413,34 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			},
 		},
 		// Gateway C4b: the model catalog — the SAME source function the
-		// `GET /v1/models` route serves (one construction, never two).
+		// `GET /v1/models` route serves (one construction, never two) —
+		// plus one-shot completions (warden Task 4), read-live settings
+		// per call so a `namingModel` change applies without a restart.
+		// Warden Task 6: the decision registry — the seam host's
+		// `decisions` members delegate here; `slug` is the CALLING
+		// extension's identity (read at call time), which the registry
+		// stamps as `caller` on the provider's context.
+		decisions: {
+			async evaluate(slug, request, opts = {}) {
+				return opened.decisions.evaluate(slug, request, opts);
+			},
+			async list() {
+				return opened.decisions.list();
+			},
+		},
 		models: {
 			async list() {
 				return listModels(opened);
+			},
+			async complete(input) {
+				return completeOnce(
+					{
+						models: opened.models,
+						defaultModel: opened.defaultModel,
+						readSettings: () => opened.settings.read(),
+					},
+					input,
+				);
 			},
 		},
 		commands: {

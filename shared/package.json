@@ -72,6 +72,10 @@
 			"types": "./dist/jobs.d.ts",
 			"default": "./dist/jobs.js"
 		},
+		"./decisions": {
+			"types": "./dist/decisions.d.ts",
+			"default": "./dist/decisions.js"
+		},
 		"./blocks": {
 			"types": "./dist/blocks/index.d.ts",
 			"default": "./dist/blocks/index.js"

@@ -120,7 +120,35 @@ function providerReadinessReport(
 	for (const { id: providerId } of opened.models.getProviders()) {
 		providers.push(readinessEntry(opened, providerId, producersByName));
 	}
+	// Warden Task 7: decision providers append as their own entries
+	// (`kind: "decision"`, the model ids listed) — a decision provider
+	// whose id collides with a chat provider stays SEPARATE (distinct
+	// kinds, never merged).
+	for (const decision of opened.decisions.providers()) {
+		providers.push(decisionEntry(decision));
+	}
 	return { providers };
+}
+
+/**
+ * One decision provider's report entry (warden Task 7): the registry
+ * row projected onto the shared entry shape — `models` the count,
+ * `modelIds` the bare ids, `owner` the contributing extension.
+ */
+function decisionEntry(decision: {
+	id: string;
+	extension: string;
+	models: readonly string[];
+	status: AuthCheckProvider["status"];
+}): AuthCheckProvider {
+	return {
+		provider: decision.id,
+		kind: "decision",
+		status: decision.status,
+		models: decision.models.length,
+		modelIds: decision.models,
+		owner: decision.extension,
+	};
 }
 
 /** Register the model-catalog and provider-readiness routes. */
@@ -154,6 +182,37 @@ export function registerProviderRoutes(
 	const isKnownProvider = (providerId: string): boolean =>
 		opened.models.getProvider(providerId) !== undefined;
 
+	// Warden Task 7: a DECISION-only provider id is equally routable (the
+	// registry enumerates its ids). The mutation bodies branch on the
+	// kind: chat ids refresh, decision ids re-read — the registry
+	// derives readiness per call, so a credential write is visible
+	// without a refresh (and the decision seam has no catalog leg to
+	// refresh).
+	const isDecisionProvider = (providerId: string): boolean =>
+		opened.decisions.providers().some((row) => row.id === providerId);
+	const isRoutableProvider = (providerId: string): boolean =>
+		isKnownProvider(providerId) || isDecisionProvider(providerId);
+	// The entry back from a mutation: the chat derivation for catalog
+	// providers, the decision entry for decision-only ids (a chat AND
+	// decision provider sharing an id answer the CHAT entry — the
+	// mutation there targets the catalog provider's refresh leg).
+	const routableEntry = (providerId: string): AuthCheckProvider => {
+		if (isKnownProvider(providerId)) {
+			return readinessEntry(opened, providerId, producersIndex(opened));
+		}
+		const decision = opened.decisions
+			.providers()
+			.find((row) => row.id === providerId);
+		if (decision === undefined) {
+			throw new Error(`provider "${providerId}" is not routable`);
+		}
+		return decisionEntry(decision);
+	};
+	// The post-write refresh: chat ids only.
+	const refreshAfterWrite = async (providerId: string): Promise<void> => {
+		if (isKnownProvider(providerId)) await opened.refreshProvider(providerId);
+	};
+
 	// One bounded refresh of the named provider (W3 Task 6, spec §7.6):
 	// the SAME policy the boot/interval/refresh-on-miss paths run — bounded
 	// by the deadline, failures warned (never the route's error), a
@@ -186,7 +245,7 @@ export function registerProviderRoutes(
 			return await reply.code(403).send({ error: "forbidden" });
 		}
 		const { id } = request.params as { id: string };
-		if (!isKnownProvider(id)) {
+		if (!isRoutableProvider(id)) {
 			return await reply.code(404).send({ error: "provider_not_found" });
 		}
 		const body = request.body;
@@ -203,9 +262,14 @@ export function registerProviderRoutes(
 				.code(400)
 				.send({ error: "invalid_field", field: "apiKey" });
 		}
-		await opened.auth.setApiKey(credentialKey(id), apiKey);
-		await opened.refreshProvider(id);
-		return readinessEntry(opened, id, producersIndex(opened));
+		// The credential key: chat ids redirect the DEFAULT provider's id
+		// to the magic "default" key; decision-only ids use the id
+		// verbatim (the magic key names the default CHAT provider, never a
+		// decision credential).
+		const key = isKnownProvider(id) ? credentialKey(id) : id;
+		await opened.auth.setApiKey(key, apiKey);
+		await refreshAfterWrite(id);
+		return routableEntry(id);
 	});
 
 	// Remove the provider's credential (admin): store delete of that SAME
@@ -216,12 +280,13 @@ export function registerProviderRoutes(
 			return await reply.code(403).send({ error: "forbidden" });
 		}
 		const { id } = request.params as { id: string };
-		if (!isKnownProvider(id)) {
+		if (!isRoutableProvider(id)) {
 			return await reply.code(404).send({ error: "provider_not_found" });
 		}
-		await opened.auth.deleteApiKey(credentialKey(id));
-		await opened.refreshProvider(id);
-		return readinessEntry(opened, id, producersIndex(opened));
+		const key = isKnownProvider(id) ? credentialKey(id) : id;
+		await opened.auth.deleteApiKey(key);
+		await refreshAfterWrite(id);
+		return routableEntry(id);
 	});
 
 	// Models: the merged chat-model catalog as picker entries (no provider

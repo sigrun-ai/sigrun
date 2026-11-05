@@ -24,6 +24,10 @@ import type {
 	SubmissionId,
 	ToolRegistration,
 } from "@earendil-works/pi-durable";
+import type {
+	DecisionRequest,
+	DecisionResult,
+} from "@sigrun/shared/decisions";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
 import type { Tree } from "@sigrun/shared/blocks";
@@ -236,6 +240,8 @@ export interface SeamHost {
 	readonly publishedHooks: SigrunHost["publishedHooks"];
 	/** The served model catalog (gateway C4b): `GET /v1/models`' list. */
 	readonly models: SigrunHost["models"];
+	/** Decision providers (warden Task 5 — the decision-providers spec). */
+	readonly decisions: SigrunHost["decisions"];
 	/** The slash-command surface (gateway C4b): catalog + in-process run. */
 	readonly commands: SigrunHost["commands"];
 	/**
@@ -365,6 +371,19 @@ export function createSeamHost(
 		readonly publishedHooks?: {
 			readonly current: {
 				registry: import("./published-hooks.js").PublishedHookRegistry | undefined;
+			};
+			readonly ready: Promise<unknown>;
+		};
+		/**
+		 * The decision-registry slot (warden Task 6): the same deferred
+		 * discipline as `publishedHooks` — boot fills `current` right after
+		 * `loadExtensions` returns and resolves `ready`. The host-bridge
+		 * path (above) delegates through it; the slot is consulted by the
+		 * no-server fallback branch only.
+		 */
+		readonly decisions?: {
+			readonly current: {
+				registry: import("./decisions.js").DecisionRegistry | undefined;
 			};
 			readonly ready: Promise<unknown>;
 		};
@@ -878,6 +897,9 @@ export function createSeamHost(
 			async get(id) {
 				return (await hostBridge("jobs.get")).jobs.get(id);
 			},
+			async activeRun(conversationId) {
+				return (await hostBridge("jobs.activeRun")).jobs.activeRun(conversationId);
+			},
 			async isJobRun(conversationId, context) {
 				return (await hostBridge("jobs.isJobRun")).jobs.isJobRun(conversationId, context);
 			},
@@ -1008,6 +1030,31 @@ export function createSeamHost(
 		models: {
 			async list() {
 				return (await hostBridge("models.list")).models.list();
+			},
+			async complete(input) {
+				return (await hostBridge("models.complete")).models.complete(input);
+			},
+		},
+		// Warden Task 6: the decisions surface delegates to the host
+		// bridge (the bridge owns the registry's body); `caller` is the
+		// identity name read AT CALL TIME (the same rekey-aware pattern as
+		// `publishedHooks.call` — the host rekeys in place), so a calling
+		// extension can never claim another identity.
+		decisions: {
+			async evaluate(
+				request: DecisionRequest,
+				opts: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+			): Promise<DecisionResult> {
+				const bridge = await hostBridge("decisions.evaluate");
+				if (bridge.decisions === undefined) {
+					return { ok: false, code: "no_model", error: "no decision provider is registered" };
+				}
+				return bridge.decisions.evaluate(identity.name, request, opts);
+			},
+			async list() {
+				const bridge = await hostBridge("decisions.list");
+				if (bridge.decisions === undefined) return [];
+				return bridge.decisions.list();
 			},
 		},
 		commands: {
