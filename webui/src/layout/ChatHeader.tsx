@@ -42,6 +42,9 @@ export function ChatHeader(props: {
 	readonly onExport: () => void;
 	readonly onCompact: () => void;
 	readonly onArchive: () => void;
+	/** Whether the active conversation is archived: the menu item then
+	 *  reads Unarchive (App's onArchive flips the flag). */
+	readonly archived?: boolean;
 	/** Whether the narrow-viewport drawer is open (aria-expanded only). */
 	readonly drawerOpen: boolean;
 	/** Toggle the narrow-viewport drawer (rail + sidebar). */
@@ -60,6 +63,7 @@ export function ChatHeader(props: {
 		onExport,
 		onCompact,
 		onArchive,
+		archived = false,
 		drawerOpen,
 		onToggleDrawer,
 	} = props;
@@ -223,7 +227,7 @@ export function ChatHeader(props: {
 							data-menu-action="archive"
 							onClick={runMenuAction(onArchive)}
 						>
-							Archive
+							{archived ? "Unarchive" : "Archive"}
 						</button>
 					</div>
 				)}

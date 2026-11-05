@@ -94,7 +94,6 @@ const EMPTY_FORM: SkillFormData = {
 	name: "",
 	description: "",
 	body: "",
-	where: "workspace",
 };
 
 function mainData(overrides?: Partial<SkillMainData>): SkillMainData {
@@ -337,6 +336,21 @@ describe("the 3000-commit guard (view limits: < 2000 blocks, < 4 MiB data)", () 
 		);
 		expect(blockCount(tree)).toBeLessThan(2000);
 		expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThan(4 * 1024 * 1024);
+	});
+});
+
+describe("the new-skill form", () => {
+	test("offers no Where choice: learned skills are the curator's", () => {
+		const tree = buildSkillsTree(
+			{ edit: true },
+			undefined,
+			EMPTY_FORM,
+			{ writable: true, historyAvailable: true, selectedExists: false },
+		);
+		const text = JSON.stringify(tree);
+		expect(text).toContain('"name":"name"');
+		expect(text).not.toContain('"name":"where"');
+		expect(text).not.toContain('"label":"Learned"');
 	});
 });
 

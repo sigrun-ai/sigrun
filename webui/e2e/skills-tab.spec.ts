@@ -38,9 +38,9 @@ test("Skills tab: create a workspace skill, see it + its one-commit history, edi
 		// New skill → the form (params {edit:true}).
 		await page.getByRole("button", { name: "New skill" }).click();
 		await expect(page).toHaveURL(/edit/);
-		// Where: Workspace (the choice field's radio option), then
-		// name/description/body (the fields' aria-labels are their labels).
-		await page.getByRole("radio", { name: "Workspace" }).check();
+		// No Where choice (new skills land in the workspace; learned is the
+		// curator's), then name/description/body (aria-labels are labels).
+		await expect(page.getByRole("radio", { name: "Learned" })).toHaveCount(0);
 		await page.getByRole("textbox", { name: "Name" }).fill("acme-e2e-skill");
 		await page.getByRole("textbox", { name: "Description" }).fill("the e2e skill");
 		await page.getByRole("textbox", { name: "Body" }).fill("The e2e body.");

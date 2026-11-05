@@ -564,7 +564,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 		selection: Selection | undefined,
 	): Promise<SkillFormData> {
 		if (params.skill === undefined || selection === undefined) {
-			return { name: "", description: "", body: "", where: "workspace" };
+			return { name: "", description: "", body: "" };
 		}
 		try {
 			const text = await readSkillFile(selection.skill.rootDir, selection.skill.name, "SKILL.md");
@@ -573,14 +573,12 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 				name: selection.skill.name,
 				description: parsed?.description ?? selection.skill.description,
 				body: parsed?.body ?? "",
-				where: "workspace",
 			};
 		} catch {
 			return {
 				name: selection.skill.name,
 				description: selection.skill.description,
 				body: "",
-				where: "workspace",
 			};
 		}
 	}
@@ -887,36 +885,23 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 			create: async (ctx: SurfaceContext, payload: unknown): Promise<ActionResult> => {
 				const user = userOf(ctx);
 				if (user === undefined) return { ok: false, error: { message: "forbidden" } };
-				const where = fieldOf(payload, "where") ?? "workspace";
+				// New skills land in the workspace only: the learned root is
+				// the curator's (a user edits, pins or deletes learned skills,
+				// never creates one).
+				const where = fieldOf(payload, "where");
+				if (where !== undefined && where !== "workspace") {
+					return {
+						ok: false,
+						error: { message: "new skills go in the workspace; learned skills come from the curator", field: "where" },
+					};
+				}
 				const name = fieldOf(payload, "name");
 				const description = fieldOf(payload, "description");
-				const body = fieldOf(payload, "body");
 				if (name === undefined || !validSkillName(name)) {
 					return { ok: false, error: { message: "a valid skill name is required (lowercase letters, digits, dashes)", field: "name" } };
 				}
 				if (description === undefined || description.trim() === "") {
 					return { ok: false, error: { message: "a description is required", field: "description" } };
-				}
-				if (where === "learned") {
-					const curation = deps.curationOf(user);
-					if (curation === undefined) {
-						return { ok: false, error: { message: "learned skills are unavailable" } };
-					}
-					try {
-						await curation.store.apply(
-							name,
-							{ kind: "create", content: skillFileText(name, description.trim(), body ?? "") },
-							{ actor: "user" },
-						);
-					} catch (error) {
-						return failure(error);
-					}
-					deps.bump();
-					return {
-						ok: true,
-						toast: `Created ${name}`,
-						navigate: { type: "navigate", params: { skill: name, root: "learned" } },
-					};
 				}
 				return workspaceWrite(ctx, payload, { mode: "create" });
 			},

@@ -1388,11 +1388,14 @@ function AppShell(options: AppOptions = {}) {
 			);
 	}, [activeId, client]);
 
-	// The header's archive action targets the active conversation.
+	// The header's archive action targets the active conversation and
+	// flips its flag (an archived conversation's item reads Unarchive).
+	const activeArchived =
+		list.rows.find((row) => row.id === activeId)?.archived === true;
 	const onArchive = useCallback((): void => {
 		if (activeId === null) return;
-		void archiveConversation(activeId, true);
-	}, [activeId, archiveConversation]);
+		void archiveConversation(activeId, !activeArchived);
+	}, [activeId, activeArchived, archiveConversation]);
 
 	// The sign-out closure (W1 Task 8; tabs+skills Task 2): ONE callback
 	// shared by the rail footer and the bottom bar's More sheet — the
@@ -1581,6 +1584,7 @@ function AppShell(options: AppOptions = {}) {
 				onExport={onExport}
 				onCompact={onCompact}
 				onArchive={onArchive}
+				archived={activeArchived}
 				drawerOpen={drawerOpen}
 				onToggleDrawer={() => setDrawerOpen((open) => !open)}
 				bell={
