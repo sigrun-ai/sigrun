@@ -61,6 +61,7 @@ const META: MetaResponse = {
 	seam: { interactions: [], ambient: [] },
 	collisions: { webui: [], providers: [], commands: [] },
 		publishedHooks: [],
+		decisions: { providers: [], default: undefined, collisions: [] },
 };
 
 describe("createClient", () => {

@@ -39,6 +39,7 @@ function makeMeta(init?: {
 		seam: { interactions: [], ambient: [] },
 		collisions: { webui: [], providers: [], commands: [] },
 		publishedHooks: [],
+		decisions: { providers: [], default: undefined, collisions: [] },
 		...(init?.coreViews === undefined ? {} : { coreViews: init.coreViews }),
 	};
 }
