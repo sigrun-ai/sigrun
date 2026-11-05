@@ -11,6 +11,9 @@ export declare const calls: {
 /** Make the provider slow (0 restores the instant answer). */
 export declare function setProviderDelay(ms: number): void;
 
+/** Set the readiness the tracker reports (warden Task 7). */
+export declare function setReadiness(status: string): void;
+
 /** Clear the records (tests own their fixtures' state). */
 export declare function resetDecisionProvider(): void;
 

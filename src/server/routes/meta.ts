@@ -200,8 +200,15 @@ export function registerMetaRoutes(
 			// hook name (`provider` is the owner slug; `shadowed` lists the
 			// losing providers). Empty when nothing published.
 			publishedHooks: opened.publishedHooks(),
+			// Warden Task 7: the decision-provider seam projection (the same
+			// pure-derivation discipline — the registry's boot-built rows).
+			decisions: {
+				providers: opened.decisions.providers(),
+				default: opened.decisions.resolvedDefault(),
+				collisions: opened.decisions.collisions(),
+			},
 		};
-	});
+});
 
 	// The slash-command catalog: the thin metadata list the composer's `/`
 	// menu consumes — name, description, args hint, and the endpoint each

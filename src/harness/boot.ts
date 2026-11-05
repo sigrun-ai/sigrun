@@ -72,6 +72,10 @@ import {
 	buildDecisionRegistry,
 	type DecisionRegistry,
 } from "./decisions.js";
+import {
+	buildDecisionEvaluateTool,
+	createDecisionsExtension,
+} from "./decision-tool.js";
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { createJobStateExtension } from "./sections/job-state.js";
@@ -1394,6 +1398,15 @@ export async function openHarness(
 	// can show and update interactive block surfaces in chat — the same
 	// core-owned slot as the coding/search tools, never quarantined.
 	registry.install(blocksToolsExtension);
+	// The decision tool (warden Task 7): installed HERE with an empty
+	// tool list — the placeholder holding the core `sigrun.decisions`
+	// name — because the decision declarations are only known AFTER the
+	// loader runs. Once the registry is built (below), boot RE-INSTALLS
+	// the extension with `decision_evaluate` when the registry lists ≥ 1
+	// decision model (`registry.install` replaces a same-name extension
+	// in place); a no-provider boot keeps the placeholder and the tool
+	// is never offered.
+	registry.install(createDecisionsExtension());
 	// Extension packages load before `Harness.open` reads the registry
 	// (spec §3 boot order). Failures quarantine and boot continues. §3
 	// factory-result producers are retained alongside the outcomes (Task 9e).
@@ -1653,13 +1666,25 @@ export async function openHarness(
 		timeoutCapMs: config.decisions.timeoutMs,
 		// The env tier of the timeout knob: env always wins over a live
 		// file edit (the config's env-over-file precedence, per call).
-		...(env[DECISION_TIMEOUT_ENV] === undefined
+		...(env[DECISION_TIMEOUT_ENV] === undefined || env[DECISION_TIMEOUT_ENV] === ""
 			? {}
 			: { timeoutMs: config.decisions.timeoutMs }),
 		now: () => Date.now(),
 		warn: (message) => console.warn(message),
 	});
 	decisionRegistryReady();
+	// Warden Task 7: the late fill — swap the placeholder extension for
+	// the tool-bearing one when any decision model exists at boot.
+	if (decisionsSlot.registry !== undefined && decisionsSlot.registry.list().length > 0) {
+		registry.install(
+			createDecisionsExtension([
+				buildDecisionEvaluateTool({
+					decisions: decisionsSlot.registry,
+					settings: settingsStore,
+				}),
+			]),
+		);
+	}
 	publishRegistryReady();
 	for (const binding of userServiceBindings) {
 		userServices.register(binding.extension, binding.services, binding.packageDir);

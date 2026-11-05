@@ -19,16 +19,26 @@
 export const calls = [];
 
 let delayMs = 0;
+// Warden Task 7: the fixture's readiness tracker state. Default
+// "not_configured" — a fresh boot with no credential resolved; tests
+// flip it via `setReadiness` (the route suite's no-restart flip).
+let readinessStatus = "not_configured";
 
 /** Make the provider slow (0 restores the instant answer). */
 export function setProviderDelay(ms) {
 	delayMs = ms;
 }
 
+/** Set the readiness the tracker reports (warden Task 7). */
+export function setReadiness(status) {
+	readinessStatus = status;
+}
+
 /** Clear the records (tests own their fixtures' state). */
 export function resetDecisionProvider() {
 	calls.length = 0;
 	delayMs = 0;
+	readinessStatus = "not_configured";
 }
 
 /** A schema-valid answer set covering exactly the request's questions. */
@@ -79,8 +89,11 @@ export default function createFixtureDecisionProvider() {
 				id: "acme-judge",
 				label: "Acme Judge",
 				credentialEnv: "TYPESAFE_API_KEY",
-				models: [{ id: "judge-1" }, { id: "judge-2" }],
-				async evaluate(request, ctx) {
+			models: [{ id: "judge-1" }, { id: "judge-2" }],
+			readiness() {
+				return { status: readinessStatus };
+			},
+			async evaluate(request, ctx) {
 					calls.push({
 						request,
 						model: ctx.model,

@@ -269,6 +269,8 @@ describe("GET /v1/meta", () => {
 			collisions: { webui: [], providers: [], commands: [] },
 			// Knowledge C7: no published hooks on a bare boot.
 			publishedHooks: [],
+			// Warden Task 7: no decision providers on a bare boot.
+			decisions: { providers: [], collisions: [] },
 			// tabs+skills Task 4: the reserved `core` slug's views ride meta
 			// (positively pinned in core-views.test.ts too).
 			coreViews: [
