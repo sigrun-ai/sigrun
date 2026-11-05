@@ -142,6 +142,8 @@ const SETTING_KEYS = [
 	"jobHistory",
 	"defaultModel",
 	"namingModel",
+	"decisionModel",
+	"decisions",
 	"defaultProvider",
 	"skills",
 	"notifications",
@@ -440,6 +442,41 @@ function validate(value: Record<string, unknown>): void {
 			);
 		}
 	}
+	if (value.decisionModel !== undefined) {
+		// Exactly defaultModel's spec rules (no `false` disable — a
+		// decision call without a default resolves the first-registered
+		// provider's first model).
+		const spec = value.decisionModel;
+		if (typeof spec !== "string" || spec.trim() === "") {
+			throw new SettingsValidationError(
+				"decisionModel",
+				"must be a non-empty provider/model-id string",
+			);
+		}
+		const trimmed = spec.trim();
+		const slash = trimmed.indexOf("/");
+		if (
+			slash !== -1 &&
+			(trimmed.slice(0, slash) === "" || trimmed.slice(slash + 1) === "")
+		) {
+			throw new SettingsValidationError(
+				"decisionModel",
+				"must have a non-empty provider and model id",
+			);
+		}
+	}
+	// The decision surface's toggles (warden Task 6): a flat section —
+	// `tool` a boolean.
+	if (value.decisions !== undefined) {
+		const decisions = asRecord(value.decisions);
+		if (decisions === undefined) {
+			throw new SettingsValidationError("decisions", "must be an object");
+		}
+		checkKeys("decisions.", decisions, ["tool"]);
+		if (decisions.tool !== undefined && typeof decisions.tool !== "boolean") {
+			throw new SettingsValidationError("decisions.tool", "must be a boolean");
+		}
+	}
 	if (value.defaultProvider !== undefined) {
 		const provider = asRecord(value.defaultProvider);
 		if (provider === undefined) {
@@ -551,6 +588,7 @@ function validateServer(server: unknown): void {
 		"dev",
 		"supervised",
 		"backup",
+		"decisions",
 	]);
 	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
 	// exactly the names croner's evaluation path resolves, and throws on
@@ -727,6 +765,22 @@ function validateServer(server: unknown): void {
 					"must be a positive integer",
 				);
 			}
+		}
+	}
+	if (record.decisions !== undefined) {
+		const decisions = asRecord(record.decisions);
+		if (decisions === undefined) {
+			throw new SettingsValidationError("server.decisions", "must be an object");
+		}
+		checkKeys("server.decisions.", decisions, ["timeoutMs"]);
+		if (
+			decisions.timeoutMs !== undefined &&
+			!isPositiveInt(decisions.timeoutMs)
+		) {
+			throw new SettingsValidationError(
+				"server.decisions.timeoutMs",
+				"must be a positive integer",
+			);
 		}
 	}
 	if (record.isolation !== undefined) {

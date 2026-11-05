@@ -355,6 +355,19 @@ export function createSeamHost(
 			};
 			readonly ready: Promise<unknown>;
 		};
+		/**
+		 * The decision-registry slot (warden Task 6): the same deferred
+		 * discipline as `publishedHooks` — boot fills `current` right after
+		 * `loadExtensions` returns and resolves `ready`. The host-bridge
+		 * path (above) delegates through it; the slot is consulted by the
+		 * no-server fallback branch only.
+		 */
+		readonly decisions?: {
+			readonly current: {
+				registry: import("./decisions.js").DecisionRegistry | undefined;
+			};
+			readonly ready: Promise<unknown>;
+		};
 	},
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
@@ -891,8 +904,11 @@ export function createSeamHost(
 				return (await hostBridge("models.complete")).models.complete(input);
 			},
 		},
-		// Warden Task 5: the bridge carries a decision registry once boot
-		// wires one (Task 6); without one `evaluate` surfaces `no_model`.
+		// Warden Task 6: the decisions surface delegates to the host
+		// bridge (the bridge owns the registry's body); `caller` is the
+		// identity name read AT CALL TIME (the same rekey-aware pattern as
+		// `publishedHooks.call` — the host rekeys in place), so a calling
+		// extension can never claim another identity.
 		decisions: {
 			async evaluate(
 				request: DecisionRequest,
@@ -902,7 +918,7 @@ export function createSeamHost(
 				if (bridge.decisions === undefined) {
 					return { ok: false, code: "no_model", error: "no decision provider is registered" };
 				}
-				return bridge.decisions.evaluate(request, opts);
+				return bridge.decisions.evaluate(identity.name, request, opts);
 			},
 			async list() {
 				const bridge = await hostBridge("decisions.list");

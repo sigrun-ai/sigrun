@@ -22,7 +22,7 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
+import { DECISION_TIMEOUT_ENV, effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { requiresProxyVouch } from "../server/auth/proxy-only.js";
 import { wireActivity } from "./activity.js";
 import { snapshotBeforeMigration } from "./migration-snapshot.js";
@@ -68,6 +68,10 @@ import {
 	buildPublishedHookRegistry,
 	type PublishedHookRegistry,
 } from "./published-hooks.js";
+import {
+	buildDecisionRegistry,
+	type DecisionRegistry,
+} from "./decisions.js";
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { createJobStateExtension } from "./sections/job-state.js";
@@ -363,6 +367,15 @@ export interface OpenedHarness {
 	 * submission without a restart).
 	 */
 	readonly settings: SettingsStore;
+	/**
+	 * The decision registry (warden Task 6): every loaded extension's
+	 * validated `decisionProviders` folded into ONE registry —
+	 * `evaluate`/`list`/`providers`/`resolvedDefault`/`collisions`,
+	 * credentials resolved per call (auth.json over the ambient env),
+	 * `evaluate` never throws. The host bridge delegates its
+	 * `decisions` surface to it; empty = the no-declarer deploy.
+	 */
+	readonly decisions: DecisionRegistry;
 	/**
 	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
 	 * restart key's stored value at boot, taken once after the settings
@@ -1486,6 +1499,20 @@ export async function openHarness(
 	const publishedHooksSlot: {
 		registry: PublishedHookRegistry | undefined;
 	} = { registry: undefined };
+	// The decision-registry slot (warden Task 6): the SAME deferred
+	// discipline as the published-hook slot above — seam hosts are built
+	// inside the loader's hostContextFactory (before the registry can
+	// exist) and close over this slot. Boot builds the registry from the
+	// loader's declarations right after `loadExtensions` returns and
+	// resolves the deferred; a `host.decisions.evaluate` issued from a
+	// factory body waits on it.
+	let decisionRegistryReady!: () => void;
+	const decisionsReady = new Promise<void>((resolve) => {
+		decisionRegistryReady = resolve;
+	});
+	const decisionsSlot: {
+		registry: DecisionRegistry | undefined;
+	} = { registry: undefined };
 	// The boot-shared store trio (Task 5): one SecretsStore + one
 	// ExtensionSettingsStore over the roots resolved at the top of boot;
 	// each seam host scopes it to its extension's slug (cheap, no I/O —
@@ -1505,6 +1532,7 @@ export async function openHarness(
 		curationBindings,
 		noticeActionBindings,
 		publishedHookDeclarations,
+		decisionProviderDeclarations,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -1548,6 +1576,7 @@ export async function openHarness(
 						set: (slug, user, tools) => userTools.set(slug, user, tools),
 					}, userServices, {
 						publishedHooks: { current: publishedHooksSlot, ready: publishedHooksReady },
+						decisions: { current: decisionsSlot, ready: decisionsReady },
 					});
 				host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
@@ -1601,6 +1630,36 @@ export async function openHarness(
 			warn: (message) => console.warn(message),
 		},
 	);
+	// The decision registry (warden Task 6): built from the loader's
+	// collected declarations the moment `loadExtensions` returns (the
+	// published-hook pattern above), then the deferred resolves — a
+	// `host.decisions.evaluate` issued from a factory body (still in
+	// flight) proceeds from here. The credential resolves PER CALL:
+	// `auth.json[id].apiKey` (a live read, so a key written through the
+	// providers route applies without a restart) wins over the ambient
+	// `credentialEnv` with the auth bridge's `""`-means-unset rule; the
+	// magic `"default"` key never applies (it names the default CHAT
+	// provider). The settings read is live too: `decisionModel` and
+	// `server.decisions.timeoutMs` apply without a restart.
+	decisionsSlot.registry = buildDecisionRegistry(decisionProviderDeclarations, {
+		credential: (id, credentialEnv) => {
+			const stored = authStore.read()[id]?.apiKey;
+			if (stored !== undefined) return stored;
+			return credentialEnv === undefined
+				? undefined
+				: env[credentialEnv]?.trim() || undefined;
+		},
+		readSettings: () => settingsStore.read(),
+		timeoutCapMs: config.decisions.timeoutMs,
+		// The env tier of the timeout knob: env always wins over a live
+		// file edit (the config's env-over-file precedence, per call).
+		...(env[DECISION_TIMEOUT_ENV] === undefined
+			? {}
+			: { timeoutMs: config.decisions.timeoutMs }),
+		now: () => Date.now(),
+		warn: (message) => console.warn(message),
+	});
+	decisionRegistryReady();
 	publishRegistryReady();
 	for (const binding of userServiceBindings) {
 		userServices.register(binding.extension, binding.services, binding.packageDir);
@@ -2383,6 +2442,7 @@ export async function openHarness(
 		identity,
 		memoryHealth,
 		settings: settingsStore,
+		decisions: decisionsSlot.registry as DecisionRegistry,
 		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,

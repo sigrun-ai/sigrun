@@ -362,7 +362,18 @@ export function buildDecisionRegistry(
 		credential(id: string, env: string | undefined): string | undefined;
 		/** The live settings (decisionModel, server.decisions.timeoutMs). */
 		readSettings(): SettingsFile;
+		/**
+		 * The configured timeout — the default AND cap for one evaluate
+		 * call (env over file over the built-in default).
+		 */
 		timeoutCapMs: number;
+		/**
+		 * The env tier of the timeout knob (warden Task 6): set when
+		 * `SIGRUN_DECISION_TIMEOUT_MS` is in the environment, so the env
+		 * var wins over a live file edit to `server.decisions.timeoutMs`
+		 * (the config's env-over-file precedence applied per call).
+		 */
+		timeoutMs?: number;
 		now(): number;
 		warn(message: string): void;
 	},
@@ -415,7 +426,9 @@ export function buildDecisionRegistry(
 	function settingsTimeoutMs(): number {
 		const decisions = (deps.readSettings() as { server?: { decisions?: { timeoutMs?: number } } }).server
 			?.decisions;
-		return decisions?.timeoutMs ?? deps.timeoutCapMs;
+		// Env tier first (env always wins), then the live file value,
+		// then the configured fallback.
+		return deps.timeoutMs ?? decisions?.timeoutMs ?? deps.timeoutCapMs;
 	}
 
 	async function evaluate(

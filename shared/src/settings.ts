@@ -180,6 +180,14 @@ export interface ServerSettings {
 	 * 30000 ms.
 	 */
 	readonly publishedHookDeadlineMs?: number;
+	/**
+	 * The decision-provider knob (warden Task 6): `SIGRUN_DECISION_TIMEOUT_MS`
+	 * — the per-call timeout (default AND cap, default 15000 ms), a
+	 * positive integer.
+	 */
+	readonly decisions?: {
+		readonly timeoutMs?: number;
+	};
 	/** The multi-user execution jail (M1). `mode` and `osUsers` are restart-required. */
 	readonly isolation?: {
 		/** `SIGRUN_ISOLATION` — auto, always, or off; default auto. */
@@ -422,6 +430,15 @@ export interface SettingsFile {
 	 */
 	readonly namingModel?: string | false;
 	/**
+	 * Sigrun: the decision providers' default model (warden Task 6), a
+	 * non-empty `provider/model-id` spec validated exactly like
+	 * `defaultModel`. Absent = the first model of the first-registered
+	 * decision provider. LIVE — the decision registry reads it per
+	 * `host.decisions.evaluate` call, so a PATCH reaches the next call
+	 * without a restart.
+	 */
+	readonly decisionModel?: string;
+	/**
 	 * Sigrun: the env-driven OpenAI-compatible provider's endpoint
 	 * (ruling 7), applied when `OPENAI_BASE_URL` is absent.
 	 */
@@ -456,6 +473,15 @@ export interface SettingsFile {
 	 * `defaultTools`.
 	 */
 	readonly autoEnableCodemode?: boolean;
+	/**
+	 * Sigrun: the decision surface's toggles (warden Task 6). `tool`
+	 * (default false) gates the core `decision_evaluate` tool — read at
+	 * each tool call; a disabled tool returns an error result naming the
+	 * setting. LIVE.
+	 */
+	readonly decisions?: {
+		readonly tool?: boolean;
+	};
 	/**
 	 * Sigrun: the static boot configuration (see {@link ServerSettings}).
 	 * Deployment defaults under env — changes require a restart.

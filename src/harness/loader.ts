@@ -87,6 +87,7 @@ import type { Extension, Registry } from "@earendil-works/pi-durable";
 import type {
 	ChannelContribution,
 	CurationTarget,
+	DecisionProviderContribution,
 	ExtensionCommandContribution,
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
@@ -118,6 +119,7 @@ import { basename, dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { satisfies, validRange } from "semver";
 import type { DeclaredKinds } from "./seam-host.js";
+import type { DecisionDeclaration } from "./decisions.js";
 import {
 	HOST_RUNTIME_MODULES,
 	hostModuleVersion,
@@ -465,6 +467,14 @@ export interface LoadedExtensions {
 	 */
 	readonly publishedHookDeclarations: readonly PublishedHookDeclaration[];
 	/**
+	 * `decisionProviders` declarations from loaded extensions (warden
+	 * Task 6), one entry per contribution in load order, each
+	 * `{extension, contribution}` with the slug attribution — boot folds
+	 * this flat list into the ONE `DecisionRegistry` (last-registered
+	 * wins per id). Quarantined extensions contribute none.
+	 */
+	readonly decisionProviderDeclarations: readonly DecisionDeclaration[];
+	/**
 	 * Declared jobs from factory results (jobs §8.3 — the `extension`
 	 * source), one entry per loaded extension whose result carried `jobs`;
 	 * quarantined extensions contribute none. Boot reconciliation folds
@@ -612,6 +622,8 @@ export interface ResolvedExtension {
 	readonly curationTargets?: readonly CurationTarget[];
 	/** Present only when the factory result carried `publishedHooks` (validated). */
 	readonly publishedHooks?: readonly PublishedHook[];
+	/** Decision-provider contributions (warden Task 6), validated fail-loud. */
+	readonly decisionProviders?: readonly DecisionProviderContribution[];
 	/** Present only when the factory result carried `noticeActions` (validated). */
 	readonly noticeActions?: Readonly<Record<string, UserNoticeActionHandler>>;
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
@@ -721,7 +733,8 @@ type LoaderReadKeys =
 	| "userServices"
 	| "curationTargets"
 	| "noticeActions"
-	| "publishedHooks";
+	| "publishedHooks"
+	| "decisionProviders";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -1027,6 +1040,104 @@ function validatePublishedHooks(
 		}
 	}
 	return value as readonly PublishedHook[];
+}
+
+/** The decision-provider id grammar (warden Task 6): also the auth.json key. */
+const DECISION_PROVIDER_ID = /^[a-z][a-z0-9-]*$/;
+/** The decision-provider id length bound. */
+const DECISION_PROVIDER_ID_MAX_CHARS = 64;
+/** The decision-model id grammar (the `"<provider>/<model>"` spec's second half). */
+const DECISION_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+/** The `credentialEnv` grammar: a process-env NAME. */
+const DECISION_CREDENTIAL_ENV = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Validate a factory result's `decisionProviders` declaration (warden
+ * Task 6). Absent → undefined (no contributions). Present but malformed
+ * → throw; the loader quarantines the extension with the thrown message
+ * (fail-loud: an extension that THINKS it contributed a decision
+ * provider must not silently lose it — the providers/health class).
+ * Per entry: a string `id` matching {@link DECISION_PROVIDER_ID} (≤64
+ * chars), at least one model whose ids match {@link DECISION_MODEL_ID}
+ * with no intra-provider duplicates, `evaluate` a function, `readiness`
+ * absent or a function, and `credentialEnv` absent or a NAME.
+ */
+function validateDecisionProviders(
+	value: unknown,
+): readonly DecisionProviderContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned a decisionProviders field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const provider = entry as {
+			id?: unknown;
+			models?: unknown;
+			evaluate?: unknown;
+			readiness?: unknown;
+			credentialEnv?: unknown;
+		} | null;
+		if (
+			typeof provider?.id !== "string" ||
+			provider.id.length > DECISION_PROVIDER_ID_MAX_CHARS ||
+			!DECISION_PROVIDER_ID.test(provider.id)
+		) {
+			throw new Error(
+				`extension factory returned a decision provider with an invalid id ${JSON.stringify(provider?.id)} (must match ${DECISION_PROVIDER_ID.source}, ≤${DECISION_PROVIDER_ID_MAX_CHARS} chars)`,
+			);
+		}
+		if (
+			!Array.isArray(provider.models) ||
+			provider.models.length === 0
+		) {
+			throw new Error(
+				`extension factory returned a decision provider "${provider.id}" with no models`,
+			);
+		}
+		const seen = new Set<string>();
+		for (const model of provider.models) {
+			const modelId = (model as { id?: unknown } | null)?.id;
+			if (
+				typeof modelId !== "string" ||
+				!DECISION_MODEL_ID.test(modelId)
+			) {
+				throw new Error(
+					`extension factory returned a decision provider "${provider.id}" with an invalid model id ${JSON.stringify(modelId)} (must match ${DECISION_MODEL_ID.source})`,
+				);
+			}
+			if (seen.has(modelId)) {
+				throw new Error(
+					`extension factory returned a decision provider "${provider.id}" with a duplicate model id "${modelId}"`,
+				);
+			}
+			seen.add(modelId);
+		}
+		if (typeof provider.evaluate !== "function") {
+			throw new Error(
+				`extension factory returned a decision provider "${provider.id}" whose evaluate is not a function`,
+			);
+		}
+		if (
+			provider.readiness !== undefined &&
+			typeof provider.readiness !== "function"
+		) {
+			throw new Error(
+				`extension factory returned a decision provider "${provider.id}" whose readiness is not a function`,
+			);
+		}
+		if (
+			provider.credentialEnv !== undefined &&
+			(typeof provider.credentialEnv !== "string" ||
+				!DECISION_CREDENTIAL_ENV.test(provider.credentialEnv))
+		) {
+			throw new Error(
+				`extension factory returned a decision provider "${provider.id}" with an invalid credentialEnv ${JSON.stringify(provider.credentialEnv)} (must match ${DECISION_CREDENTIAL_ENV.source})`,
+			);
+		}
+	}
+	return value as readonly DecisionProviderContribution[];
 }
 
 function validateCurationTargets(
@@ -2342,6 +2453,9 @@ async function resolvedFromFactory(
 		throw new Error("extension factory returned a perUserTools field that is not a boolean");
 	}
 	const providers = validateProviders(candidate.providers);
+	// Decision providers (warden Task 6): validated with the other
+	// contribution fields, BEFORE the contributor-only check reads them.
+	const decisionProviders = validateDecisionProviders(candidate.decisionProviders);
 	const loginProviders = validateLoginProviders(candidate.loginProviders);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
@@ -2371,7 +2485,8 @@ async function resolvedFromFactory(
 			loginProviders === undefined &&
 			webuiBundles === undefined &&
 			channels === undefined &&
-			userServices === undefined
+			userServices === undefined &&
+			decisionProviders === undefined
 		) {
 			return undefined;
 		}
@@ -2485,6 +2600,7 @@ async function resolvedFromFactory(
 		...(curationTargets === undefined ? {} : { curationTargets }),
 		...(noticeActions === undefined ? {} : { noticeActions }),
 		...(publishedHooks === undefined ? {} : { publishedHooks }),
+		...(decisionProviders === undefined ? {} : { decisionProviders }),
 		...(providers === undefined ? {} : { providers }),
 		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
@@ -2786,6 +2902,9 @@ const noticeActionBindings: ExtensionNoticeActionBinding[] = [];
 // registry AFTER `loadExtensions` returns (ownership: configured before
 // built-ins, first per name wins — the registry's own ordering rule).
 const publishedHookDeclarations: PublishedHookDeclaration[] = [];
+// Decision-provider declarations (warden Task 6), slug-attributed —
+// boot folds them into the ONE DecisionRegistry.
+const decisionProviderDeclarations: DecisionDeclaration[] = [];
 const userServiceBindings: { extension: string; services: readonly UserService[]; packageDir: string }[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
@@ -3263,6 +3382,16 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						hook,
 					});
 				}
+				// Decision providers (warden Task 6): collected AFTER the install
+				// — a quarantined extension never reaches here, so every
+				// declaration comes from a LOADED extension. The slug (not the
+				// declared contribution id) is the attribution.
+				for (const contribution of resolved.decisionProviders ?? []) {
+					decisionProviderDeclarations.push({
+						extension: slug,
+						contribution,
+					});
+				}
 				if (resolved.curationTargets !== undefined) {
 					curationBindings.push({
 						extension: slug,
@@ -3398,6 +3527,7 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		curationBindings,
 		noticeActionBindings,
 		publishedHookDeclarations,
+		decisionProviderDeclarations,
 		jobBindings,
 		routeBindings,
 		commandBindings,
