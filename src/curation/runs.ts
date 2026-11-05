@@ -63,6 +63,10 @@ import { ensureRequestId, recordAuthor } from "./attribution.js";
 import { isInternal, markInternal } from "./internal.js";
 import { curationRun, CurationRunDoc } from "./run-doc.js";
 import { CURATION_GATE_EXTENSION } from "./gate.js";
+import {
+	excludeInteractiveTools,
+	withoutInteractive,
+} from "../harness/interactive-tools.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 
 /** What the run driver needs from its host. */
@@ -71,6 +75,18 @@ export interface CurationRunDeps {
 	readonly harness: Harness;
 	/** The boot registry (the gate + extension resolution). */
 	readonly registry: Registry;
+	/**
+	 * The loaded extensions' interactive tool names (ask-user Task 3,
+	 * spec §6). Only the producers that HIDE tools read it: a digest run's
+	 * `init` excludes them from the fresh conversation's stored filter,
+	 * and every run's `allow` list loses them with a warning BEFORE
+	 * `checkRunOpts` (an all-interactive list still fails the non-empty
+	 * check). A fork REVIEW keeps them listed — `rebuildAgentWithGate`
+	 * copies the parent's selection for byte-identical prompt prefixes,
+	 * and the gate blocks an interactive call instead. Absent on the
+	 * test-only hand-built deps (no hiding — the pre-feature behavior).
+	 */
+	readonly interactiveTools?: ReadonlySet<string>;
 }
 
 /** The parent state the driver captures at start (the cancel oracle). */
@@ -630,9 +646,19 @@ export async function forkReviewRun(
 	id: ConversationId,
 	opts: CurationRunOpts,
 ): Promise<CurationRunResult> {
-	checkRunOpts(opts);
-	const { harness } = deps;
-	const parent = await harness.conversation(id, BACKGROUND_CONTEXT);
+// Ask-user Task 3: the allow list loses interactive tools BEFORE the
+// non-empty check (an all-interactive list still fails loudly, with
+// the strip warning logged first). Fork reviews KEEP them listed
+// (cache parity) — the gate blocks a call instead.
+const allow = withoutInteractive(
+opts.allow,
+deps.interactiveTools ?? new Set(),
+console.warn,
+"fork review",
+);
+checkRunOpts({ ...opts, allow });
+const { harness } = deps;
+const parent = await harness.conversation(id, BACKGROUND_CONTEXT);
 	if (parent === undefined) {
 		return notEligible("the conversation does not exist");
 	}
@@ -678,7 +704,7 @@ export async function forkReviewRun(
 				const doc = await tx.doc(CurationRunDoc, forkId);
 				doc.user = owner;
 				doc.reviewId = opts.reviewId;
-				doc.allow = [...opts.allow];
+				doc.allow = [...allow];
 				doc.parent = id as number;
 				// The fork's copied meta carries the parent's sharing; an
 				// internal run is nobody's shared copy (A2's invisibility
@@ -711,7 +737,13 @@ export async function digestRunRun(
 	defaultModel: { readonly provider: string; readonly modelId: string },
 	defaultAgent: () => AgentChange,
 ): Promise<CurationRunResult> {
-	checkRunOpts(opts);
+	const allow = withoutInteractive(
+		opts.allow,
+		deps.interactiveTools ?? new Set(),
+		console.warn,
+		"digest run",
+	);
+	checkRunOpts({ ...opts, allow });
 	const { harness } = deps;
 	const conversation = await harness.createConversation(
 		{
@@ -727,10 +759,14 @@ export async function digestRunRun(
 			},
 			init: async (tx, id) => {
 				await markInternal(tx, id, user);
+				// Ask-user Task 3: the digest conversation's fresh agent
+				// selection loses the interactive tools (the tool is never
+				// listed, so the model never tries).
+				await excludeInteractiveTools(tx, id, deps.interactiveTools ?? new Set());
 				const doc = await tx.doc(CurationRunDoc, id);
 				doc.user = user;
 				doc.reviewId = opts.reviewId;
-				doc.allow = [...opts.allow];
+				doc.allow = [...allow];
 			},
 		},
 		BACKGROUND_CONTEXT,

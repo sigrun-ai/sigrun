@@ -44,6 +44,7 @@ import { listModels } from "./helpers.js";
 import { notifyExtension } from "./notifications.js";
 import type { ServerContext } from "./context.js";
 import { SessionMetaDoc } from "./session-meta.js";
+import { isJobRunConversation } from "../harness/interactive-tools.js";
 import { accountLinkWire, serializeConversationView } from "./views.js";
 
 /**
@@ -297,6 +298,18 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					enabled: job.enabled,
 					state: job.state,
 				};
+			},
+			async isJobRun(conversationId) {
+				// The detection reads COMMITTED durable state (session meta,
+				// the live doc, submission records) — it never participates in
+				// the caller's transaction, so the bridge's own background
+				// context is the honest one (the HandlerContext arg is a
+				// cancellation surface only).
+				return await isJobRunConversation(
+					opened.harness,
+					conversationId,
+					BACKGROUND_CONTEXT,
+				);
 			},
 		},
 		users: {

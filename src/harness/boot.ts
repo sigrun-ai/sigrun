@@ -264,6 +264,15 @@ export interface OpenedHarness {
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
 	readonly defaultModel: ModelRef;
+	/**
+	 * The union of every loaded extension's validated `interactiveTools`
+	 * (ask-user Task 3, spec §6): the tool names core hides in every
+	 * non-interactive run — job run conversations (`jobs/fire.ts`),
+	 * curator runs (`curation/runs.ts`), and the create-with-job op
+	 * (`server/conversation-ops.ts`). An empty set is the
+	 * no-interactive-extension deploy (every caller no-ops).
+	 */
+	readonly interactiveTools: ReadonlySet<string>;
 	/** Provider-merge collisions; the sink `GET /v1/meta`'s `collisions.providers` reads. */
 	readonly providerCollisions: readonly ProviderCollision[];
 	/**
@@ -1511,6 +1520,7 @@ export async function openHarness(
 		webuiBundles: extensionWebuiBundles,
 		skillRoots: extensionSkillRoots,
 		jobBindings,
+		interactiveTools: loadedInteractiveTools,
 		routeBindings,
 		commandBindings,
 		notifierBindings,
@@ -1751,6 +1761,12 @@ export async function openHarness(
 		// `typed` entry — there is no user turn to attribute).
 		commandExpansion,
 		envBuilder: undefined as unknown as EnvBuilder,
+		// Ask-user Task 3: job fires hide interactive tools (assigned with
+		// the rest of the late-bound deps after the load completes).
+		// SAFETY: the placeholder is assigned below, before any fireJob
+		// caller can run (the same late-binding pattern as `harness`/
+		// `storage`/`envBuilder` on this deps object).
+		interactiveTools: undefined as unknown as ReadonlySet<string>,
 		// Gateway C7: a deliver-carrying fire warns once per run when no
 		// engine loaded (core ships none — `gatewayEngine` is undefined
 		// unless an extension declared one).
@@ -2024,6 +2040,7 @@ export async function openHarness(
 	// JobsService — happens after this point.
 	jobRuntimeDeps.harness = harness;
 	jobRuntimeDeps.storage = storage;
+	jobRuntimeDeps.interactiveTools = new Set(loadedInteractiveTools);
 	// Drain the restart-limit parks reported during open before scheduling
 	// resumes. A failed status patch is logged and dropped by applyParkedJobs.
 	await applyParkedJobs(harness, reports.takeParked(), BACKGROUND_CONTEXT);
@@ -2106,6 +2123,7 @@ export async function openHarness(
 		storage,
 		curation,
 		defaultModel,
+		interactiveTools: new Set(loadedInteractiveTools),
 		stores: curationOf,
 		skillsOptions: {
 			userDir: join(roots.configDir, "skills"),
@@ -2368,6 +2386,7 @@ export async function openHarness(
 		reports,
 		jobRunTotals: () => jobRunTotals,
 		defaultModel,
+		interactiveTools: new Set(loadedInteractiveTools),
 		providerCollisions: sink.collisions,
 		webuiBundles,
 		webuiBundleCollisions,

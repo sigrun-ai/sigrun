@@ -249,6 +249,7 @@ what core does with each, and where its rules are documented:
 | `harnessShutdown` | `ExtensionHarnessShutdownHandler` | the shutdown flush window (handlers may commit); runs after workers stop, concurrently with other extensions under one shared deadline and with no guaranteed relative order | this table |
 | `userDeleted` | `ExtensionUserDeletedHandler` | fired after a user delete transferred ownership — move your per-user records here | this table |
 | `interactionKinds` | `readonly string[]` | gates your interaction-seed writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
+| `interactiveTools` | `readonly string[]` | tool names that need a human present; core hides them in job and curator runs (each name must be one of your `tools`) | ["Interactive tools"](#interactive-tools) |
 | `ambientKinds` | `readonly string[]` | gates your ambient-surface writes and feeds the capability inventory | [approval-ux-seams.md](approval-ux-seams.md) |
 | `workers` | `readonly ExtensionWorker[]` | host-owned wake timers + one-run-at-a-time execution; statuses in `/v1/meta` | "Idle workers: `wakeOn` only" |
 | `curationTargets` | `readonly CurationTarget[]` | the curator's learnable targets: listed tools are wrapped for review hints, `undo` is required at load (a target without it quarantines) | ["Curation targets"](#curation-targets) |
@@ -957,6 +958,39 @@ job-state prompt section on its next run.
 
 The HTTP `POST /v1/conversations` route does not accept this option: it
 still takes no body fields.
+
+## Interactive tools
+
+A factory result may declare `interactiveTools` — the names of tools it
+registers (`extension.tools`) that need a human present, such as a
+question tool that waits on an answer card. Each name must be a tool the
+extension registers; a declaration naming an unregistered tool quarantines
+the extension at load with
+`interactiveTools names "<n>", which this extension does not register`.
+
+Core hides the named tools in every non-interactive run it creates:
+
+- **Job run conversations** (`conversation: "new"` fires) and
+  **`host.conversations.create({job, agent})`** — the names are removed
+  from the conversation's stored enabled-tools filter at creation time
+  (`AgentDoc.tools`), so the tool is neither offered to the model nor
+  reachable from a nested `executeTool()` call. An explicit `agent.tools`
+  selection naming an interactive tool loses it the same way.
+- **Curator runs** — a digest run's fresh conversation excludes them;
+  every run's `allow` list loses them with ONE logged warning (the strip
+  runs before the non-empty-`allow` check, so an all-interactive list
+  still fails loudly). A fork review KEEPS them listed — its agent is
+  rebuilt from the parent's stored selection for byte-identical prompt
+  prefixes (provider cache parity) — and the curation gate blocks a call
+  instead.
+
+A job that fires into an EXISTING conversation (`action.conversation:
+<id>`) is not covered by the creation-time filter: the conversation
+predates the fire and keeps the tool listed. An interactive tool must
+therefore guard its own execute with `host.jobs.isJobRun(conversationId,
+context)` and refuse (telling the model to escalate instead) when it
+returns true — a run must never wait on a human that isn't there. The
+same guard covers a conversation whose `jobId` stamp makes it a job run.
 
 ## HTTP routes
 

@@ -872,6 +872,9 @@ export function createSeamHost(
 			async get(id) {
 				return (await hostBridge("jobs.get")).jobs.get(id);
 			},
+			async isJobRun(conversationId, context) {
+				return (await hostBridge("jobs.isJobRun")).jobs.isJobRun(conversationId, context);
+			},
 		},
 		users: {
 			async list() {

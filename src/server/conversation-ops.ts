@@ -41,6 +41,7 @@ import {
 } from "@sigrun/shared/access";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
+import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import {
 	ensureRequestId,
 	recordAuthor,
@@ -352,6 +353,20 @@ export async function createConversationOp(
 			undefined,
 			input.owner,
 		);
+		// Ask-user Task 3 (spec §6): a conversation created FOR a job hides
+		// the interactive tools — the creation-time filter edits the stored
+		// enabled-tools filter, so the tool is neither offered nor reachable
+		// from nested `executeTool()` calls. An explicit `agent.tools`
+		// selection naming one loses it the same way. A SECOND commit after
+		// `harness.createConversation` is fine: document access is
+		// unrestricted here.
+		if (input.job !== undefined) {
+			await excludeInteractiveTools(
+				tx,
+				conversation.id,
+				opened.interactiveTools,
+			);
+		}
 	}, BACKGROUND_CONTEXT);
 	const view = await readView(conversation);
 	return { id: conversation.id, view };

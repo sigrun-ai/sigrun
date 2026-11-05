@@ -264,3 +264,48 @@ describe("host.conversations.create({job})", () => {
 		expect(response.json()).toEqual({ error: "invalid_body" });
 	});
 });
+
+describe("host.jobs.isJobRun", () => {
+	test("is true for a job-created conversation (the jobId stamp)", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const job = await createAliceJob(opened);
+		const id = await host.conversations.create({ owner: "alice", job: job.id });
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(true);
+	});
+
+	test("is true while a fixed-conversation job's input is the current run's input; false for an ordinary run in the same conversation", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		// A long-running ordinary conversation the fixed-conversation job
+		// fires INTO (the creation-time filter cannot cover this shape).
+		const id = await host.conversations.create({ owner: "alice" });
+		const spec: JobSpec = {
+			name: "nightly-check",
+			schedule: { every: "60s" },
+			action: {
+				kind: "prompt",
+				prompt: "check the state",
+				conversation: id as unknown as number,
+			},
+		};
+		const job = await opened.jobs.createApi(spec, "alice");
+		await opened.jobs.runNow(job.id);
+		// While the job fire's run is live its input carries the job: prefix.
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation vanished");
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(true);
+		await conversation.waitForIdle(BACKGROUND_CONTEXT);
+		// Settled: the run.inputs read is empty and the meta carries no
+		// jobId (the conversation predates the fire) — an ordinary run in
+		// the same conversation is NOT a job run.
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(false);
+		const submission = await conversation.submit(
+			{ type: "input", content: "an ordinary user turn" },
+			BACKGROUND_CONTEXT,
+		);
+		await expect(host.jobs.isJobRun(id, BACKGROUND_CONTEXT)).resolves.toBe(false);
+		await submission.wait(BACKGROUND_CONTEXT);
+	});
+});
+

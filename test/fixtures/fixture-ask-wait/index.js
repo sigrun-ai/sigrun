@@ -3,6 +3,9 @@
  * `interactiveTools`): a DECLINABLE interaction kind ("askwait.q") and one
  * tool `wait_for_human` whose execute seeds a question record and then
  * waits — the "waiting question" half of the message-decline rules.
+ * Task 3: the factory result declares `interactiveTools: ["wait_for_human"]`
+ * — core hides it in job and curator runs and `host.jobs.isJobRun` learns
+ * whether a run is job-driven.
  *
  * Plain JavaScript, no build step — the loader imports it directly via
  * its file URL. The factory takes the HOST CONTEXT (arity-1): it
@@ -114,6 +117,7 @@ export default function createAskWaitFixture(host) {
 
 	return {
 		interactionKinds: [ASK_KIND],
+		interactiveTools: ["wait_for_human"],
 		extension: defineExtension({
 			name: "sigrun-fixture-ask-wait",
 			tools: [waitForHuman],
