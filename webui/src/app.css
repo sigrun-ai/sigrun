@@ -506,8 +506,13 @@ body {
 	color: var(--text);
 }
 
-/* Archived conversations render dimmed. */
-.session-item-archived {
+/* Archived conversations render dimmed. The CONTENT dims, never the row:
+   opacity < 1 on the <li> makes it a stacking context, which traps the
+   ⋯ menu's z-index inside the row — the rows beneath then paint over the
+   open menu and take its clicks (e2e/session-menu.spec.ts). */
+.session-item-archived > .session-fork-mark,
+.session-item-archived > .session-select,
+.session-item-archived > .session-age {
 	opacity: 0.55;
 }
 
