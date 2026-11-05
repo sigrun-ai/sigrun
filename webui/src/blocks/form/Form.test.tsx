@@ -392,14 +392,34 @@ describe("interaction stepper (§9.1)", () => {
 			],
 		}) as SectionBlock;
 
-	const stepperForm = (): FormBlock =>
+	const stepperForm = (init?: { q2Required?: boolean }): FormBlock =>
 		({
 			type: "form",
 			bind: "/answers",
 			mode: "submit",
 			onSubmit: "answer",
 			submitLabel: "Submit answers",
-			children: [choiceSection("First question", "q1"), choiceSection("Second question", "q2")],
+			children: [
+				choiceSection("First question", "q1"),
+				{
+					type: "section",
+					title: "Second question",
+					children: [
+						{
+							type: "choice",
+							name: "q2",
+							label: "Second question",
+							multi: true,
+							allowOther: { label: "Type something" },
+							...(init?.q2Required === true ? { required: true } : {}),
+							options: [
+								{ id: "o1", label: "Alpha" },
+								{ id: "o2", label: "Beta" },
+							],
+						} as Field,
+					],
+				} as SectionBlock,
+			],
 		}) as FormBlock;
 
 	test("an interaction form with several choice sections steps one at a time with a review step", () => {
@@ -439,7 +459,67 @@ describe("interaction stepper (§9.1)", () => {
 		expect(dispatch).toHaveBeenCalledTimes(1);
 		expect(dispatch).toHaveBeenCalledWith(
 			{ type: "submit", name: "answer" },
-			{ rev: 0, values: { q1: "a", q2: "" } },
+			{ rev: 0, values: { q1: "a", q2: [] } },
 		);
+	});
+
+	test("the review shows option LABELS (single, multi, and other text)", () => {
+		const { renderer } = makeHarness(stepperForm(), {
+			data: { answers: { q1: "b", q2: ["o1", { other: "mine" }] } },
+			interaction: true,
+		});
+		act(() => {
+			findButton(renderer, "Next").props.onClick();
+		});
+		act(() => {
+			findButton(renderer, "Review").props.onClick();
+		});
+		const review = textContent(renderer.toJSON());
+		expect(review).toContain("Beta");
+		expect(review).toContain("Alpha, mine");
+		expect(review).not.toContain("o2");
+	});
+
+	test("unanswered required questions hold Submit until answered", () => {
+		const { dispatch, renderer } = makeHarness(stepperForm({ q2Required: true }), {
+			data: { answers: { q1: "a" } },
+			interaction: true,
+		});
+		act(() => {
+			findButton(renderer, "Next").props.onClick();
+		});
+		act(() => {
+			findButton(renderer, "Review").props.onClick();
+		});
+		// The review names the unanswered section and Submit is disabled.
+		const review = textContent(renderer.toJSON());
+		expect(review).toContain("Not answered yet: Second question");
+		const held = findButton(renderer, "Submit answers");
+		expect(held.props.disabled).toBe(true);
+		act(() => {
+			held.props.onClick();
+		});
+		expect(dispatch).not.toHaveBeenCalled();
+		// Navigation stays free: go Back, answer, Submit enables.
+		act(() => {
+			findButton(renderer, "Back").props.onClick();
+		});
+		const option = renderer.root.findAll(
+			(node) => node.type === "input" && node.props.value === "o1",
+		)[0]!;
+		act(() => {
+			option.props.onChange({ target: { value: "o1", checked: true } });
+		});
+		act(() => {
+			findButton(renderer, "Review").props.onClick();
+		});
+		const ready = textContent(renderer.toJSON());
+		expect(ready).not.toContain("Not answered yet");
+		const submit = findButton(renderer, "Submit answers");
+		expect(submit.props.disabled).not.toBe(true);
+		act(() => {
+			submit.props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledTimes(1);
 	});
 });
