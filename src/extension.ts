@@ -221,6 +221,10 @@ export type ExtensionLifecyclePayload = {
 		readonly status: "answered" | "skipped" | "expired" | "cancelled";
 		/** The answering user (C5 attribution), when a human answered. */
 		readonly answeredByUser?: string;
+		/** How a DECLINE landed (ask-user Task 1/2): "button" via the decline
+		 *  route/host method, "message" via an admitted decline message. Set
+		 *  only on a declined ("skipped") record. */
+		readonly declinedVia?: "button" | "message";
 		/** The STORED (masked-by-construction) answer values — render-safe. */
 		readonly answer?: Readonly<Record<string, unknown>>;
 		readonly owner?: string;
@@ -1446,6 +1450,18 @@ export interface SigrunHost {
 		context: HandlerContext,
 	): Promise<boolean>;
 	/**
+	 * Decline a pending DECLINABLE interaction as a human (ask-user Task
+	 * 1): status "skipped", `declinedVia: "button"`. `opts.user` names
+	 * the declining human (the same attribution `answerInteraction`
+	 * stamps); false when the record is not pending or not declinable.
+	 */
+	declineInteraction(
+		conversationId: ConversationId,
+		callId: string,
+		context: HandlerContext,
+		opts?: { readonly user?: string },
+	): Promise<boolean>;
+	/**
 	 * Inspect one interaction record WITHOUT consuming anything: returns
 	 * the same stored projection as {@link SigrunHost.snapshotInteraction}
 	 * (secret values stay `SECRET_MASK`), but never touches the one-shot
@@ -1648,6 +1664,24 @@ export interface SigrunHost {
 		): Promise<
 			{ readonly jobId: string; readonly owner: string | undefined } | undefined
 		>;
+
+		/**
+		 * Whether the conversation's CURRENT run is job-driven (ask-user
+		 * Task 3, spec §6): true when the session meta carries a `jobId`
+		 * (a `conversation: "new"` run), or any input of the conversation's
+		 * current run (`LiveDoc` `run.inputs`, present exactly while busy)
+		 * resolves to a submission whose requestId carries the job prefix
+		 * (`job:<fireKey>`, the prefix `jobs/fire.ts` stamps on both fire
+		 * shapes). Interactive tools call this in execute and refuse with an
+		 * error telling the model to escalate instead — the execute-time
+		 * guard for the conversations the creation-time filter cannot reach
+		 * (a job firing into an existing conversation; defence in depth
+		 * should the filter ever miss).
+		 */
+		isJobRun(
+			conversationId: ConversationId,
+			context: HandlerContext,
+		): Promise<boolean>;
 	};
 
 	/**
@@ -1866,6 +1900,17 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly runSettled?: ExtensionRunSettledHandler;
 	/** Declared interaction kinds (the seam's write gate + capability inventory). */
 	readonly interactionKinds?: readonly string[];
+	/**
+	 * Tool names this extension registers that need a human present
+	 * (ask-user Task 3, spec §6). Validated at load like
+	 * `interactionKinds` (each name must name a tool this extension's
+	 * `extension.tools` registers; a bad declaration quarantines). Core
+	 * hides the named tools in every non-interactive run (job run
+	 * conversations, curator runs); in a job-fired EXISTING conversation
+	 * the tool stays listed and must refuse at execute time — guard with
+	 * `host.jobs.isJobRun`.
+	 */
+	readonly interactiveTools?: readonly string[];
 	/** Declared ambient surface keys (the seam's write gate + capability inventory). */
 	readonly ambientKinds?: readonly string[];
 	/** Idle workers (the curator contract — `wakeOn` only, `every` retired). */

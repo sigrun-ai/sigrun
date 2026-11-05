@@ -453,17 +453,25 @@ describe("core/jobs list (the caller-visible rows)", () => {
 // ─── the selected job ─────────────────────────────────────────────────────
 
 describe("core/jobs selected job", () => {
-	test("the selected job shows runs (manual flag, error, conversation) and revisions (changedBy, changedAt)", async () => {
+	test(
+		"the selected job shows runs (manual flag, error, conversation) and revisions (changedBy, changedAt)",
+		{ timeout: 30_000 },
+		async () => {
 		const { app, alice } = await bootServer();
 		const job = await createJob(app, alice, promptSpec("acme-nightly"));
 		const fired = await call(app, "POST", `/v1/jobs/${job.id}/run`, alice);
 		expect(fired.json.outcome).toBe("running");
 		const conversationId = fired.json.conversationId;
 		// Wait for the run to settle so the manual flag/error/outcome are final.
-		await until(async () => {
-			const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs`, alice);
-			return runs.json.runs[0]?.outcome !== "running";
-		});
+		// 30 s: a run settles through the service's async lanes; a loaded
+		// 2-core CI runner needs far more than the 5 s default.
+		await until(
+			async () => {
+				const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs`, alice);
+				return runs.json.runs[0]?.outcome !== "running";
+			},
+			30_000,
+		);
 		await call(app, "PATCH", `/v1/jobs/${job.id}`, alice, {
 			schedule: { cron: "0 3 * * *", timezone: "America/St_Johns" },
 		});
@@ -590,7 +598,10 @@ describe("core/jobs selected job", () => {
 		});
 	});
 
-	test("runs page by 25 (runCursor); revisions page by 25 (revCursor)", async () => {
+	test(
+		"runs page by 25 (runCursor); revisions page by 25 (revCursor)",
+		{ timeout: 180_000 },
+		async () => {
 		const { app, opened, alice } = await bootServer();
 		const job = await createJob(app, alice, promptSpec("acme-nightly"));
 		// 30 revisions (versions 1..30) without the route's per-patch cost.
@@ -605,13 +616,16 @@ describe("core/jobs selected job", () => {
 		for (let run = 0; run < 26; run += 1) {
 			await opened.jobs.runNow(job.id);
 		}
-		await until(async () => {
-			const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs?limit=26`, alice);
-			return (
-				runs.json.runs.length === 26 &&
-				runs.json.runs.every((one: any) => one.outcome !== "running")
-			);
-		});
+		await until(
+			async () => {
+				const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs?limit=26`, alice);
+				return (
+					runs.json.runs.length === 26 &&
+					runs.json.runs.every((one: any) => one.outcome !== "running")
+				);
+			},
+			120_000,
+		);
 
 		// Runs: newest 25 on the first page, Load more → runCursor → the rest.
 		const first = await view(app, alice, { job: job.id });

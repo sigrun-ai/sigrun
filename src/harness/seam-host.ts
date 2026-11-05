@@ -18,7 +18,12 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type { ConversationId, Harness, ToolRegistration } from "@earendil-works/pi-durable";
+import type {
+	ConversationId,
+	Harness,
+	SubmissionId,
+	ToolRegistration,
+} from "@earendil-works/pi-durable";
 import type {
 	DecisionRequest,
 	DecisionResult,
@@ -37,7 +42,9 @@ import {
 import {
 	InteractionDoc,
 	InteractionsIndexDoc,
+	QueuedHumanInputsDoc,
 	applyAnswer,
+	applyDecline,
 	asInteractionRecord,
 	indexPending,
 	indexSettled,
@@ -134,6 +141,18 @@ export interface SeamHost {
 		callId: string,
 		status: "skipped" | "expired" | "cancelled",
 		context: Context,
+	): Promise<boolean>;
+	/**
+	 * Decline a pending DECLINABLE interaction as a human (ask-user Task
+	 * 1): status "skipped", `declinedVia: "button"`. `opts.user` names
+	 * the declining human (the same attribution `answerInteraction`
+	 * stamps); false when the record is not pending or not declinable.
+	 */
+	declineInteraction(
+		conversationId: ConversationId,
+		callId: string,
+		context: Context,
+		opts?: { readonly user?: string },
 	): Promise<boolean>;
 	/** Inspect one record WITHOUT consuming the one-shot secret delivery
 	 *  (the stored projection, masked; safe to repeat). */
@@ -510,6 +529,56 @@ export function createSeamHost(
 			if (problem !== null) throw new SeamError("interaction", problem);
 			context = toDurableContext(context);
 			const h = await harness(context);
+
+			// A declinable record seeded after a human message is immediately
+			// declined when that message is still queued (ask-user Task 2,
+			// spec 5.3): the message was admitted BEFORE the card existed and
+			// must never get stuck behind it. Read each recorded submission's
+			// current status here (outside the commit — submission status is
+			// a table read) and drop any entry that is no longer queued.
+			let preDeclineUser: string | undefined;
+			let preDeclined = false;
+			const stillQueuedIds = new Set<string>();
+			const seen = new Set<string>();
+			if (record.declinable === true) {
+				const queuedDoc = await h.snapshot(
+					QueuedHumanInputsDoc,
+					conversationId,
+					context,
+				);
+				const byId = queuedDoc?.byId ?? {};
+				// Snapshot key set: the commit-time cleanup below may only drop
+				// keys THIS read saw. A submission recorded by a concurrent
+				// submitOp ledger commit that lands between the snapshot and our
+				// commit is not in `seen` and must survive.
+				for (const key of Object.keys(byId)) seen.add(key);
+				const stillQueued: string[] = [];
+				for (const [submissionId] of Object.entries(byId)) {
+					const submission = await h.submission(
+						Number(submissionId) as SubmissionId,
+						context,
+					);
+					if (submission === undefined) continue; // gone — drop below
+					const status = await submission.status(context);
+					// Fork isolation: QueuedHumanInputsDoc forks with the
+					// conversation, so a child inherits the parent's entries.
+					// Only same-conversation submissions count as queued here.
+					if (
+						status.status === "queued" &&
+						status.conversationId === conversationId
+					) {
+						stillQueued.push(submissionId);
+						stillQueuedIds.add(submissionId);
+					}
+				}
+				if (stillQueued.length > 0) {
+					// Earliest recorded submission wins (ascending id order).
+					stillQueued.sort((a, b) => Number(a) - Number(b));
+					preDeclineUser = byId[stillQueued[0]!]?.user;
+					preDeclined = true;
+				}
+			}
+
 			await h.commit(async (tx) => {
 				// Maintain the index in the SAME commit as the record.
 				const existing = await tx.doc(
@@ -519,6 +588,39 @@ export function createSeamHost(
 					record.callId,
 				);
 				if (existing.status !== "pending") return; // first-write wins
+				if (record.declinable === true) {
+					// Drop ledger entries whose submission is no longer queued
+					// (they were read above; only stale ones are removed).
+					const queuedDraft = await tx.doc(
+						QueuedHumanInputsDoc,
+						conversationId,
+					);
+					const mutableById = queuedDraft.byId as Record<
+						string,
+						{ readonly user?: string }
+					>;
+					for (const key of Object.keys(mutableById)) {
+						if (seen.has(key) && !stillQueuedIds.has(key)) {
+							delete mutableById[key];
+						}
+					}
+				}
+				if (preDeclined) {
+					// Seed already settled: the human's queued message declines
+					// the question before it is ever shown. Reuses applyDecline's
+					// single definition of the settled shape.
+					Object.assign(existing, record);
+					// A self-declared-terminal seed (the extension passed a
+					// non-pending status) must NOT survive the assign: the
+					// queued human message declined it, so applyDecline stamps
+					// declinedVia/answeredBy on a pending baseline.
+					Object.assign(existing, { status: "pending" });
+					applyDecline(existing, "message", Date.now(), preDeclineUser);
+					// No index entry — it is not pending. Sweep any secret
+					// delivery staged for this record (defensive).
+					sweepSecretDelivery(conversationId, record.callId);
+					return;
+				}
 				Object.assign(existing, record);
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexPending(index, conversationId, record.callId);
@@ -577,6 +679,32 @@ export function createSeamHost(
 				const mutable = draft as unknown as Record<string, unknown>;
 				mutable.status = status;
 				mutable.settledAt = Date.now();
+				const index = await tx.doc(InteractionsIndexDoc);
+				indexSettled(index, conversationId, callId);
+				sweepSecretDelivery(conversationId, callId);
+				return true;
+			}, context);
+		},
+
+		async declineInteraction(conversationId, callId, context, opts) {
+			context = toDurableContext(context);
+			const h = await harness(context);
+			// Same commit shape as settleInteraction: the sweep lands INSIDE
+			// the commit and only on the applied terminal transition.
+			return await h.commit(async (tx) => {
+				const draft = await tx.doc(
+					InteractionDoc,
+					conversationId,
+					callId,
+					callId,
+				);
+				const outcome = applyDecline(
+					draft,
+					"button",
+					Date.now(),
+					opts?.user,
+				);
+				if (outcome !== "declined") return false;
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexSettled(index, conversationId, callId);
 				sweepSecretDelivery(conversationId, callId);
@@ -771,6 +899,9 @@ export function createSeamHost(
 			},
 			async activeRun(conversationId) {
 				return (await hostBridge("jobs.activeRun")).jobs.activeRun(conversationId);
+			},
+			async isJobRun(conversationId, context) {
+				return (await hostBridge("jobs.isJobRun")).jobs.isJobRun(conversationId, context);
 			},
 		},
 		users: {

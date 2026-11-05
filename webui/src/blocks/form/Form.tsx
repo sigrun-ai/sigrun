@@ -9,6 +9,7 @@
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type {
+	ChoiceField,
 	Field,
 	FormBlock,
 	JsonObject,
@@ -22,6 +23,7 @@ import {
 	useSurfaceData,
 } from "../context";
 import { BlockView } from "../BlockView";
+import { choiceValueText } from "./choiceText";
 import { FieldView } from "./fields";
 import { collectFields, initialValue, validateField } from "./values";
 
@@ -310,9 +312,28 @@ function StepperForm(props: {
 	readonly onSubmit: () => void;
 }): ReactNode {
 	const [step, setStep] = useState(0);
+	const data = useSurfaceData();
 	const total = props.sections.length;
 	const reviewing = step >= total;
 	const section = reviewing ? undefined : props.sections[step];
+
+	/** The section's choice field (the stepper's contract: one choice
+	 *  per section — §9.1). */
+	const choiceOf = (item: SectionBlock): ChoiceField | undefined =>
+		item.children.find(
+			(child): child is ChoiceField =>
+				typeof child === "object" &&
+				child !== null &&
+				(child as Field).type === "choice",
+		);
+
+	// The review holds Submit while a required question is unanswered
+	// (§7.2 ask-user design: "Not answered yet: <section title>").
+	const unanswered = props.sections.filter((item) => {
+		const choice = choiceOf(item);
+		if (choice === undefined || choice.required !== true) return false;
+		return choiceValueText(choice, props.values[choice.name]) === undefined;
+	});
 
 	return (
 		<div className="blk blk-form blk-stepper" data-block="form" data-step={step}>
@@ -344,20 +365,23 @@ function StepperForm(props: {
 				<>
 					<div className="blk-stepper-review">
 						{props.sections.map((item, index) => {
-							const choice = item.children.find(
-								(child) =>
-									typeof child === "object" &&
-									child !== null &&
-									(child as Field).type === "choice",
-							) as Field | undefined;
-							const value = choice === undefined ? undefined : props.values[choice.name];
+							const choice = choiceOf(item);
+							const text =
+								choice === undefined
+									? undefined
+									: choiceValueText(choice, props.values[choice.name]);
 							return (
 								<div key={index} className="blk-stepper-review-row">
 									<SectionTitle section={item} />
-									<span dir="auto">{typeof value === "string" ? value : JSON.stringify(value)}</span>
+									<span dir="auto">{text}</span>
 								</div>
 							);
 						})}
+						{unanswered.map((item, index) => (
+							<div key={`unanswered-${index}`} className="blk-stepper-review-unanswered">
+								Not answered yet: {boundString(data, item.title)}
+							</div>
+						))}
 					</div>
 					<div className="blk-stepper-nav">
 						<button type="button" onClick={() => setStep(total - 1)}>
@@ -367,6 +391,7 @@ function StepperForm(props: {
 							<button
 								type="button"
 								className="blk-form-submit"
+								disabled={unanswered.length > 0}
 								onClick={props.onSubmit}
 							>
 								{props.submitLabel}

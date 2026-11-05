@@ -578,8 +578,12 @@ export class GitHistory {
 
 	/** Corrupt git dir → move aside, re-init, snapshot commit (loud log). */
 	private async recoverCorrupt(): Promise<void> {
-		const brokenName = `${this.spec.gitDir.split(sep).pop() ?? "repo"}.broken-${utcStamp(this.now())}`;
-		const brokenPath = `${this.spec.gitDir}.broken-${utcStamp(this.now())}`;
+		// ONE stamp: the summary must name the directory the rename made —
+		// two utcStamp(now) calls can straddle a clock tick and name a
+		// path that was never created (seen as a CI flake).
+		const stamp = utcStamp(this.now());
+		const brokenName = `${this.spec.gitDir.split(sep).pop() ?? "repo"}.broken-${stamp}`;
+		const brokenPath = `${this.spec.gitDir}.broken-${stamp}`;
 		await rename(this.spec.gitDir, brokenPath);
 		this.logLine(
 			`corrupt git dir moved aside: ${this.spec.gitDir} → ${brokenPath}`,

@@ -56,6 +56,7 @@ import { parseModelSpec } from "../config.js";
 import { expandInput } from "../commands/expand.js";
 import type { CommandExpansion } from "../commands/expand.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
+import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import { noteThen } from "../server/turns/submit-turn.js";
 import { recordAuthor } from "../curation/attribution.js";
 import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
@@ -103,6 +104,19 @@ export interface JobRuntimeDeps {
 	): Promise<void>;
 	/** Resolve absent/orphaned owners against the live directory (§6.5). */
 	effectiveOwner(owner: string | undefined): string | undefined;
+	/**
+	 * The loaded extensions' interactive tool names
+	 * (`OpenedHarness.interactiveTools`, ask-user Task 3, spec §6): every
+	 * job-run conversation core creates hides them — the
+	 * `conversation: "new"` fire's `init` removes them from the stored
+	 * `AgentDoc.tools` enabled filter (after the owner selection rewrite),
+	 * so the tool is neither offered nor reachable from a nested
+	 * `executeTool()` call. A job fire into an EXISTING conversation is
+	 * untouched (the tool stays listed and must guard its own execute
+	 * with `host.jobs.isJobRun`). Absent on the test-only hand-built deps
+	 * (no hiding — the pre-feature behavior).
+	 */
+	interactiveTools?: ReadonlySet<string>;
 }
 
 export interface FireResult {
@@ -299,13 +313,11 @@ async function firePrompt(
 		if (prior === undefined) {
 			await deps.harness.commit(async (tx) => {
 				await tx.doc(JobRunDoc, fireKey, run);
-				// The job stamp mirrors the "new" path (fire.ts below): the
-				// runSettled observer finds the run to settle BY this field,
-				// and the job-state section reads it. Client patchMeta can
-				// never set jobId (400 invalid_field); only the fire's own
-				// commit writes it.
-				const meta = await tx.doc(SessionMetaDoc, conversationId as ConversationId);
-				meta.jobId = id;
+				// NO meta.jobId stamp here (the 2026-11-05 reconciliation with
+				// ask-user's isJobRun): a fire INTO an existing conversation must
+			// not mark every later run of that conversation job-driven. The
+				// runSettled observer settles this run from the submission's
+				// `job:<fireKey>` requestId instead (observe.ts).
 			}, context);
 			await patchJob(deps.harness, id, (draft) => {
 				draft.lastRun = run;
@@ -390,6 +402,10 @@ async function firePrompt(
 					if (action.deliver !== undefined) meta.deliver = [...action.deliver];
 					if (owner !== undefined) meta.owner = owner;
 					await deps.rewriteUserSelection?.(tx, newId, undefined, owner);
+					// Ask-user Task 3: the job-run conversation never offers an
+					// interactive tool (the tool is never listed, so the model
+					// never tries — §6's prompt section keys off tool presence).
+					await excludeInteractiveTools(tx, newId, deps.interactiveTools ?? new Set());
 					if (action.runSharing !== undefined) meta.sharing = action.runSharing;
 					meta.name = runName(record.spec.name, deps.now(), record, deps);
 				},

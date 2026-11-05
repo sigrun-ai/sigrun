@@ -173,10 +173,13 @@ describe("host.jobs.activeRun", () => {
 			jobId: job.id,
 			owner: "alice",
 		});
-		// The fire stamps jobId on the fixed conversation's SessionMeta —
-		// the runSettled observer finds the run to settle BY this field.
-		await expect(host.conversations.meta(id)).resolves.toMatchObject({
-			jobId: job.id,
+		// The fixed-conversation fire does NOT stamp the meta (a fire INTO
+		// an existing conversation must not mark its later runs job-driven,
+		// per isJobRun's contract); the observer settles the run from the
+		// submission's job:<fireKey> requestId instead. The meta carries no
+		// jobId while the fire runs…
+		await expect(host.conversations.meta(id)).resolves.not.toMatchObject({
+			jobId: expect.anything(),
 		});
 
 		gate.release();

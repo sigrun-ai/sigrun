@@ -187,6 +187,9 @@ export type ExtensionLifecyclePayload = {
 		readonly answer?: Readonly<Record<string, unknown>>;
 		/** The answering user (C5 attribution), when a human answered. */
 		readonly answeredByUser?: string;
+		/** How a DECLINE landed (ask-user Task 1/2): "button" or "message";
+		 *  set only on a declined ("skipped") record. */
+		readonly declinedVia?: "button" | "message";
 		readonly owner?: string;
 	};
 };
@@ -1119,6 +1122,7 @@ export class EventBus {
 							callId?: unknown;
 							status?: unknown;
 							answeredByUser?: unknown;
+							declinedVia?: unknown;
 							answer?: unknown;
 						};
 						if (
@@ -1133,6 +1137,13 @@ export class EventBus {
 							const recordAnsweredByUser =
 								typeof record.answeredByUser === "string"
 									? record.answeredByUser
+									: undefined;
+							// Ask-user Task 1: the decline channel rides the payload
+							// next to the answering user (same record read).
+							const recordDeclinedVia =
+								record.declinedVia === "button" ||
+								record.declinedVia === "message"
+									? record.declinedVia
 									: undefined;
 							const recordAnswerValues =
 								typeof record.answer === "object" &&
@@ -1171,6 +1182,9 @@ export class EventBus {
 									...(recordAnsweredByUser === undefined
 										? {}
 										: { answeredByUser: recordAnsweredByUser }),
+									...(recordDeclinedVia === undefined
+										? {}
+										: { declinedVia: recordDeclinedVia }),
 									...(recordAnswerValues === undefined
 										? {}
 										: { answer: recordAnswerValues }),
@@ -1584,6 +1598,9 @@ export class EventBus {
 					...(event.answeredByUser === undefined
 						? {}
 						: { answeredByUser: event.answeredByUser }),
+					...(event.declinedVia === undefined
+						? {}
+						: { declinedVia: event.declinedVia }),
 					...(event.answer === undefined ? {} : { answer: event.answer }),
 				};
 		}

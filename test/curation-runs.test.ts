@@ -48,6 +48,11 @@ const TARGET_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-curation-target", "index.js"),
 ).href;
 
+/** The ask-wait fixture entry (declares wait_for_human interactive). */
+const ASK_WAIT_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-ask-wait", "index.js"),
+).href;
+
 /** The fixture module's exports (records + reset). */
 type FixtureModule = {
 	readonly writes: readonly { text: string }[];
@@ -119,6 +124,12 @@ async function boot(responses: readonly unknown[]): Promise<{
 			{
 				name: "fixture-curation-target",
 				entry: TARGET_SPECIFIER,
+			} satisfies ResolvedExtensionInput,
+			// Ask-user Task 3: the interactive-tool declarer rides every
+			// boot (an inert fixture when a test never calls its tool).
+			{
+				name: "sigrun-fixture-ask-wait",
+				entry: ASK_WAIT_SPECIFIER,
 			} satisfies ResolvedExtensionInput,
 		],
 	});
@@ -553,6 +564,147 @@ describe("digestRun (curator P6 run driver)", () => {
 		).toBe(true);
 	});
 });
+
+// ─── interactive tools in curator runs (ask-user Task 3) ──────────────────
+
+describe("interactive tools in curator runs", () => {
+	test("a digest allow list loses interactive tools with ONE warning", { timeout: 30_000 }, async () => {
+		const warnings: string[] = [];
+		const spy = vi.spyOn(console, "warn").mockImplementation((message?: unknown) => {
+			warnings.push(String(message));
+		});
+		try {
+			const { opened, curation } = await boot([
+				fauxAssistantMessage("digest complete"),
+			]);
+			const result = await curation.digestRun("alice", {
+				...RUN_OPTS,
+				allow: ["wait_for_human", "skill_manage"],
+				input: "Digest the week's hints.",
+				reviewId: "digest-interactive",
+			});
+			expect(result.status).toBe("completed");
+			// The run doc's allow is the STRIPPED list; the warning names the
+			// removed tool and fires exactly once.
+			const runId = await digestConversationOf(opened, "digest-interactive");
+			expect(runId).toBeDefined();
+			const { CurationRunDoc } = await import("../src/curation/run-doc.js");
+			const run = await opened.harness.snapshot(
+				CurationRunDoc,
+				runId as ConversationId,
+				BACKGROUND_CONTEXT,
+			);
+			expect(run?.allow).toEqual(["skill_manage"]);
+			const stripWarnings = warnings.filter((line) =>
+				line.includes("wait_for_human"),
+			);
+			expect(stripWarnings).toHaveLength(1);
+			// The digest conversation's offered tools exclude the interactive one.
+			const conversation = await opened.harness.conversation(
+				runId as ConversationId,
+				BACKGROUND_CONTEXT,
+			);
+			const agent = await conversation!.agent(BACKGROUND_CONTEXT);
+			expect(
+				agent.tools.some((tool) => tool.name === "wait_for_human"),
+			).toBe(false);
+			expect(
+				agent.callable.some((tool) => tool.name === "wait_for_human"),
+			).toBe(false);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("an all-interactive allow list still fails the non-empty check, warning first", { timeout: 30_000 }, async () => {
+		const warnings: string[] = [];
+		const spy = vi.spyOn(console, "warn").mockImplementation((message?: unknown) => {
+			warnings.push(String(message));
+		});
+		try {
+			const { curation } = await boot([]);
+			await expect(
+				curation.digestRun("alice", {
+					...RUN_OPTS,
+					allow: ["wait_for_human"],
+					input: "Digest the week's hints.",
+					reviewId: "digest-empty-after-strip",
+				}),
+			).rejects.toThrow(/non-empty allow/);
+			expect(
+				warnings.filter((line) => line.includes("wait_for_human")),
+			).toHaveLength(1);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("a fork review KEEPS interactive tools listed (cache parity); the gate blocks a call", { timeout: 30_000 }, async () => {
+		const { opened, curation } = await boot([
+			// The parent's own turn.
+			fauxAssistantMessage("the parent's answer"),
+			// The review calls the interactive tool; the gate blocks it;
+			// the review then finishes.
+			fauxAssistantMessage(
+				[fauxToolCall("wait_for_human", {} as JsonObject)],
+				{ stopReason: "toolUse" },
+			),
+			fauxAssistantMessage("review done"),
+		]);
+		const parent = await parentConversation(opened, "alice");
+		const result = await curation.forkReview(parent as ConversationId, {
+			...RUN_OPTS,
+			reviewId: "review-interactive",
+		});
+		expect(result.status).toBe("completed");
+		const forkId = await forkOf(opened, parent);
+		const fork = await opened.harness.conversation(
+			forkId as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		// Cache parity: the fork's stored selection is byte-identical to the
+		// parent's — the interactive tool is still OFFERED...
+		const agent = await fork!.agent(BACKGROUND_CONTEXT);
+		expect(
+			agent.tools.some((tool) => tool.name === "wait_for_human"),
+		).toBe(true);
+		// ...but the gate blocked the call (the tool never executed — no
+		// question card exists on the fork).
+		const blocked = await toolResultTexts(opened, forkId, "wait_for_human");
+		expect(blocked).toHaveLength(1);
+		expect(blocked[0]).toContain("not available in this review");
+	});
+});
+
+/** The tool-result texts of one tool on one conversation (call order). */
+async function toolResultTexts(
+	opened: OpenedHarness,
+	id: number,
+	tool: string,
+): Promise<string[]> {
+	const conversation = await opened.harness.conversation(
+		id as ConversationId,
+		BACKGROUND_CONTEXT,
+	);
+	if (conversation === undefined) throw new Error("conversation vanished");
+	const page = await conversation.entries({}, 100, undefined, BACKGROUND_CONTEXT);
+	const texts: string[] = [];
+	for (const entry of [...page.items].reverse()) {
+		if (entry.kind !== "pi.tool-result") continue;
+		for (const message of entry.model ?? []) {
+			if (message.role !== "toolResult" || message.toolName !== tool) continue;
+			texts.push(
+				typeof message.content === "string"
+					? message.content
+					: message.content
+							.filter((block) => block.type === "text")
+							.map((block) => block.text)
+							.join(""),
+			);
+		}
+	}
+	return texts;
+}
 
 // ─── maintain ─────────────────────────────────────────────────────────────
 

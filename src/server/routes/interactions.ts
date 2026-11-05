@@ -46,9 +46,11 @@ import {
 	InteractionsIndexDoc,
 	answerFromBody,
 	applyAnswer,
+	applyDecline,
 	asInteractionRecord,
 	indexSettled,
 	maskedAnswerValues,
+	sweepSecretDelivery,
 	type InteractionRecord,
 } from "../../harness/interactions.js";
 import { loadConversation } from "../conversation-handler.js";
@@ -61,6 +63,7 @@ import { SessionMetaDoc } from "../session-meta.js";
 import type {
 	AmbientList,
 	InteractionAnswered,
+	InteractionDeclined,
 	InteractionList,
 	InboxInteraction,
 	InboxResponse,
@@ -315,6 +318,68 @@ export function registerInteractionRoutes(
 				callId,
 				status: "answered",
 				answer: committed.answer,
+			};
+		},
+	);
+
+	// The decline route (ask-user Task 1): the answer route's peer — a
+	// human declines a DECLINABLE record (status "skipped", declinedVia
+	// "button"). Same access (write), same commit structure, same
+	// indexSettled + reply-after-commit; every successful decline sweeps
+	// the record's unread secret delivery inside the commit (the
+	// settleInteraction pattern). 404 unknown / 404 not-pending /
+	// 409 not-declinable.
+	app.post(
+		"/v1/conversations/:id/interactions/:callId/decline",
+		{
+			schema: { params: ANSWER_PARAMS_SCHEMA },
+			preHandler: loadConversation(ctx, "write"),
+		},
+		async (request, reply): Promise<InteractionDeclined> => {
+			const { callId } = request.params as { callId: string };
+			const conversation = request.conversation;
+			const committed = await conversation.commit(async (tx) => {
+				const draft = await tx.doc(
+					InteractionDoc,
+					conversation.id,
+					callId,
+					callId,
+				);
+				// Unknown callId: the doc materializes empty — kind "" never
+				// seeded (the answer route's detection).
+				if (draft.kind === "") {
+					return { found: false } as const;
+				}
+				const outcome = applyDecline(
+					draft,
+					"button",
+					Date.now(),
+					request.principal.user,
+				);
+				if (outcome !== "declined") {
+					// A loser of the first-wins race never sweeps: the delivery
+					// (when there is one) belongs to the winner (the answer
+					// route's rule).
+					return { found: true, outcome } as const;
+				}
+				const index = await tx.doc(InteractionsIndexDoc);
+				indexSettled(index, conversation.id, callId);
+				sweepSecretDelivery(conversation.id, callId);
+				return { found: true, outcome } as const;
+			}, BACKGROUND_CONTEXT);
+			if (!committed.found) {
+				return await reply.code(404).send({ error: "no_such_interaction" });
+			}
+			if (committed.outcome === "not_pending") {
+				return await reply.code(404).send({ error: "not_pending" });
+			}
+			if (committed.outcome === "not_declinable") {
+				return await reply.code(409).send({ error: "not_declinable" });
+			}
+			return {
+				callId,
+				status: "skipped",
+				declinedVia: "button",
 			};
 		},
 	);

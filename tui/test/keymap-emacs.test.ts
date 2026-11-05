@@ -118,6 +118,7 @@ describe("emacs keymap — globals", () => {
 			delta: 1,
 		});
 		expect(keymap.handle("\x0f", ctx())).toEqual({ type: "answer-interaction" });
+		expect(keymap.handle("\x1bs", ctx())).toEqual({ type: "decline-interaction" });
 		expect(keymap.handle("\x0c", ctx())).toEqual({ type: "redraw" });
 		expect(keymap.handle("\x08", ctx())).toEqual({ type: "help" });
 	});

@@ -394,6 +394,13 @@ export interface LoginProviderBinding {
 export interface LoadedExtensions {
 	/** Validated per-user process declarations and their resolved package dirs. */
 	readonly userServices: readonly { extension: string; services: readonly UserService[]; packageDir: string }[];
+	/**
+	 * Interactive tool names (ask-user Task 3, spec §6): the flat union
+	 * over every LOADED extension's validated `interactiveTools`
+	 * declaration; quarantined extensions contribute none. Boot folds it
+	 * into the one `ReadonlySet` on `OpenedHarness`.
+	 */
+	readonly interactiveTools: readonly string[];
 	/** Slugs whose loaded factory result declared `perUserTools: true`. */
 	readonly perUserSlugs: readonly string[];
 	/** One entry per configured specifier, in order — never empty-entry gaps. */
@@ -694,6 +701,14 @@ export interface ResolvedExtension {
 	/** Declared interaction kinds / ambient surface keys (both optional). */
 	readonly interactionKinds?: readonly string[];
 	readonly ambientKinds?: readonly string[];
+	/**
+	 * Interactive tool names (ask-user Task 3, spec §6): validated against
+	 * the extension's own registered tools (`extension.tools`); a name the
+	 * extension does not register quarantines. Boot folds every loaded
+	 * extension's set into `OpenedHarness.interactiveTools` (the union the
+	 * job fire, curator-run, and create-with-job paths hide).
+	 */
+	readonly interactiveTools?: readonly string[];
 }
 
 /**
@@ -720,6 +735,7 @@ type LoaderReadKeys =
 	| "onSettingsChanged"
 	| "interactionKinds"
 	| "ambientKinds"
+	| "interactiveTools"
 	| "workers"
 	| "jobs"
 	| "routes"
@@ -810,6 +826,34 @@ function validateKinds(value: unknown): string | null {
 		return "kinds declaration must be an array of non-empty strings";
 	}
 	return null;
+}
+
+/**
+ * Validate the `interactiveTools` declaration (ask-user Task 3, spec §6):
+ * an array of non-empty strings, every one naming a tool the extension's
+ * OWN `extension.tools` registers (hiding a tool the extension never
+ * registered is a declaration bug — it quarantines, loudly).
+ */
+function validateInteractiveTools(
+	value: unknown,
+	extension: Extension | undefined,
+): readonly string[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error("interactiveTools must be an array of strings");
+	}
+	if (value.some((name) => typeof name !== "string" || name.length === 0)) {
+		throw new Error("interactiveTools must be an array of non-empty strings");
+	}
+	const registered = new Set(extension?.tools?.map((tool) => tool.name) ?? []);
+	for (const name of value as readonly string[]) {
+		if (!registered.has(name)) {
+			throw new Error(
+				`interactiveTools names "${name}", which this extension does not register`,
+			);
+		}
+	}
+	return value as readonly string[];
 }
 
 /**
@@ -2532,6 +2576,14 @@ async function resolvedFromFactory(
 		validateKinds(candidate.interactionKinds) ??
 		validateKinds(candidate.ambientKinds);
 	if (kindsProblem !== null) throw new Error(kindsProblem);
+	// Interactive tools (ask-user Task 3, spec §6): an array of non-empty
+	// strings, each naming a tool the extension's OWN `extension.tools`
+	// registers — hiding a tool the extension never registered is a
+	// declaration bug that must quarantine, never silently no-op.
+	const interactiveTools = validateInteractiveTools(
+		candidate.interactiveTools,
+		extension,
+	);
 	// The settings-change hook (U4 §13.2): present-but-not-a-function is
 	// the same contract violation class as the lifecycle fields — an
 	// extension that THINKS it observes settings changes must not
@@ -2593,6 +2645,7 @@ async function resolvedFromFactory(
 		...(candidate.interactionKinds === undefined
 			? {}
 			: { interactionKinds: candidate.interactionKinds as readonly string[] }),
+		...(interactiveTools === undefined ? {} : { interactiveTools }),
 		...(candidate.ambientKinds === undefined
 			? {}
 			: { ambientKinds: candidate.ambientKinds as readonly string[] }),
@@ -2909,6 +2962,9 @@ const userServiceBindings: { extension: string; services: readonly UserService[]
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
 const jobBindings: { extension: string; jobs: readonly JobSpec[] }[] = [];
+// Interactive tool names (ask-user Task 3): the flat union over loaded
+// extensions (boot folds it into the one ReadonlySet on OpenedHarness).
+const interactiveTools: string[] = [];
 // HTTP routes (W5 Task 2), attributed to the slug like the job bindings.
 const routeBindings: ExtensionRouteBinding[] = [];
 // Slash commands (W5 Task 3), attributed the same way.
@@ -3404,9 +3460,16 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						}
 					}
 				}
-			if (resolved.jobs !== undefined) {
-				jobBindings.push({ extension: slug, jobs: resolved.jobs });
-			}
+				if (resolved.jobs !== undefined) {
+					jobBindings.push({ extension: slug, jobs: resolved.jobs });
+				}
+				// Interactive tools (ask-user Task 3): collected AFTER the
+				// install, slug-attributed — a quarantined extension never
+				// reaches here, so the union boot folds comes from LOADED
+				// extensions only.
+				if (resolved.interactiveTools !== undefined) {
+					interactiveTools.push(...resolved.interactiveTools);
+				}
 			if (resolved.userServices !== undefined) {
 				userServiceBindings.push({
 					extension: slug,
@@ -3529,6 +3592,7 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		publishedHookDeclarations,
 		decisionProviderDeclarations,
 		jobBindings,
+		interactiveTools,
 		routeBindings,
 		commandBindings,
 		notifierBindings,

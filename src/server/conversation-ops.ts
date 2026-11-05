@@ -41,10 +41,15 @@ import {
 } from "@sigrun/shared/access";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
+import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import {
 	ensureRequestId,
 	recordAuthor,
 } from "../curation/attribution.js";
+import {
+	QueuedHumanInputsDoc,
+	declinePendingOnMessage,
+} from "../harness/interactions.js";
 import { UnservedModelError } from "../harness/providers/index.js";
 import { resolveServedModelRefreshing } from "../harness/providers/refresh.js";
 import { isSuperuser, type Principal } from "./auth/principal.js";
@@ -348,6 +353,20 @@ export async function createConversationOp(
 			undefined,
 			input.owner,
 		);
+		// Ask-user Task 3 (spec §6): a conversation created FOR a job hides
+		// the interactive tools — the creation-time filter edits the stored
+		// enabled-tools filter, so the tool is neither offered nor reachable
+		// from nested `executeTool()` calls. An explicit `agent.tools`
+		// selection naming one loses it the same way. A SECOND commit after
+		// `harness.createConversation` is fine: document access is
+		// unrestricted here.
+		if (input.job !== undefined) {
+			await excludeInteractiveTools(
+				tx,
+				conversation.id,
+				opened.interactiveTools,
+			);
+		}
 	}, BACKGROUND_CONTEXT);
 	const view = await readView(conversation);
 	return { id: conversation.id, view };
@@ -384,6 +403,20 @@ export interface SubmitOpOptions {
 	 * surface still notes.
 	 */
 	readonly skipNoteFor?: string;
+	/**
+	 * Ask-user Task 2: when `true` AND `opts.entry === undefined` (a plain
+	 * human message, never a block answer), admission declines every
+	 * pending declinable interaction record in the conversation
+	 * (`declinedVia: "message"`), and a submission admitted while the
+	 * conversation is busy (status `"queued"`) is recorded in
+	 * `QueuedHumanInputsDoc` so a question seeded LATER in the same busy
+	 * window is immediately declined. The HTTP submit route passes
+	 * `true`; the host bridge passes `true` only when `opts.user` is set.
+	 * A throwing submit (`whenBusy: "reject"` while busy) declines
+	 * nothing — this takes effect only after `conversation.submit`
+	 * returns.
+	 */
+	readonly declinesQuestions?: boolean;
 }
 
 /**
@@ -557,6 +590,31 @@ export async function submitOp(
 	// The submit pass-through is retired (§6.7): the memory seam's
 	// runSettled owns capture, so submissions admit directly.
 	const submission = await conversation.submit(draft, BACKGROUND_CONTEXT);
+	// Ask-user Task 2: a human message (no entry, declinesQuestions: true)
+	// declines every pending declinable question and records itself in the
+	// queued-inputs ledger when it was admitted while busy. A rejected
+	// submit (whenBusy: "reject" while busy) throws above and reaches none
+	// of this.
+	if (opts.declinesQuestions === true && opts.entry === undefined) {
+		const declined = await declinePendingOnMessage(
+			opened.harness,
+			conversation.id,
+			opts.user,
+			Date.now(),
+			BACKGROUND_CONTEXT,
+		);
+		void declined; // the returned callIds are observational only
+		const admitted = await submission.status(BACKGROUND_CONTEXT);
+		if (admitted.status === "queued") {
+			await opened.harness.commit(async (tx) => {
+				const doc = await tx.doc(QueuedHumanInputsDoc, conversation.id);
+				const byId = doc.byId as Record<string, { readonly user?: string }>;
+				byId[String(submission.id)] = {
+					...(opts.user !== undefined ? { user: opts.user } : {}),
+				};
+			}, BACKGROUND_CONTEXT);
+		}
+	}
 	await recordAuthor(
 		conversation,
 		{ submissionId: submission.id },

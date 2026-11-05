@@ -1,0 +1,6 @@
+{
+	"name": "sigrun-fixture-ask-wait",
+	"private": true,
+	"type": "module",
+	"main": "index.js"
+}

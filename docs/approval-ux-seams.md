@@ -337,6 +337,49 @@ Two event surfaces extend the seam (2026-10-23, gateway C5/C6):
   nothing. Channels/edit-your-prompt-message consumers use it to
   resolve delivered prompts (edit the message to the outcome).
 
+## Declinable records (2026-11-05, ask-user Task 1)
+
+A record may carry `declinable: true` (the only legal value — `false`
+fails validation). A declinable record can be DECLINED by a human
+instead of answered: the decline is a first-class peer of the answer,
+never an auto-answer (nothing ever answers or declines on the human's
+behalf — a decline is always a deliberate human act).
+
+- **The flag.** `declinable: true` on the seed record. Absent means NOT
+  declinable. `declinedVia` ("button" | "message") is set by the
+  decline path on the terminal record; any other value fails validation.
+- **The route.** `POST /v1/conversations/:id/interactions/:callId/decline`
+  (write access, like the answer route). 200 returns
+  `{callId, status: "skipped", declinedVia: "button"}`; errors are
+  404 `no_such_interaction`, 404 `not_pending`, 409 `not_declinable`.
+  A decline writes `status: "skipped"`, `answeredBy: "human"`,
+  `answeredByUser` (the declining principal), `declinedVia: "button"`,
+  maintains the pending index, and sweeps the record's unread secret
+  delivery — all inside the same commit, as `settleInteraction` does.
+- **The host method.** `host.declineInteraction(conversationId, callId,
+  context, opts?)` declines via `"button"` and returns `true` on the
+  applied transition, `false` when the record is not pending or not
+  declinable. `opts.user` names the declining human (the same
+  attribution `answerInteraction` stamps).
+- **The event.** `interactionSettled` carries `declinedVia` on a
+  declined record, so a consumer can render "declined by the human"
+  distinctly from other skips.
+- **The message path (Task 2).** An admitted human message declines
+  every pending declinable record in the conversation with
+  `declinedVia: "message"`, through the same commit shape (index +
+  secret sweep included). Which submissions count: the HTTP submit
+  route's input submissions always count — any principal with write
+  access, scripted clients included, and the single-operator path with
+  no user (spec §5.3). Host (`host.conversations.submit`) submits count
+  only when they carry `opts.user`. Submissions carrying an `entry`
+  (UI-blocks answers) never count, and a rejected submission
+  (`whenBusy: "reject"` while busy, or a validation failure) declines
+  nothing. A message admitted while the conversation is busy (still
+  queued, not yet placed) is remembered per conversation; a declinable
+  record seeded while such a message is still queued is seeded already
+  settled — the message was typed before the card existed and must
+  never get stuck behind it.
+
 ## Implementation status (2026-10-14)
 
 Shipped in core + webui (commits bcd4423 + webui commit):
@@ -346,6 +389,7 @@ Shipped in core + webui (commits bcd4423 + webui commit):
 - `src/harness/seam-host.ts`: the host context (factory arity-1, kinds
   write gate, owner allocation).
 - Server: `GET/POST /v1/conversations/:id/interactions(/:callId/answer)`,
+  `POST /v1/conversations/:id/interactions/:callId/decline`,
   `GET /v1/conversations/:id/interactions/:callId`, `GET .../ambient`,
   `/v1/meta seam`.
 - Webui: `InteractionCards` + `AmbientPanels` render the record's
