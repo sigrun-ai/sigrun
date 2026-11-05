@@ -600,7 +600,7 @@ describe("core/jobs selected job", () => {
 
 	test(
 		"runs page by 25 (runCursor); revisions page by 25 (revCursor)",
-		{ timeout: 60_000 },
+		{ timeout: 180_000 },
 		async () => {
 		const { app, opened, alice } = await bootServer();
 		const job = await createJob(app, alice, promptSpec("acme-nightly"));

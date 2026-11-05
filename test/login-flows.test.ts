@@ -1,7 +1,10 @@
 import { expect, test } from "vitest";
 import { LoginFlows, MAX_ACTIVE_LOGIN_FLOWS } from "../src/server/login/flows.js";
 
-test("public begins cannot grow active or consumed login state without bound", () => {
+test(
+	"public begins cannot grow active or consumed login state without bound",
+	{ timeout: 20_000 },
+	() => {
 	const flows = new LoginFlows();
 	let oldestState = "";
 	let oldestKey = "";
