@@ -18,7 +18,12 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type { ConversationId, Harness, ToolRegistration } from "@earendil-works/pi-durable";
+import type {
+	ConversationId,
+	Harness,
+	SubmissionId,
+	ToolRegistration,
+} from "@earendil-works/pi-durable";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
 import type { Tree } from "@sigrun/shared/blocks";
@@ -515,6 +520,7 @@ export function createSeamHost(
 			let preDeclineUser: string | undefined;
 			let preDeclined = false;
 			const stillQueuedIds = new Set<string>();
+			const seen = new Set<string>();
 			if (record.declinable === true) {
 				const queuedDoc = await h.snapshot(
 					QueuedHumanInputsDoc,
@@ -522,15 +528,26 @@ export function createSeamHost(
 					context,
 				);
 				const byId = queuedDoc?.byId ?? {};
+				// Snapshot key set: the commit-time cleanup below may only drop
+				// keys THIS read saw. A submission recorded by a concurrent
+				// submitOp ledger commit that lands between the snapshot and our
+				// commit is not in `seen` and must survive.
+				for (const key of Object.keys(byId)) seen.add(key);
 				const stillQueued: string[] = [];
 				for (const [submissionId] of Object.entries(byId)) {
 					const submission = await h.submission(
-						submissionId as never,
+						Number(submissionId) as SubmissionId,
 						context,
 					);
 					if (submission === undefined) continue; // gone — drop below
 					const status = await submission.status(context);
-					if (status.status === "queued") {
+					// Fork isolation: QueuedHumanInputsDoc forks with the
+					// conversation, so a child inherits the parent's entries.
+					// Only same-conversation submissions count as queued here.
+					if (
+						status.status === "queued" &&
+						status.conversationId === conversationId
+					) {
 						stillQueued.push(submissionId);
 						stillQueuedIds.add(submissionId);
 					}
@@ -564,23 +581,17 @@ export function createSeamHost(
 						{ readonly user?: string }
 					>;
 					for (const key of Object.keys(mutableById)) {
-						if (!stillQueuedIds.has(key)) delete mutableById[key];
+						if (seen.has(key) && !stillQueuedIds.has(key)) {
+							delete mutableById[key];
+						}
 					}
 				}
 				if (preDeclined) {
 					// Seed already settled: the human's queued message declines
-					// the question before it is ever shown.
-					const settled = {
-						...record,
-						status: "skipped" as const,
-						settledAt: Date.now(),
-						answeredBy: "human" as const,
-						...(preDeclineUser !== undefined
-							? { answeredByUser: preDeclineUser }
-							: {}),
-						declinedVia: "message" as const,
-					};
-					Object.assign(existing, settled);
+					// the question before it is ever shown. Reuses applyDecline's
+					// single definition of the settled shape.
+					Object.assign(existing, record);
+					applyDecline(existing, "message", Date.now(), preDeclineUser);
 					// No index entry — it is not pending. Sweep any secret
 					// delivery staged for this record (defensive).
 					sweepSecretDelivery(conversationId, record.callId);

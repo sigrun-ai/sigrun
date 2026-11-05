@@ -783,3 +783,202 @@ describe("a human message declines pending declinable questions", () => {
 		},
 	);
 });
+
+// Review fixes (ask-user Task 2): two seedInteraction ledger races the
+// first review found.
+describe("seed-time decline ledger hardening", () => {
+	test(
+		"a ledger entry recorded concurrently with the seed (after its snapshot) survives the cleanup",
+		{ timeout: 60_000 },
+		async () => {
+			// Simulates submitOp's ledger commit landing between
+			// seedInteraction's snapshot and its commit: the seed's snapshot
+			// sees an EMPTY ledger, but a queued entry exists by commit time.
+			// The seed must not delete the entry it never saw. The snapshot
+			// wrapper holds the snapshot open at the "ledger absent" read,
+			// so the injection is deterministic (no timing race).
+			const { opened } = await bootServer();
+			const root = await opened.harness.root(BACKGROUND_CONTEXT);
+
+			// The injected entry mimics submitOp's ledger commit shape: a
+			// concurrently-admitted queued submission of THIS conversation.
+			// Its submission id need not exist — the seed already returned
+			// from its snapshot (an empty ledger has no status lookups), so
+			// the entry is never read, only swept-or-kept at commit time.
+			const key = "999999999";
+
+			const realSnapshot = opened.harness.snapshot.bind(
+				opened.harness,
+			);
+			let injected = false;
+			// SAFETY: narrow wrapper around the real snapshot; forwards every
+			// overload verbatim, only the ledger snapshot is held.
+			(opened.harness as { snapshot: unknown }).snapshot = async (
+				...args: unknown[]
+			) => {
+				const result = await realSnapshot(
+					...(args as Parameters<typeof realSnapshot>),
+				);
+				const [token, conversationId] = args as [unknown, unknown];
+				if (
+					token === QueuedHumanInputsDoc &&
+					conversationId === root.id &&
+					!injected &&
+					result === undefined
+				) {
+					injected = true;
+					// "Concurrent" ledger commit, landing between the
+					// snapshot and the seed's commit.
+					await opened.harness.commit(async (tx) => {
+						const doc = await tx.doc(
+							QueuedHumanInputsDoc,
+							root.id,
+						);
+						const byId = doc.byId as Record<
+							string,
+							{ readonly user?: string }
+						>;
+						byId[key] = { user: "alice" };
+					}, BACKGROUND_CONTEXT);
+				}
+				return result;
+			};
+			try {
+				const host = askWaitHost();
+				await host.seedInteraction(
+					root.id,
+					{
+						kind: "askwait.q",
+						callId: "concurrent-1",
+						status: "pending",
+						createdAt: Date.now(),
+						declinable: true,
+					} as never,
+					BACKGROUND_CONTEXT,
+				);
+			} finally {
+				(opened.harness as { snapshot: unknown }).snapshot =
+					realSnapshot;
+			}
+			expect(injected).toBe(true);
+
+			// The seed's snapshot saw an empty ledger (no pre-decline), and
+			// the concurrent entry it never saw survived the cleanup.
+			const record = await recordOf(opened, root.id, "concurrent-1");
+			expect(record?.status).toBe("pending");
+			const queued = await queuedOf(opened, root.id);
+			expect(queued?.byId?.[key]).toEqual({ user: "alice" });
+
+			// Cleanup: settle the record.
+			await askWaitHost().declineInteraction(
+				root.id,
+				"concurrent-1",
+				BACKGROUND_CONTEXT,
+				{},
+			);
+		},
+	);
+
+	test(
+		"a fork inherits the parent's queued ledger entry but does not pre-decline the child's card",
+		{ timeout: 60_000 },
+		async () => {
+			const { app, opened, faux } = await bootServer();
+			const parent = await opened.harness.root(BACKGROUND_CONTEXT);
+			faux.setResponses([fauxAssistantMessage("answer")]);
+
+			// Give the parent one settled exchange so it has a forkable
+			// entry.
+			const submission = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${parent.id}/submissions`,
+				payload: { input: "hello" },
+				headers: { "content-type": "application/json" },
+			});
+			expect(submission.statusCode).toBe(202);
+			const parentHandle = await opened.harness.conversation(
+				parent.id,
+				BACKGROUND_CONTEXT,
+			);
+			await parentHandle!.waitForIdle(BACKGROUND_CONTEXT);
+
+			// A still-queued submission recorded in the PARENT's ledger —
+			// the busy-window claim the fork inherits. A REAL steer-queued
+			// message: the tool round is held at the gate so the submission
+			// stays queued.
+			let release!: () => void;
+			(globalThis as Record<string, unknown>).__askWaitGate =
+				new Promise<void>((resolve) => {
+					release = resolve;
+				});
+			faux.setResponses([
+				fauxAssistantMessage([fauxToolCall("wait_for_human", {})], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("done"),
+			]);
+			const start = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${parent.id}/submissions`,
+				payload: { input: "ask me" },
+				headers: { "content-type": "application/json" },
+			});
+			expect(start.statusCode).toBe(202);
+			// Give the tool a beat to reach the gate (the run is live).
+			await new Promise((resolve) => setTimeout(resolve, 250));
+			const steer = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${parent.id}/submissions`,
+				payload: { input: "parent's queued message", whenBusy: "steer" },
+				headers: { "content-type": "application/json" },
+			});
+			expect(steer.statusCode).toBe(202);
+			const parentLedger = await queuedOf(opened, parent.id);
+			const queuedKey = Object.keys(parentLedger?.byId ?? {})[0];
+			expect(queuedKey).toBeDefined();
+
+			// Fork at the newest entry (the default: empty payload).
+			const forked = await app.inject({
+				method: "POST",
+				url: `/v1/conversations/${parent.id}/fork`,
+				payload: {},
+				headers: { "content-type": "application/json" },
+			});
+			expect(forked.statusCode).toBe(201);
+			const childId = forked.json().id as number as ConversationId;
+
+			// The fork inherited the parent's ledger entry.
+			const childLedger = await queuedOf(opened, childId);
+			expect(Object.keys(childLedger?.byId ?? {})).toContain(queuedKey);
+
+			// Seed a declinable card in the CHILD: the parent's queued
+			// submission must not pre-decline it.
+			const host = askWaitHost();
+			await host.seedInteraction(
+				childId,
+				{
+					kind: "askwait.q",
+					callId: "child-1",
+					status: "pending",
+					createdAt: Date.now(),
+					declinable: true,
+				} as never,
+				BACKGROUND_CONTEXT,
+			);
+			const record = await recordOf(opened, childId, "child-1");
+			expect(record?.status).toBe("pending");
+
+			// The foreign entry is swept from the child's ledger by the
+			// seed's cleanup (it is not a queued submission of the child).
+			const childLedgerAfter = await queuedOf(opened, childId);
+			expect(
+				childLedgerAfter?.byId?.[queuedKey!],
+			).toBeUndefined();
+
+			// Cleanup: release the gate so the parent's run can settle.
+			release();
+			delete (globalThis as Record<string, unknown>).__askWaitGate;
+			await parentHandle!.waitForIdle(BACKGROUND_CONTEXT);
+		},
+	);
+});
