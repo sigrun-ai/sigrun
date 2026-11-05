@@ -646,19 +646,19 @@ export async function forkReviewRun(
 	id: ConversationId,
 	opts: CurationRunOpts,
 ): Promise<CurationRunResult> {
-// Ask-user Task 3: the allow list loses interactive tools BEFORE the
-// non-empty check (an all-interactive list still fails loudly, with
-// the strip warning logged first). Fork reviews KEEP them listed
-// (cache parity) — the gate blocks a call instead.
-const allow = withoutInteractive(
-opts.allow,
-deps.interactiveTools ?? new Set(),
-console.warn,
-"fork review",
-);
-checkRunOpts({ ...opts, allow });
-const { harness } = deps;
-const parent = await harness.conversation(id, BACKGROUND_CONTEXT);
+	// Ask-user Task 3: the allow list loses interactive tools BEFORE the
+	// non-empty check (an all-interactive list still fails loudly, with
+	// the strip warning logged first). Fork reviews KEEP them listed
+	// (cache parity) — the gate blocks a call instead.
+	const allow = withoutInteractive(
+		opts.allow,
+		deps.interactiveTools ?? new Set(),
+		console.warn,
+		"fork review",
+	);
+	checkRunOpts({ ...opts, allow });
+	const { harness } = deps;
+	const parent = await harness.conversation(id, BACKGROUND_CONTEXT);
 	if (parent === undefined) {
 		return notEligible("the conversation does not exist");
 	}

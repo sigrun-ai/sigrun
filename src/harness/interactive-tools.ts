@@ -95,8 +95,8 @@ export async function isJobRunConversation(
  * let installing an interactive-tool extension break unrelated curation
  * targets — but warns ONCE per call naming the removed tools and `where`
  * (an all-interactive list then still hits the existing
- * non-empty-`allow` check, loudly). Returns `list` itself when nothing
- * was removed (no copy churn for the common case).
+ * non-empty-`allow` check, loudly). Returns a fresh array in every case
+ * (the tracker requires alias-free roots).
  */
 export function withoutInteractive(
 	list: readonly string[],

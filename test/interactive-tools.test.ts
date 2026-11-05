@@ -35,12 +35,8 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import {
 	AgentDoc,
-	defineExtension,
-	defineTool,
 	type ConversationId,
 } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
-import { createRequire } from "node:module";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
@@ -365,6 +361,70 @@ describe("job fires hide interactive tools", () => {
 			BACKGROUND_CONTEXT,
 		);
 		expect(stored?.tools).toEqual({ remove: ["wait_for_human"] });
+		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+	});
+
+	test("a job firing into an EXISTING conversation keeps the tool listed (the uncovered shape)", async () => {
+		const { opened } = await bootAskWait();
+		const conversation = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const now = Date.parse("2026-11-05T12:00:00.000Z");
+		const fireKey = "nightly:2026-11-05T12:00:00.000Z";
+		const spec: JobSpec = {
+			name: "nightly",
+			schedule: { every: "60s" },
+			action: {
+				kind: "prompt",
+				prompt: "run the job",
+				conversation: conversation.id as unknown as number,
+			},
+		};
+		await opened.harness.commit(async (tx) => {
+			await writeJobChange(
+				tx,
+				"nightly",
+				{
+					source: "api",
+					spec,
+					owner: "alice",
+					enabled: true,
+					createdAt: new Date(now).toISOString(),
+					hash: specHash("nightly", spec),
+					state: "waiting",
+				},
+				"alice",
+				new Date(now).toISOString(),
+			);
+		}, BACKGROUND_CONTEXT);
+		const deps: JobRuntimeDeps = {
+			effectiveOwner: (owner) => owner,
+			harness: opened.harness,
+			storage: opened.storage,
+			registry: opened.registry,
+			models: opened.models,
+			defaultModel: opened.defaultModel,
+			now: () => now,
+			defaultTz: "UTC",
+			gatewayLoaded: false,
+			interactiveTools: opened.interactiveTools,
+		};
+		const fired = await fireJob(
+			deps,
+			"nightly",
+			fireKey,
+			now,
+			BACKGROUND_CONTEXT,
+		);
+		expect(fired.outcome).toBe("running");
+		// The fixed-conversation branch is NOT covered by the creation-time
+		// filter: the tool stays listed (the execute-time isJobRun guard is
+		// the tool's own answer for this shape, per spec §6's option A).
+		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		expect(
+			agent.tools.some((tool) => tool.name === "wait_for_human"),
+		).toBe(true);
 		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
 	});
 });

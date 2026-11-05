@@ -956,6 +956,14 @@ the same commit as `owner` and `lastActivityAt`; it does not create a run
 record or change the job's `lastRun`. The stamped conversation renders the
 job-state prompt section on its next run.
 
+`host.jobs.isJobRun(conversationId, context)` answers whether the
+conversation's CURRENT run is job-driven: true when the conversation's
+session meta carries a `jobId` (a `conversation: "new"` run), or any input
+of the conversation's current run carries the job requestId prefix. An
+interactive tool (see "Interactive tools") calls it in execute and refuses
+when true — a job firing into an EXISTING conversation is not covered by
+the creation-time filter, and a run must never wait on a human.
+
 The HTTP `POST /v1/conversations` route does not accept this option: it
 still takes no body fields.
 

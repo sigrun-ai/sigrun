@@ -3331,16 +3331,16 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						}
 					}
 				}
-			if (resolved.jobs !== undefined) {
-				jobBindings.push({ extension: slug, jobs: resolved.jobs });
-			}
-			// Interactive tools (ask-user Task 3): collected AFTER the
-			// install, slug-attributed — a quarantined extension never
-			// reaches here, so the union boot folds comes from LOADED
-			// extensions only.
-			if (resolved.interactiveTools !== undefined) {
-				interactiveTools.push(...resolved.interactiveTools);
-			}
+				if (resolved.jobs !== undefined) {
+					jobBindings.push({ extension: slug, jobs: resolved.jobs });
+				}
+				// Interactive tools (ask-user Task 3): collected AFTER the
+				// install, slug-attributed — a quarantined extension never
+				// reaches here, so the union boot folds comes from LOADED
+				// extensions only.
+				if (resolved.interactiveTools !== undefined) {
+					interactiveTools.push(...resolved.interactiveTools);
+				}
 			if (resolved.userServices !== undefined) {
 				userServiceBindings.push({
 					extension: slug,
