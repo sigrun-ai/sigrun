@@ -463,10 +463,15 @@ describe("core/jobs selected job", () => {
 		expect(fired.json.outcome).toBe("running");
 		const conversationId = fired.json.conversationId;
 		// Wait for the run to settle so the manual flag/error/outcome are final.
-		await until(async () => {
-			const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs`, alice);
-			return runs.json.runs[0]?.outcome !== "running";
-		});
+		// 30 s: a run settles through the service's async lanes; a loaded
+		// 2-core CI runner needs far more than the 5 s default.
+		await until(
+			async () => {
+				const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs`, alice);
+				return runs.json.runs[0]?.outcome !== "running";
+			},
+			30_000,
+		);
 		await call(app, "PATCH", `/v1/jobs/${job.id}`, alice, {
 			schedule: { cron: "0 3 * * *", timezone: "America/St_Johns" },
 		});
@@ -611,13 +616,16 @@ describe("core/jobs selected job", () => {
 		for (let run = 0; run < 26; run += 1) {
 			await opened.jobs.runNow(job.id);
 		}
-		await until(async () => {
-			const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs?limit=26`, alice);
-			return (
-				runs.json.runs.length === 26 &&
-				runs.json.runs.every((one: any) => one.outcome !== "running")
-			);
-		});
+		await until(
+			async () => {
+				const runs = await call(app, "GET", `/v1/jobs/${job.id}/runs?limit=26`, alice);
+				return (
+					runs.json.runs.length === 26 &&
+					runs.json.runs.every((one: any) => one.outcome !== "running")
+				);
+			},
+			120_000,
+		);
 
 		// Runs: newest 25 on the first page, Load more → runCursor → the rest.
 		const first = await view(app, alice, { job: job.id });
