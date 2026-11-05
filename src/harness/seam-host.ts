@@ -33,6 +33,7 @@ import {
 import {
 	InteractionDoc,
 	InteractionsIndexDoc,
+	QueuedHumanInputsDoc,
 	applyAnswer,
 	applyDecline,
 	asInteractionRecord,
@@ -504,6 +505,44 @@ export function createSeamHost(
 			if (problem !== null) throw new SeamError("interaction", problem);
 			context = toDurableContext(context);
 			const h = await harness(context);
+
+			// A declinable record seeded after a human message is immediately
+			// declined when that message is still queued (ask-user Task 2,
+			// spec 5.3): the message was admitted BEFORE the card existed and
+			// must never get stuck behind it. Read each recorded submission's
+			// current status here (outside the commit — submission status is
+			// a table read) and drop any entry that is no longer queued.
+			let preDeclineUser: string | undefined;
+			let preDeclined = false;
+			const stillQueuedIds = new Set<string>();
+			if (record.declinable === true) {
+				const queuedDoc = await h.snapshot(
+					QueuedHumanInputsDoc,
+					conversationId,
+					context,
+				);
+				const byId = queuedDoc?.byId ?? {};
+				const stillQueued: string[] = [];
+				for (const [submissionId] of Object.entries(byId)) {
+					const submission = await h.submission(
+						submissionId as never,
+						context,
+					);
+					if (submission === undefined) continue; // gone — drop below
+					const status = await submission.status(context);
+					if (status.status === "queued") {
+						stillQueued.push(submissionId);
+						stillQueuedIds.add(submissionId);
+					}
+				}
+				if (stillQueued.length > 0) {
+					// Earliest recorded submission wins (ascending id order).
+					stillQueued.sort((a, b) => Number(a) - Number(b));
+					preDeclineUser = byId[stillQueued[0]!]?.user;
+					preDeclined = true;
+				}
+			}
+
 			await h.commit(async (tx) => {
 				// Maintain the index in the SAME commit as the record.
 				const existing = await tx.doc(
@@ -513,6 +552,40 @@ export function createSeamHost(
 					record.callId,
 				);
 				if (existing.status !== "pending") return; // first-write wins
+				if (record.declinable === true) {
+					// Drop ledger entries whose submission is no longer queued
+					// (they were read above; only stale ones are removed).
+					const queuedDraft = await tx.doc(
+						QueuedHumanInputsDoc,
+						conversationId,
+					);
+					const mutableById = queuedDraft.byId as Record<
+						string,
+						{ readonly user?: string }
+					>;
+					for (const key of Object.keys(mutableById)) {
+						if (!stillQueuedIds.has(key)) delete mutableById[key];
+					}
+				}
+				if (preDeclined) {
+					// Seed already settled: the human's queued message declines
+					// the question before it is ever shown.
+					const settled = {
+						...record,
+						status: "skipped" as const,
+						settledAt: Date.now(),
+						answeredBy: "human" as const,
+						...(preDeclineUser !== undefined
+							? { answeredByUser: preDeclineUser }
+							: {}),
+						declinedVia: "message" as const,
+					};
+					Object.assign(existing, settled);
+					// No index entry — it is not pending. Sweep any secret
+					// delivery staged for this record (defensive).
+					sweepSecretDelivery(conversationId, record.callId);
+					return;
+				}
 				Object.assign(existing, record);
 				const index = await tx.doc(InteractionsIndexDoc);
 				indexPending(index, conversationId, record.callId);

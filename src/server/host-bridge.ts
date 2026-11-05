@@ -158,6 +158,9 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 					...(opts?.whenBusy === undefined
 						? {}
 						: { whenBusy: opts.whenBusy }),
+					// Ask-user Task 2: a host submit counts as a human message
+					// (declines pending questions) only when it carries a user.
+					declinesQuestions: opts?.user !== undefined,
 				});
 			},
 			async watch(id, listener) {

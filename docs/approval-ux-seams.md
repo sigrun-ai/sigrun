@@ -364,9 +364,21 @@ behalf — a decline is always a deliberate human act).
 - **The event.** `interactionSettled` carries `declinedVia` on a
   declined record, so a consumer can render "declined by the human"
   distinctly from other skips.
-- **The message path (Task 2).** An admitted message whose text declines
-  the pending question settles the record with `declinedVia: "message"`
-  through the same commit shape (index + secret sweep included).
+- **The message path (Task 2).** An admitted human message declines
+  every pending declinable record in the conversation with
+  `declinedVia: "message"`, through the same commit shape (index +
+  secret sweep included). Which submissions count: the HTTP submit
+  route's input submissions always count — any principal with write
+  access, scripted clients included, and the single-operator path with
+  no user (spec §5.3). Host (`host.conversations.submit`) submits count
+  only when they carry `opts.user`. Submissions carrying an `entry`
+  (UI-blocks answers) never count, and a rejected submission
+  (`whenBusy: "reject"` while busy, or a validation failure) declines
+  nothing. A message admitted while the conversation is busy (still
+  queued, not yet placed) is remembered per conversation; a declinable
+  record seeded while such a message is still queued is seeded already
+  settled — the message was typed before the card existed and must
+  never get stuck behind it.
 
 ## Implementation status (2026-10-14)
 

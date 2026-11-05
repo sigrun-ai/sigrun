@@ -34,10 +34,11 @@
  */
 
 import { defineDoc, defineDocFamily } from "@earendil-works/pi-durable";
-import type { JsonValue } from "@earendil-works/chord";
+import type { Context, JsonValue } from "@earendil-works/chord";
 import type {
 	ConversationDocFamilyToken,
 	ConversationId,
+	Harness,
 	JsonObject,
 } from "@earendil-works/pi-durable";
 import type {
@@ -139,6 +140,30 @@ export const InteractionsIndexDoc = defineDoc<InteractionsIndex>({
 	scope: "session",
 	checkpointWhen: () => false,
 	initial: () => ({ pending: {} }),
+});
+
+/**
+ * The queued human-message ledger (conversation singleton): when a human's
+ * message is admitted while a conversation is busy (status "queued"), it
+ * is recorded here keyed by submissionId. `seedInteraction` consults this
+ * before committing a declinable record, so a question seeded after the
+ * human's message is immediately declined. The record lives only while the
+ * submission is queued; once placed or settled the entry is dropped by
+ * `seedInteraction`'s commit, keeping the doc small.
+ */
+export type QueuedHumanInputs = {
+	/** submissionId (numeric string) -> the submitting user, when known. */
+	readonly byId: Record<string, { readonly user?: string }>;
+};
+
+export const QueuedHumanInputsDoc = defineDoc<QueuedHumanInputs>({
+	kind: "sigrun.interactions.queued-human-inputs",
+	version: 1,
+	scope: "conversation",
+	checkpointWhen: () => false,
+	history: "latest",
+	fork: "current",
+	initial: () => ({ byId: {} }),
 });
 
 /** Terminal statuses: answering one of these is a no-op (first wins).
@@ -512,6 +537,49 @@ export function applyDecline(
 	if (user !== undefined) mutable.answeredByUser = user;
 	mutable.declinedVia = via;
 	return "declined";
+}
+
+/**
+ * The admitted-message decline (ask-user Task 2): a human's message
+ * admitted through `submitOp` declines every PENDING declinable record in
+ * the conversation (`via: "message"`), in one commit, right after
+ * admission. Only the seam host's own kinds are in scope — the index
+ * lists every pending record, and the seed's `interactionKinds` gate
+ * already restricted what can be pending, but the draft read re-checks
+ * `declinable` so a record without the flag is never touched.
+ *
+ * Returns the callIds that transitioned. The caller (submitOp) passes
+ * `user` (the submitting principal's user, when identified); an
+ * unidentified submitter still declines, just without attribution.
+ */
+export async function declinePendingOnMessage(
+	harness: Harness,
+	conversationId: ConversationId,
+	user: string | undefined,
+	now: number,
+	context: Context,
+): Promise<readonly string[]> {
+	return await harness.commit(async (tx) => {
+		const index = await tx.doc(InteractionsIndexDoc);
+		const pending = index.pending[String(conversationId)] ?? [];
+		if (pending.length === 0) return [];
+		const declined: string[] = [];
+		for (const callId of pending) {
+			const draft = await tx.doc(
+				InteractionDoc,
+				conversationId,
+				callId,
+				callId,
+			);
+			const outcome = applyDecline(draft, "message", now, user);
+			if (outcome === "declined") {
+				indexSettled(index, conversationId, callId);
+				sweepSecretDelivery(conversationId, callId);
+				declined.push(callId);
+			}
+		}
+		return declined;
+	}, context);
 }
 
 /**

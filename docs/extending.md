@@ -292,6 +292,10 @@ effects are identical by construction:
   empty `tools` array enables zero tools.
 - `submit(id, input, {user, requestId, whenBusy})` — the submissions
   route's op (content resolution, the served-model check, `waitMs` off).
+  Ask-user: a host submit carrying `user` counts as a human message and
+  declines the conversation's pending declinable interaction records
+  (`declinedVia: "message"`); a submit without `user` never declines
+  anything (spec §5.3 of the ask-user design).
 - `watch(id, listener)` — the SSE stream's snapshot-first shape.
 - `list({owner, archived})` / `meta(id)` — the durable listing and the
   session-meta read (a superuser-shaped view: extensions are trusted).
