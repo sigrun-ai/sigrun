@@ -478,6 +478,32 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 		expect(HOST_RUNTIME_MODULES).toContain("@sigrun/shared");
 	});
 
+	test("pi-codemode joins the host runtime modules (linked into packages dirs)", () => {
+		// @sigrun/ext-codemode imports CodemodeSandbox at RUNTIME. Core does
+		// not depend on pi-codemode (it arrives via pi-durable), so a
+		// packages-dir install of the extension could not resolve it: the
+		// extension quarantined with "Cannot find package
+		// '@earendil-works/pi-codemode'". It links like the other host
+		// modules so the extension resolves the copy the host runs.
+		expect(HOST_RUNTIME_MODULES).toContain("@earendil-works/pi-codemode");
+	});
+
+	test("the pi-codemode link points at the host's own copy", () => {
+		// The end the link exists for: a bare `@earendil-works/pi-codemode`
+		// import from INSIDE the packages dir resolves to the copy the host
+		// runs (one sandbox runtime, never a second). pi-codemode's exports
+		// map carries no `require` condition, so this asserts the link itself
+		// rather than require-resolving through it.
+		const packagesDir = join(freshDir("sigrun-hostmod-codemode-"), "packages");
+		mkdirSync(join(packagesDir, "node_modules"), { recursive: true });
+		ensureHostModuleLinks(packagesDir);
+		const link = join(packagesDir, "node_modules", "@earendil-works", "pi-codemode");
+		expect(lstatSync(link).isSymbolicLink()).toBe(true);
+		expect(realpathSync(link)).toBe(
+			realpathSync(join(import.meta.dirname, "..", "node_modules", "@earendil-works", "pi-codemode")),
+		);
+	});
+
 	test("sigrun links ITSELF into the packages dir (the spec 14.1 self-link)", () => {
 		// The source checkout has no node_modules/@sigrun/sigrun anywhere
 		// above src/ (sigrun is not a dependency of itself) — the node_modules

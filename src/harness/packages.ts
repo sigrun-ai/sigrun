@@ -98,6 +98,13 @@ export const HOST_RUNTIME_MODULES: readonly string[] = [
 	"@earendil-works/pi-ai",
 	"@earendil-works/pi-durable",
 	"@earendil-works/chord",
+	// @sigrun/ext-codemode imports CodemodeSandbox at RUNTIME. Core does not
+	// depend on pi-codemode (it arrives transitively via pi-durable), so a
+	// packages-dir install of the extension could not resolve it — the
+	// extension quarantined with "Cannot find package
+	// '@earendil-works/pi-codemode'". Linked like the other Earendil host
+	// modules so the extension resolves the copy the host actually runs.
+	"@earendil-works/pi-codemode",
 	"typebox",
 	// The shared workspace is host-shipped too (wire + access contracts
 	// every extension family type against; @sigrun/recall is the first
