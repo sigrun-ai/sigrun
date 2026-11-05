@@ -1308,7 +1308,22 @@
 }
 .blk-field textarea { max-width: 48rem; }
 .blk-field :is(input, textarea, select):focus-visible { border-color: var(--accent); outline: none; }
-.blk-daterange input { width: auto; }
+/* Row-laid controls keep their own widths (same specificity as the rule
+   above, later in the sheet — so it wins). */
+.blk-field .blk-daterange input { width: auto; }
+.blk-secret-status { white-space: nowrap; }
+/* In-field buttons (daterange presets, list Add/Remove): the action look. */
+.blk-field button {
+	background: var(--surface-2);
+	border: 1px solid var(--border, #333);
+	border-radius: 6px;
+	color: var(--text, #ddd);
+	cursor: pointer;
+	font: inherit;
+	font-size: 0.85em;
+	padding: 0.25rem 0.65rem;
+}
+.blk-field button:hover { border-color: var(--accent); }
 
 /* The submit sizes to its label (a column-flex child stretches by
    default — it spanned the whole form). */
