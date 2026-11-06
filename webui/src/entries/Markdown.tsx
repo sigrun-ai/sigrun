@@ -151,6 +151,7 @@ function FilterableTable(props: { children?: ReactNode }) {
 function CodeBlock(props: { children?: ReactNode }) {
 	const { children } = props;
 	const [copied, setCopied] = useState(false);
+	const [wrap, setWrap] = useState(false);
 	const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	useEffect(() => {
 		return () => {
@@ -175,16 +176,27 @@ function CodeBlock(props: { children?: ReactNode }) {
 		<div className="md-code">
 			<div className="md-code-head">
 				<span className="md-code-lang">{languageOf(code)}</span>
-				<button
-					type="button"
-					className="md-code-copy"
-					data-copied={copied || undefined}
-					onClick={onCopy}
-				>
-					{copied ? "Copied" : "Copy"}
-				</button>
+				<span className="md-code-tools">
+					<button
+						type="button"
+						className="md-code-wrap"
+						aria-pressed={wrap}
+						title="Wrap long lines"
+						onClick={() => setWrap((on) => !on)}
+					>
+						Wrap
+					</button>
+					<button
+						type="button"
+						className="md-code-copy"
+						data-copied={copied || undefined}
+						onClick={onCopy}
+					>
+						{copied ? "Copied" : "Copy"}
+					</button>
+				</span>
 			</div>
-			<pre>
+			<pre data-wrap={wrap ? "" : undefined}>
 				<code>{text}</code>
 			</pre>
 		</div>
