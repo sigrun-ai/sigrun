@@ -71,13 +71,26 @@ export function transportKey(options: ExtSurfaceTransportOptions): string {
 	return instanceKey(options.params ?? {});
 }
 
+/** The surface path WITHOUT any query — suffix routes (/data, /actions,
+ *  /uploads) build from this and add their own query last (appending a
+ *  suffix after `?params=` would land after the query string — the
+ *  webui's E8 find, now the TUI's fetchData fix). */
+function surfaceBase(options: ExtSurfaceTransportOptions): string {
+	return `/v1/ext/${encodeURIComponent(options.slug)}/surfaces/${encodeURIComponent(options.id)}`;
+}
+
+/** The URL-encoded params JSON. */
+function paramsQuery(options: ExtSurfaceTransportOptions): string {
+	return encodeURIComponent(JSON.stringify(options.params ?? {}));
+}
+
 /** The base path for one surface instance (`?params=` omitted when `{}`). */
 function surfacePath(options: ExtSurfaceTransportOptions): string {
-	const base = `/v1/ext/${encodeURIComponent(options.slug)}/surfaces/${encodeURIComponent(options.id)}`;
+	const base = surfaceBase(options);
 	if (options.params === undefined || Object.keys(options.params).length === 0) {
 		return base;
 	}
-	return `${base}?params=${encodeURIComponent(JSON.stringify(options.params))}`;
+	return `${base}?params=${paramsQuery(options)}`;
 }
 
 function withQuery(path: string, key: string, value: string): string {
@@ -134,7 +147,7 @@ export function createExtSurfaceTransport(
 			return get<SurfaceLoad>(surfacePath(options));
 		},
 		fetchData(since?: number): Promise<SurfaceFetch> {
-			const path = `${surfacePath(options)}/data`;
+			const path = `${surfaceBase(options)}/data?params=${paramsQuery(options)}`;
 			return get<SurfaceFetch>(
 				since === undefined ? path : withQuery(path, "since", String(since)),
 			);
@@ -146,7 +159,7 @@ export function createExtSurfaceTransport(
 			actionId: string;
 		}): Promise<SurfaceActResult> {
 			const response = await doFetch(
-				`${baseUrl}${surfacePath(options)}/actions`,
+				`${baseUrl}${surfaceBase(options)}/actions`,
 				{
 					method: "POST",
 					headers: { ...headers(), "content-type": "application/json" },
@@ -156,7 +169,7 @@ export function createExtSurfaceTransport(
 			return (await response.json()) as SurfaceActResult;
 		},
 		async upload(body: SurfaceUploadBody): Promise<SurfaceActResult> {
-			const base = surfacePath(options);
+			const base = surfaceBase(options);
 			const path = withQuery(
 				`${baseUrl}${base}/uploads/${encodeURIComponent(body.field)}/${encodeURIComponent(body.name)}`,
 				"params",

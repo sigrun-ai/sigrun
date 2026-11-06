@@ -1001,6 +1001,32 @@ describe("Extension views (UI-blocks U3 Task 5)", () => {
 		expect(app.pane.render(100).join("\n")).toContain("[notice] acme action accepted");
 	});
 
+	test("params-only navigate reopens the view with those params (jobs-editor Task 7)", async () => {
+		const app = await openBoard();
+		app.extViewState!.dispatch(
+			{ type: "navigate", params: { job: "acme-a" } },
+			{},
+		);
+		await flush();
+		expect(app.extView?.slug).toBe("fixture-surfaces");
+		expect(app.extView?.id).toBe("board");
+		expect(app.extView?.params).toEqual({ job: "acme-a" });
+	});
+
+	test("a target navigate routes through navigateCoreTarget (jobs-editor Task 7)", async () => {
+		const app = await openBoard();
+		const spy = vi
+			.spyOn(app, "navigateCoreTarget")
+			.mockResolvedValue(undefined);
+		app.extViewState!.dispatch(
+			{ type: "navigate", target: { settings: "acme" } },
+			{},
+		);
+		await flush();
+		expect(spy).toHaveBeenCalledWith({ settings: "acme" });
+		spy.mockRestore();
+	});
+
 	test("a new events stream id lands on the open view's transport handle", async () => {
 		const app = await openBoard();
 		app.setEventsStreamId("stream-one");

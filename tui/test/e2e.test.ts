@@ -38,7 +38,11 @@ import type { ProviderContributor } from "../../src/harness/providers/index.js";
 import { createServer } from "../../src/server/index.js";
 import { seededIdentity } from "../../test/helpers/identity.js";
 import { SigrunClient, type ConversationViewWire } from "../src/api.js";
-import { watchConversation, type WatchHandlers } from "../src/sse.js";
+import {
+	watchConversation,
+	watchEvents,
+	type WatchHandlers,
+} from "../src/sse.js";
 
 /** The existing seam fixture, loaded through the REAL loader. */
 const FIXTURE_SPECIFIER = pathToFileURL(
@@ -582,4 +586,158 @@ describe("per-keymap TUI e2e (headless app over the real wire)", () => {
 			},
 		);
 	}
+});
+
+// ─── jobs-editor Task 7: the Jobs core view navigation, over the wire ──
+//
+// The TUI follows block navigation: a collection row's activation
+// ({type:"edit", name:"openJob"} + {itemId}) carries its accepted result's
+// `navigate` back through the channel's onNavigate wiring, and the view
+// REOPENS with those params. The run trigger proves Task 5's hub fix end
+// to end in the TUI: a background run's job.changed event bumps every
+// watching core/jobs instance, and the open view refetches its runs.
+
+describe("tui e2e — the Jobs view navigation (jobs-editor Task 7)", () => {
+	/** A prompt job spec (acme literals — the tests-own-literals rule). */
+	const promptSpec = () => ({
+		name: "acme-nightly",
+		schedule: { every: "3600s" },
+		action: { kind: "prompt", prompt: "say acme", conversation: "new" },
+	});
+
+	/** POST a JSON body at a path, with the harness user's header. */
+	async function post(
+		server: TestServer,
+		path: string,
+		body?: unknown,
+	): Promise<Response> {
+		return fetch(server.baseUrl + path, {
+			method: "POST",
+			// No content-type on a bodyless POST (Fastify's json parser
+			// 400s an empty application/json body).
+			headers: {
+				"x-sigrun-user": "tester",
+				...(body === undefined ? {} : { "content-type": "application/json" }),
+			},
+			...(body === undefined ? {} : { body: JSON.stringify(body) }),
+		});
+	}
+
+	/** An app against the server with the Jobs view open, with the
+	 *  launcher's events loop wired (Task 5's hub path: a job.changed
+	 *  bump reaches the open view as surface.changed). */
+	async function openJobs(
+		server: TestServer,
+		params?: Record<string, unknown>,
+	) {
+		const client = new SigrunClient({
+			baseUrl: server.baseUrl,
+			user: "tester",
+		});
+		const app = new TuiApp(client, {
+			tui: { requestRender: () => {} } as unknown as TUI,
+			watchOptions: { baseUrl: server.baseUrl, user: "tester" },
+		});
+		let helloSeen = false;
+		const unwatch = watchEvents(
+			{
+				onEvent: (event) => {
+					if (event.type === "surface.changed" && "slug" in event) {
+						app.dispatchSurfaceChanged(event);
+					}
+				},
+				onHello: (streamId) => {
+					helloSeen = true;
+					app.setEventsStreamId(streamId);
+				},
+			},
+			{ baseUrl: server.baseUrl, user: "tester", reconnectBaseMs: 25 },
+		);
+		// The hello (the launcher's ordering) precedes the first load: the
+		// load's X-Sigrun-Stream registers the watcher, so a job.changed
+		// bump reaches this instance (Task 5's hub path).
+		await waitUntil(() => helloSeen, "the events stream hello");
+		await app.openExtView(
+			"core",
+			"jobs",
+			params as Parameters<typeof app.openExtView>[2],
+		);
+		await waitUntil(
+			() => app.extViewState?.view.status === "ready",
+			"the Jobs view to load",
+		);
+		return {
+			client,
+			app,
+			dispose: () => {
+				unwatch();
+				app.dispose();
+			},
+		};
+	}
+
+	test("the Jobs view opens a job from the list and opens New job", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		// SigrunClient has no create-job call — the raw fetch carries it.
+		const created = await post(server, "/v1/jobs", promptSpec());
+		expect(created.status).toBe(201);
+		const job = ((await created.json()) as { job: { id: string } }).job;
+		const { app, dispose } = await openJobs(server);
+		try {
+			// The collection row's activation payload ({itemId} = the row's id)
+			// → the accepted result's navigate reopens the view at the job.
+			app.extViewState!.dispatch(
+				{ type: "edit", name: "openJob" },
+				{ itemId: job.id },
+			);
+			await waitUntil(
+				() => app.extView?.params.job === job.id,
+				"the view to navigate to the job",
+			);
+			// The "New job" button's navigate action reopens the form page
+			// (its field labels render — `Name` is the first).
+			app.extViewState!.dispatch(
+				{ type: "navigate", params: { edit: true } },
+				{},
+			);
+			await waitUntil(
+				() => app.extView?.params.edit === true,
+				"the view to navigate to the New job form",
+			);
+			await waitUntil(
+				() =>
+					app.extViewState?.view.status === "ready" &&
+					app.mainContent.current.render(100).join("\n").includes("Name"),
+				"the New job form to render",
+			);
+		} finally {
+			dispose();
+		}
+	});
+
+	test("a background run refreshes the open TUI Jobs view", { timeout: 30_000 }, async () => {
+		const server = await bootServer();
+		const created = await post(server, "/v1/jobs", promptSpec());
+		expect(created.status).toBe(201);
+		const job = ((await created.json()) as { job: { id: string } }).job;
+		const { app, dispose } = await openJobs(server, { job: job.id });
+		try {
+			const runs = () =>
+				(
+					(app.extViewState?.view.data as Record<string, unknown>)
+						.main as Record<string, unknown>
+				).runs as { items: unknown[] };
+			expect(runs().items).toHaveLength(0);
+			const run = await post(server, `/v1/jobs/${job.id}/run`);
+			expect(run.status).toBe(200);
+			// Task 5's hub: the run's job.changed bumps the watching
+			// instance; the view refetches and the run row lands.
+			await waitUntil(
+				() => runs().items.length > 0,
+				"the run to appear in the open view",
+			);
+		} finally {
+			dispose();
+		}
+	});
 });

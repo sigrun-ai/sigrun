@@ -991,11 +991,13 @@ export function createJobsView(deps: {
 			// collection rows' own `id` field (the channels derive item ids
 			// from it, spec §5.5) — and the accepted result carries the
 			// navigate back (§6.3: SurfaceActOk.navigate passes the wire
-			// unchanged). The webui applies it (useSurface routes
-			// result.navigate through onNavigate); the TUI does NOT apply
-			// result.navigate yet — a PRE-EXISTING channel gap for every
-			// ext view's action-result navigation, out of scope here
-			// (whole-branch review ledger).
+			// unchanged). Both channels apply it: the webui's useSurface
+			// routes result.navigate through onNavigate, and the TUI's
+			// SurfaceState does the same (jobs-editor Task 7) — its
+			// accepted-result branch fires onNavigate LAST, and the app's
+			// wiring reopens the view with the params. The compact page's
+			// Esc-back dispatch (tui/src/blocks/page.ts) is genuinely
+			// routed through the same seam.
 			openJob: async (
 				ctx: SurfaceContext,
 				payload: unknown,

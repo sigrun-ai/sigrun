@@ -475,6 +475,14 @@ export class TuiApp implements Component, ActionHost {
 		// subscriptions or action timers survive a re-open.
 		this.#extView?.state.dispose();
 		const state = new SurfaceState(handle.transport);
+		// Navigation wiring (jobs-editor Task 7): a navigate action or an
+		// accepted result's `navigate` reopens THIS view with the params
+		// (params-only) or routes a core target through the shell — never
+		// posted to the server (SurfaceState.dispatch short-circuits it).
+		state.onNavigate = (nav) =>
+			nav.target !== undefined
+				? void this.navigateCoreTarget(nav.target)
+				: void this.openExtView(slug, id, nav.params ?? {});
 		const view = new SurfaceView(state, {
 			theme: this.#theme,
 			unicode: this.#unicode,
