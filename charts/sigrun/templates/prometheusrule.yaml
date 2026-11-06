@@ -124,15 +124,15 @@ spec:
               A task has reached the restart limit and is blocked until
               retry. Check the durable report logs and the task inspection;
               schedule jobs also show blocked/restart_limit on their record.
-        - alert: SigrunDurableSessionFailed
-          # D5: a storage/session failure closes the durable Session.
-          expr: increase(sigrun_durable_reports_total{type="session_failed"}[10m]) > 0
+        - alert: SigrunDurableStorageFailed
+          # D5: a storage failure is reported by the durable runtime.
+          expr: increase(sigrun_durable_reports_total{type="storage_failed"}[10m]) > 0
           labels:
             severity: warning
           annotations:
-            summary: a sigrun durable session failed
+            summary: a sigrun durable storage failure was reported
             description: >-
-              A durable session_failed report was emitted within the last
+              A durable storage_failed report was emitted within the last
               ten minutes. Check the pod logs for the report and its stack,
               then inspect storage health and the restart path.
 {{- if .Values.controllers.backup.enabled }}
