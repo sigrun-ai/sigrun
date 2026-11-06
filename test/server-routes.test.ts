@@ -337,11 +337,6 @@ async function bootServer(options?: {
 		extensions: [contributor],
 		env: {},
 		settingsDir: dir,
-		// The gateway/mcp built-ins stay on 1.4.0 until the family
-		// migration (the skew gate quarantines them); their route rows
-		// (/v1/ext/gateway/status, /v1/ext/sigrun-mcp/oauth/*) are absent
-		// from this rig's table until Task 8 re-pins them.
-		builtins: false,
 	});
 	const app = await createServer(opened, config);
 	cleanups.push(async () => {
@@ -405,6 +400,9 @@ describe("server route table", () => {
 				"/v1/providers/:id/credential",
 				"/v1/providers/:id/refresh",
 				"/v1/events",
+				"/v1/ext/gateway/status",
+				"/v1/ext/sigrun-mcp/oauth/:server/start",
+				"/v1/ext/sigrun-mcp/oauth/:server/complete",
 				"/v1/extensions",
 				"/v1/extensions/:slug/secrets",
 				"/v1/extensions/:slug/secrets/:key",

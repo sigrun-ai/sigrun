@@ -35,6 +35,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import YAML from "yaml";
 import { describe, expect, test } from "vitest";
+import { satisfies } from "semver";
 import { BUILTIN_EXTENSIONS } from "../src/harness/builtins.js";
 
 /** Repo root (test/ → ..). */
@@ -364,16 +365,17 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 			for (const [module, pin] of Object.entries(sibling.manifest.peerDependencies ?? {})) {
 				const own = core.dependencies?.[module];
 				if (own !== undefined) {
-					// Phase-1 peers deliberately accept both host majors while
-					// core develops against 1.4.0. A range that excludes core's
-					// pin is the skew class this test exists to catch.
+					// A peer range that excludes core's pin is the skew class
+					// this test exists to catch. Peers may be exact literals or
+					// ranges ("1.3.0 || 1.4.0" in the 1.4 era, "~1.5.0" now) —
+					// semver's satisfies answers both.
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
 					expect(
 						module === "@sigrun/shared"
 							? [...accepted].some((entry) =>
 								acceptedSharedPeers(name, sibling.manifest.version, pin, own).has(entry),
 							)
-							: accepted.has(own),
+							: accepted.has(own) || satisfies(own, pin),
 						`${name} peer ${module} accepts core's pin ${own}`,
 					).toBe(true);
 				} else {
@@ -385,7 +387,7 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 					).version as string;
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
 					expect(
-						accepted.has(resolved),
+						accepted.has(resolved) || satisfies(resolved, pin),
 						`${name} peer ${module} accepts core's resolved ${resolved}`,
 					).toBe(true);
 				}

@@ -855,11 +855,6 @@ describe("settings section load contract (U4 Task 3)", () => {
 			extensionSpecifiers: [CORE_SPECIFIER],
 			env: {},
 			settingsDir: dir,
-			// The built-ins stay on 1.4.0 until the family migration (the
-			// skew gate quarantines them BEFORE the fixture's own
-			// declaration check runs); this assertion targets the fixture's
-			// outcome only, and the skew quarantines must not crowd it out.
-			builtins: false,
 		});
 		cleanups.push(async () => {
 			await opened.harness.close(BACKGROUND_CONTEXT);

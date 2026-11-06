@@ -256,6 +256,9 @@ export const VIEW_SCHEMA: Shape = {
 										},
 										"timestamp": {
 											"kind": "number"
+										},
+										"thinkingLevel": {
+											"kind": "string"
 										}
 									}
 								}
@@ -325,14 +328,6 @@ export const VIEW_SCHEMA: Shape = {
 																"type": {
 																	"kind": "string"
 																},
-																"required": {
-																	"kind": "array",
-																	"variants": [
-																		{
-																			"kind": "string"
-																		}
-																	]
-																},
 																"properties": {
 																	"kind": "object",
 																	"fields": {
@@ -348,6 +343,14 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
 																}
 															}
 														},
@@ -552,14 +555,6 @@ export const VIEW_SCHEMA: Shape = {
 																"type": {
 																	"kind": "string"
 																},
-																"required": {
-																	"kind": "array",
-																	"variants": [
-																		{
-																			"kind": "string"
-																		}
-																	]
-																},
 																"properties": {
 																	"kind": "object",
 																	"fields": {
@@ -586,6 +581,14 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
 																}
 															}
 														}
@@ -605,14 +608,6 @@ export const VIEW_SCHEMA: Shape = {
 															"fields": {
 																"type": {
 																	"kind": "string"
-																},
-																"required": {
-																	"kind": "array",
-																	"variants": [
-																		{
-																			"kind": "string"
-																		}
-																	]
 																},
 																"properties": {
 																	"kind": "object",
@@ -640,6 +635,14 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
 																}
 															}
 														}
@@ -719,14 +722,6 @@ export const VIEW_SCHEMA: Shape = {
 																"type": {
 																	"kind": "string"
 																},
-																"required": {
-																	"kind": "array",
-																	"variants": [
-																		{
-																			"kind": "string"
-																		}
-																	]
-																},
 																"properties": {
 																	"kind": "object",
 																	"fields": {
@@ -752,14 +747,6 @@ export const VIEW_SCHEMA: Shape = {
 																					"fields": {
 																						"type": {
 																							"kind": "string"
-																						},
-																						"required": {
-																							"kind": "array",
-																							"variants": [
-																								{
-																									"kind": "string"
-																								}
-																							]
 																						},
 																						"properties": {
 																							"kind": "object",
@@ -787,6 +774,14 @@ export const VIEW_SCHEMA: Shape = {
 																									}
 																								}
 																							}
+																						},
+																						"required": {
+																							"kind": "array",
+																							"variants": [
+																								{
+																									"kind": "string"
+																								}
+																							]
 																						}
 																					}
 																				},
@@ -796,6 +791,14 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
 																}
 															}
 														}
@@ -947,14 +950,6 @@ export const VIEW_SCHEMA: Shape = {
 																"type": {
 																	"kind": "string"
 																},
-																"required": {
-																	"kind": "array",
-																	"variants": [
-																		{
-																			"kind": "string"
-																		}
-																	]
-																},
 																"properties": {
 																	"kind": "object",
 																	"fields": {
@@ -992,6 +987,14 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
 																}
 															}
 														}
@@ -1011,14 +1014,6 @@ export const VIEW_SCHEMA: Shape = {
 															"fields": {
 																"type": {
 																	"kind": "string"
-																},
-																"required": {
-																	"kind": "array",
-																	"variants": [
-																		{
-																			"kind": "string"
-																		}
-																	]
 																},
 																"properties": {
 																	"kind": "object",
@@ -1046,6 +1041,14 @@ export const VIEW_SCHEMA: Shape = {
 																			}
 																		}
 																	}
+																},
+																"required": {
+																	"kind": "array",
+																	"variants": [
+																		{
+																			"kind": "string"
+																		}
+																	]
 																}
 															}
 														}

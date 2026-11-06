@@ -67,11 +67,6 @@ test("every context-taking seam method normalizes literals before commit/snapsho
 				identity: await seededIdentity(dir),
 				env: {},
 				extensionSpecifiers: [FIXTURE_SPECIFIER],
-				// The built-ins stay on 1.4.0 until the family migration
-				// (the skew gate quarantines them); the call-count pins
-				// below drop the curator tick-job commit until Task 8
-				// re-pins the 7/5 shape.
-				builtins: false,
 			},
 		);
 		const root = await opened.harness.root(BACKGROUND_CONTEXT);
@@ -120,13 +115,10 @@ test("every context-taking seam method normalizes literals before commit/snapsho
 
 		// Two seeds, answer, settle, set and clear: every durable write got
 		// the full context, not the extension's structural literal. The
-		// curator built-in's tick-job reconciliation commit is absent in
-		// this builtins-disabled rig (the skew gate quarantines the
-		// still-1.4.0 sibling; Task 8 re-pins 7).
-		expect(commit).toHaveBeenCalledTimes(6);
-		// The curator's boot-time snapshots are absent in this
-		// builtins-disabled rig alongside its commit (Task 8 re-pins 5).
-		expect(snapshot).toHaveBeenCalledTimes(2);
+		// seventh call is the curator built-in's tick-job reconciliation
+		// (its declared task record) — boot-time, same normalization rule.
+		expect(commit).toHaveBeenCalledTimes(7);
+		expect(snapshot).toHaveBeenCalledTimes(5);
 		for (const call of [...commit.mock.calls, ...snapshot.mock.calls]) {
 			const forwarded = call.at(-1) as Context;
 			expect(forwarded).not.toBe(literal);
@@ -142,7 +134,7 @@ test("every context-taking seam method normalizes literals before commit/snapsho
 				abortSignal: controller.signal,
 			} as unknown as Context),
 		).rejects.toThrow("caller cancelled");
-		expect(commit).toHaveBeenCalledTimes(6);
+		expect(commit).toHaveBeenCalledTimes(7);
 	} finally {
 		if (opened !== undefined) {
 			await opened.harness.close(BACKGROUND_CONTEXT);

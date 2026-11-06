@@ -72,12 +72,7 @@ async function bootWith(
 	const dir = await tempDir();
 	const config = configWith(dir);
 	const opened = await openHarness(config, {
-		identity: await seededIdentity(dir), env: {}, extensionSpecifiers: [...specifiers],
-		// The published built-ins stay on 1.4.0 until the family migration
-		// (the skew gate quarantines them); these contract assertions pin
-		// the fixture extensions' outcomes, not the built-in surface.
-		builtins: false,
-	});
+		identity: await seededIdentity(dir), env: {}, extensionSpecifiers: [...specifiers] });
 	const app = await createServer(opened, config);
 	return { opened, app };
 }
@@ -735,15 +730,13 @@ test("a footer record with a three-column columns passes (the footer zones)", as
 test("the meta route inventories declared kinds", async () => {
 	const { app } = await bootWith([FIXTURE_SPECIFIER]);
 	const meta = (await app.inject({ method: "GET", url: "/v1/meta" })).json();
-	// The rig boots `builtins: false` (the skew gate quarantines the
-	// still-1.4.0 built-ins during the family migration), so the curator
-	// rows are absent here; the built-in inventory is test/builtins.test.ts's
-	// lane (Task 8 re-pins it on 1.5.0 built-ins).
 	expect(meta.seam).toEqual({
 		interactions: [
+			{ extension: "curator", kinds: ["curator.overlay-question"] },
 			{ extension: "sigrun-fixture-seam", kinds: ["fixture.ask"] },
 		],
 		ambient: [
+			{ extension: "curator", keys: ["curator.notice"] },
 			{ extension: "sigrun-fixture-seam", keys: ["fixture.panel"] },
 		],
 	});

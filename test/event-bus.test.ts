@@ -810,6 +810,10 @@ describe("pi-durable 1.5.0 commit semantics", () => {
 				sources: () => ({ file: [], extensions: [] }),
 				settings: () => ({}),
 				onChange: (jobId: string) => {
+					// The built-ins load in this rig (1.5.0 family), so the
+					// curator's tick-job row also fires onChange; the test owns
+					// only its own job-* rows.
+					if (!jobId.startsWith("job-")) return;
 					calls.push(jobId);
 					if (!armed) {
 						armed = true;

@@ -51,10 +51,6 @@ async function bootServer(): Promise<FastifyInstance> {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: {},
-		// The built-ins stay on 1.4.0 until the family migration (the
-		// skew gate quarantines them); the catalog asserts core's rows
-		// only until Task 8 re-pins the built-in tail.
-		builtins: false,
 	});
 	const app = await createServer(opened, config);
 	cleanups.push(async () => {
@@ -98,10 +94,6 @@ describe("GET /v1/commands", () => {
 				endpoint: { method: string; path: string };
 			}[];
 		};
-		// Core rows only: the built-ins' commands (the gateway's pair/link,
-		// the curator's learn) load with the built-ins, which this rig
-		// disables (the skew gate quarantines the still-1.4.0 siblings
-		// during the family migration; Task 8 re-pins the full table).
 		expect(body.commands.map((c) => c.name)).toEqual([
 			"new",
 			"fork",
@@ -112,8 +104,13 @@ describe("GET /v1/commands", () => {
 			"model",
 			"thinking",
 			"jobs",
-			// U4's core settings command.
+			// U4's core settings command, then the built-ins' commands —
+			// the gateway's two (gateway Task 4, §8.2) and the curator's
+			// `/learn` (Task B1) — extension-declared, after the core table.
 			"settings",
+			"pair",
+			"link",
+			"learn",
 		]);
 		for (const command of body.commands) {
 			expect(typeof command.description).toBe("string");
