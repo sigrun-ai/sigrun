@@ -21,6 +21,7 @@ import {
 	liveCompactionFailure as sharedLiveCompactionFailure,
 	liveCompactions as sharedLiveCompactions,
 	liveGenerationPartial as sharedLiveGenerationPartial,
+	liveRunFailure as sharedLiveRunFailure,
 	liveToolSlots as sharedLiveToolSlots,
 } from "@sigrun/shared/live";
 
@@ -63,6 +64,18 @@ export function liveCompactionFailure(
 	view: ConversationViewWire,
 ): string | undefined {
 	return sharedLiveCompactionFailure(asBase(view));
+}
+
+/**
+ * The newest run's failure (`pi.live.runFailure`), as the alert renders
+ * it: `{reason, detail?}`, or undefined when no failure is recorded, a
+ * newer run is in flight, or the ending was user-caused
+ * (`aborted`/`reset`).
+ */
+export function liveRunFailure(
+	view: ConversationViewWire,
+): { readonly reason: string; readonly detail?: string } | undefined {
+	return sharedLiveRunFailure(asBase(view));
 }
 
 /**

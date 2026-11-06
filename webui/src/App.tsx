@@ -45,6 +45,7 @@ import { TurnList } from "./entries/TurnList";
 import { userText } from "./entries/UserEntry";
 import {
 	liveCompactionFailure,
+	liveRunFailure,
 	liveCompactions,
 } from "./entries/liveDoc";
 import { GalleryView } from "./gallery/GalleryView";
@@ -235,6 +236,10 @@ function ChatCenter(props: {
 	const compacting = view !== null && liveCompactions(view) > 0;
 	const compactionError =
 		view === null || compacting ? undefined : liveCompactionFailure(view);
+	// A run that ended without an answer surfaces why (pi-durable 1.5.0
+	// `pi.live.runFailure`); the shared reader hides the user-caused
+	// endings (aborted/reset) and any failure a newer run superseded.
+	const runFailure = view === null ? undefined : liveRunFailure(view);
 	return (
 		<section
 			className="chat-center"
@@ -275,6 +280,12 @@ function ChatCenter(props: {
 					{compactionError !== undefined && (
 						<p className="chat-compaction-failure" role="alert">
 							compaction failed: {compactionError}
+						</p>
+					)}
+					{runFailure !== undefined && (
+						<p className="chat-run-failure" role="alert">
+							run ended: {runFailure.reason}
+							{runFailure.detail ? `: ${runFailure.detail}` : ""}
 						</p>
 					)}
 				</>

@@ -576,6 +576,53 @@ describe("App shell", () => {
 		}
 	});
 
+	test("a pi.live runFailure renders `run ended: <reason>: <detail>` next to the transcript", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// sources[1] is the root conversation's stream.
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						entries: [
+							makeEntry("pi.user", [textMessage("user", "hi")], {
+								id: 10,
+								conversationId: 1,
+							}),
+						],
+						docs: {
+							"pi.live": {
+								runFailure: {
+									reason: "model_error",
+									detail: "upstream 502",
+								},
+							},
+						},
+					}),
+				),
+			);
+		});
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("run ended: model_error: upstream 502");
+		// The user-caused reasons stay hidden.
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						docs: { "pi.live": { runFailure: { reason: "aborted" } } },
+					}),
+				),
+			);
+		});
+		expect(textContent(renderer.toJSON())).not.toContain("run ended:");
+	});
+
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {
 		const { client, createEventSource, sources } = makeHarness();
 		try {

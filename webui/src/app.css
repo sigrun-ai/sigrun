@@ -1427,6 +1427,12 @@ body {
 	margin: 0.25rem 0;
 }
 
+.chat-run-failure {
+	color: var(--danger);
+	font-size: 0.8rem;
+	margin: 0.25rem 0;
+}
+
 /* Tool rows (B4): one tool call INSIDE the expanded activity line —
    never a first-class card. Glyph ✓ settled / ✗ error / · no result,
    tool name, preview in mono; expansion opens the JSON arguments and

@@ -41,6 +41,17 @@ export interface LiveDocWire {
 	readonly tools?: readonly LiveToolSlotWire[];
 	readonly compactions?: readonly unknown[];
 	readonly compactionFailure?: { readonly error?: unknown };
+	/**
+	 * Why the newest run ended without an answer (pi-durable 1.5.0
+	 * `LiveState.runFailure`): set in the commit that ends the run,
+	 * removed when a later commit starts one. The clients narrow it to
+	 * `{reason, detail?}` — taskId/inputs/first are the harness's
+	 * bookkeeping, not display data.
+	 */
+	readonly runFailure?: {
+		readonly reason?: unknown;
+		readonly detail?: unknown;
+	};
 }
 
 /**
@@ -117,4 +128,34 @@ export function liveCompactionFailure(
 	if (typeof failure !== "object" || failure === null) return undefined;
 	const error = failure.error;
 	return typeof error === "string" && error !== "" ? error : undefined;
+}
+
+/** The run-failure reasons the USER caused — hidden by design. */
+const USER_CAUSED_RUN_FAILURES = new Set(["aborted", "reset"]);
+
+/**
+ * The newest run's failure (`pi.live.runFailure`, pi-durable 1.5.0), as
+ * the clients display it: `{reason, detail?}`, or undefined when no
+ * failure is recorded, when `run` is present (a newer run started — the
+ * recorded failure is stale), when the reason is user-caused
+ * (`aborted`/`reset` — the user watched themselves do it), or when the
+ * doc shape drifted (fail soft to absent, like
+ * {@link liveCompactionFailure}). A non-string detail is dropped, never
+ * surfaced.
+ */
+export function liveRunFailure(
+	view: ConversationViewBase,
+): { readonly reason: string; readonly detail?: string } | undefined {
+	const doc = liveDoc(view);
+	if (doc === undefined || doc.run !== undefined) return undefined;
+	const failure = doc.runFailure;
+	if (typeof failure !== "object" || failure === null) return undefined;
+	const reason = failure.reason;
+	if (typeof reason !== "string" || reason === "") return undefined;
+	if (USER_CAUSED_RUN_FAILURES.has(reason)) return undefined;
+	const detail = failure.detail;
+	if (typeof detail === "string" && detail !== "") {
+		return { reason, detail };
+	}
+	return { reason };
 }

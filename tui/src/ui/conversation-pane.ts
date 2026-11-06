@@ -6,7 +6,12 @@
  * (`▸ Thinking · 2 tools`; `▾` when open) that unfolds into the thinking
  * text and `✓ tool  preview` rows (`✗` error, `·` no result yet — the
  * wire carries no per-tool running marker, so `·` covers pending too).
- * `pi.compaction` renders the centred `── context compacted ──` divider. The `[tool]`/`[thinking]` tags of
+ * `pi.compaction` renders the centred `── context compacted ──` divider.
+ * A run that ended without an answer (`pi.live.runFailure`, pi-durable
+ * 1.5.0) renders one dim `run ended: <reason>[: <detail>]` line under
+ * the last turn; the shared reader hides the user-caused endings
+ * (`aborted`/`reset`) and any failure a newer run superseded.
+ * The `[tool]`/`[thinking]` tags of
  * the entry-era pane are gone.
  *
  * Task 2c: an EXPANDED input (`/skill:name`, a prompt template) is one
@@ -51,6 +56,7 @@ import {
 	type MarkdownTheme,
 	type TuiMouseEventResult,
 } from "@earendil-works/pi-tui";
+import { liveRunFailure } from "@sigrun/shared/live";
 import {
 	activityLabel,
 	expandedUserEntry,
@@ -252,6 +258,9 @@ export class ConversationPane implements Component {
 	readonly #noticeComponents: Component[] = [];
 
 	#turns: readonly Turn<EntryShape>[] = [];
+	/** The latest view's `run ended:` line (stream state — recomputed on
+	 *  every `showView`, unlike the composer-owned notices). */
+	#runFailureLine: string | undefined;
 	/** The open view's conversation id (the chat-block attach's address). */
 	#conversationId = 0;
 	/** The mounted chat-block surface states, keyed by entry id
@@ -378,6 +387,11 @@ export class ConversationPane implements Component {
 		}
 		this.#conversationId = conversationId;
 		this.#turns = groupTurns(wire.entries as readonly EntryShape[]);
+		const runFailure = liveRunFailure(wire);
+		this.#runFailureLine =
+			runFailure === undefined
+				? undefined
+				: `run ended: ${runFailure.reason}${runFailure.detail ? `: ${runFailure.detail}` : ""}`;
 		if (this.#focus !== undefined && this.#focus >= this.#turns.length) {
 			this.#focus = undefined;
 		}
@@ -515,6 +529,13 @@ export class ConversationPane implements Component {
 				this.#container.addChild(component);
 			}
 			this.#container.addChild(new RenderSlot()); // turn gap
+		}
+		// The run-failure line rides UNDER the last turn (a stream-derived
+		// line, not a composer notice — `showView`'s replacement owns it).
+		if (this.#runFailureLine !== undefined) {
+			this.#container.addChild(
+				new Text(this.#theme.dim(this.#runFailureLine), 0, 0),
+			);
 		}
 		for (const notice of this.#notices) {
 			const component = noticeComponent(notice);
