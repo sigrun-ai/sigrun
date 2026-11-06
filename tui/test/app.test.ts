@@ -13,6 +13,8 @@ import type { TUI } from "@earendil-works/pi-tui";
 import type { JsonObject, SurfaceLoad } from "@sigrun/shared/blocks";
 import { SurfaceView } from "../src/blocks/surface-view.js";
 import { TuiApp } from "../src/ui/app.js";
+import { StatusBar } from "../src/ui/status-bar.js";
+import { plainTuiTheme } from "../src/theme.js";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
 import { Sidebar, type SidebarSelection } from "../src/ui/sidebar.js";
 import type {
@@ -982,6 +984,21 @@ describe("Extension views (UI-blocks U3 Task 5)", () => {
 		const rendered = app.pane.render(100).join("\n");
 		expect(rendered).toContain("[notice]");
 		expect(state.consumeNotices()).toEqual([]);
+	});
+
+	test("surface notices ALSO flash the status bar (the pane is unpainted while the view owns the slot)", async () => {
+		const app = await openBoard();
+		// A mounted status bar (the launcher's shape): the steady state
+		// snapshot must exist BEFORE the flash or #flashStatus no-ops.
+		const statusBar = new StatusBar({ theme: plainTuiTheme(), messageMs: 60_000 });
+		statusBar.set({ conversation: "acme", hints: [] });
+		app.setStatusBar(statusBar);
+		const state = app.extViewState!;
+		state.dispatch({ type: "submit", name: "acmeAction" }, {});
+		await flush();
+		// The toast flashed the bar AND still landed as a pane notice.
+		expect(statusBar.getState().message).toBe("acme action accepted");
+		expect(app.pane.render(100).join("\n")).toContain("[notice] acme action accepted");
 	});
 
 	test("a new events stream id lands on the open view's transport handle", async () => {

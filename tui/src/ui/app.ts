@@ -481,9 +481,14 @@ export class TuiApp implements Component, ActionHost {
 		});
 		state.onChange(() => {
 			// The surface's notices (action toasts, rejections) land as
-			// pane notices — the TUI has no toast zone of its own.
+			// pane notices (the post-close backlog) AND flash the status
+			// bar while mounted — the pane is not painted while this view
+			// owns the main slot, so the flash is the visible channel
+			// (SurfaceState's contract names the status bar as the host
+			// notice seam).
 			for (const notice of state.consumeNotices()) {
 				this.pane.showNotice(notice);
+				this.#flashStatus(notice);
 			}
 			this.#tui.requestRender();
 		});
