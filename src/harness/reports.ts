@@ -5,6 +5,12 @@
  * follow-up work. This collector is therefore synchronous and small: count
  * and log immediately. It never reads transcripts, and no failure in
  * logging or an observer can escape into pi-durable.
+ *
+ * Its second responsibility (D2) is the restart-limit queue: it never
+ * calls the Harness from inside `onReport` (which runs inside Session
+ * machinery) — restart-limited tasks queue, and once boot registers the
+ * listener the queue drains via `setImmediate` (and each later report
+ * the same way).
  */
 
 import type { Report, ReportInfo, ReportTask } from "@earendil-works/pi-durable";
@@ -92,8 +98,8 @@ export function createDurableReports(opts: {
 }): {
 	onReport(report: Report): void;
 	counts(): Readonly<Record<ReportKind, number>>;
-	/** The queued restart-limited reports (drained by boot after open). */
-	takeRestartLimited(): readonly ReportTask[];
+	/** The queued restart-limited reports (a COPY — observation, not a drain). */
+	queuedRestartLimited(): readonly ReportTask[];
 	/**
 	 * Register the restart-limited listener. Queued reports drain to it
 	 * via `setImmediate`; each later report is delivered the same way.
@@ -151,7 +157,7 @@ export function createDurableReports(opts: {
 		counts(): Readonly<Record<ReportKind, number>> {
 			return { ...totals };
 		},
-		takeRestartLimited(): readonly ReportTask[] {
+		queuedRestartLimited(): readonly ReportTask[] {
 			return [...queued];
 		},
 		onRestartLimited(sink: RestartLimitedListener): void {

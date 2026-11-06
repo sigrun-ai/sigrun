@@ -197,7 +197,11 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		// pi-durable 1.5.0 (D2): restart_limit is no longer a task blocked
 		// reason — the restart-limited signal moved to the job record gauge.
 		expect(samples).toContain('sigrun_jobs_blocked{reason="restart_limit"} 0');
-		expect(samples).not.toContain('sigrun_tasks_blocked{reason="restart_limit"}');
+		expect(
+			samples.some((line) =>
+				line.startsWith('sigrun_tasks_blocked{reason="restart_limit"}'),
+			),
+		).toBe(false);
 	});
 
 	test("increments durable report counters and counts blocked task reasons", async () => {

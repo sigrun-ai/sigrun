@@ -49,6 +49,7 @@ import { fireJob, type JobRuntimeDeps } from "./fire.js";
 import {
 	reconcileJobs,
 	createExecutor,
+	liveScheduleTasksByJob,
 	type ReconcileSources,
 } from "./reconcile.js";
 import { removeJobState, warnJobStateRemoval } from "./state-dir.js";
@@ -460,21 +461,31 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			);
 			const rearmed = await readJob(deps.harness, id, ctx);
 			if (rearmed === undefined) throw new JobNotFoundError(id);
-			await createExecutor(
-				{
-					harness: deps.harness,
-					storage: deps.storage,
-					runtime: deps.runtime,
-					rootId: deps.rootId,
-					sources: deps.sources,
-					...(deps.jobsRoot === undefined
-						? {}
-						: { jobsRoot: deps.jobsRoot }),
-				},
-				id,
-				rearmed,
-				ctx,
+			// Double-executor guard: if a live executor with the record's
+			// hash already exists (a raced reconcile created one between the
+			// block and the resume), reuse it instead of creating a second.
+			const live = await liveScheduleTasksByJob(deps.storage, ctx);
+			const existing = (live.get(id) ?? []).find(
+				(task) =>
+					(task.input as { hash?: unknown }).hash === rearmed.hash,
 			);
+			if (existing === undefined) {
+				await createExecutor(
+					{
+						harness: deps.harness,
+						storage: deps.storage,
+						runtime: deps.runtime,
+						rootId: deps.rootId,
+						sources: deps.sources,
+						...(deps.jobsRoot === undefined
+							? {}
+							: { jobsRoot: deps.jobsRoot }),
+					},
+					id,
+					rearmed,
+					ctx,
+				);
+			}
 			const record = await readJob(deps.harness, id, ctx);
 			if (record === undefined) throw new JobNotFoundError(id);
 			return wireOf(id, record);

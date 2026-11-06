@@ -279,20 +279,19 @@ export async function reconcileJobs(
 		);
 		if (record.enabled) {
 			if (matching.length === 0) {
-				// D2: a restart-limited record (state blocked, reason
-				// restart_limit) is left ALONE — its executor ended faulted and
-				// only an explicit resume re-arms it. Stale-task pruning (the
-				// hash-mismatch aborts below) is unchanged.
-				if (
-					record.state === "blocked" &&
-					record.reason === "restart_limit"
-				) {
-					continue;
-				}
 				for (const task of live) {
 					await deps.harness.abortTask(task.id, ctx);
 				}
-				await createExecutor(deps, id, record, ctx);
+				// D2: a restart-limited record (state blocked, reason
+				// restart_limit) gets NO new executor — its executor ended
+				// faulted and only an explicit resume re-arms it. The guard
+				// wraps ONLY the creation: stale-task pruning above (and the
+				// hash-mismatch aborts below) still runs.
+				if (
+					!(record.state === "blocked" && record.reason === "restart_limit")
+				) {
+					await createExecutor(deps, id, record, ctx);
+				}
 			}
 			// A matching live task exists: leave it (the same task id
 			// survives an unchanged reboot). Extra stale live tasks for

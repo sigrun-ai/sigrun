@@ -19,10 +19,10 @@
  *   cleared, exactly one live executor) and refuses a healthy job with
  *   `JobNotBlockedError`.
  *
- * The crash-loop fixture is `test/admin-tasks.test.ts`'s
- * `bootParkedRig`: a `sigrun.schedule`-KIND task whose only phase never
- * resolves, driven through one creating boot + four abandoned reopens
- * so the sixth open hits the restart limit during `Harness.open`.
+ * The crash-loop fixture lives in this file: a `sigrun.schedule`-KIND
+ * task whose only phase never resolves, driven through one creating
+ * boot + four abandoned reopens so the sixth open hits the restart
+ * limit during `Harness.open`.
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -153,7 +153,7 @@ describe("durable reports: the restart-limited queue", () => {
 			reason: "restart_limit",
 			error: new Error("restart limit reached"),
 		});
-		expect(reports.takeRestartLimited()).toEqual([task]);
+		expect(reports.queuedRestartLimited()).toEqual([task]);
 		// Registration must drain the QUEUED backlog asynchronously.
 		const delivered: ReportTask[] = [];
 		reports.onRestartLimited((one) => {
@@ -198,10 +198,10 @@ async function boot(rig: RestartRig): Promise<void> {
 	});
 	// Replace the core jobs extension's `sigrun.schedule` definition with
 	// the waiting fixture: the task KIND stays `sigrun.schedule`, but the
-	// phase never resolves — the crash-loop simulation (the admin-tasks
-	// rig's exact pattern: the scheduler resolves definitions from the
-	// live registry, so the fixture must be INSTALLED to survive a
-	// reopen).
+	// phase never resolves — the crash-loop simulation. The scheduler
+	// resolves definitions from the live registry, so the fixture must be
+	// INSTALLED to survive a reopen (else the record blocks missing_task
+	// instead of re-running).
 	rig.opened.registry.uninstall({ name: "sigrun.jobs" });
 	rig.opened.registry.install(TEST_JOBS_EXTENSION);
 }
@@ -388,11 +388,9 @@ describe("restart-limit recovery (D2)", () => {
 			const rig = await bootRestartLimitedRig();
 			// One more CLEAN boot: reconcile must leave the blocked
 			// record alone (no executor recreation).
-			await rig.opened.harness.close(BACKGROUND_CONTEXT);
+			const prior = rig.opened;
+			await prior.harness.close(BACKGROUND_CONTEXT);
 			await boot(rig);
-			cleanups.push(async () => {
-				await rig.opened.harness.close(BACKGROUND_CONTEXT);
-			});
 			const live = await liveScheduleTasksByJob(
 				rig.opened.storage,
 				BACKGROUND_CONTEXT,
