@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.1] - 2026-11-06
+
+### Fixed
+
+- Extension views scroll. The surface never got a definite height (the
+  `.blk-surface` wrapper was a content-sized flex child, so a page's
+  `height: 100%` resolved to auto) while the app root clips, so long views
+  — the escalation inbox, a skill's SKILL.md — could not be scrolled at
+  all. The surface now fills the main body and scrolls; a `page` root is
+  sized to it, so its header stays put and its regions scroll.
+
+### Added
+
+- Code blocks in Markdown get a **Wrap** toggle beside Copy (soft-wraps long
+  lines; macOS overlay scrollbars hide the horizontal bar otherwise).
+
+### Changed
+
+- The family bumps to 0.10.1 (shared, tui, sandbox platform packages);
+  companion: `@sigrun/ext-gateway` 0.1.20 (shared peer gains 0.10.1).
+- The published-hooks loader test scopes its built-in-shadowing check to
+  its own hook (the real ext-mcp built-in publishes `mcp.tool-annotations`
+  since 0.2.3, which had turned CI red on main).
+
 ## [0.10.0] - 2026-11-06
 
 ### Added
