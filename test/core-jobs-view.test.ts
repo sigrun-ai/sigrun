@@ -207,15 +207,21 @@ async function createJob(
 	return created.json.job as JobWire;
 }
 
-/** Walk one slot (sidebar/main), depth-first over layout children. */
+/** Walk one slot (sidebar/main), depth-first over layout children.
+ *  A `page` block keeps its blocks in `main`/`sidebar`/`detail`
+ *  (shared/src/blocks/types.ts) rather than `children`, so the walk
+ *  descends those columns too — otherwise assertions over the whole
+ *  tree (collectActionIds, assertActionBlocksValid) see the page node
+ *  alone. */
 function* walk(blocks: unknown): Generator<Record<string, any>> {
 	if (!Array.isArray(blocks)) return;
 	for (const block of blocks) {
 		if (typeof block !== "object" || block === null) continue;
 		const node = block as Record<string, any>;
 		yield node;
-		if (Array.isArray(node.children)) {
-			for (const child of node.children) {
+		for (const column of ["children", "main", "sidebar", "detail"]) {
+			if (!Array.isArray(node[column])) continue;
+			for (const child of node[column]) {
 				const inner =
 					typeof child === "object" && child !== null && "block" in child
 						? child.block

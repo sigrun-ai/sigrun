@@ -575,21 +575,18 @@ export function createJobsView(deps: {
 								{ label: "Task", value: { $: "/main/job/task" } },
 							],
 						},
-						// The action body, as a bound markdown block. Kind-conditional
-						// blocks are fine: a job's kind cannot change without a new
-						// render (a PATCH that changes kind bumps the revision, and the
-						// tree rebuild binds the other block).
-						...(job.kind === "prompt"
-							? [{ type: "markdown", text: { $: "/main/job/prompt" } }]
-							: []),
-						...(job.kind === "task"
-							? [
-									{
-										type: "markdown",
-										text: { $: "/main/job/taskInputMarkdown" },
-									},
-								]
-							: []),
+						// The action body blocks: BOTH are emitted UNCONDITIONALLY.
+						// The earlier kind-conditional form rested on a false invariant —
+						// `bumpRev` advances `rev` only (treeRev is never written), so a
+						// REST PATCH that changes a job's action kind would leave an open
+						// client showing the stale body block until reload (the clients
+						// apply fresh DATA to the SAME tree). The data-bound fix is
+						// unconditional blocks: the off-kind binding resolves null, and
+						// both clients render a null/empty markdown text as NOTHING
+						// visible (webui boundString → "" in a zero-height div; pi-tui
+						// Markdown returns zero lines for empty text).
+						{ type: "markdown", text: { $: "/main/job/prompt" } },
+						{ type: "markdown", text: { $: "/main/job/taskInputMarkdown" } },
 					],
 				},
 				...(writeActions.length === 0
