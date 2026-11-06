@@ -1028,11 +1028,13 @@ describe("chart ServiceMonitor + PrometheusRule", () => {
 		expect(byName.get("SigrunJobFailed")?.expr).toBe(
 			'increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0',
 		);
-		// D5: the restart-limit park and storage-failure alerts.
-		expect(byName.get("SigrunTaskParked")?.expr).toBe(
-			'sigrun_tasks_blocked{reason="restart_limit"} > 0',
+		// D2: the restart-limited job gauge and storage-failure alerts
+		// (pi-durable 1.5.0 has no task_parked state; the job record's
+		// blocked/restart_limit gauge replaced the task-level alert).
+		expect(byName.get("SigrunJobRestartLimited")?.expr).toBe(
+			'sigrun_jobs_blocked{reason="restart_limit"} > 0',
 		);
-		expect(byName.get("SigrunTaskParked")?.for).toBe("5m");
+		expect(byName.get("SigrunJobRestartLimited")?.for).toBe("5m");
 		expect(byName.get("SigrunDurableStorageFailed")?.expr).toBe(
 			'increase(sigrun_durable_reports_total{type="storage_failed"}[10m]) > 0',
 		);

@@ -7,8 +7,9 @@
  * Admin-only (403 forbidden for non-admins).
  *
  * pi-durable 1.5.0 removed `task_parked`/`retryTask`, and with them the
- * `POST /v1/admin/tasks/:id/retry` route and its tests (the replacement
- * recovery surface lands with the plan's Task 4).
+ * `POST /v1/admin/tasks/:id/retry` route and its tests; the replacement
+ * recovery surface is Task 4's `POST /v1/jobs/:id/resume` (covered by
+ * test/jobs-restart-limit.test.ts + test/jobs-api.test.ts).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -71,11 +72,11 @@ async function until<T>(
 }
 
 /**
- * The park-fixture task: a schedule-KIND task (so the boot's
- * applyParkedJobs patches the owning job) whose only phase never
- * resolves — every abandoned boot leaves the record `running`.
- * Installed as the replacement core jobs extension (same extension name
- * and task kind), so the list route resolves its owner as `sigrun.jobs`.
+ * The restart-limit fixture task: a schedule-KIND task whose only phase
+ * never resolves — every abandoned boot leaves the record `running`,
+ * which is what counts a restart on the next open. Installed as the
+ * replacement core jobs extension (same extension name and task kind),
+ * so the list route resolves its owner as `sigrun.jobs`.
  */
 function waitingScheduleTask() {
 	return defineTask<{ jobId: string; hash: string }, { phase: "wait" }, void, object>({
@@ -170,11 +171,10 @@ async function boot(rig: ParkRig): Promise<void> {
 	});
 	rig.opened = opened;
 	// Replace the core jobs extension's `sigrun.schedule` definition with
-	// the waiting fixture: the task KIND stays `sigrun.schedule` (so the
-	// boot's applyParkedJobs patches the owning job), but the phase never
-	// resolves — the crash-loop simulation. The uninstall-by-name drops
-	// the core definition; the fixture re-installs the same extension name
-	// and task kind with the waiting phase.
+	// the waiting fixture: the task KIND stays `sigrun.schedule`, but the
+	// phase never resolves — the crash-loop simulation. The
+	// uninstall-by-name drops the core definition; the fixture re-installs
+	// the same extension name and task kind with the waiting phase.
 	opened.registry.uninstall({ name: "sigrun.jobs" });
 	opened.registry.install(TEST_JOBS_EXTENSION);
 	rig.app = await createServer(opened, rig.config, [], {
@@ -199,13 +199,16 @@ async function closeRig(rig: ParkRig): Promise<void> {
 }
 
 /**
- * Build the parked state through real openHarness boots: the first
- * boot creates the job + task (job state `waiting` — the pre-patch
- * causality pin), four abandoned reopens, and the final boot parks it
- * (restart_limit) with the job record patched to blocked by the boot's
- * applyParkedJobs.
+ * Build the restart-limited state through real openHarness boots: the
+ * first boot creates the job + task (job state `waiting`), four
+ * abandoned reopens count restarts 1..4, and the sixth open reaches
+ * restart limit 5 — the task faults DURING `Harness.open` (pi-durable
+ * 1.5.0 has no park state: a restart-limited task ENDS terminal and the
+ * owning job record is marked blocked/restart_limit by the boot's
+ * report-listener drain; test/jobs-restart-limit.test.ts owns those
+ * assertions).
  */
-async function _bootParkedRigUnusedUntilTask4(): Promise<ParkRig> {
+async function bootParkedRig(): Promise<ParkRig> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-admin-tasks-"));
 	const faux = fauxProvider({
 		provider: "faux",
@@ -282,15 +285,11 @@ async function _bootParkedRigUnusedUntilTask4(): Promise<ParkRig> {
 		);
 	}
 	// The sixth open (creation + five reopens) reaches restart limit 5:
-	// the task parks DURING Harness.open, and the boot's applyParkedJobs
-	// patches the job record before openHarness returns.
+	// the task faults DURING Harness.open. pi-durable 1.5.0 has no park
+	// state to assert here — the job-level recovery assertions live in
+	// test/jobs-restart-limit.test.ts; this rig only builds the state.
 	await abandon(rig);
 	await boot(rig);
-	const inspection = await rig.opened.harness.inspect(BACKGROUND_CONTEXT);
-	const parked = inspection.tasks.find(
-		(candidate) => String(candidate.record.id) === String(rig.taskId),
-	);
-	expect(parked?.state).toMatchObject({ kind: "blocked", reason: "restart_limit" });
 	return rig;
 }
 
@@ -369,8 +368,113 @@ describe("GET /v1/admin/tasks?state=blocked", () => {
 		expect(response.json()).toEqual({ error: "invalid_field", field: "state" });
 	});
 
-	// The park-listing test is deleted with the retry cases: pi-durable
-	// 1.5.0 removed task_parked/retryTask, so no rig can produce a
-	// restart_limit-blocked task. bootParkedRig stays (the plan's Task 4
-	// reuses it for the replacement recovery surface).
+	test(
+		"200 with the row shape {id, kind, reason, conversationId, owner?, extension?}",
+		{ timeout: 60_000 },
+		async () => {
+			// The missing_task fixture: a sleeping task whose definition is
+			// unregistered once its sleep is DUE — the scheduler blocks it
+			// missing_task. The fake clock makes the sleep due without a
+			// real-time wait (the park-era rig's exact mechanism).
+			const dir = await mkdtemp(join(tmpdir(), "sigrun-admin-tasks-200-"));
+			const faux = fauxProvider({
+				provider: "faux",
+				models: [{ id: "m", contextWindow: 128_000 }],
+			});
+			faux.setResponses([fauxAssistantMessage("ok")]);
+			const config = loadConfig({
+				SIGRUN_DEFAULT_MODEL: "faux/m",
+				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+				SIGRUN_AUTH: "token",
+				SIGRUN_WORKSPACE_PATH: dir,
+			});
+			const identity = await seededIdentity(dir);
+			const clock = createFakeClock(Date.now());
+			const opened = await openHarness(config, {
+				identity,
+				extensions: [
+					{
+						name: "ext-faux",
+						providers: [{ provider: faux.provider }],
+					} satisfies ProviderContributor,
+				],
+				env: {},
+				settingsDir: dir,
+				now: clock.now,
+				setTimer: clock.setTimer,
+			});
+			// Install the sleeping fixture under a test extension name (the
+			// row's optional extension column resolves through the registry
+			// while installed), create the task, and let it sleep.
+			opened.registry.uninstall({ name: "sigrun.jobs" });
+			opened.registry.install({ name: "sigrun.test.sleep", tasks: [sleepingScheduleTask()] });
+			const app = await createServer(opened, config, [], {
+				env: {},
+				listenHost: "127.0.0.1",
+			});
+			cleanups.push(async () => {
+				await app.close();
+				await opened.harness.close(BACKGROUND_CONTEXT);
+				await rm(dir, { recursive: true, force: true });
+			});
+			const { token: adminToken } = await opened.identity.tokens.create("tester-cli", "tester");
+			const root = await opened.harness.root(BACKGROUND_CONTEXT);
+			const taskId = await opened.harness.commit(
+				async (tx) =>
+					await tx.createTask(
+						sleepingScheduleTask(),
+						{ jobId: "api:missing-job", hash: "missing-fixture" },
+						{
+							ownership: { kind: "conversation" },
+							conversationId: root.id,
+							background: true,
+						},
+					),
+				BACKGROUND_CONTEXT,
+			);
+			await until(
+				async () => await opened.harness.getTask(taskId, BACKGROUND_CONTEXT),
+				(task) => task?.state.status === "sleeping",
+				"the sleeping fixture to sleep",
+			);
+			// Make the sleep DUE without firing its timer (set, not advance):
+			// only a DUE, uninvoked record falls through to the registry fit
+			// (blocked: missing_task).
+			const sleeping = await opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
+			if (sleeping?.state.status !== "sleeping") throw new Error("fixture: task not sleeping");
+			clock.set(sleeping.state.until + 1_000);
+			// Unregister the definition: the due task's blocked reason becomes
+			// missing_task (the registry no longer holds its kind).
+			opened.registry.uninstall({ name: "sigrun.test.sleep" });
+			await until(
+				async () =>
+					(await opened.harness.inspect(BACKGROUND_CONTEXT)).tasks.find(
+						(candidate) => String(candidate.record.id) === String(taskId),
+					)?.state,
+				(state) => state?.kind === "blocked" && state.reason === "missing_task",
+				"the task to block missing_task",
+			);
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/admin/tasks?state=blocked",
+				headers: { authorization: `Bearer ${adminToken}` },
+			});
+			expect(response.statusCode).toBe(200);
+			const tasks = response.json().tasks;
+			expect(Array.isArray(tasks)).toBe(true);
+			const row = tasks.find(
+				(candidate: { id: number }) => String(candidate.id) === String(taskId),
+			);
+			expect(row).toBeDefined();
+			expect(typeof row.id).toBe("number");
+			expect(row.kind).toBe("sigrun.schedule");
+			expect(row.reason).toBe("missing_task");
+			expect(typeof row.conversationId).toBe("number");
+			// Owner comes from the root conversation's SessionMeta when set;
+			// the extension column resolves through the installed registry —
+			// here the fixture was uninstalled, so the field is omitted (the
+			// row shape's optional half).
+			expect("reason" in row && typeof row.reason === "string").toBe(true);
+		},
+	);
 });

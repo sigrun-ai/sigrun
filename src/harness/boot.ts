@@ -30,6 +30,7 @@ import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
 import { reconcileJobs } from "../jobs/reconcile.js";
+import { markRestartLimitedJob } from "../jobs/restart-limit.js";
 import { createDurableReports } from "./reports.js";
 import { registerJobObservers } from "../jobs/observe.js";
 import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
@@ -2472,6 +2473,19 @@ export async function openHarness(
 			);
 		}
 	}
+	// D2 restart-limit recovery: reports that arrived DURING
+	// Harness.open sat queued in the collector. Register the live
+	// listener now (drains the backlog via setImmediate, then every
+	// later restart-limited report flows straight to it); the listener
+	// owns all Harness reads/commits — the collector never calls the
+	// Harness from inside onReport.
+	reports.onRestartLimited((task) => {
+		void markRestartLimitedJob(harness, task, BACKGROUND_CONTEXT).catch(
+			(error: unknown) => {
+				console.error("jobs: restart-limited listener failed:", error);
+			},
+		);
+	});
 	harness.resume();
 	return {
 		harness,

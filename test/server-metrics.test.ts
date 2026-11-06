@@ -191,9 +191,13 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		]) {
 			expect(samples).toContain(`sigrun_durable_reports_total{type="${type}"} 0`);
 		}
-		for (const reason of ["missing_task", "task_too_old", "migration_failed", "restart_limit"]) {
+		for (const reason of ["missing_task", "task_too_old", "migration_failed"]) {
 			expect(samples).toContain(`sigrun_tasks_blocked{reason="${reason}"} 0`);
 		}
+		// pi-durable 1.5.0 (D2): restart_limit is no longer a task blocked
+		// reason — the restart-limited signal moved to the job record gauge.
+		expect(samples).toContain('sigrun_jobs_blocked{reason="restart_limit"} 0');
+		expect(samples).not.toContain('sigrun_tasks_blocked{reason="restart_limit"}');
 	});
 
 	test("increments durable report counters and counts blocked task reasons", async () => {
@@ -209,7 +213,7 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		const samples = parseExposition(await getMetrics(app));
 		expect(samples).toContain('sigrun_durable_reports_total{type="task_faulted"} 1');
 		expect(samples).toContain('sigrun_durable_reports_total{type="storage_failed"} 0');
-		expect(samples).toContain('sigrun_tasks_blocked{reason="restart_limit"} 0');
+		expect(samples).toContain('sigrun_jobs_blocked{reason="restart_limit"} 0');
 	});
 
 	test("a scrape racing shutdown (harness closed) answers 200 with sigrun_up 0", async () => {

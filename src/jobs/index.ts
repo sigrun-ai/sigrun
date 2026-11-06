@@ -48,6 +48,7 @@ import {
 import { fireJob, type JobRuntimeDeps } from "./fire.js";
 import {
 	reconcileJobs,
+	createExecutor,
 	type ReconcileSources,
 } from "./reconcile.js";
 import { removeJobState, warnJobStateRemoval } from "./state-dir.js";
@@ -67,6 +68,14 @@ export class JobNotFoundError extends Error {
 	constructor(id: string) {
 		super(`job ${id} does not exist`);
 		this.name = "JobNotFoundError";
+	}
+}
+
+/** Thrown when `resume` targets a job that is not restart-limited (409 `not_blocked`). */
+export class JobNotBlockedError extends Error {
+	constructor(id: string) {
+		super(`job ${id} is not blocked by the restart limit`);
+		this.name = "JobNotBlockedError";
 	}
 }
 
@@ -178,6 +187,15 @@ export interface JobsService {
 		outcome: "running" | "skipped" | "blocked";
 		conversationId?: number;
 	}>;
+	/**
+	 * Re-arm a restart-limited job (D2): state `waiting`, `reason`
+	 * cleared, and the executor recreated through reconcile's
+	 * `createExecutor` path. Works for every source (api, file,
+	 * extension). Throws {@link JobNotFoundError} for an unknown id and
+	 * {@link JobNotBlockedError} unless the record is exactly
+	 * `state: "blocked", reason: "restart_limit"`.
+	 */
+	resume(id: string): Promise<JobWire>;
 	reconcile(): Promise<void>;
 }
 
@@ -421,6 +439,45 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 			const now = deps.runtime.now();
 			const fireKey = `${id}:manual:${now}`;
 			return await fireJob(deps.runtime, id, fireKey, now, ctx);
+		},
+
+		async resume(id: string): Promise<JobWire> {
+			const prior = await readJob(deps.harness, id, ctx);
+			if (prior === undefined) throw new JobNotFoundError(id);
+			if (prior.state !== "blocked" || prior.reason !== "restart_limit") {
+				throw new JobNotBlockedError(id);
+			}
+			// Re-arm: waiting + no reason, then the executor through the
+			// SAME creation path reconcile uses.
+			await patchJob(
+				deps.harness,
+				id,
+				(draft) => {
+					draft.state = "waiting";
+					delete draft.reason;
+				},
+				ctx,
+			);
+			const rearmed = await readJob(deps.harness, id, ctx);
+			if (rearmed === undefined) throw new JobNotFoundError(id);
+			await createExecutor(
+				{
+					harness: deps.harness,
+					storage: deps.storage,
+					runtime: deps.runtime,
+					rootId: deps.rootId,
+					sources: deps.sources,
+					...(deps.jobsRoot === undefined
+						? {}
+						: { jobsRoot: deps.jobsRoot }),
+				},
+				id,
+				rearmed,
+				ctx,
+			);
+			const record = await readJob(deps.harness, id, ctx);
+			if (record === undefined) throw new JobNotFoundError(id);
+			return wireOf(id, record);
 		},
 
 		reconcile: reconcileOne,

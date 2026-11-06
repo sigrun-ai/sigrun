@@ -570,3 +570,58 @@ describe("run-now and the runs history", () => {
 		).toBe(200);
 	});
 });
+
+describe("POST /v1/jobs/:id/resume (restart-limit recovery, D2)", () => {
+	test("a waiting job → 409 not_blocked; a read-only principal → 403; an unknown id → 404", async () => {
+		const { app, alice, bob } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());
+		const job = created.json.job;
+		// A healthy (waiting) job is not blocked.
+		expect(
+			await call(app, "POST", `/v1/jobs/${job.id}/resume`, alice),
+		).toMatchObject({ status: 409, json: { error: "not_blocked" } });
+		// Hidden to bob (no share): 404, not a 403 tell.
+		expect(
+			await call(app, "POST", `/v1/jobs/${job.id}/resume`, bob),
+		).toMatchObject({ status: 404, json: { error: "job_not_found" } });
+		// Unknown id: 404.
+		expect(
+			await call(app, "POST", "/v1/jobs/api:none/resume", alice),
+		).toMatchObject({ status: 404, json: { error: "job_not_found" } });
+	});
+
+	test("a read-only share → 403 forbidden", async () => {
+		const { app, alice, bob } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());
+		const job = created.json.job;
+		await call(app, "PATCH", `/v1/jobs/${job.id}`, alice, {
+			sharing: { scope: "household", level: "read" },
+		});
+		expect(
+			await call(app, "POST", `/v1/jobs/${job.id}/resume`, bob),
+		).toMatchObject({ status: 403, json: { error: "forbidden" } });
+	});
+
+	test("a blocked/restart_limit job resumes to 200 waiting", async () => {
+		const { app, opened, alice } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());
+		const job = created.json.job;
+		// Drive the record into the restart-limit blocked state the same
+		// way the reports listener does (the crash-loop path is covered by
+		// test/jobs-restart-limit.test.ts; here only the route matters).
+		const { patchJob } = await import("../src/jobs/docs.js");
+		await patchJob(
+			opened.harness,
+			job.id,
+			(draft) => {
+				draft.state = "blocked" as typeof draft.state;
+				draft.reason = "restart_limit";
+			},
+			BACKGROUND_CONTEXT,
+		);
+		const resumed = await call(app, "POST", `/v1/jobs/${job.id}/resume`, alice);
+		expect(resumed.status).toBe(200);
+		expect(resumed.json.job.state).toBe("waiting");
+		expect(resumed.json.job.reason).toBeUndefined();
+	});
+});

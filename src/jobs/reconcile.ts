@@ -279,6 +279,16 @@ export async function reconcileJobs(
 		);
 		if (record.enabled) {
 			if (matching.length === 0) {
+				// D2: a restart-limited record (state blocked, reason
+				// restart_limit) is left ALONE — its executor ended faulted and
+				// only an explicit resume re-arms it. Stale-task pruning (the
+				// hash-mismatch aborts below) is unchanged.
+				if (
+					record.state === "blocked" &&
+					record.reason === "restart_limit"
+				) {
+					continue;
+				}
 				for (const task of live) {
 					await deps.harness.abortTask(task.id, ctx);
 				}
@@ -362,8 +372,10 @@ async function patchRecord(
 	await patchJob(harness, id, change as never, ctx);
 }
 
-/** Create the schedule task for one enabled record (ONE commit). */
-async function createExecutor(
+/** Create the schedule task for one enabled record (ONE commit).
+ *  Exported for `JobsService.resume` (D2): a restart-limited job's
+ *  re-arm rides the same creation path. */
+export async function createExecutor(
 	deps: ReconcileDeps,
 	id: string,
 	record: JobRecord,

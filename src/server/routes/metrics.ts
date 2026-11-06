@@ -67,7 +67,7 @@ import { checkStorage } from "../readiness.js";
 /** The exposition content type (spec §6.9's format rule). */
 const EXPOSITION_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
 
-const BLOCKED_REASONS = ["missing_task", "task_too_old", "migration_failed", "restart_limit"] as const;
+const BLOCKED_REASONS = ["missing_task", "task_too_old", "migration_failed"] as const;
 
 /** Escape one label value per the exposition format: `\` → `\\`,
  *  `"` → `\"`, newline → `\n`. */
@@ -218,6 +218,29 @@ export function registerMetricsRoutes(
 									},
 								],
 				),
+			);
+			// D2: the job-record blocked gauge. pi-durable 1.5.0 has no
+			// task park state — a restart-limited schedule task ends
+			// faulted and its JOB record carries blocked/restart_limit —
+			// so the alertable signal lives on the job records. Emitted
+			// for restart_limit plus zero-valued label stability; other
+			// blocked reasons (fire-time blocks) ride the same gauge when
+			// they occur.
+			const jobBlockedReasons: Record<string, number> = {
+				restart_limit: 0,
+			};
+			for (const { record } of jobRecords) {
+				if (record.state !== "blocked") continue;
+				const reason = record.reason ?? "unknown";
+				jobBlockedReasons[reason] = (jobBlockedReasons[reason] ?? 0) + 1;
+			}
+			family(
+				"sigrun_jobs_blocked",
+				"Jobs blocked by record reason",
+				Object.entries(jobBlockedReasons).map(([reason, count]) => ({
+					labels: { reason },
+					value: count,
+				})),
 			);
 		} catch (error) {
 			up = 0;

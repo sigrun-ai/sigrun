@@ -22,8 +22,9 @@
  * `GET /v1/admin/tasks?state=blocked` lists blocked tasks from
  * `harness.inspect()` (id, kind, reason, conversationId, owner from the
  * conversation's SessionMeta when present). Admin-only (403 forbidden).
- * The retry route existed for 1.4.0's task_parked/retryTask pair; 1.5.0
- * removed both (its replacement recovery surface lands with Task 4).
+ * The LISTING stays; the retry route is gone — 1.5.0 removed
+ * task_parked/retryTask, and its replacement recovery surface is the
+ * job-level `POST /v1/jobs/:id/resume` (Task 4, D2).
  *
  * Durability (Review Focus 4): the restart rides the SAME ordered
  * shutdown as the SIGTERM path — the event bus drains pending settles

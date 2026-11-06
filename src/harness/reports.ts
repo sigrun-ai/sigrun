@@ -7,7 +7,7 @@
  * logging or an observer can escape into pi-durable.
  */
 
-import type { Report, ReportInfo } from "@earendil-works/pi-durable";
+import type { Report, ReportInfo, ReportTask } from "@earendil-works/pi-durable";
 
 /** The report vocabulary is derived from pi-durable, not mirrored as a type. */
 export type ReportKind = ReportInfo["kind"];
@@ -69,6 +69,22 @@ function formatReport(report: Report): string {
 	].join(" ");
 }
 
+/** A restart-limited report's listener (boot registers it after open). */
+export type RestartLimitedListener = (task: ReportTask) => void;
+
+/**
+ * The restart-limit predicate (D2). Schedules are an extension task
+ * kind, so a restart-limited schedule arrives as `task_faulted` (reason
+ * `restart_limit`); `task_interrupted` is the built-in tasks' spelling.
+ * Checked FIRST, before anything else.
+ */
+function isRestartLimited(report: Report): report is Report & { task: ReportTask } {
+	return (
+		(report.kind === "task_faulted" || report.kind === "task_interrupted") &&
+		report.reason === "restart_limit"
+	);
+}
+
 /** Create the one process-local report collector passed to Harness.open. */
 export function createDurableReports(opts: {
 	log: (line: string) => void;
@@ -76,8 +92,38 @@ export function createDurableReports(opts: {
 }): {
 	onReport(report: Report): void;
 	counts(): Readonly<Record<ReportKind, number>>;
+	/** The queued restart-limited reports (drained by boot after open). */
+	takeRestartLimited(): readonly ReportTask[];
+	/**
+	 * Register the restart-limited listener. Queued reports drain to it
+	 * via `setImmediate`; each later report is delivered the same way.
+	 * The collector NEVER calls the Harness from inside `onReport` (that
+	 * runs inside Session machinery) — delivery is always deferred.
+	 */
+	onRestartLimited(listener: RestartLimitedListener): void;
 } {
 	const totals = Object.fromEntries(REPORT_KINDS.map((kind) => [kind, 0])) as Record<ReportKind, number>;
+	let queued: ReportTask[] = [];
+	let listener: RestartLimitedListener | undefined;
+	let drainScheduled = false;
+	const scheduleDrain = (): void => {
+		if (drainScheduled) return;
+		drainScheduled = true;
+		setImmediate(() => {
+			drainScheduled = false;
+			const sink = listener;
+			if (sink === undefined) return;
+			const batch = queued;
+			queued = [];
+			for (const task of batch) {
+				try {
+					sink(task);
+				} catch (error) {
+					console.error("reports: restart-limited listener failed:", error);
+				}
+			}
+		});
+	};
 	return {
 		onReport(report): void {
 			// Count and log before observing: a throwing sink cannot lose the
@@ -88,6 +134,14 @@ export function createDurableReports(opts: {
 			} catch {
 				// A host log sink is not allowed to fail durable scheduling.
 			}
+			// The restart-limit queue: the predicate is checked FIRST. Only
+			// the ReportTask is queued — the collector never touches the
+			// Harness; the listener (registered by boot after open) owns all
+			// follow-up reads/commits.
+			if (isRestartLimited(report)) {
+				queued.push(report.task);
+				if (listener !== undefined) scheduleDrain();
+			}
 			try {
 				opts.onReport?.(report);
 			} catch {
@@ -96,6 +150,13 @@ export function createDurableReports(opts: {
 		},
 		counts(): Readonly<Record<ReportKind, number>> {
 			return { ...totals };
+		},
+		takeRestartLimited(): readonly ReportTask[] {
+			return [...queued];
+		},
+		onRestartLimited(sink: RestartLimitedListener): void {
+			listener = sink;
+			if (queued.length > 0) scheduleDrain();
 		},
 	};
 }
