@@ -25,7 +25,11 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { DECISION_TIMEOUT_ENV, effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { requiresProxyVouch } from "../server/auth/proxy-only.js";
 import { wireActivity } from "./activity.js";
-import { snapshotBeforeMigration } from "./migration-snapshot.js";
+import {
+	snapshotBeforeDurableUpgrade,
+	snapshotBeforeMigration,
+	writeDurableVersionMarker,
+} from "./migration-snapshot.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
@@ -173,7 +177,6 @@ import {
 	type IsolationAvailability,
 } from "../sandbox/availability.js";
 import {
-	BUILTIN_EXTENSIONS,
 	resolveBuiltins,
 	type ResolvedBuiltins,
 } from "./builtins.js";
@@ -1110,12 +1113,26 @@ export async function openHarness(
 		// openNodeSqliteStorage applies its one-way durable migration. The
 		// injected clock keeps snapshots deterministic in tests; a needed
 		// snapshot failure aborts boot here, before any migration write.
-		await snapshotBeforeMigration(config.storagePath, {
+		const schemaSnapshot = await snapshotBeforeMigration(config.storagePath, {
 			env,
 			now: options.now ?? (() => new Date()),
 			log: (line) => console.log(line),
 		});
-		return await openNodeSqliteStorage(config.storagePath);
+		// D4 (1.5.0 upgrade): a store last written by an older pi-durable
+		// minor gets its own snapshot — skipped when the schema guard above
+		// already wrote one this boot. The version marker is written only
+		// AFTER a successful open, so it never claims a version the store
+		// has not actually been opened by.
+		if (schemaSnapshot === undefined) {
+			await snapshotBeforeDurableUpgrade(config.storagePath, {
+				env,
+				now: options.now ?? (() => new Date()),
+				log: (line) => console.log(line),
+			});
+		}
+		const opened = await openNodeSqliteStorage(config.storagePath);
+		await writeDurableVersionMarker(config.storagePath);
+		return opened;
 	})();
 	const registry = createRegistry();
 	// Late-filled by the loader: factories publish through the same registry

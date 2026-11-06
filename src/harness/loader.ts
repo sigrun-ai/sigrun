@@ -2369,8 +2369,9 @@ const DECLARED_PEER_MODULES = [
 ] as const;
 
 /**
- * The declared-peer guard (pi-durable 1.4.0 D7): after the resolved-version
- * guard, reject an Earendil peer range that excludes the running host.
+ * The declared-peer guard (pi-durable 1.4.0 D7; 1.5.0 D3 moved it
+ * PRE-import): reject an Earendil peer range that excludes the running
+ * host before the extension's module code executes.
  * Non-semver specifiers (file:, link:, git:, URLs, workspace:) and wildcards
  * pass; a missing or unreadable manifest also passes because the guard never
  * quarantines what it cannot read.
@@ -3079,6 +3080,16 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 								`the resolved entry is a TypeScript source (${loaded}) — build the package and ship its built entry (dist/index.js); the built server loads JavaScript`,
 							);
 						}
+			// Declared-peer preflight (1.5.0 upgrade, spec D3): the peer-range
+			// guard runs BEFORE the import so a previous-minor extension's
+			// module-level code (which may destructure host shapes the new
+			// version removed) never executes. A throw here rides the same
+			// per-extension try as every other quarantine.
+			const moduleDir = extensionModuleDir(loaded);
+			if (moduleDir !== undefined) {
+				const peerReason = checkDeclaredPeers(moduleDir);
+				if (peerReason !== undefined) throw new Error(peerReason);
+			}
 			const module = (await import(loaded)) as ExtensionModule;
 			// Host-module version guard (spec §6.4 R6): the module tree the
 			// extension's bare imports resolve from must agree with the copy
@@ -3087,11 +3098,8 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 			// no trace (no seam host, no bindings, no registry entry). A throw
 			// here rides the existing per-extension try (quarantine, boot
 			// continues) exactly like the reserved-section check below.
-			const moduleDir = extensionModuleDir(loaded);
 			if (moduleDir !== undefined) {
 				checkHostModules(moduleDir);
-				const peerReason = checkDeclaredPeers(moduleDir);
-				if (peerReason !== undefined) throw new Error(peerReason);
 			}
 			// Two-phase host: the factory receives the host at CALL time, but
 			// the extension name and kinds it declares are only known from its
