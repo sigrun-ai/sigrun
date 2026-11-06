@@ -32,8 +32,10 @@ import type { JobRuntimeDeps } from "./fire.js";
 
 /** The `sigrun.job.run` key a run record was written under. */
 function runKeyOf(run: JobRunWire): string {
+	// Manual runs key on FIREAT (the same clock reading `runNow` used for
+	// the fire-key tail), never startedAt — see docs.ts's runKeyOf note.
 	if (run.manual) {
-		return `${run.jobId}:manual:${Date.parse(run.startedAt)}`;
+		return `${run.jobId}:manual:${Date.parse(run.fireAt)}`;
 	}
 	return `${run.jobId}:${Date.parse(run.fireAt)}`;
 }

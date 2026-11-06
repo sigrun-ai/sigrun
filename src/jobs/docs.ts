@@ -350,11 +350,17 @@ export async function pruneHistory(
 /**
  * The fire key a stored run was written under, re-derived for retiring:
  * scheduled runs key on `<jobId>:<fireAt epoch ms>`; manual runs on
- * `<jobId>:manual:<startedAt epoch ms>` (the manual fire stamps it).
+ * `<jobId>:manual:<fireAt epoch ms>` — the SAME clock reading `runNow`
+ * passes as both the key tail and the fire's fireAt. (Deriving the
+ * manual key from `startedAt` instead wedges the settle whenever the
+ * fire's clock reading rolls over one ms before the run's `startedAt`
+ * stamp: the observer commits the settled record under a key that
+ * differs by 1ms from the key the fire stored, and the run stays
+ * `running` forever.)
  */
 function runKeyOf(run: JobRunWire): string {
 	if (run.manual) {
-		return `${run.jobId}:manual:${Date.parse(run.startedAt)}`;
+		return `${run.jobId}:manual:${Date.parse(run.fireAt)}`;
 	}
 	return `${run.jobId}:${Date.parse(run.fireAt)}`;
 }
