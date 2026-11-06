@@ -1029,6 +1029,19 @@
 	display: flex;
 	flex-wrap: wrap;
 	gap: 0.4rem;
+	/* Sticky to the collection's scroll container: rows ticked far down a
+	   long list keep their actions on screen. */
+	position: sticky;
+	top: 0;
+	z-index: 2;
+	padding: 0.4rem 0;
+	background: var(--bg, #111);
+}
+
+.blk-bulk-count {
+	color: var(--muted, #999);
+	font-size: 0.85em;
+	margin-right: 0.2rem;
 }
 
 .blk-bulk-action,
