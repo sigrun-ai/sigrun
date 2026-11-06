@@ -100,9 +100,25 @@ describe("createExtSurfaceTransport", () => {
 			fetch: stub.fetch,
 		}).transport;
 		await transport.fetchData(2);
-		expect(stub.calls[0]?.input).toContain("/data");
-		expect(stub.calls[0]?.input).toContain("params=");
-		expect(stub.calls[0]?.input).toContain("since=2");
+		// The EXACT url (final-review fix wave): the suffix bug this branch
+		// fixed landed /data AFTER ?params=, and the toContain assertions
+		// below would have passed against it.
+		expect(stub.calls[0]?.input).toBe(
+			`http://127.0.0.1:8080/v1/ext/fixture-surfaces/surfaces/board/data?params=${encodeURIComponent(JSON.stringify({ board: "b2" }))}&since=2`,
+		);
+	});
+
+	test("act() posts to /actions on the query-free base (params ride the body)", async () => {
+		const stub = stubFetch();
+		const transport = createExtSurfaceTransport({
+			...BASE,
+			params: { board: "b2" },
+			fetch: stub.fetch,
+		}).transport;
+		await transport.act({ action: "openJob", type: "edit", payload: {}, actionId: "a1" });
+		expect(stub.calls[0]?.input).toBe(
+			"http://127.0.0.1:8080/v1/ext/fixture-surfaces/surfaces/board/actions",
+		);
 	});
 
 	test("image() rejects (the route ships with U7)", async () => {
@@ -152,15 +168,15 @@ describe("ExtSurfaceHub (tui)", () => {
 			{ ...BASE, id: "stats", fetch: stub.fetch },
 			"k-stats",
 		).transport;
-		const seenB1: number[] = [];
-		const seenB2: number[] = [];
-		const seenOther: number[] = [];
-		boardB1.onChanged((event) => seenB1.push(event.rev));
-		boardB2.onChanged((event) => seenB2.push(event.rev));
-		other.onChanged((event) => seenOther.push(event.rev));
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 1 });
-		expect(seenB1).toEqual([9]);
-		expect(seenB2).toEqual([9]);
+		const seenB1: { rev: number; treeRev: number }[] = [];
+		const seenB2: { rev: number; treeRev: number }[] = [];
+		const seenOther: { rev: number; treeRev: number }[] = [];
+		boardB1.onChanged((event) => seenB1.push({ rev: event.rev, treeRev: event.treeRev }));
+		boardB2.onChanged((event) => seenB2.push({ rev: event.rev, treeRev: event.treeRev }));
+		other.onChanged((event) => seenOther.push({ rev: event.rev, treeRev: event.treeRev }));
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 7 });
+		expect(seenB1).toEqual([{ rev: 9, treeRev: 7 }]);
+		expect(seenB2).toEqual([{ rev: 9, treeRev: 7 }]);
 		expect(seenOther).toEqual([]);
 	});
 

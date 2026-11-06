@@ -192,15 +192,15 @@ describe("ExtSurfaceHub", () => {
 			{ slug: "fixture-surfaces", id: "stats", fetch: stub.fetch },
 			"k-stats",
 		);
-		const seenB1: number[] = [];
-		const seenB2: number[] = [];
-		const seenOther: number[] = [];
-		boardB1.onChanged((event) => seenB1.push(event.rev));
-		boardB2.onChanged((event) => seenB2.push(event.rev));
-		other.onChanged((event) => seenOther.push(event.rev));
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 1 });
-		expect(seenB1).toEqual([9]);
-		expect(seenB2).toEqual([9]);
+		const seenB1: { rev: number; treeRev: number }[] = [];
+		const seenB2: { rev: number; treeRev: number }[] = [];
+		const seenOther: { rev: number; treeRev: number }[] = [];
+		boardB1.onChanged((event) => seenB1.push({ rev: event.rev, treeRev: event.treeRev }));
+		boardB2.onChanged((event) => seenB2.push({ rev: event.rev, treeRev: event.treeRev }));
+		other.onChanged((event) => seenOther.push({ rev: event.rev, treeRev: event.treeRev }));
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 7 });
+		expect(seenB1).toEqual([{ rev: 9, treeRev: 7 }]);
+		expect(seenB2).toEqual([{ rev: 9, treeRev: 7 }]);
 		expect(seenOther).toEqual([]);
 	});
 });
