@@ -2,8 +2,8 @@
  * The TUI's extension-surface transport (UI-blocks U3 Task 5): implements
  * the shared `SurfaceTransport` contract over the U3 routes (spec §7.2)
  * as the TUI's remote client. One transport = one surface instance
- * (slug + id + params); the wire `k` (hashed instance key) keys the
- * change-event routing in {@link ExtSurfaceHub}.
+ * (slug + id + params); the hub routes change events by (slug, id) —
+ * the wire `k` is not matched (see ExtSurfaceHub).
  *
  * Like the webui twin, every fetch carries `X-Sigrun-Stream` once the
  * launcher hands the stream id in (the watcher entry's stream);
@@ -193,19 +193,25 @@ export function createExtSurfaceTransport(
 /**
  * The change-event router (the launcher's dispatch seam): `attach`
  * creates a transport whose `onChanged` subscribes into the hub under
- * the instance's (slug, id, k); `dispatch` fans a `surface.changed`
- * event out to the matching subscriptions only.
+ * the instance's (slug, id); `dispatch` fans a `surface.changed` event
+ * out to every subscription of the event's view. The event's `k` is NOT
+ * matched: the server hashes the principal-scoped instance key (jobs /
+ * skills / curator fold the user in), which no client hash can
+ * reproduce. The server already targets the event at the streams
+ * watching that exact instance (watchers.streamsFor), so matching the
+ * view is safe; a second instance of the same view refetches once.
  */
 export class ExtSurfaceHub {
 	readonly #subscriptions = new Set<{
 		readonly slug: string;
 		readonly id: string;
-		readonly keyHash: string;
 		readonly listener: (event: SurfaceChangedEvent) => void;
 	}>();
 
-	/** Create a transport whose `onChanged` subscribes into this hub. */
-	attach(options: ExtSurfaceTransportOptions, keyHash: string): ExtSurfaceTransportHandle {
+	/** Create a transport whose `onChanged` subscribes into this hub. The
+	 *  `keyHash` argument is retained for call-site compatibility (dispatch
+	 *  no longer routes on it — see the class doc). */
+	attach(options: ExtSurfaceTransportOptions, _keyHash: string): ExtSurfaceTransportHandle {
 		const base = createExtSurfaceTransport(options);
 		const hub = this;
 		const transport: SurfaceTransport = {
@@ -218,7 +224,6 @@ export class ExtSurfaceHub {
 				const subscription = {
 					slug: options.slug,
 					id: options.id,
-					keyHash,
 					listener,
 				};
 				hub.#subscriptions.add(subscription);
@@ -233,7 +238,8 @@ export class ExtSurfaceHub {
 		};
 	}
 
-	/** Fire every subscription matching the event's (slug, id, k). */
+	/** Fire every subscription of the event's (slug, id), whatever the
+	 *  event's `k`. */
 	dispatch(event: {
 		readonly slug: string;
 		readonly id: string;
@@ -244,8 +250,7 @@ export class ExtSurfaceHub {
 		for (const subscription of this.#subscriptions) {
 			if (
 				subscription.slug === event.slug &&
-				subscription.id === event.id &&
-				subscription.keyHash === event.k
+				subscription.id === event.id
 			) {
 				subscription.listener({ rev: event.rev, treeRev: event.treeRev });
 			}

@@ -3,7 +3,7 @@
  * `SurfaceTransport` over the U3 routes as a REMOTE client (baseUrl +
  * identity headers). Tests pin the same wire shapes as the webui twin
  * plus the TUI-only headers (x-sigrun-user, bearer token) and the
- * hub's (slug, id, k) change-event routing.
+ * hub's (slug, id) change-event routing.
  */
 
 import { describe, expect, test } from "vitest";
@@ -132,32 +132,46 @@ describe("createExtSurfaceTransport", () => {
 });
 
 describe("ExtSurfaceHub (tui)", () => {
-	test("dispatch fires only the matching (slug, id, k) subscription", () => {
+	test("dispatch fires every subscription of the event's view, whatever k", () => {
+		// The server's k hashes the PRINCIPAL-scoped instance key, which the
+		// client can never reproduce — matching on it silently starved the
+		// jobs/skills/curator views. The server already targets an event at
+		// the streams watching that exact instance (watchers.streamsFor), so
+		// matching the view is safe; a second instance of it refetches once.
 		const hub = new ExtSurfaceHub();
 		const stub = stubFetch();
-		const board = hub.attach({ ...BASE, fetch: stub.fetch }, "k-board").transport;
-		const stats = hub.attach(
+		const boardB1 = hub.attach(
+			{ ...BASE, params: { board: "b1" }, fetch: stub.fetch },
+			"k-b1",
+		).transport;
+		const boardB2 = hub.attach(
+			{ ...BASE, params: { board: "b2" }, fetch: stub.fetch },
+			"k-b2",
+		).transport;
+		const other = hub.attach(
 			{ ...BASE, id: "stats", fetch: stub.fetch },
 			"k-stats",
 		).transport;
-		const seenBoard: number[] = [];
-		const seenStats: number[] = [];
-		board.onChanged((event) => seenBoard.push(event.rev));
-		stats.onChanged((event) => seenStats.push(event.rev));
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-board", rev: 4, treeRev: 1 });
-		expect(seenBoard).toEqual([4]);
-		expect(seenStats).toEqual([]);
+		const seenB1: number[] = [];
+		const seenB2: number[] = [];
+		const seenOther: number[] = [];
+		boardB1.onChanged((event) => seenB1.push(event.rev));
+		boardB2.onChanged((event) => seenB2.push(event.rev));
+		other.onChanged((event) => seenOther.push(event.rev));
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 1 });
+		expect(seenB1).toEqual([9]);
+		expect(seenB2).toEqual([9]);
+		expect(seenOther).toEqual([]);
 	});
 
-	test("a same-slug/id event under a different k does NOT fire (multi-instance)", () => {
+	test("the unsubscribe silences the instance under the (slug, id) rule", () => {
 		const hub = new ExtSurfaceHub();
 		const board = hub.attach({ ...BASE, fetch: stubFetch().fetch }, "k-b1").transport;
 		const seen: number[] = [];
 		const off = board.onChanged((event) => seen.push(event.rev));
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b2", rev: 9, treeRev: 1 });
-		expect(seen).toEqual([]);
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b1", rev: 1, treeRev: 1 });
 		off();
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b1", rev: 10, treeRev: 1 });
-		expect(seen).toEqual([]);
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b1", rev: 2, treeRev: 1 });
+		expect(seen).toEqual([1]);
 	});
 });

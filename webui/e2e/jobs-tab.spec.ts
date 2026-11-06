@@ -100,6 +100,81 @@ test("Jobs tab: create a job via POST /v1/jobs, select it, Run now, see the run 
 	}
 });
 
+test("a background run refreshes the open job without a reload", async ({
+	browser,
+}) => {
+	// Task 5: the jobs view folds the principal into its instance key, so
+	// the server's surface.changed k never matched the client's params-only
+	// hash — a background run stayed "running" (or invisible) until a
+	// reload. The hub now matches (slug, id); the run row must appear live.
+	const context = await browser.newContext({
+		extraHTTPHeaders: { "x-sigrun-user": "tester" },
+	});
+	const page = await context.newPage();
+	try {
+		await page.goto(`${server.url}/#/ext/core/jobs`);
+
+		const jobId: string = await page.evaluate(async () => {
+			const response = await fetch("/v1/jobs", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					name: "acme-bg-run",
+					schedule: { every: "1h" },
+					action: {
+						kind: "prompt",
+						prompt: "say tick",
+						conversation: "new",
+					},
+				}),
+			});
+			if (!response.ok) {
+				throw new Error(`POST /v1/jobs failed: ${response.status}`);
+			}
+			const body = (await response.json()) as { job: { id: string } };
+			return body.job.id;
+		});
+
+		// Open the job (select the row → the collection's openJob navigates).
+		const row = page
+			.locator('[data-page-region="sidebar"] .blk-list-card', {
+				hasText: "acme-bg-run",
+			})
+			.first();
+		await expect(row).toBeVisible();
+		await row.click();
+		// NOTE: the `#/ext/core/jobs\?params=…` form used by the first spec
+		// silently loses one backslash in a JS template literal (the regex
+		// becomes `jobs?params` and can never match). Use a raw-string
+		// assertion on the params portion instead.
+		await expect(page).toHaveURL(new RegExp(`params=.*${encodeURIComponent(jobId)}`));
+		const main = page.locator('[data-page-region="main"]');
+		await expect(main).toContainText("acme-bg-run");
+
+		// Fire the run OUT OF BAND (not the Run now button — its own accepted
+		// result refetches the view and would mask a broken change event).
+		await page.evaluate(async (id) => {
+			const response = await fetch(`/v1/jobs/${encodeURIComponent(id)}/run`, {
+				method: "POST",
+			});
+			if (!response.ok) {
+				throw new Error(`POST /v1/jobs/${id}/run failed: ${response.status}`);
+			}
+		}, jobId);
+
+		// The run row appears WITHOUT a reload — the surface.changed event
+		// reached this principal-scoped view. (Outcome-agnostic: the shared
+		// harness boots the faux provider with ONE scripted response, which
+		// the Run-now spec consumes; this run may legitimately land
+		// "failed"/model_error — the property under test is the live row,
+		// not the outcome.)
+		const runs = main.locator(".blk-list-card").filter({ hasText: /succeeded|failed/ });
+		await expect(runs.first()).toBeVisible({ timeout: 30_000 });
+	} finally {
+		await context.close();
+	}
+});
+
 test("New job: fill the form, create, land on the job", async ({
 	browser,
 }) => {

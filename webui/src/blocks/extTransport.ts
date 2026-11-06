@@ -1,9 +1,9 @@
 /**
  * The extension-surface transport (UI-blocks U3 Task 5): implements the
  * shared `SurfaceTransport` contract over the U3 routes (spec §7.2), as
+ * shared `SurfaceTransport` contract over the U3 routes (spec §7.2), as
  * the webui's fetch. One transport instance = one surface INSTANCE
- * (slug + id + the params object it loads with); the wire `k` (the
- * hashed instance key) keys the change-event routing.
+ * (slug + id + the params object it loads with).
  *
  * Behavior the contract pins here (§7.3):
  * - every fetch carries `X-Sigrun-Stream` when a stream id is supplied,
@@ -84,7 +84,8 @@ function withQuery(path: string, key: string, value: string): string {
  *  instance identity the hub needs for change-event routing. */
 export interface ExtTransport {
 	readonly transport: SurfaceTransport;
-	/** The wire `k` (sha256 hex of slug\0id\0key) — the event's routing key. */
+	/** The wire `k` (sha256 hex of slug\0id\0key) the attach callers once
+	 *  passed through; retained for callers that still compute it. */
 	readonly keyHash: string;
 }
 
@@ -177,26 +178,31 @@ export function createExtTransport(options: ExtTransportOptions): SurfaceTranspo
 /**
  * The change-event router (the app shell's dispatch seam): `attach`
  * creates a transport whose `onChanged` subscribes into the hub, and
- * `dispatch` fans a `surface.changed` event out to exactly the
- * subscriptions whose (slug, id, k) match. The hub is the single
- * subscription registry — params never appear in events (§7.3), so the
- * wire `k` is the only routing key.
+ * `dispatch` fans a `surface.changed` event out to every subscription
+ * of the event's (slug, id). The hub is the single subscription
+ * registry — params never appear in events (§7.3). The event's `k` is
+ * NOT matched: the server computes it from the principal-scoped
+ * instance key (the jobs / skills / curator views fold the user into
+ * the key), which no client hash can reproduce. Matching the view is
+ * safe because the server already targets the event at the streams
+ * watching that exact instance (watchers.streamsFor) — a second
+ * instance of the same view merely refetches once.
  */
 export class ExtSurfaceHub {
 	readonly #subscriptions = new Set<{
 		readonly slug: string;
 		readonly id: string;
-		readonly keyHash: string;
 		readonly listener: (event: SurfaceChangedEvent) => void;
 	}>();
 
 	/**
 	 * Create a transport for one surface instance whose `onChanged`
-	 * subscribes into this hub. The wire `k` (sha256 hex of
-	 * slug\0id\0key) is the event's routing key — the caller computes it
-	 * once (the instance never changes key for a fixed params).
+	 * subscribes into this hub. The `keyHash` argument (sha256 hex of
+	 * slug\0id\0canonical params) is retained for call-site compatibility
+	 * — dispatch no longer routes on it (see the class doc); it MAY be
+	 * dropped with its callers in a follow-up.
 	 */
-	attach(options: ExtTransportOptions, keyHash: string): SurfaceTransport {
+	attach(options: ExtTransportOptions, _keyHash: string): SurfaceTransport {
 		const base = createExtTransport(options);
 		const hub = this;
 		return {
@@ -209,7 +215,6 @@ export class ExtSurfaceHub {
 				const subscription = {
 					slug: options.slug,
 					id: options.id,
-					keyHash,
 					listener,
 				};
 				hub.#subscriptions.add(subscription);
@@ -221,9 +226,9 @@ export class ExtSurfaceHub {
 	}
 
 	/**
-	 * Fire every subscription matching the event's (slug, id, k). Events
-	 * carry no data — the channel fetches `…/data?since=<rev>` as its own
-	 * principal (§7.3).
+	 * Fire every subscription of the event's (slug, id), whatever the
+	 * event's `k`. Events carry no data — the channel fetches
+	 * `…/data?since=<rev>` as its own principal (§7.3).
 	 */
 	dispatch(event: {
 		readonly slug: string;
@@ -235,8 +240,7 @@ export class ExtSurfaceHub {
 		for (const subscription of this.#subscriptions) {
 			if (
 				subscription.slug === event.slug &&
-				subscription.id === event.id &&
-				subscription.keyHash === event.k
+				subscription.id === event.id
 			) {
 				subscription.listener({ rev: event.rev, treeRev: event.treeRev });
 			}

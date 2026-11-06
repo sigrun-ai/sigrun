@@ -3,10 +3,11 @@
  * the U3 routes. Tests pin the wire shapes (params encoding, the
  * `X-Sigrun-Stream` watcher header, `?since=` on data fetches, the
  * action body's `params`, the octet-stream upload path), the deferred
- * `image()` rejection (until U7), and the hub's (slug, id, k) routing —
- * a `surface.changed` event must fire exactly the matching instance's
- * listeners (the multi-instance rule: a same-slug/id event under a
- * different `k` must NOT fire), and the unsubscribe must silence it.
+ * `image()` rejection (until U7), and the hub's (slug, id) routing —
+ * a `surface.changed` event fires EVERY subscription of the event's
+ * view whatever the event's `k` (the server hashes the principal-scoped
+ * instance key; it already targets the event at the watching streams),
+ * and the unsubscribe must silence it.
  */
 
 import { describe, expect, test } from "vitest";
@@ -171,17 +172,35 @@ describe("ExtSurfaceHub", () => {
 		expect(seen).toEqual([1]);
 	});
 
-	test("the k hash is the routing key — a same-slug/id event under another k does NOT fire", () => {
+	test("dispatch fires every subscription of the event's view, whatever k", () => {
+		// The server's k hashes the PRINCIPAL-scoped instance key (the jobs /
+		// skills / curator views fold the user into the key), which the client
+		// can never reproduce — matching on it silently starved those views.
+		// The server delivers an event only to streams watching that exact
+		// instance (watchers.streamsFor), so matching the view is safe.
 		const hub = new ExtSurfaceHub();
-		const board = hub.attach(
-			{ slug: "fixture-surfaces", id: "board", fetch: stubFetch().fetch },
+		const stub = stubFetch();
+		const boardB1 = hub.attach(
+			{ slug: "fixture-surfaces", id: "board", params: { board: "b1" }, fetch: stub.fetch },
 			"k-b1",
 		);
-		const seen: number[] = [];
-		board.onChanged((event) => seen.push(event.rev));
-		// A board instance under params {board:"b2"} (different key) must NOT
-		// reach the b1 instance's listeners (the multi-instance rule).
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b2", rev: 9, treeRev: 1 });
-		expect(seen).toEqual([]);
+		const boardB2 = hub.attach(
+			{ slug: "fixture-surfaces", id: "board", params: { board: "b2" }, fetch: stub.fetch },
+			"k-b2",
+		);
+		const other = hub.attach(
+			{ slug: "fixture-surfaces", id: "stats", fetch: stub.fetch },
+			"k-stats",
+		);
+		const seenB1: number[] = [];
+		const seenB2: number[] = [];
+		const seenOther: number[] = [];
+		boardB1.onChanged((event) => seenB1.push(event.rev));
+		boardB2.onChanged((event) => seenB2.push(event.rev));
+		other.onChanged((event) => seenOther.push(event.rev));
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 1 });
+		expect(seenB1).toEqual([9]);
+		expect(seenB2).toEqual([9]);
+		expect(seenOther).toEqual([]);
 	});
 });
