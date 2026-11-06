@@ -77,8 +77,11 @@ const COLLISION_SPECIFIER = pathToFileURL(
 /**
  * The 1.4-era peer fixture (1.5.0 upgrade Task 6 / spec D3): its declared
  * peer range `1.3.0 || 1.4.0` excludes the 1.5.0 host, so the PRE-IMPORT
- * declared-peer guard quarantines it. Its index.js is a valid factory —
- * only the peer range can stop it.
+ * declared-peer guard quarantines it. Its index.js deliberately imports
+ * `Type` from pi-ai, which throws at module evaluation on a 1.5.0 host —
+ * that failure is the point: a peer-range quarantine message (not the
+ * SyntaxError) proves the guard ran BEFORE the import. Do not "repair"
+ * the fixture to a clean import; that would un-pin the ordering.
  */
 const PEER_1_4_SPECIFIER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-peer-1-4", "index.js"),
@@ -521,9 +524,11 @@ test.each([
 test("a 1.4-era extension quarantines on its peer range before import", async () => {
 	// D3 (1.5.0 upgrade): the declared-peer guard runs BEFORE the import —
 	// a 1.4-era extension's factory (which may destructure 1.4-era host
-	// shapes at module scope) never executes. fixture-peer-1-4's factory is
-	// itself valid, so the quarantine outcome below can only come from the
-	// pre-import peer check; fixture-ext in the same load still reports ok.
+	// shapes at module scope) never executes. fixture-peer-1-4's module-level
+	// `Type` import from pi-ai THROWS on evaluation (pi-ai 1.5.0 exports no
+	// Type), so the peer-range message asserted below — not a SyntaxError —
+	// is the proof of pre-import ordering; fixture-ext in the same load
+	// still reports ok.
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-preimport-peer-"));
 	try {
 		const opened = await openHarness(configWith(dir), {
