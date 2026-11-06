@@ -47,6 +47,7 @@
  */
 
 import { createHash } from "node:crypto";
+import { existsSync } from "node:fs";
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -75,10 +76,13 @@ const FIXTURE = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-warden-e2e", "index.js"),
 ).href;
 
-/** The warden's built package entry (committed dist). */
-const WARDEN = pathToFileURL(
-	join(siblingRepo("sigrun-warden"), "dist", "index.js"),
-).href;
+/** The warden's built package entry (committed dist), when a sibling
+ * checkout exists. Core CI does NOT check the warden out (it is not a
+ * built-in sibling in family-checkout), so the suite skips there and
+ * runs wherever the sibling layout exists (dev machines, the warden's
+ * own release pipeline via needs-core). */
+const WARDEN_PATH = join(siblingRepo("sigrun-warden"), "dist", "index.js");
+const WARDEN = pathToFileURL(WARDEN_PATH).href;
 
 interface Rig {
 	opened: OpenedHarness;
@@ -329,7 +333,12 @@ async function waitForPending(
 	return pending;
 }
 
-describe("warden end-to-end", () => {
+// Core CI does not lay the warden sibling out, so the suite skips
+// there (the warden's OWN needs-core release job exercises it against
+// a real sibling checkout).
+const wardenPresent = existsSync(WARDEN_PATH);
+
+describe.skipIf(!wardenPresent)("warden end-to-end", () => {
 	test(
 		"a live conversation's torrents_remove waits on a warden.confirm interaction (judge returns low clear-ask) and runs after allow",
 		{ timeout: 60_000 },
