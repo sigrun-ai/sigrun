@@ -213,6 +213,26 @@ describe("Markdown: code blocks", () => {
 		).toEqual(["text"]);
 		renderer.unmount();
 	});
+
+	test("Wrap toggles soft-wrapping on the code body (off by default)", () => {
+		const renderer = render(
+			h(Markdown, { source: "```bash\nls\n```", variant: "prose" }),
+		);
+		const pre = () => renderer.root.findByType("pre");
+		const toggle = () => renderer.root.findByProps({ className: "md-code-wrap" });
+		expect(pre().props["data-wrap"]).toBeUndefined();
+		expect(toggle().props["aria-pressed"]).toBe(false);
+		act(() => {
+			toggle().props.onClick();
+		});
+		expect(pre().props["data-wrap"]).toBe("");
+		expect(toggle().props["aria-pressed"]).toBe(true);
+		act(() => {
+			toggle().props.onClick();
+		});
+		expect(pre().props["data-wrap"]).toBeUndefined();
+		renderer.unmount();
+	});
 });
 
 describe("Markdown: variants and emphasis", () => {

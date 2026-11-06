@@ -124,6 +124,11 @@ test("the inbox: raise via tool, answer in the browser, item moves to In progres
 	await item.click();
 	const choice = page.getByRole("radio", { name: /Go/ });
 	await expect(choice).toBeVisible({ timeout: 10_000 });
+	// Split layout: the list stays in the sidebar beside the detail.
+	await expect(
+		page.locator('[data-page-region="sidebar"] .blk-list-card').filter({ hasText: "Demo" }),
+	).toBeVisible();
+	await expect(page.locator('[data-page-region="main"]')).toContainText("Demo body");
 	await choice.check();
 	await page.getByRole("button", { name: "Send answer" }).click();
 

@@ -183,7 +183,11 @@ test("a configured provider beats a built-in provider of the same name", async (
 	resetHookProviderAlt();
 	// The ALT fixture loads as a BUILT-IN; the configured one must own.
 	await withOpenedHarness([PROVIDER], async (opened) => {
-		expect(opened.publishedHooks()).toEqual([
+		// Scoped to this test's hook: the real built-ins load too, and
+		// ext-mcp (0.2.3+) publishes its own mcp.tool-annotations.
+		expect(
+			opened.publishedHooks().filter((hook) => hook.name === "recall.echo"),
+		).toEqual([
 			{ name: "recall.echo", provider: "acme-recall", shadowed: ["acme-recall-alt"] },
 		]);
 	}, { extraBuiltins: [PROVIDER_ALT] });

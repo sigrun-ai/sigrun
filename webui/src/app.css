@@ -552,6 +552,32 @@ body {
 	min-height: 0;
 }
 
+/* The surface owns the scroll: the app root clips (overflow: hidden),
+   so without a definite height down this chain a long view grew past
+   the window and could not scroll at all. A non-page root scrolls the
+   surface itself; a `page` root is sized to it exactly, so its header
+   stays put and its own regions (main/sidebar/detail) scroll. */
+.ext-surface > .blk-surface {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: auto;
+}
+
+.ext-surface > .blk-surface > .blk-width:has(> .blk-page) {
+	flex: 1 1 0;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+}
+
+.ext-surface > .blk-surface > .blk-width > .blk-page {
+	flex: 1 1 0;
+	min-height: 0;
+	height: auto;
+}
+
 /* The chat header (the mockup's 48px bar). Nothing wraps: the title
    ellipsizes, the controls keep fixed sizes. */
 
@@ -1133,7 +1159,8 @@ body {
 	font-family: var(--mono);
 }
 
-.md-code-copy {
+.md-code-copy,
+.md-code-wrap {
 	border: none;
 	background: transparent;
 	color: var(--faint);
@@ -1144,9 +1171,20 @@ body {
 }
 
 .md-code-copy:hover,
-.md-code-copy:focus-visible {
+.md-code-copy:focus-visible,
+.md-code-wrap:hover,
+.md-code-wrap:focus-visible {
 	color: var(--text);
 	background: var(--surface-2);
+}
+
+.md-code-wrap[aria-pressed="true"] {
+	color: var(--text);
+}
+
+.md-code-tools {
+	display: inline-flex;
+	gap: 0.15rem;
 }
 
 .md-code-copy[data-copied] {
@@ -1159,6 +1197,13 @@ body {
 	overflow-x: auto;
 	font: 12.5px/1.55 var(--mono);
 	color: var(--text);
+}
+
+/* Wrap: long lines (a held shell command) read without sideways
+   scrolling — overlay scrollbars hide the horizontal bar otherwise. */
+.md-code pre[data-wrap] {
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 
 .md-code pre code {
