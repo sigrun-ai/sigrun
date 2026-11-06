@@ -385,7 +385,7 @@ describe("GET /metrics job families (W4 Task 4)", () => {
 		// omitted entirely) still is.
 		expect(body).toContain("sigrun_job_next_run_timestamp_seconds");
 		expect(body).not.toContain(
-			'sigrun_job_next_run_timestamp_seconds{id="file:tick"}',
+			'sigrun_job_next_run_timestamp_seconds{job="file:tick"}',
 		);
 		// The last-run family only samples jobs that HAVE run (the
 		// backup-marker convention) — never-fired jobs serve no sample.

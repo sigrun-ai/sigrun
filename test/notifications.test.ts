@@ -548,13 +548,27 @@ describe("run.settled per notifications.runSettled", () => {
 		expect(ofType("run.settled")).toHaveLength(0);
 
 		// Close the stream: the route's finish decrements the watcher
-		// count. Await the watch termination (it stops inside finish)
-		// before the next settle, so the unwatched rule sees zero.
+		// count. Await the STREAM watch's termination (it stops inside
+		// finish) before the next settle, so the unwatched rule sees zero.
+		// The capture also holds the one-shot readView watches (Task 2's
+		// readFullView acquires one per GET) — those stop within the read,
+		// so the live stream watch is the one still open; awaiting the
+		// LAST watch would return instantly on an already-stopped read
+		// watch and race the stream teardown.
 		connection.destroy();
-		const watch = server.watches[server.watches.length - 1];
-		expect(watch).toBeDefined();
+		const open = await Promise.all(
+			server.watches.map(async (watch) => ({
+				watch,
+				closed: await Promise.race([
+					watch.closed.then(() => true),
+					Promise.resolve().then(() => false),
+				]),
+			})),
+		);
+		const streamWatch = open.find((entry) => !entry.closed)?.watch;
+		expect(streamWatch).toBeDefined();
 		await Promise.race([
-			watch!.closed,
+			streamWatch!.closed,
 			new Promise((_, reject) =>
 				setTimeout(() => reject(new Error("watch never closed")), 10_000),
 			),

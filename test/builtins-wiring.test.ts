@@ -370,12 +370,20 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 					// ranges ("1.3.0 || 1.4.0" in the 1.4 era, "~1.5.0" now) —
 					// semver's satisfies answers both.
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
+					// An invalid range throws RangeError out of satisfies; that IS
+					// the skew this test names — fail the expect, not the loop.
+					let rangeAccepts = false;
+					try {
+						rangeAccepts = satisfies(own, pin);
+					} catch {
+						rangeAccepts = false;
+					}
 					expect(
 						module === "@sigrun/shared"
 							? [...accepted].some((entry) =>
 								acceptedSharedPeers(name, sibling.manifest.version, pin, own).has(entry),
 							)
-							: accepted.has(own) || satisfies(own, pin),
+							: accepted.has(own) || rangeAccepts,
 						`${name} peer ${module} accepts core's pin ${own}`,
 					).toBe(true);
 				} else {
