@@ -189,7 +189,6 @@ test("a configured provider beats a built-in provider of the same name", async (
 			opened.publishedHooks().filter((hook) => hook.name === "recall.echo"),
 		).toEqual([
 			{ name: "recall.echo", provider: "acme-recall", shadowed: ["acme-recall-alt"] },
-			{ name: "mcp.tool-annotations", provider: "sigrun-mcp", shadowed: [] },
 		]);
 	}, { extraBuiltins: [PROVIDER_ALT] });
 });
