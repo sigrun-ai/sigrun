@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.2] - 2026-11-06
+
+### Fixed
+
+- The multi-select bulk action bar stays on screen: it rendered at the top
+  of the list, so ticking rows further down a scrolled list (the escalation
+  inbox sidebar) left "Dismiss selected" out of view. It is now sticky to
+  the collection's scroll container and shows "N selected".
+
+### Changed
+
+- The family bumps to 0.10.2; companion: `@sigrun/ext-gateway` 0.1.21
+  (shared peer gains 0.10.2).
+
 ## [0.10.1] - 2026-11-06
 
 ### Fixed
