@@ -14,15 +14,23 @@
  * classifies a terminal message at all.
  *
  * setup mode:
- * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider slowed
- *    deterministically (`tokensPerSecond: 2`, `tokenSize` pinned) — the
- *    item-1 lever: the scripted long answer streams for ~2 minutes.
- * 2. Install an extension carrying a `GenerationHooks.afterResponse` hook
+ * 1. Run ONE fast CONTROL turn in an ISOLATED harness (its own tmpdir):
+ *    the hook MUST fire exactly once for it — positive evidence the hook
+ *    is loaded and working, so the crash pass's zero-fire assertion
+ *    cannot pass vacuously with an absent/broken hook. The control
+ *    harness writes its fires to the scenario dir's marker file but its
+ *    conversations to its own storage, so the scenario conversation's
+ *    history stays clean.
+ * 2. Boot the scenario harness on `<dir>/sigrun.db` with the faux
+ *    provider slowed deterministically (`tokensPerSecond: 2`,
+ *    `tokenSize` pinned) — the item-1 lever: the scripted long answer
+ *    streams for ~2 minutes.
+ * 3. Install an extension carrying a `GenerationHooks.afterResponse` hook
  *    (via `hook(GenerationTask, { afterResponse })` — .d.ts-verified shape:
  *    `afterResponse(message, api, context)`). The hook appends one line to
  *    `<dir>/hook-fires.count` on EVERY invocation — the T12a execution-marker
  *    pattern, one line per fire, across both processes.
- * 3. Submit one input; poll the LiveDoc until the committed generation
+ * 4. Submit one input; poll the LiveDoc until the committed generation
  *    partial carries actual streamed text (the item-1 mid-generation
  *    observable), wait STORE_SETTLE_MS (the 1.5.0 deferred-persistence
  *    window — `settings.progress.persistWithinMs` default 1,000 ms — so
@@ -37,12 +45,12 @@
  *    never resent, so the run ends `unanswered` reason `interrupted`
  *    deterministically).
  * 2. Reacquire the killed submission, await settlement (deadline).
- * 3. Count the hook fires in the marker file. 1.5.0: an interrupted run
- *    has NO terminal provider message, so `afterResponse` never fires —
- *    the OBSERVED count is the payload either way (recorded, not
- *    asserted to a specific number), but with the retry pinned the
- *    expected count is 0 and the observe-guard conclusion is
- *    defensive-only (no re-fire is possible without a classification).
+ * 3. Count the hook fires in the marker file. The setup CONTROL turn
+ *    proves the hook works (exactly one fire before the crash scenario);
+ *    the crash pass must add ZERO — 1.5.0: an interrupted run has NO
+ *    terminal provider message, so `afterResponse` never fires. The
+ *    observe-guard conclusion is defensive-only (no re-fire is possible
+ *    without a classification).
  */
 
 import { appendFileSync } from "node:fs";
@@ -140,6 +148,43 @@ async function main(): Promise<never> {
 	const { mode, dir } = parseDriverArgs();
 
 	if (mode === "setup") {
+		// CONTROL TURN (non-vacuity): one fast, settled turn in an ISOLATED
+		// harness (its own tmpdir — the control conversation must NOT share
+		// the scenario's history) with the hook writing to the scenario
+		// dir's marker file. The hook MUST fire exactly once, proving the
+		// registration works before the crash scenario's zero-fire assertion
+		// can mean anything.
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const controlDir = await mkdtemp(join(tmpdir(), "sigrun-hook-control-"));
+		try {
+			const control = await bootScenarioHarness(controlDir, [
+				fauxAssistantMessage("control answer"),
+			]);
+			control.registry.install(hookExtension(dir));
+			const controlRoot = await control.harness.root(BACKGROUND_CONTEXT, {
+				agent: { model: control.defaultModel },
+			});
+			const controlSubmission = await controlRoot.submit(
+				{ type: "input", content: "control turn" },
+				BACKGROUND_CONTEXT,
+			);
+			await withDeadline(
+				controlSubmission.wait(BACKGROUND_CONTEXT),
+				SETTLE_DEADLINE_MS,
+				"control turn settlement",
+			);
+			await control.harness.close(BACKGROUND_CONTEXT);
+		} finally {
+			await rm(controlDir, { recursive: true, force: true });
+		}
+		const controlFires = await hookFires(dir);
+		if (controlFires.length !== 1) {
+			await verifyFailed(
+				`the control turn produced ${controlFires.length} afterResponse fires (expected exactly one — a working hook registration is the non-vacuity precondition for the crash pass's zero-fire assertion)`,
+			);
+		}
+
 		const opened = await bootScenarioHarness(
 			dir,
 			[fauxAssistantMessage(SLOW_ANSWER)],
@@ -183,12 +228,15 @@ async function main(): Promise<never> {
 			}
 			await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 		}
-		// Belt-and-braces non-vacuity: the hook must NOT have fired in setup
-		// (if it had, the kill point was not mid-stream — a vacuous run).
+		// Belt-and-braces non-vacuity: the hook must NOT have fired for the
+		// SCENARIO conversation in setup (if it had, the kill point was not
+		// mid-stream — a vacuous run). The control turn's one fire predates
+		// the scenario (and lives in a different conversation), so the crash
+		// pass's count is the file total minus the control's one.
 		const setupFires = await hookFires(dir);
-		if (setupFires.length > 0) {
+		if (setupFires.length !== 1) {
 			await verifyFailed(
-				`the afterResponse hook fired ${setupFires.length}x in SETUP before the kill marker — the kill was not mid-stream (vacuous run)`,
+				`expected exactly the control turn's one fire before the kill marker, found ${setupFires.length} — the scenario conversation's hook fired in setup (kill not mid-stream) or the control evidence drifted`,
 			);
 		}
 		// 1.5.0 deferred persistence: the partial is SHOWN at once but STORED
@@ -270,23 +318,22 @@ async function main(): Promise<never> {
 	}
 
 	// The fire count: ONE line per actual afterResponse invocation across
-	// BOTH processes. This is the verification's payload — the observed
-	// count, recorded (and the observe-guard conclusion derived). 1.5.0,
-	// retry pinned: an interrupted run has NO terminal provider message, so
-	// afterResponse never fires — expect 0 (a positive count would mean a
-	// regression retried or re-fired the hook).
-	const fires = await hookFires(dir);
-	if (fires.length !== 0) {
+	// BOTH processes, minus the control turn's one (the control proves the
+	// hook works; the crash pass must add ZERO — 1.5.0: an interrupted run
+	// has NO terminal provider message, so afterResponse never fires).
+	const fires = (await hookFires(dir)).length - 1;
+	if (fires !== 0) {
 		return verifyFailed(
-			`the afterResponse hook fired ${fires.length}x although the interrupted run never classified a terminal message (1.5.0: no resend, no afterResponse)`,
+			`the afterResponse hook fired ${fires}x for the interrupted run (expected 0 — 1.5.0: no resend, no terminal message, no afterResponse)`,
 		);
 	}
-	const refired = false;
 	const observeGuard =
 		"defensive-only: afterResponse never fires for an interrupted run (1.5.0: the in-flight request is a failed attempt, never resent; with no retry left the run ends interrupted with NO terminal provider message — the hook's only fire point never occurs)";
 
 	// The stored partial converts to exactly one aborted entry; no final
-	// answer exists (never resent).
+	// answer exists (never resent). The view's entries are the SCENARIO
+	// conversation's window — the control turn's answer lives in its own
+	// conversation, so any final answer here is a resend regression.
 	const watch = await root.watch(BACKGROUND_CONTEXT);
 	const view = watch.value;
 	const assistants = assistantMessages(
@@ -326,8 +373,7 @@ async function main(): Promise<never> {
 		reason: (settled as { reason?: string }).reason,
 		runFailureReason: live?.runFailure?.reason,
 		runCleared: live?.run === undefined,
-		hookFires: fires.length,
-		refired,
+		hookFires: fires,
 		observeGuard,
 		finalAnswers: finalAnswers.length,
 		abortedPartials: abortedPartials.length,

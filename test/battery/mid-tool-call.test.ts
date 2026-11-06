@@ -55,13 +55,15 @@ test(
 			// limit NEITHER tool re-executes): exactly one execution each.
 			expect(payload.unsafeExecutions).toBe(1);
 			expect(payload.safeExecutions).toBe(1);
-			// Both cut-off tools ended with the visible restart_limit error.
-			expect(payload.unsafeRestartLimited).toBe(true);
-			expect(payload.safeRestartLimited).toBe(true);
-			// The run ENDED (never stuck busy); whether it failed with a
-			// runFailure or continued from the error results to an answer is
-			// upstream's settled behavior — the driver verified one held.
+			// The run ENDED (never stuck busy); the driver asserts the failing
+			// branch's runFailure reason is restart_limit and the done branch's
+			// answer accounting — record which branch occurred.
 			expect(payload.runCleared).toBe(true);
+			expect(
+				payload.runFailureReason === "restart_limit" ||
+					payload.settledStatus === "done",
+			).toBe(true);
+			expect(payload.finalAnswers).toBeLessThanOrEqual(1);
 		} finally {
 			// Reap the setup driver promptly on the failure path (on the happy
 			// path it is already dead; kill() is best-effort and never throws).

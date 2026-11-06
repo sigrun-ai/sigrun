@@ -25,8 +25,8 @@ const KILL_MARKER_DEADLINE_MS = 60_000;
 const VERIFY_DEADLINE_MS = 90_000;
 
 test(
-"kill -9 mid-background-compaction → restart → restart-limited compaction ENDS into pi.live.compactionFailure, no summary, turns intact",
-{ timeout: 150_000 },
+	"kill -9 mid-background-compaction → restart → restart-limited compaction ENDS into pi.live.compactionFailure, no summary, turns intact",
+	{ timeout: 150_000 },
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-battery-compact-"));
 		let setup: ReturnType<typeof spawnDriver> | undefined;

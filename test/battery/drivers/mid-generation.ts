@@ -29,15 +29,20 @@
  * 4. Print `GENERATING` (only after the partial is stored) and stay alive
  *    until SIGKILL — the test times the kill off this marker.
  *
- * verify mode:
- * 1. Reopen the SAME storage dir and resume (openHarness), with a fresh
- *    faux provider scripted to answer fully and fast.
- * 2. Reacquire the killed submission, await settlement (deadline).
- * 3. Assert the 1.5.0 terminal outcome: settled `unanswered` reason
- *    `interrupted` with `pi.live.runFailure.reason === "interrupted"`, no
- *    final answer, exactly one aborted entry (the stored partial), and
- *    `pi.live.run === undefined` (the conversation is NOT stuck busy);
- *    the view serializes.
+ * verify mode (`verify` = interrupted; `verify-retry` = retried):
+ * - `verify`: the recovery boots with `retry: { maxRetries: 0 }` — the
+ *   killed in-flight request is a failed attempt with NO retry left, so
+ *   the run ends `unanswered` reason `interrupted`, the STORED partial
+ *   converts to exactly one aborted entry, no final answer exists, and
+ *   `pi.live.run` clears (`runFailure` polled — the run-ending commit can
+ *   publish a beat after the wait resolves).
+ * - `verify-retry`: the recovery boots with the DEFAULT retry
+ *   (maxRetries 3): the killed attempt is charged and the next attempt
+ *   RE-RUNS against the fresh provider, so the turn completes — settled
+ *   `done`, exactly one aborted entry (the stored partial) followed by
+ *   exactly one final answer, and `pi.live.run` clears.
+ * Both passes keep the 1.5.0 invariant: no duplicate final answer, and
+ * the conversation never sticks busy.
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
@@ -47,8 +52,8 @@ import { LiveDoc, type SubmissionId } from "@earendil-works/pi-durable";
 import {
 	bootScenarioHarness,
 	marker,
-	parseDriverArgs,
 	readScenarioState,
+	startSelfWatchdog,
 	STORE_SETTLE_MS,
 	verifyFailed,
 	verified,
@@ -58,6 +63,8 @@ import {
 
 /** The long answer the setup pass streams slowly (never completes before the kill). */
 const SLOW_ANSWER = "slow streaming answer about crash recovery ".repeat(40);
+/** The full answer the retry-verify pass's fresh provider serves. */
+const RECOVERED_ANSWER = "recovered final answer after mid-generation kill";
 
 /** Marker-wait deadlines INSIDE the driver (fail loud, never hang). */
 const PARTIAL_DEADLINE_MS = 30_000;
@@ -77,7 +84,25 @@ function assistantMessages(
 }
 
 async function main(): Promise<never> {
-	const { mode, dir } = parseDriverArgs();
+	const argv = process.argv.slice(2);
+	const requestedMode = argv[0];
+	// The retry-verify pass rides the same driver: `verify-retry` boots the
+	// recovery with the DEFAULT retry (maxRetries 3) so the killed attempt
+	// is charged and RE-RUN (outcome a); `verify` boots with maxRetries 0
+	// (outcome b, interrupted). Both share the killed setup state.
+	const mode =
+		requestedMode === "verify-retry" ? "verify-retry" : requestedMode;
+	if (
+		(mode !== "setup" && mode !== "verify" && mode !== "verify-retry") ||
+		argv[1] === undefined
+	) {
+		process.stderr.write(
+			"usage: tsx <driver.ts> <setup|verify|verify-retry> <dir>\n",
+		);
+		process.exit(2);
+	}
+	const dir = argv[1];
+	startSelfWatchdog();
 
 	if (mode === "setup") {
 		const opened = await bootScenarioHarness(
@@ -138,16 +163,25 @@ async function main(): Promise<never> {
 		return new Promise<never>(() => {});
 	}
 
-	// verify mode: reopen and settle the killed submission. The fresh
-	// provider scripts one answer, but 1.5.0 NEVER resends the interrupted
-	// request — the scripted response exists only to fail loudly (fast) if a
-	// regression DOES resend (the answer would land as a second final answer
-	// the assertions below reject).
+	// verify / verify-retry: reopen and settle the killed submission.
+	// `verify` (retry pinned maxRetries 0): the killed in-flight request is
+	// a failed attempt with NO retry left — the run ends interrupted.
+	// `verify-retry` (DEFAULT retry, maxRetries 3): the attempt is charged
+	// and the next attempt RE-RUNS against the fresh provider — the turn
+	// completes. The scripted answer exists for the retry pass; for the
+	// pinned pass it is the fail-loud regression detector (never served).
+	const interrupted = mode === "verify";
 	const opened = await bootScenarioHarness(
 		dir,
-		[fauxAssistantMessage("resent answer — must never be served")],
+		[
+			fauxAssistantMessage(
+				interrupted
+					? "resent answer — must never be served"
+					: RECOVERED_ANSWER,
+			),
+		],
 		undefined,
-		{ retry: { maxRetries: 0 } },
+		interrupted ? { retry: { maxRetries: 0 } } : undefined,
 	);
 	const state = await readScenarioState(dir);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
@@ -166,50 +200,6 @@ async function main(): Promise<never> {
 		"recovered submission settlement",
 	);
 
-	// 1.5.0: the in-flight request is never resent; the run ends
-	// `unanswered` reason "interrupted" (retry was pinned to maxRetries 0),
-	// the STORED partial converts to exactly one aborted entry, and
-	// `pi.live.run` clears (the conversation is NOT stuck busy).
-	// `runFailure` is set by the run-ending commit, which can publish a
-	// beat after the submission wait resolves — poll it with a deadline.
-	let live = await opened.harness.snapshot(
-		LiveDoc,
-		root.id,
-		BACKGROUND_CONTEXT,
-	);
-	const runFailureDeadline = Date.now() + SETTLE_DEADLINE_MS;
-	while (live?.runFailure === undefined) {
-		if (Date.now() > runFailureDeadline) {
-			return verifyFailed(
-				`pi.live.runFailure never appeared after the interrupted run settled (live: ${JSON.stringify(live)})`,
-			);
-		}
-		await new Promise((resolve) => setTimeout(resolve, 100));
-		live = await opened.harness.snapshot(
-			LiveDoc,
-			root.id,
-			BACKGROUND_CONTEXT,
-		);
-	}
-	if (live?.run !== undefined) {
-		return verifyFailed(
-			`pi.live.run is still set after the interrupted run settled — the conversation is stuck busy (run: ${JSON.stringify(live.run)})`,
-		);
-	}
-	if (live?.runFailure?.reason !== "interrupted") {
-		return verifyFailed(
-			`expected pi.live.runFailure.reason "interrupted" after the mid-generation kill (got ${JSON.stringify(live?.runFailure)})`,
-		);
-	}
-	if (
-		settled.status !== "unanswered" ||
-		(settled as { reason?: string }).reason !== "interrupted"
-	) {
-		return verifyFailed(
-			`expected the killed submission to settle unanswered/interrupted (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}) — 1.5.0 never resends the in-flight request`,
-		);
-	}
-
 	// The structural view (spec §9.3): serializing it is itself an assertion.
 	const watch = await root.watch(BACKGROUND_CONTEXT);
 	const view = watch.value;
@@ -223,8 +213,9 @@ async function main(): Promise<never> {
 	await watch.stop();
 
 	// The interrupted attempt's stored partial converts to an "aborted"
-	// assistant entry — visible state, and NOT a final answer (1.5.0: no
-	// resend means no recovered answer exists).
+	// assistant entry in BOTH outcomes (the kill lands after the first
+	// deferred store — STORE_SETTLE_MS). Outcome (b) adds no answer;
+	// outcome (a) adds exactly one.
 	const assistants = assistantMessages(view.entries);
 	const finalAnswers = assistants.filter(
 		(message) => message.stopReason === "stop",
@@ -232,15 +223,97 @@ async function main(): Promise<never> {
 	const abortedPartials = assistants.filter(
 		(message) => message.stopReason === "aborted",
 	);
-	if (finalAnswers.length !== 0) {
-		return verifyFailed(
-			`the interrupted outcome must carry no final answer (1.5.0 never resends), found ${finalAnswers.length}`,
-		);
-	}
 	if (abortedPartials.length !== 1) {
 		return verifyFailed(
 			`expected exactly one aborted assistant entry from the stored interrupted partial, found ${abortedPartials.length} (a crash before the first store leaves none — the kill marker waits STORE_SETTLE_MS, so zero here means the persistence rule regressed)`,
 		);
+	}
+
+	// `pi.live.run` must clear in BOTH outcomes (never stuck busy). The
+	// run-ending commit can publish a beat after the wait resolves — poll.
+	let live = await opened.harness.snapshot(
+		LiveDoc,
+		root.id,
+		BACKGROUND_CONTEXT,
+	);
+	const liveDeadline = Date.now() + SETTLE_DEADLINE_MS;
+	while (live?.run !== undefined) {
+		if (Date.now() > liveDeadline) {
+			return verifyFailed(
+				`pi.live.run never cleared after the run settled (stuck busy; live: ${JSON.stringify(live)})`,
+			);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		live = await opened.harness.snapshot(
+			LiveDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+	}
+
+	if (interrupted) {
+		// Outcome (b): no retry left → the run ends unanswered/interrupted,
+		// runFailure records it, no final answer exists.
+		const runFailureDeadline = Date.now() + SETTLE_DEADLINE_MS;
+		while (live?.runFailure === undefined) {
+			if (Date.now() > runFailureDeadline) {
+				return verifyFailed(
+					`pi.live.runFailure never appeared after the interrupted run settled (live: ${JSON.stringify(live)})`,
+				);
+			}
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			live = await opened.harness.snapshot(
+				LiveDoc,
+				root.id,
+				BACKGROUND_CONTEXT,
+			);
+		}
+		if (live?.runFailure?.reason !== "interrupted") {
+			return verifyFailed(
+				`expected pi.live.runFailure.reason "interrupted" after the mid-generation kill (got ${JSON.stringify(live?.runFailure)})`,
+			);
+		}
+		if (
+			settled.status !== "unanswered" ||
+			(settled as { reason?: string }).reason !== "interrupted"
+		) {
+			return verifyFailed(
+				`expected the killed submission to settle unanswered/interrupted (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}) — 1.5.0 never resends the in-flight request`,
+			);
+		}
+		if (finalAnswers.length !== 0) {
+			return verifyFailed(
+				`the interrupted outcome must carry no final answer (1.5.0 never resends), found ${finalAnswers.length}`,
+			);
+		}
+	} else {
+		// Outcome (a): the default retry re-runs the killed attempt → the
+		// turn completes with exactly one final answer (the fresh
+		// provider's recovered text), no runFailure.
+		if (settled.status !== "done") {
+			return verifyFailed(
+				`expected the retried turn to settle done (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}) — the default retry should re-run the charged attempt`,
+			);
+		}
+		if (finalAnswers.length !== 1) {
+			return verifyFailed(
+				`expected exactly one final answer after the retried recovery, found ${finalAnswers.length}`,
+			);
+		}
+		const answerText = finalAnswers
+			.flatMap((message) =>
+				(message.content ?? []).filter(
+					(block): block is { type: "text"; text: string } =>
+						block.type === "text",
+				),
+			)
+			.map((block) => block.text)
+			.join("\n");
+		if (!answerText.includes(RECOVERED_ANSWER)) {
+			return verifyFailed(
+				`the final answer does not contain the recovered answer text (got: ${JSON.stringify(answerText)})`,
+			);
+		}
 	}
 	if (serialized.length === 0) {
 		return verifyFailed("serialized view is empty");
@@ -248,9 +321,11 @@ async function main(): Promise<never> {
 
 	await opened.harness.close(BACKGROUND_CONTEXT);
 	return verified({
-		outcome: "aborted",
+		outcome: interrupted ? "aborted" : "completed",
 		settledStatus: settled.status,
-		reason: (settled as { reason?: string }).reason,
+		...(settled.status === "unanswered"
+			? { reason: (settled as { reason?: string }).reason }
+			: {}),
 		runFailureReason: live?.runFailure?.reason,
 		runCleared: live?.run === undefined,
 		finalAnswers: finalAnswers.length,

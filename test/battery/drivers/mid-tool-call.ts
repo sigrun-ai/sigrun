@@ -37,6 +37,16 @@
  *    `restart_limit` diagnostic; the submission settles `unanswered`
  *    reason `restart_limit` with `pi.live.runFailure.reason` matching;
  *    `pi.live.run` is cleared; the view serializes.
+ *
+ * NOTE on STORE_SETTLE_MS (the deferred-persistence wait the other
+ * drivers add before their kill markers): this driver deliberately omits
+ * it. The kill observable here is each tool's `TOOL_RUNNING:<tool>`
+ * marker, printed INSIDE execute() — and the execute-intent checkpoint
+ * (`{phase: "execute", arguments, replay}`) is committed as a NON-deferred
+ * commit BEFORE execute() runs (the tool task's phase transition reads
+ * `pi.live`, which flushes any held deferred progress). The replay
+ * decision is therefore already durable when the marker prints; no extra
+ * settle window is needed.
  */
 
 import { appendFileSync } from "node:fs";
@@ -299,11 +309,12 @@ async function main(): Promise<never> {
 	}
 
 	// 1.5.0: the round's tools ended restart_limited; the generation then
-	// either fails the run (`pi.live.runFailure`) or CONTINUES it from the
-	// round's error results (the model may answer from the errors — both are
-	// upstream-legitimate; the task-level interruption and the visible
-	// restart_limit results are the settled 1.5.0 semantics). The wait may
-	// resolve a beat before the run-ending commit publishes — poll live.
+	// either fails the run (`pi.live.runFailure` reason `restart_limit`) or
+	// CONTINUES it from the round's error results (the model may answer
+	// from the errors — both are upstream-legitimate; the task-level
+	// interruption and the visible restart_limit results are the settled
+	// 1.5.0 semantics). The wait may resolve a beat before the run-ending
+	// commit publishes — poll live.
 	let liveAfter = view.docs["pi.live"] as
 		| { run?: unknown; runFailure?: { reason?: string } }
 		| undefined;
@@ -327,9 +338,25 @@ async function main(): Promise<never> {
 		(message) => message.stopReason === "stop",
 	);
 	const runFailureReason = liveAfter?.runFailure?.reason;
-	if (settled.status !== "done" && runFailureReason === undefined) {
+	if (settled.status !== "done") {
+		// The failing branch: the run's failure is specifically the
+		// restart limit (both task_interrupted reports carry it).
+		if (runFailureReason !== "restart_limit") {
+			return verifyFailed(
+				`the restart-limited run neither answered nor ended runFailure restart_limit (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}, runFailure=${JSON.stringify(liveAfter?.runFailure)})`,
+			);
+		}
+	}
+	// Answer accounting: a continued run answers at most once; a
+	// restart-limited run answers never.
+	if (finalAnswers.length > 1) {
 		return verifyFailed(
-			`the restart-limited run neither answered nor recorded a runFailure (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}, live: ${JSON.stringify(liveAfter)})`,
+			`expected at most one final answer, found ${finalAnswers.length}`,
+		);
+	}
+	if (settled.status === "done" && finalAnswers.length !== 1) {
+		return verifyFailed(
+			`the run settled done but carries ${finalAnswers.length} final answers (expected exactly one)`,
 		);
 	}
 	if (serialized.length === 0) {
@@ -346,8 +373,6 @@ async function main(): Promise<never> {
 		runCleared: liveAfter?.run === undefined,
 		unsafeExecutions,
 		safeExecutions,
-		unsafeRestartLimited: true,
-		safeRestartLimited: true,
 		finalAnswers: finalAnswers.length,
 		entries: view.entries.length,
 	});

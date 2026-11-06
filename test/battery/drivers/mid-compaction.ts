@@ -13,17 +13,18 @@
  * setup mode:
  * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider slowed
  *    deterministically (`tokensPerSecond: 2`, `tokenSize` pinned) and the
- *    compaction policy forced through the OpenHarnessOptions.settings seam
- *    to thresholds calibrated for the curator era: the eight core tool
- *    schemas (the A6 skill_manage curation tool included) ride in every
- *    request, so the warm-up turn and turn 2 both start from a tools-sized
- *    baseline. Blocking threshold 5000 (`contextWindow - reserveTokens`),
- *    background band from 3000 (`blocking - backgroundTokens`),
- *    `keepRecentTokens: 1`. A short warm-up turn stays under the band;
- *    turn 2's preparation (thousands of estimated tokens, baseline plus
- *    filler) lands inside it, so upstream
- *    creates a conversation-owned BACKGROUND compaction task while turn
- *    2's generation proceeds.
+ *    compaction policy forced through the OpenHarnessOptions.settings seam.
+ *    Band 2200..5000 (`contextWindow - reserveTokens` = 5000 blocking;
+ *    background floor 2200 via `backgroundTokens: 2_800`),
+ *    `keepRecentTokens: 1`. Calibration is against the MEASURED-USAGE
+ *    baseline: upstream's estimateContext reads the last assistant
+ *    message's totalTokens, and the faux provider's simulated cache
+ *    counts prompt tokens in cacheWrite (input 0), inflating totalTokens
+ *    to ~2× the prompt — warm-up measured ≈2142, turn 2 ≈2505 (see the
+ *    inline comment at the settings object). A short warm-up turn stays
+ *    under the band; turn 2 (baseline plus filler) lands inside it, so
+ *    upstream creates a conversation-owned BACKGROUND compaction task
+ *    while turn 2's generation proceeds.
  * 2. All faux responses are content-discriminating factories: the
  *    summarizer's request serializes the pre-cut transcript (it contains the
  *    warm-up ANSWER text but never turn 2's marker), so routing needs no
@@ -99,7 +100,7 @@ const SETUP_SUMMARY = `background compaction summary payload ${"s".repeat(2_800)
 const COMPACTION_DEADLINE_MS = 30_000;
 const SETTLE_DEADLINE_MS = 30_000;
 /** Deadline for the verify pass's pi.live.compactionFailure poll. */
-const SUMMARY_ENTRY_DEADLINE_MS = 15_000;
+const COMPACTION_FAILURE_DEADLINE_MS = 15_000;
 /** Poll cadence for the setup conditions and the verify compactionFailure poll. */
 const POLL_MS = 100;
 
@@ -233,7 +234,19 @@ async function main(): Promise<never> {
 		// Turn 2: the warm-up answer's measured totalTokens (~2142) plus the
 		// filler (~350) land the request inside the background band
 		// (2200 … 5000). Upstream creates a conversation-owned background
-		// compaction while this turn's generation proceeds.
+		// compaction while this turn's generation proceeds. Guard: NO
+		// compaction may exist before turn 2 — a warm-up drift into the band
+		// would make the killed compaction the wrong one.
+		const liveBeforeTurn2 = await opened.harness.snapshot(
+			LiveDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+		if ((liveBeforeTurn2?.compactions ?? []).length !== 0) {
+			return verifyFailed(
+				`a compaction already exists before turn 2 (${JSON.stringify(liveBeforeTurn2?.compactions)}) — the warm-up drifted into the band; the killed compaction would be the wrong one`,
+			);
+		}
 		const second = await root.submit(
 			{
 				type: "input",
@@ -332,7 +345,7 @@ async function main(): Promise<never> {
 	// `pi.live.compactionFailure` records the failure (polled — the ending
 	// commit can publish a beat after waitForTask resolves).
 	let compactionFailure: unknown;
-	const failureDeadline = Date.now() + SUMMARY_ENTRY_DEADLINE_MS;
+	const failureDeadline = Date.now() + COMPACTION_FAILURE_DEADLINE_MS;
 	for (;;) {
 		const live = await opened.harness.snapshot(
 			LiveDoc,

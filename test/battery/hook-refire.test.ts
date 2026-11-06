@@ -58,10 +58,10 @@ test(
 			expect(payload.runFailureReason).toBe("interrupted");
 			expect(payload.runCleared).toBe(true);
 			// afterResponse's only fire point is a terminal provider message;
-			// an interrupted run has none — the observed count is 0, and the
-			// observe-guard conclusion is defensive-only.
+			// an interrupted run has none — the crash pass adds 0 fires (the
+			// driver's control turn proves the hook registration works), and
+			// the observe-guard conclusion is defensive-only.
 			expect(payload.hookFires).toBe(0);
-			expect(payload.refired).toBe(false);
 			expect(typeof payload.observeGuard).toBe("string");
 			// The stored partial converts to exactly one aborted entry; no
 			// final answer exists.

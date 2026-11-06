@@ -164,10 +164,10 @@ export async function withDeadline<T>(
 }
 
 /**
- * pi-durable 1.5.0 deferred persistence (spec §4.1, `CommitPersistence`):
- * streamed partials and running tool output are SHOWN to watches at once
- * but STORED only at the next boundary commit or after
- * `settings.progress.persistWithinMs` (default 1,000 ms). The battery's
+ * pi-durable 1.5.0 changelog (deferred persistence): streamed partials
+ * and running tool output are SHOWN to watches at once but STORED only
+ * at the next boundary commit or after `settings.progress.persistWithinMs`
+ * (default 1,000 ms). The battery's
  * kill observable must be STORED state — a crash before the first store
  * leaves no aborted entry at all — so after an in-memory observable
  * (LiveDoc `generation.message`, a compaction listed in `pi.live`)
