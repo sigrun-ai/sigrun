@@ -2091,6 +2091,11 @@ export async function openHarness(
 					);
 				},
 				toolExecution: callerSettings?.toolExecution,
+				// pi-durable 1.5.0: restart-limited tasks END instead of parking
+				// (no file backing — caller seam and default only, like
+				// toolExecution). The battery pins it to make crash outcomes
+				// deterministic.
+				restartLimit: callerSettings?.restartLimit,
 				compaction: {
 					...config.compaction,
 					...(config.compaction.modelOverrides === undefined &&

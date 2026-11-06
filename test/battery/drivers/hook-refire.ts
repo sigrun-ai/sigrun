@@ -2,12 +2,16 @@
  * Crash-battery item 6 driver (plan Task 12 step 6, spec §7 M1 battery):
  * `kill -9` mid-streaming-generation while a `GenerationHooks.afterResponse`
  * hook is installed → restart → count the hook's ACTUAL fires across both
- * processes. The OBSERVED count is the payload — 1 = the hook never fired in
- * the killed process (the stream never completed) and fired once on the
- * recovered run; 2 = the hook fired in both processes (re-fire on replay) —
- * and it finalizes the memory extension's observe-guard design (spec §3
- * Memory row: a durable memo keyed by generation id is REQUIRED if
- * `afterResponse` can re-fire for one user turn, defensive-only otherwise).
+ * processes. The OBSERVED count is the payload. Under pi-durable 1.5.0 the
+ * kill lands while the request is in flight, so the terminal provider
+ * message NEVER arrives in the killed process, and with the recovery
+ * pass's retry pinned (`maxRetries: 0`) the run ends `unanswered`
+ * reason `interrupted` — `afterResponse` fires ONLY on a terminal
+ * provider message, and an interrupted run never produces one, so the
+ * 1.5.0 outcome is ZERO fires: the memory extension's observe guard
+ * (a durable memo keyed by generation id) stays DEFENSIVE-ONLY — the
+ * hook cannot re-fire for a killed turn, because the turn never
+ * classifies a terminal message at all.
  *
  * setup mode:
  * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider slowed
@@ -20,23 +24,25 @@
  *    pattern, one line per fire, across both processes.
  * 3. Submit one input; poll the LiveDoc until the committed generation
  *    partial carries actual streamed text (the item-1 mid-generation
- *    observable), print `GENERATING`, and stay alive until SIGKILL. The kill
- *    lands mid-token-stream: the terminal provider message NEVER arrives in
+ *    observable), wait STORE_SETTLE_MS (the 1.5.0 deferred-persistence
+ *    window — `settings.progress.persistWithinMs` default 1,000 ms — so
+ *    the kill lands after STORED progress, not just shown progress),
+ *    print `GENERATING`, and stay alive until SIGKILL. The kill lands
+ *    mid-token-stream: the terminal provider message NEVER arrives in
  *    this process, so `afterResponse` cannot fire in setup.
  *
  * verify mode:
- * 1. Reopen the SAME storage dir and resume (same hook installed), with a
- *    fresh faux provider serving the full recovery answer fast.
+ * 1. Reopen the SAME storage dir and resume (same hook installed), with
+ *    retry pinned to `maxRetries: 0` (1.5.0: the interrupted attempt is
+ *    never resent, so the run ends `unanswered` reason `interrupted`
+ *    deterministically).
  * 2. Reacquire the killed submission, await settlement (deadline).
- * 3. Count the hook fires in the marker file. The OBSERVED count is the
- *    payload (recorded, not asserted to a specific number — this is a
- *    verification, not a pass/fail on the count); the OBSERVE-GUARD
- *    conclusion is derived from it: re-fired ⇒ the memory extension's
- *    observe MUST key a durable memo by generation id to stay exactly-once;
- *    not re-fired ⇒ the guard is defensive-only. Both are reported; the
- *    test only asserts the count is a positive integer and the turn
- *    completed (non-vacuity: a completed turn guarantees at least one
- *    terminal classification, which is the hook's only fire point).
+ * 3. Count the hook fires in the marker file. 1.5.0: an interrupted run
+ *    has NO terminal provider message, so `afterResponse` never fires —
+ *    the OBSERVED count is the payload either way (recorded, not
+ *    asserted to a specific number), but with the retry pinned the
+ *    expected count is 0 and the observe-guard conclusion is
+ *    defensive-only (no re-fire is possible without a classification).
  */
 
 import { appendFileSync } from "node:fs";
@@ -58,6 +64,7 @@ import {
 	marker,
 	parseDriverArgs,
 	readScenarioState,
+	STORE_SETTLE_MS,
 	verifyFailed,
 	verified,
 	withDeadline,
@@ -66,8 +73,8 @@ import {
 
 /** The long answer the setup pass streams slowly (never completes before the kill). */
 const SLOW_ANSWER = "slow streaming answer for the hook fire count ".repeat(40);
-/** The full answer the verify pass's fresh provider serves. */
-const RECOVERED_ANSWER = "recovered final answer observed by the afterResponse hook";
+/** The scripted answer a regression's resend would serve (1.5.0 must never consume it). */
+const RECOVERED_ANSWER = "resent answer — must never be served";
 
 /** Marker-wait deadlines INSIDE the driver (fail loud, never hang). */
 const PARTIAL_DEADLINE_MS = 30_000;
@@ -137,6 +144,9 @@ async function main(): Promise<never> {
 			dir,
 			[fauxAssistantMessage(SLOW_ANSWER)],
 			{ tokensPerSecond: 2, tokenSize: { min: 8, max: 8 } },
+			// 1.5.0 pin (matching the recovery pass): no retry attempt, so a
+			// regression that retried could not mask the hook accounting.
+			{ retry: { maxRetries: 0 } },
 		);
 		opened.registry.install(hookExtension(dir));
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -181,6 +191,11 @@ async function main(): Promise<never> {
 				`the afterResponse hook fired ${setupFires.length}x in SETUP before the kill marker — the kill was not mid-stream (vacuous run)`,
 			);
 		}
+		// 1.5.0 deferred persistence: the partial is SHOWN at once but STORED
+		// only within settings.progress.persistWithinMs (default 1,000 ms) —
+		// the kill marker waits the store window plus slack so the kill lands
+		// after STORED progress (STORE_SETTLE_MS, drivers/lib.ts).
+		await new Promise((resolve) => setTimeout(resolve, STORE_SETTLE_MS));
 		marker("GENERATING");
 		// Stay alive until the test's SIGKILL: the in-flight stream's timers
 		// hold the loop open; this keepalive makes it independent of them.
@@ -189,9 +204,14 @@ async function main(): Promise<never> {
 	}
 
 	// verify mode: reopen, resume, settle the killed submission, count fires.
-	const opened = await bootScenarioHarness(dir, [
-		fauxAssistantMessage(RECOVERED_ANSWER),
-	]);
+	// 1.5.0: retry pinned to maxRetries 0 — the interrupted attempt is NEVER
+	// resent, so the run ends `unanswered` reason `interrupted`.
+	const opened = await bootScenarioHarness(
+		dir,
+		[fauxAssistantMessage(RECOVERED_ANSWER)],
+		undefined,
+		{ retry: { maxRetries: 0 } },
+	);
 	opened.registry.install(hookExtension(dir));
 	const state = await readScenarioState(dir);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
@@ -209,36 +229,75 @@ async function main(): Promise<never> {
 		SETTLE_DEADLINE_MS,
 		"recovered submission settlement",
 	);
-	if (settled.status !== "done") {
+	if (
+		settled.status !== "unanswered" ||
+		(settled as { reason?: string }).reason !== "interrupted"
+	) {
 		return verifyFailed(
-			`the crashed turn did not complete after recovery (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}) — a completed turn is the non-vacuity precondition for the fire count`,
+			`expected the killed submission to settle unanswered/interrupted under the pinned retry policy (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}) — 1.5.0 never resends the in-flight request`,
+		);
+	}
+	// `pi.live.run` must clear (the conversation is NOT stuck busy); the
+	// run-ending commit can publish a beat after the wait resolves — poll.
+	let live = await opened.harness.snapshot(
+		LiveDoc,
+		root.id,
+		BACKGROUND_CONTEXT,
+	);
+	const failureDeadline = Date.now() + SETTLE_DEADLINE_MS;
+	while (live?.runFailure === undefined) {
+		if (Date.now() > failureDeadline) {
+			return verifyFailed(
+				`pi.live.runFailure never appeared after the interrupted run settled (live: ${JSON.stringify(live)})`,
+			);
+		}
+		await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+		live = await opened.harness.snapshot(
+			LiveDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+	}
+	if (live?.run !== undefined) {
+		return verifyFailed(
+			`pi.live.run is still set after the interrupted run settled — the conversation is stuck busy`,
+		);
+	}
+	if (live?.runFailure?.reason !== "interrupted") {
+		return verifyFailed(
+			`expected pi.live.runFailure.reason "interrupted" (got ${JSON.stringify(live?.runFailure)})`,
 		);
 	}
 
 	// The fire count: ONE line per actual afterResponse invocation across
 	// BOTH processes. This is the verification's payload — the observed
-	// count, recorded (and the observe-guard conclusion derived), not
-	// asserted to a specific number.
+	// count, recorded (and the observe-guard conclusion derived). 1.5.0,
+	// retry pinned: an interrupted run has NO terminal provider message, so
+	// afterResponse never fires — expect 0 (a positive count would mean a
+	// regression retried or re-fired the hook).
 	const fires = await hookFires(dir);
-	if (fires.length < 1) {
-		// Zero fires with a completed turn means the hook never fired at all —
-		// a broken registration (vacuous), not a "no re-fire" observation.
+	if (fires.length !== 0) {
 		return verifyFailed(
-			"the afterResponse hook never fired although the turn completed — broken hook registration (vacuous run)",
+			`the afterResponse hook fired ${fires.length}x although the interrupted run never classified a terminal message (1.5.0: no resend, no afterResponse)`,
 		);
 	}
-	const refired = fires.length >= 2;
-	const observeGuard = refired
-		? "REQUIRED: durable memo keyed by generation id (afterResponse re-fires on replay — without the guard the memory observe writes duplicate records for one user turn)"
-		: "defensive-only: afterResponse did NOT re-fire for the killed turn (single fire on the recovered run — the guard remains a cheap idempotence backstop, not a correctness requirement)";
+	const refired = false;
+	const observeGuard =
+		"defensive-only: afterResponse never fires for an interrupted run (1.5.0: the in-flight request is a failed attempt, never resent; with no retry left the run ends interrupted with NO terminal provider message — the hook's only fire point never occurs)";
 
-	// Exactly one final answer (the recovered run's answer) — the turn-level
-	// sanity the fire count rides on.
+	// The stored partial converts to exactly one aborted entry; no final
+	// answer exists (never resent).
 	const watch = await root.watch(BACKGROUND_CONTEXT);
 	const view = watch.value;
-	const finalAnswers = assistantMessages(
+	const assistants = assistantMessages(
 		view.entries as unknown as { kind: string; model?: readonly unknown[] }[],
-	).filter((message) => message.stopReason === "stop");
+	);
+	const finalAnswers = assistants.filter(
+		(message) => message.stopReason === "stop",
+	);
+	const abortedPartials = assistants.filter(
+		(message) => message.stopReason === "aborted",
+	);
 	let serialized = "";
 	try {
 		serialized = JSON.stringify(view);
@@ -247,9 +306,14 @@ async function main(): Promise<never> {
 		return verifyFailed(`view does not serialize: ${String(error)}`);
 	}
 	await watch.stop();
-	if (finalAnswers.length !== 1) {
+	if (finalAnswers.length !== 0) {
 		return verifyFailed(
-			`expected exactly one final answer after recovery, found ${finalAnswers.length}`,
+			`expected NO final answer for the interrupted run (1.5.0 never resends), found ${finalAnswers.length}`,
+		);
+	}
+	if (abortedPartials.length !== 1) {
+		return verifyFailed(
+			`expected exactly one aborted entry from the stored interrupted partial, found ${abortedPartials.length}`,
 		);
 	}
 	if (serialized.length === 0) {
@@ -259,10 +323,14 @@ async function main(): Promise<never> {
 	await opened.harness.close(BACKGROUND_CONTEXT);
 	return verified({
 		settledStatus: settled.status,
+		reason: (settled as { reason?: string }).reason,
+		runFailureReason: live?.runFailure?.reason,
+		runCleared: live?.run === undefined,
 		hookFires: fires.length,
 		refired,
 		observeGuard,
 		finalAnswers: finalAnswers.length,
+		abortedPartials: abortedPartials.length,
 		entries: view.entries.length,
 	});
 }

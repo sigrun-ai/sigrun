@@ -1,9 +1,14 @@
 /**
- * Crash-battery item 3 (plan Task 12 step 3, spec §7 M1, Review Focus #5):
- * `kill -9` during a background compaction → resume succeeds, no
- * half-written summary, committed turns intact, view serializes,
- * subsequent submits succeed. Two-process orchestration via
- * test/battery/lib.ts; the scenario driver is
+ * Crash-battery item 3 (plan Task 12 step 3, spec §7 M1, Review Focus #5;
+ * 1.5.0 crash semantics per spec §3.2-e): `kill -9` during a background
+ * compaction → the restart-limited compaction no longer parks nor
+ * re-runs: with `settings.restartLimit` pinned to 1, the first recovery
+ * ENDS the cut-off compaction task (failed) into
+ * `pi.live.compactionFailure`, the summarize request fires in SETUP ONLY
+ * (never re-requested), NO summary entry is ever placed (no half-written
+ * summary is possible), the committed turns stay intact, the view
+ * serializes, and subsequent submits succeed. Two-process orchestration
+ * via test/battery/lib.ts; the scenario driver is
  * test/battery/drivers/mid-compaction.ts (its header documents the marker
  * protocol and the mid-compaction observable).
  */
@@ -20,8 +25,8 @@ const KILL_MARKER_DEADLINE_MS = 60_000;
 const VERIFY_DEADLINE_MS = 90_000;
 
 test(
-	"kill -9 mid-background-compaction → restart → resume succeeds, no half-written summary, turns intact",
-	{ timeout: 150_000 },
+"kill -9 mid-background-compaction → restart → restart-limited compaction ENDS into pi.live.compactionFailure, no summary, turns intact",
+{ timeout: 150_000 },
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-battery-compact-"));
 		let setup: ReturnType<typeof spawnDriver> | undefined;
@@ -42,19 +47,24 @@ test(
 			expect(exit.code).toBeNull();
 			expect(exit.signal).toBe("SIGKILL");
 
-			// Verify pass: reopen + resume; the compaction task re-runs from
-			// its durable checkpoint and every Review-Focus-#5 assertion runs
-			// in the driver (fail-loud VERIFY-FAIL reasons surface through
-			// runVerifyPass).
+			// Verify pass: reopen + resume; the restart-limited compaction
+			// ENDS (failed) into pi.live.compactionFailure and every
+			// Review-Focus-#5 assertion runs in the driver (fail-loud
+			// VERIFY-FAIL reasons surface through runVerifyPass).
 			const payload = await runVerifyPass(
 				driverPath,
 				["verify", dir],
 				VERIFY_DEADLINE_MS,
 			);
-			expect(payload.compactionOutcome).toBe("completed");
-			expect(payload.summaryEntries).toBe(1);
-			expect(payload.summaryWellFormed).toBe(true);
-			expect(payload.summarizeRequests).toEqual(["setup", "verify"]);
+			// 1.5.0: the cut-off compaction task ENDS failed (never completes).
+			expect(payload.compactionOutcome).toBe("failed");
+			// The failure is recorded in pi.live.compactionFailure.
+			expect(payload.compactionFailureRecorded).toBe(true);
+			// No summary entry is ever placed (no half-written summary).
+			expect(payload.summaryEntries).toBe(0);
+			// The summarize request fired in SETUP ONLY — the restart-limited
+			// compaction never re-requests it.
+			expect(payload.summarizeRequests).toEqual(["setup"]);
 			expect(payload.preKillTurnsIntact).toBe(true);
 			expect(payload.viewSerializes).toBe(true);
 			expect(payload.subsequentSubmitStatus).toBe("done");

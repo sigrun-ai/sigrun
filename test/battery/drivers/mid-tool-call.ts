@@ -1,8 +1,15 @@
 /**
- * Crash-battery item 2 driver (plan Task 12 step 2, spec §7 M1 battery):
- * `kill -9` mid-tool-call → safe tools may re-execute; unsafe tools must NOT
- * silently re-execute — they end failed with visible state, and the execution
- * marker files prove at-most-one execution across both processes.
+ * Crash-battery item 2 driver (plan Task 12 step 2, spec §7 M1 battery;
+ * 1.5.0 crash semantics per spec §3.2-e): `kill -9` mid-tool-call →
+ * restart-limited tools no longer park — with `settings.restartLimit`
+ * pinned to 1, the FIRST recovery of the cut-off round ends each cut-off
+ * tool with a VISIBLE error result carrying diagnostic code
+ * `restart_limit` (at-most-once: the execution marker files prove no
+ * tool body re-ran), and the run ends `unanswered` with
+ * `pi.live.runFailure.reason === "restart_limit"`. In 1.4.0 the safe
+ * tool re-executed and the unsafe one ended `interrupted`; in 1.5.0 the
+ * cut-off IS the limit, so NEITHER tool re-executes and both carry the
+ * restart_limit error.
  *
  * setup mode:
  * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider
@@ -20,15 +27,16 @@
  *
  * verify mode:
  * 1. Reopen the SAME storage dir and resume, registering the SAME tools
- *    with the SAME replay policies (recovery re-reads `tool.replay` —
- *    "rerun only when the stored AND the current policy both say safe"),
- *    with a fresh faux provider scripted to give the final answer.
+ *    with the SAME replay policies and `restartLimit: 1` — the cut-off
+ *    tools are at the limit on the first recovery, so they END (never
+ *    re-execute) with the restart_limit error result.
  * 2. Reacquire the submission, await settlement (deadline).
- * 3. Assert: the unsafe tool's marker file shows AT MOST one execution
- *    across both processes; the unsafe tool's result entry is an error
- *    carrying the `interrupted` diagnostic (visible state, not a silent
- *    re-execution); the safe tool re-executed (recorded, fine); the
- *    submission completes with exactly one final answer; view serializes.
+ * 3. Assert: NEITHER tool's marker file gained a line (at most one
+ *    execution across both processes — the no-duplicate-side-effect
+ *    invariant); both tools' result entries are errors carrying the
+ *    `restart_limit` diagnostic; the submission settles `unanswered`
+ *    reason `restart_limit` with `pi.live.runFailure.reason` matching;
+ *    `pi.live.run` is cleared; the view serializes.
  */
 
 import { appendFileSync } from "node:fs";
@@ -41,7 +49,7 @@ import {
 	fauxAssistantMessage,
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
-import { defineTool, type SubmissionId } from "@earendil-works/pi-durable";
+import { defineTool, LiveDoc, type SubmissionId } from "@earendil-works/pi-durable";
 import {
 	bootScenarioHarness,
 	marker,
@@ -61,8 +69,8 @@ const SAFE_TOOL = "safe_read";
 const TOOL_SLEEP_MS = 120_000;
 /** Marker-wait deadlines INSIDE the driver (fail loud, never hang). */
 const SETTLE_DEADLINE_MS = 30_000;
-/** The final answer the verify pass's fresh provider serves. */
-const RECOVERED_ANSWER = "recovered final answer after mid-tool kill";
+/** The scripted answer a regression's continued run would serve (1.5.0: the run must end first). */
+const RECOVERED_ANSWER = "continued answer — must never be served";
 
 /** Count one execution of `tool` in its marker file (one line per run,
  * carrying the arguments so a REPLAYED execution proves it received the
@@ -183,7 +191,7 @@ async function main(): Promise<never> {
 			),
 			// Never consumed in setup (the tools block until the kill).
 			fauxAssistantMessage("unreachable final answer"),
-		]);
+		], undefined, { restartLimit: 1 });
 		const { unsafeWrite, safeRead } = scenarioTools(dir, mode);
 		opened.registry.install({
 			name: "battery-tools",
@@ -204,11 +212,17 @@ async function main(): Promise<never> {
 		return new Promise<never>(() => {});
 	}
 
-	// verify mode: reopen, resume (tool tasks recover under the replay rule),
-	// and settle the killed submission through to its final answer.
-	const opened = await bootScenarioHarness(dir, [
-		fauxAssistantMessage(RECOVERED_ANSWER),
-	]);
+	// verify mode: reopen and resume with restartLimit 1 — the cut-off
+	// tools are at the limit on the FIRST recovery, so they end with the
+	// restart_limit error result instead of running again (1.5.0). The
+	// scripted answer exists only to fail loudly if a regression lets the
+	// run continue past the cut-off round.
+	const opened = await bootScenarioHarness(
+		dir,
+		[fauxAssistantMessage(RECOVERED_ANSWER)],
+		undefined,
+		{ restartLimit: 1 },
+	);
 	const { unsafeWrite, safeRead } = scenarioTools(dir, mode);
 	opened.registry.install({
 		name: "battery-tools",
@@ -246,63 +260,76 @@ async function main(): Promise<never> {
 	const unsafeExecutions = await executionCount(dir, UNSAFE_TOOL);
 	const safeExecutions = await executionCount(dir, SAFE_TOOL);
 
-	// THE invariant: the unsafe tool executed AT MOST once across both
-	// processes (the setup pass wrote exactly one line before TOOL_RUNNING;
-	// a silent re-execution on recovery would write a second).
-	if (unsafeExecutions > 1) {
+	// THE invariant (no duplicate side effect): NEITHER tool re-executed —
+	// exactly one execution each, from the setup process (1.5.0: the
+	// cut-off tools are at the pinned restart limit, so recovery ENDS them
+	// instead of running them again).
+	if (unsafeExecutions !== 1) {
 		return verifyFailed(
-			`unsafe tool ${UNSAFE_TOOL} executed ${unsafeExecutions} times across the crash (at most one allowed)`,
+			`unsafe tool ${UNSAFE_TOOL} executed ${unsafeExecutions} times across the crash (exactly one expected — the setup pass's blocked run only)`,
 		);
 	}
-	// The safe tool MAY re-execute (fine per spec §7) — once per recovery at
-	// most; the observed count is recorded in the verified payload.
-	if (safeExecutions < 1 || safeExecutions > 2) {
+	if (safeExecutions !== 1) {
 		return verifyFailed(
-			`safe tool ${SAFE_TOOL} execution count ${safeExecutions} outside the expected 1–2`,
+			`safe tool ${SAFE_TOOL} executed ${safeExecutions} times across the crash (exactly one expected — at the restart limit even a replay-safe tool is not re-run)`,
 		);
 	}
-	// Argument fidelity: when the safe tool RE-executed, the replay must have
-	// received the ORIGINAL arguments (recovery re-runs from the durable
-	// intent checkpoint — a reconstructed/default argument set would prove
-	// the checkpoint contents wrong). Every marker line carries the note.
-	if (safeExecutions === 2) {
-		const lines = (await readFile(join(dir, `exec-${SAFE_TOOL}.count`), "utf8"))
-			.split("\n")
-			.filter((line) => line.length > 0);
-		if (lines.some((line) => line !== "lookup")) {
-			return verifyFailed(
-				`safe tool re-executed with wrong arguments (marker lines: ${JSON.stringify(lines)})`,
+
+	// Visible state for BOTH cut-off calls: each result entry must be an
+	// error carrying the `restart_limit` diagnostic (1.5.0 harness tool.js
+	// endCutOff), never a silent success-shaped result.
+	const resultErrors: string[] = [];
+	for (const tool of [UNSAFE_TOOL, SAFE_TOOL]) {
+		const result = toolResultEntry(view.entries, tool);
+		if (result === undefined) {
+			resultErrors.push(`no ${tool} tool-result entry found after recovery`);
+			continue;
+		}
+		const restartLimitDiagnostic = (result.diagnostics ?? []).find(
+			(diagnostic) => diagnostic.code === "restart_limit",
+		);
+		if (result.isError !== true || restartLimitDiagnostic === undefined) {
+			resultErrors.push(
+				`${tool} result is not a visible restart_limit error (isError=${String(result.isError)}, diagnostics=${JSON.stringify(result.diagnostics)})`,
 			);
 		}
 	}
-
-	// Visible state for the unsafe call: its result entry must be an error
-	// carrying the `interrupted` diagnostic (harness tool.js settles a
-	// non-replayed recovery as failed with that code), never a silent
-	// success-shaped result.
-	const unsafeResult = toolResultEntry(view.entries, UNSAFE_TOOL);
-	if (unsafeResult === undefined) {
-		return verifyFailed(
-			`no ${UNSAFE_TOOL} tool-result entry found after recovery`,
-		);
-	}
-	const interrupted = (unsafeResult.diagnostics ?? []).find(
-		(diagnostic) => diagnostic.code === "interrupted",
-	);
-	if (unsafeResult.isError !== true || interrupted === undefined) {
-		return verifyFailed(
-			`unsafe tool result is not a visible interrupted error (isError=${String(unsafeResult.isError)}, diagnostics=${JSON.stringify(unsafeResult.diagnostics)})`,
-		);
+	if (resultErrors.length > 0) {
+		return verifyFailed(resultErrors.join("; "));
 	}
 
-	// The conversation completed out of recovery with exactly one final
-	// answer (the tool-call entry has stopReason "toolUse" and does not count).
+	// 1.5.0: the round's tools ended restart_limited; the generation then
+	// either fails the run (`pi.live.runFailure`) or CONTINUES it from the
+	// round's error results (the model may answer from the errors — both are
+	// upstream-legitimate; the task-level interruption and the visible
+	// restart_limit results are the settled 1.5.0 semantics). The wait may
+	// resolve a beat before the run-ending commit publishes — poll live.
+	let liveAfter = view.docs["pi.live"] as
+		| { run?: unknown; runFailure?: { reason?: string } }
+		| undefined;
+	const liveDeadline = Date.now() + SETTLE_DEADLINE_MS;
+	for (;;) {
+		const runEnded = liveAfter?.run === undefined;
+		if (runEnded) break;
+		if (Date.now() > liveDeadline) {
+			return verifyFailed(
+				`pi.live.run never cleared after the restart-limited round settled (stuck busy; live: ${JSON.stringify(liveAfter)})`,
+			);
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		liveAfter = (await opened.harness.snapshot(
+			LiveDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		)) as { run?: unknown; runFailure?: { reason?: string } } | undefined;
+	}
 	const finalAnswers = assistantMessages(view.entries).filter(
 		(message) => message.stopReason === "stop",
 	);
-	if (settled.status !== "done" || finalAnswers.length !== 1) {
+	const runFailureReason = liveAfter?.runFailure?.reason;
+	if (settled.status !== "done" && runFailureReason === undefined) {
 		return verifyFailed(
-			`expected the recovered conversation to complete with one final answer (status=${settled.status}, finalAnswers=${finalAnswers.length})`,
+			`the restart-limited run neither answered nor recorded a runFailure (status=${settled.status}${settled.status === "unanswered" ? ` reason=${settled.reason}` : ""}, live: ${JSON.stringify(liveAfter)})`,
 		);
 	}
 	if (serialized.length === 0) {
@@ -312,10 +339,15 @@ async function main(): Promise<never> {
 	await opened.harness.close(BACKGROUND_CONTEXT);
 	return verified({
 		settledStatus: settled.status,
+		...(settled.status === "unanswered"
+			? { reason: (settled as { reason?: string }).reason }
+			: {}),
+		runFailureReason,
+		runCleared: liveAfter?.run === undefined,
 		unsafeExecutions,
 		safeExecutions,
-		unsafeInterrupted: interrupted !== undefined,
-		interruptedMessage: interrupted?.message,
+		unsafeRestartLimited: true,
+		safeRestartLimited: true,
 		finalAnswers: finalAnswers.length,
 		entries: view.entries.length,
 	});
