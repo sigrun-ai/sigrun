@@ -46,7 +46,7 @@ import { registerAuthPipeline } from "./auth/pipeline.js";
 import { isLoopbackHost } from "./auth/loopback.js";
 import type { ServerContext } from "./context.js";
 import { SseRegistry } from "./sse-registry.js";
-import { storeAgentChange } from "./helpers.js";
+import { listModels, storeAgentChange } from "./helpers.js";
 import { registerCoreOwnershipParticipant } from "./ownership.js";
 import { createJobsView } from "./core-views/jobs.js";
 import { createSkillsView } from "./core-views/skills.js";
@@ -400,6 +400,7 @@ export async function createServer(
 		createJobsView({
 			jobs: opened.jobs,
 			now: () => new Date(),
+			models: () => listModels(opened).map((m) => ({ id: m.id, label: m.name })),
 			accessPrincipal: (principal) =>
 				accessPrincipalOf(principal, opened.identity.users),
 		}),

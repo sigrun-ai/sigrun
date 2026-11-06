@@ -1020,3 +1020,143 @@ describe("core/jobs details + provenance", () => {
 		expect(inputBlock).toBeDefined();
 	});
 });
+
+// ─── New job (jobs-editor Task 3) ──────────────────────────────────────────
+
+describe("core/jobs New job (the form + createJob)", () => {
+	test("New job opens the form: selected, no Job not found, seeded /form", async () => {
+		const { app, alice } = await bootServer();
+		const rendered = await view(app, alice, { edit: true });
+		expect(rendered.status).toBe(200);
+		const root = rendered.json.tree.root;
+		expect(root.selection.selected).toBe(true);
+		expect(root.empty).toBeUndefined();
+		// No "Job not found" empty state anywhere in the main column.
+		const texts = findBlocks(root.main, "markdown").map((b) => b.text);
+		expect(texts).not.toContain("Job not found");
+		// The form block (validateTree requires its id; both channels
+		// default the label to "Submit" — the form pins "Create").
+		const form = findBlock(root.main, "form");
+		expect(form).toBeDefined();
+		expect(form?.id).toBe("job-form");
+		expect(form?.bind).toBe("/form");
+		expect(form?.onSubmit).toBe("createJob");
+		expect(form?.submitLabel).toBe("Create");
+		// The seeded form values ride the data document.
+		const data = rendered.json.data as Record<string, any>;
+		expect(data.form).toEqual({
+			name: "",
+			description: "",
+			scheduleType: "cron",
+			schedule: "",
+			timezone: "",
+			prompt: "",
+			model: "default",
+			thinking: "default",
+			enabled: true,
+		});
+		// Model options: Default first, the faux provider's model present.
+		expect(data.modelOptions[0]).toEqual({ id: "default", label: "Default" });
+		expect(data.modelOptions).toContainEqual(
+			expect.objectContaining({ id: "faux/m" }),
+		);
+		// The page's New job action navigates {edit: true}.
+		const jobNew = (root.actions ?? []).find(
+			(action: any) => action.id === "job-new",
+		);
+		expect(jobNew).toBeDefined();
+		expect(jobNew.label).toBe("New job");
+		expect(jobNew.action).toEqual({
+			type: "navigate",
+			params: { edit: true },
+		});
+		assertActionBlocksValid(root);
+	});
+
+	test("createJob creates an api job owned by the caller and navigates to it", async () => {
+		const { app, alice } = await bootServer();
+		const json = await act(
+			app,
+			alice,
+			"createJob",
+			{
+				values: {
+					name: "acme-created",
+					description: "made in the view",
+					scheduleType: "every",
+					schedule: "15m",
+					prompt: "say ok",
+					model: "default",
+					thinking: "default",
+					enabled: true,
+				},
+			},
+			{ edit: true },
+		);
+		expect(json.status).toBe(200);
+		expect(json.json.ok).toBe(true);
+		expect(json.json.toast).toBe("Created acme-created");
+		const jobId = json.json.navigate.params.job as string;
+		expect(jobId.startsWith("api:")).toBe(true);
+		const fetched = await call(app, "GET", `/v1/jobs/${encodeURIComponent(jobId)}`, alice);
+		expect(fetched.status).toBe(200);
+		expect(fetched.json.job.owner).toBe("alice");
+		expect(fetched.json.job.action.conversation).toBe("new");
+		expect(fetched.json.job.description).toBe("made in the view");
+	});
+
+	test("createJob field errors come back field-scoped", async () => {
+		const { app, alice } = await bootServer();
+		const json = await act(
+			app,
+			alice,
+			"createJob",
+			{
+				values: {
+					name: "acme-bad-cron",
+					scheduleType: "cron",
+					schedule: "0 25 * * *",
+					prompt: "say ok",
+					model: "default",
+					thinking: "default",
+					enabled: true,
+				},
+			},
+			{ edit: true },
+		);
+		expect(json.status).toBe(200);
+		expect(json.json.ok).toBe(false);
+		expect(json.json.error.field).toBe("schedule");
+	});
+
+	test("an anonymous caller cannot create", async () => {
+		const { app } = await bootServer();
+		// Over HTTP an anonymous caller is a 401 at the auth pipeline, so
+		// this asserts the DEF's own admission rule (the file's
+		// "anonymous principals" pattern).
+		const def = app.surfaces.coreViewDefs.find((one) => one.id === "jobs");
+		expect(def).toBeDefined();
+		const result = await def!.actions?.createJob(
+			{
+				principal: {
+					user: undefined,
+					admin: false,
+					service: false,
+					method: "token" as const,
+				},
+				params: { edit: true },
+				key: "anon",
+				signal: new AbortController().signal,
+			},
+			{
+				values: {
+					name: "acme-anon",
+					scheduleType: "every",
+					schedule: "15m",
+					prompt: "say ok",
+				},
+			},
+		);
+		expect(result).toEqual({ ok: false, error: { message: "forbidden" } });
+	});
+});

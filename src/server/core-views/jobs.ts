@@ -49,6 +49,13 @@ import type {
 import type { JobsService } from "../../jobs/index.js";
 import { jobAccess } from "../jobs-access.js";
 import { isSuperuser } from "../auth/principal.js";
+import {
+	createSpecOf,
+	emptyForm,
+	formValuesOf,
+	jobFormFields,
+	type JobFormData,
+} from "./jobs-form.js";
 
 /** The runs page size and the revisions page size (the plan refinement). */
 export const PAGE_SIZE = 25;
@@ -138,10 +145,20 @@ interface MainData {
 	};
 }
 
+/** One model picker option (Default first, id "default"). */
+interface ModelOption {
+	readonly id: string;
+	readonly label: string;
+}
+
 /** The whole data document the tree binds against. */
 interface JobsViewData {
 	readonly jobs: readonly JobRow[];
 	readonly main: MainData;
+	/** The New job form's seeded values (bind target `/form`). */
+	readonly form: JobFormData;
+	/** The model choice's options (the `{$: "/modelOptions"}` binding). */
+	readonly modelOptions: readonly ModelOption[];
 }
 
 /** The view's params (spec §7.3: JSON, size-capped by the route). */
@@ -150,6 +167,8 @@ interface JobsViewParams {
 	readonly revision?: number;
 	readonly revCursor?: number;
 	readonly runCursor?: string;
+	/** New-job form (jobs-editor Task 3): the form branch of the main column. */
+	readonly edit?: true;
 }
 
 /** A schedule's summary text (the JobsPanel rule, verbatim). */
@@ -231,7 +250,9 @@ function paramsOf(params: JsonObject): JobsViewParams {
 		revision?: number;
 		revCursor?: number;
 		runCursor?: string;
+		edit?: true;
 	} = {};
+	if (params.edit === true) out.edit = true;
 	if (typeof params.job === "string" && params.job !== "") out.job = params.job;
 	if (Number.isInteger(params.revision) && (params.revision as number) > 0) {
 		out.revision = params.revision as number;
@@ -289,6 +310,7 @@ async function readData(
 	jobs: JobsService,
 	principal: AccessPrincipal,
 	params: JobsViewParams,
+	models: () => readonly ModelOption[],
 ): Promise<JobsViewData> {
 	const rows: JobRow[] = [];
 	let selected: (Omit<JobWire, "access"> & { access: Access }) | undefined;
@@ -313,7 +335,8 @@ async function readData(
 		runs: { items: [], hasMore: false, nextRunCursor: null },
 		revisions: { items: [], hasMore: false, nextRevCursor: null },
 	};
-	if (selected === undefined) return { jobs: rows, main };
+	if (selected === undefined)
+		return { jobs: rows, main, form: emptyForm(), modelOptions: models() };
 
 	// Runs: newest first; the cursor IS a run key (opaque to clients).
 	// The service's list is bounded by the retention cap, so the view
@@ -381,7 +404,7 @@ async function readData(
 		// the fallback only satisfies the narrowing.
 		access: selected.access === "none" ? "read" : selected.access,
 	};
-	return { jobs: rows, main };
+	return { jobs: rows, main, form: emptyForm(), modelOptions: models() };
 }
 
 /** The one revision selected for the diff, plus its previous (baseline). */
@@ -403,12 +426,21 @@ function selectDiff(
 export function createJobsView(deps: {
 	jobs: JobsService;
 	now(): Date;
+	/** The model catalog as picker entries (jobs-editor Task 3):
+	 *  `listModels` over the opened harness, projected to id+label. */
+	models(): readonly ModelOption[];
 	/** The directory-aware principal (groups included), wired in
 	 *  src/server/index.ts as `(p) => accessPrincipalOf(p,
 	 *  opened.identity.users)` — the same projection the routes use. */
 	accessPrincipal(principal: Principal): AccessPrincipal;
 }): SurfaceDef<"view"> {
 	const { jobs } = deps;
+	/** The model options: Default first (id "default"), then the
+	 *  catalog rows (id is the full `provider/modelId`). */
+	const modelOptions = (): readonly ModelOption[] => [
+		{ id: "default", label: "Default" },
+		...deps.models(),
+	];
 
 	/** The caller's directory-aware principal (undefined user = anonymous).
 	 *  Whole-branch review I3: the USERLESS SUPERUSER (the naive
@@ -505,7 +537,21 @@ export function createJobsView(deps: {
 		// Blocks are built as loose JSON objects (the validator owns the
 		// wire shape; the service validates every tree before serving).
 		const main: Record<string, unknown>[] = [];
-		if (data.main.found && data.main.job !== null) {
+		if (params.edit === true) {
+			// The New job form (jobs-editor Task 3): resolved BEFORE the
+			// found/not-found fallback — an unknown `job` param never
+			// shows "Job not found" while the form is open. The values
+			// ride the data document at `/form` (the bind target).
+			main.push({
+				type: "form",
+				id: "job-form",
+				bind: "/form",
+				mode: "submit",
+				onSubmit: "createJob",
+				submitLabel: "Create",
+				children: jobFormFields("prompt"),
+			});
+		} else if (data.main.found && data.main.job !== null) {
 			const job = data.main.job;
 			// IMPORTANT 3 (review fix): per-run conversation buttons ride
 			// the card's `actions` as per-row LITERALS. The block contract's
@@ -743,11 +789,21 @@ export function createJobsView(deps: {
 			...tree,
 			root: {
 				...tree.root,
+				// The New job affordance renders for ANY identified caller
+				// (createJob admits via callerOf; the form itself is inert).
+				actions: [
+					{
+						id: "job-new",
+						label: "New job",
+						icon: "add",
+						action: { type: "navigate", params: { edit: true } },
+					},
+				],
 				selection: {
-					selected: params.job !== undefined,
+					selected: params.job !== undefined || params.edit === true,
 					back: {},
 				},
-				...(data.main.found
+				...(data.main.found || params.edit === true
 					? {}
 					: {
 							empty: {
@@ -798,7 +854,7 @@ export function createJobsView(deps: {
 				return { tree: noneTree(), data: {}, access: "none" };
 			}
 			const params = paramsOf(ctx.params);
-			const data = await readData(jobs, caller, params);
+			const data = await readData(jobs, caller, params, modelOptions);
 			const revisions =
 				params.job === undefined || !data.main.found
 					? []
@@ -826,7 +882,7 @@ export function createJobsView(deps: {
 			const caller = callerOf(ctx);
 			if (caller === undefined) return { data: {}, access: "none" };
 			const params = paramsOf(ctx.params);
-			const data = await readData(jobs, caller, params);
+			const data = await readData(jobs, caller, params, modelOptions);
 			return {
 				// SAFETY: same JSON-mirror cast as `render`'s (the comment there).
 				data: data as unknown as SurfaceRenderResult["data"],
@@ -834,6 +890,43 @@ export function createJobsView(deps: {
 			};
 		},
 		actions: {
+			// The New job form's submit (jobs-editor Task 3): callerOf
+			// admission (anonymous non-superuser → forbidden; the userless
+			// superuser creates with an undefined owner, matching
+			// POST /v1/jobs), then the form-owned spec assembly. Field
+			// errors come back field-scoped so the channels mark the field.
+			createJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const caller = callerOf(ctx);
+				if (caller === undefined) {
+					return { ok: false, error: { message: "forbidden" } };
+				}
+				const assembled = createSpecOf(formValuesOf(payload));
+				if (!assembled.ok) {
+					return {
+						ok: false,
+						error: { message: assembled.message, field: assembled.field },
+					};
+				}
+				let created;
+				try {
+					created = await jobs.createApi(assembled.spec, caller.user);
+				} catch (error) {
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return {
+					ok: true,
+					toast: `Created ${assembled.spec.name}`,
+					navigate: { type: "navigate", params: { job: created.id } },
+				};
+			},
 			// The sidebar row's drill-in (review Critical 2): the `edit`
 			// activation carries {itemId} = the row's id — the JOB id, the
 			// collection rows' own `id` field (the channels derive item ids

@@ -1,0 +1,278 @@
+/**
+ * Jobs-editor Task 3: the pure form logic behind the jobs view's
+ * "New job" form — the values shape, the field list, the submit
+ * envelope read, and the spec assembly. No I/O here: `jobs.ts` owns
+ * the surface (the `{edit: true}` params branch, the `createJob`
+ * action) and this module owns the form's content.
+ *
+ * - `JobFormData.model`/`thinking` carry `"default"` (NOT `""`) — it
+ *   is the choice field's option id AND the omission sentinel
+ *   (`createSpecOf` drops the spec keys for it).
+ * - The schedule is wholly form-owned: `scheduleType` picks the shape
+ *   (`{cron, timezone?}` / `{every}` / `{at}`) and `schedule` carries
+ *   the single text value; `timezone` rides cron only.
+ * - New jobs are prompt-only with `conversation: "new"` (the binding
+ *   ruling) — the kind param exists for the edit shape (Task 4), whose
+ *   field list differs only in the action column.
+ */
+
+import type { JsonObject } from "@sigrun/shared/blocks";
+import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
+import { NAME_PATTERN, validateJobSpec } from "../../jobs/spec.js";
+
+/** The form's values shape (the `/form` branch of the data document). */
+export interface JobFormData {
+	name: string;
+	description: string;
+	scheduleType: "cron" | "every" | "at";
+	schedule: string;
+	timezone: string;
+	prompt: string;
+	model: string;
+	thinking: string;
+	enabled: boolean;
+}
+
+/** The thinking choice's options ("default" labels as Default). */
+export const THINKING_OPTIONS: readonly string[] = [
+	"default",
+	"off",
+	"minimal",
+	"low",
+	"medium",
+	"high",
+	"xhigh",
+	"max",
+];
+
+/** A new job's seeded values (bound at `/form`). */
+export function emptyForm(): JobFormData {
+	return {
+		name: "",
+		description: "",
+		scheduleType: "cron",
+		schedule: "",
+		timezone: "",
+		prompt: "",
+		model: "default",
+		thinking: "default",
+		enabled: true,
+	};
+}
+
+/**
+ * An existing job's form values (the Task-4 edit seed; Task 3 creates
+ * only, but the shape ships here). Name stays editable on the field
+ * list; model/thinking absent ⇒ `"default"`.
+ */
+export function formFromJob(job: JobWire): JobFormData {
+	const schedule = job.schedule;
+	const action = job.action;
+	return {
+		name: job.name,
+		description: job.description ?? "",
+		scheduleType: "cron" in schedule ? "cron" : "every" in schedule ? "every" : "at",
+		schedule:
+			"cron" in schedule
+				? schedule.cron
+				: "every" in schedule
+					? schedule.every
+					: schedule.at,
+		timezone: "cron" in schedule ? (schedule.timezone ?? "") : "",
+		prompt: action.kind === "prompt" ? action.prompt : "",
+		model:
+			action.kind === "prompt" && action.model !== undefined
+				? action.model
+				: "default",
+		thinking:
+			action.kind === "prompt" && action.thinking !== undefined
+				? action.thinking
+				: "default",
+		enabled: job.enabled,
+	};
+}
+
+/** Whether `value` is a plain object. */
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function stringOf(value: unknown): string {
+	return typeof value === "string" ? value : "";
+}
+
+/**
+ * The submitted form values: form dispatches wrap the fields as
+ * `{values: {...}}` (the webui FormBlock contract — the `fieldOf`
+ * convention in skills.ts); a plain object resolves too. An ABSENT
+ * `enabled` reads `true` (the toggle defaults on; a disabled/absent
+ * field never rides the envelope).
+ */
+export function formValuesOf(payload: unknown): JobFormData {
+	const source = isObject(payload) && isObject(payload.values) ? payload.values : payload;
+	const record = isObject(source) ? source : {};
+	const scheduleType = record.scheduleType;
+	return {
+		name: stringOf(record.name),
+		description: stringOf(record.description),
+		scheduleType:
+			scheduleType === "every" || scheduleType === "at" ? scheduleType : "cron",
+		schedule: stringOf(record.schedule),
+		timezone: stringOf(record.timezone),
+		prompt: stringOf(record.prompt),
+		model: stringOf(record.model) || "default",
+		thinking: stringOf(record.thinking) || "default",
+		enabled: typeof record.enabled === "boolean" ? record.enabled : true,
+	};
+}
+
+/**
+ * Map a `validateJobSpec` field path onto the form's field (the
+ * field-scoped action error). Unknown paths are FORM-LEVEL (no field).
+ */
+export function formFieldOf(path: string): string | undefined {
+	switch (path) {
+		case "name":
+			return "name";
+		case "description":
+			return "description";
+		case "schedule":
+		case "schedule.cron":
+		case "schedule.every":
+		case "schedule.at":
+			return "schedule";
+		case "schedule.timezone":
+			return "timezone";
+		case "action.prompt":
+			return "prompt";
+		case "action.model":
+			return "model";
+		case "action.thinking":
+			return "thinking";
+		default:
+			return undefined;
+	}
+}
+
+/**
+ * Assemble the `JobSpec` for `createApi` from the form values, or
+ * reject with the field-scoped failure. New jobs are prompt-only with
+ * `conversation: "new"`; the `"default"` model/thinking omit the spec
+ * keys (the server default applies).
+ */
+export function createSpecOf(
+	values: JobFormData,
+): { ok: true; spec: JobSpec } | { ok: false; field: string; message: string } {
+	const schedule =
+		values.scheduleType === "every"
+			? { every: values.schedule.trim() }
+			: values.scheduleType === "at"
+				? { at: values.schedule.trim() }
+				: values.timezone.trim() === ""
+					? { cron: values.schedule.trim() }
+					: { cron: values.schedule.trim(), timezone: values.timezone.trim() };
+	const spec: JobSpec = {
+		name: values.name,
+		...(values.description.trim() === ""
+			? {}
+			: { description: values.description.trim() }),
+		schedule,
+		action: {
+			kind: "prompt",
+			prompt: values.prompt,
+			...(values.model === "default" ? {} : { model: values.model }),
+			...(values.thinking === "default" ? {} : { thinking: values.thinking }),
+			conversation: "new",
+		},
+		enabled: values.enabled,
+	};
+	const validated = validateJobSpec(spec);
+	if (!validated.ok) {
+		return {
+			ok: false,
+			field: formFieldOf(validated.field) ?? validated.field,
+			message: validated.message,
+		};
+	}
+	return { ok: true, spec: validated.spec };
+}
+
+/**
+ * The form's field list (the same for new and edit; Name stays
+ * editable). For `kind: "task"` the prompt/model/thinking fields are
+ * omitted (a task job names a task id instead — Task 4's edit shape).
+ */
+export function jobFormFields(kind: "prompt" | "task"): JsonObject[] {
+	const fields: JsonObject[] = [
+		{
+			type: "text",
+			name: "name",
+			label: "Name",
+			required: true,
+			pattern: NAME_PATTERN.source,
+			help: "lowercase letters, digits, dot, dash, underscore",
+		},
+		{
+			type: "text",
+			name: "description",
+			label: "Description",
+		},
+		{
+			type: "choice",
+			name: "scheduleType",
+			label: "Schedule type",
+			options: [
+				{ id: "cron", label: "Cron" },
+				{ id: "every", label: "Every" },
+				{ id: "at", label: "Once" },
+			],
+		},
+		{
+			type: "text",
+			name: "schedule",
+			label: "Schedule",
+			required: true,
+			help: "Cron: 0 9 * * 1-5 · Every: 15m or 2h (60s minimum) · Once: an ISO date-time",
+		},
+		{
+			type: "text",
+			name: "timezone",
+			label: "Timezone",
+			help: "Cron only, e.g. America/Toronto; empty = server timezone",
+		},
+	];
+	if (kind === "prompt") {
+		fields.push(
+			{
+				type: "longtext",
+				name: "prompt",
+				label: "Prompt",
+				required: true,
+				syntax: "markdown",
+				rows: 10,
+			},
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: { $: "/modelOptions" },
+			},
+			{
+				type: "choice",
+				name: "thinking",
+				label: "Thinking",
+				options: THINKING_OPTIONS.map((level) => ({
+					id: level,
+					label: level === "default" ? "Default" : level,
+				})),
+			},
+		);
+	}
+	fields.push({
+		type: "toggle",
+		name: "enabled",
+		label: "Enabled",
+		default: true,
+	});
+	return fields;
+}

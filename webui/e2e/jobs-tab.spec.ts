@@ -99,3 +99,53 @@ test("Jobs tab: create a job via POST /v1/jobs, select it, Run now, see the run 
 		await context.close();
 	}
 });
+
+test("New job: fill the form, create, land on the job", async ({
+	browser,
+}) => {
+	const context = await browser.newContext({
+		extraHTTPHeaders: { "x-sigrun-user": "tester" },
+	});
+	const page = await context.newPage();
+	try {
+		await page.goto(server.url);
+		const railTab = page.locator('[data-rail-section="jobs"]');
+		await expect(railTab).toBeVisible();
+		await railTab.click();
+		await expect(page).toHaveURL(/#\/ext\/core\/jobs/);
+
+		// New job → the form (params {edit:true}).
+		await page.getByRole("button", { name: "New job" }).click();
+		await expect(page).toHaveURL(/edit/);
+		await page.getByRole("textbox", { name: "Name" }).fill("acme-e2e-job");
+		// Every-style schedule is the shortest valid one to type.
+		await page.getByRole("radio", { name: "Every" }).check();
+		await page.getByRole("textbox", { name: "Schedule" }).fill("15m");
+		await page.getByRole("textbox", { name: "Prompt" }).fill("say ok");
+		await page.getByRole("button", { name: "Create" }).click();
+
+		// The accepted result navigates to the created job: its name in the
+		// main column and its id in the URL params.
+		const main = page.locator('[data-page-region="main"]');
+		await expect(main).toContainText("acme-e2e-job");
+		await expect(page).toHaveURL(/api(%3A|:)/);
+	} finally {
+		await context.close();
+	}
+});
+
+test("New job at phone width shows the form", async ({ browser }) => {
+	const context = await browser.newContext({
+		viewport: { width: 390, height: 844 },
+		extraHTTPHeaders: { "x-sigrun-user": "tester" },
+	});
+	const page = await context.newPage();
+	try {
+		// At phone width the rail hides — route to the jobs tab directly.
+		await page.goto(`${server.url}/#/ext/core/jobs`);
+		await page.getByRole("button", { name: "New job" }).click();
+		await expect(page.getByRole("textbox", { name: "Name" })).toBeVisible();
+	} finally {
+		await context.close();
+	}
+});
