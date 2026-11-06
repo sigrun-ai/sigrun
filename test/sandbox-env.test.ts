@@ -160,12 +160,12 @@ describe("SandboxedExecutionEnv workspace operations", { timeout: 30_000 }, () =
 		expect((client as unknown as { openHandles(): number }).openHandles()).toBe(0);
 	});
 
-	test("forwards watcher changes and omits listFiles on pi-durable 1.3.0", async () => {
+	test("forwards watcher changes and omits listFiles on pi-durable 1.5.0", async () => {
 		const { env } = await envFor();
 		expect(env.listFiles).toBeUndefined();
 		const changes: string[][] = [];
 		const watcher = getOrThrow(await env.watch([{ path: "." }], (change) => {
-			if ("paths" in change) changes.push(change.paths);
+			if (change.kind === "paths") changes.push(change.paths);
 		}, context));
 		expect(watcher.mode).toBe("native");
 		await new Promise((resolve) => setTimeout(resolve, 50));

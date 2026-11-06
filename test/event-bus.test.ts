@@ -1,7 +1,7 @@
 /**
  * Memory-seam Task 2: the event bus — commit observation + side lane.
  *
- * `EventBus` subscribes to pi-durable's `Session.subscribeCommits` (the
+ * `EventBus` subscribes to pi-durable's `harness observeCommits` (the
  * harness IS a Session) and reduces each `CommitPublication` into settled
  * runs (`SettleGroup`) and conversation lifecycle events, delivering them
  * through one bounded drain loop.
