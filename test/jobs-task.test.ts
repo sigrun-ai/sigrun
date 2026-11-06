@@ -343,6 +343,12 @@ describe("the schedule task on durable sleeps", () => {
 		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
 		expect(record?.state).toBe("waiting");
 		expect(record?.nextRun).toBe(new Date(firstAt).toISOString());
+		// The patchJob sentinel never reaches a live record: the seed's
+		// discriminator key exists only on a fresh creation, and this record
+		// was loaded, not created (docs.ts `__patchJobSentinel`).
+		expect(
+			(record as Record<string, unknown>)["__patchJobSentinel"],
+		).toBeUndefined();
 		// The checkpoint is the durable `due` continuation.
 		const taskRecord = await rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
 		expect(taskRecord?.state.status).toBe("sleeping");
