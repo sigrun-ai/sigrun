@@ -289,9 +289,11 @@ export async function readView(conversation: Conversation) {
 	// Temporary Task 1 shape: the 1.5.0 watch replaces viewState; Task 2
 	// replaces this with conversation-watch routing.
 	const watch = await conversation.watch(BACKGROUND_CONTEXT);
-	const view = serializeConversationView(watch.value);
-	await watch.stop();
-	return view;
+	try {
+		return serializeConversationView(watch.value);
+	} finally {
+		await watch.stop();
+	}
 }
 
 /**

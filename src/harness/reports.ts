@@ -47,19 +47,18 @@ function field(name: string, value: unknown): string {
 
 /** Format one report without exposing transcript content or ordinary stacks. */
 function formatReport(report: Report): string {
-	const info = report as ReportInfo;
 	const fields: Array<readonly [name: string, value: unknown]> = [];
-	if ("task" in info && info.task !== undefined) {
-		fields.push(["task", info.task.id], ["kind", info.task.kind], ["conversation", info.task.conversationId]);
+	if ("task" in report && report.task !== undefined) {
+		fields.push(["task", report.task.id], ["kind", report.task.kind], ["conversation", report.task.conversationId]);
 	}
-	if ("extension" in info && info.extension !== undefined) {
-		fields.push(["extension", info.extension]);
+	if ("extension" in report && report.extension !== undefined) {
+		fields.push(["extension", report.extension]);
 	}
-	if ("conversationId" in info && info.conversationId !== undefined) {
-		fields.push(["conversation", info.conversationId]);
+	if ("conversationId" in report && report.conversationId !== undefined) {
+		fields.push(["conversation", report.conversationId]);
 	}
-	if ("callback" in info) fields.push(["callback", info.callback]);
-	if ("reason" in info) fields.push(["reason", info.reason]);
+	if ("callback" in report) fields.push(["callback", report.callback]);
+	if ("reason" in report) fields.push(["reason", report.reason]);
 	fields.push(["message", errorMessage(report.error).slice(0, MESSAGE_LIMIT)]);
 	if (report.kind === "storage_failed" && report.error instanceof Error && report.error.stack !== undefined) {
 		fields.push(["stack", report.error.stack]);

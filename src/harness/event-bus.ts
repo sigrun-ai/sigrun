@@ -3,7 +3,7 @@
  * side lane + idle detection + shutdown sequencing. See the memory-seam
  * spec §"Design".
  *
- * The bus subscribes to pi-durable's `Session.subscribeCommits` (sigrun's
+ * The bus subscribes to pi-durable's `Session.observeCommits` (sigrun's
  * harness IS a Session) and reduces each `CommitPublication` into the
  * memory seam's host events — settled-run groups and conversation
  * lifecycle — without touching run logic. The upstream listener contract
@@ -13,10 +13,10 @@
  * deadline-bounded (`Promise.race` against `hookDeadlineMs`), rejections
  * are caught + logged, and overflow drops the OLDEST queued event.
  *
- * Detection rules (verified against pi-durable 1.2.0's publication shapes
+ * Detection rules (verified against pi-durable 1.5.0's publication shapes
  * — table changes are the raw `StorageWrite` records; document changes are
  * `DocumentCommitChange`s whose `record.createdAt === publication.seq`
- * marks creation, `value === null` marks retirement):
+ * marks creation, the tagged `kind === "retire"` marks retirement):
  *
  * - **Settle**: a `submission` table write with `value.type === "input"`
  *   and a terminal status (`done`/`unanswered`). Write-type submissions

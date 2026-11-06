@@ -33,7 +33,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TaskId, TaskInspection } from "@earendil-works/pi-durable";
+import type { TaskInspection } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../context.js";
 import { SessionMetaDoc } from "../session-meta.js";

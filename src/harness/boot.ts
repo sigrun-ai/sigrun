@@ -2402,7 +2402,7 @@ export async function openHarness(
 	// the counter feeds `sigrun_job_runs_total{outcome}`). A creation
 	// write of an already-settled run (the overlap skip, the catch-up
 	// skip) counts once at creation; a `running` run counts at its settle;
-	// prune retirements (value null) never count.
+	// prune retirements (tagged `kind === "retire"`) never count.
 	const jobRunTotals = new Map<string, number>();
 	harness.observeCommits({
 		advance: (publication) => {
