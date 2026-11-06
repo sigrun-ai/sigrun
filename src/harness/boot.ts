@@ -1131,7 +1131,13 @@ export async function openHarness(
 			});
 		}
 		const opened = await openNodeSqliteStorage(config.storagePath);
-		await writeDurableVersionMarker(config.storagePath);
+		try {
+			await writeDurableVersionMarker(config.storagePath);
+		} catch (error) {
+			// A failed stamp must not leak the open storage handle.
+			await opened.close(BACKGROUND_CONTEXT).catch(() => {});
+			throw error;
+		}
 		return opened;
 	})();
 	const registry = createRegistry();

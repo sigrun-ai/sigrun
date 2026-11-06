@@ -150,6 +150,8 @@ export async function snapshotBeforeMigration(
 }
 
 /** Compare two `major.minor[.patch]` versions by their minor. */
+const MARKER_VERSION = /^(\d+)\.(\d+)(?:\.(\d+))?/;
+
 function minorIsOlder(version: string, running: string): boolean {
 	const parse = (v: string): [number, number] | undefined => {
 		const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(v.trim());
@@ -197,7 +199,11 @@ export async function snapshotBeforeDurableUpgrade(
 	} catch {
 		marked = undefined;
 	}
-	if (marked !== undefined && !minorIsOlder(marked, DURABLE_PACKAGE_VERSION)) {
+	if (
+		marked !== undefined &&
+		MARKER_VERSION.test(marked) &&
+		!minorIsOlder(marked, DURABLE_PACKAGE_VERSION)
+	) {
 		return undefined;
 	}
 
@@ -215,6 +221,16 @@ export async function snapshotBeforeDurableUpgrade(
 		try {
 			db.exec(`VACUUM INTO ${sqlString(snapshotPath)}`);
 		} catch (error) {
+			// A non-database file defers to the real storage opener, whose
+			// error reports the underlying problem better than a snapshot
+			// guard's skip-env hint (the same deferral snapshotBeforeMigration
+			// makes for its schema probe).
+			if (messageOf(error).includes("file is not a database")) {
+				opts.log(
+					`sigrun: durable upgrade snapshot skipped; ${storagePath} is not a database: ${messageOf(error)}`,
+				);
+				return undefined;
+			}
 			throw new MigrationSnapshotError(
 				`could not snapshot ${storagePath} to ${snapshotPath} before the pi-durable ${marked ?? "unmarked"} → ${DURABLE_PACKAGE_VERSION} upgrade: ${messageOf(error)}; set ${SKIP_MIGRATION_SNAPSHOT_ENV}=1 only when you have an independent backup`,
 				{ cause: error },
