@@ -5,7 +5,7 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.9.0] - 2026-11-05
 
 ### Added
 
@@ -125,109 +125,6 @@ fresh-eyes clean-room install verification.
 ### Changed
 
 - Release-pin bump to 0.6.1 (root, shared, tui, sandbox platform packages, chart appVersion, compose defaults).
-
-## [Unreleased]
-
-### Added
-- **Core notices** — a per-user message channel with buttons. An
-  extension posts a short notice to ONE directory user through
-  `host.notices` (`post`/`clear`/`list`); `noticeActions` on the factory
-  result declares the handlers its `extension` buttons may name. A
-  notice is title + body + up to three actions (`navigate`, `open` —
-  https only, `extension`), bounded by `NOTICE_LIMITS` and capped at 10
-  per extension / 50 per user. Nothing expires on a timer: a notice
-  clears on its ✕, the user's next prompt in that conversation, a
-  navigate/open button, a successful extension action, Clear all, the
-  posting extension's `clear`, or eviction past a cap. Nobody but the
-  addressed user ever sees one (a foreign id answers 404, never 403),
-  forks never copy them, and a revoked share drops that conversation's
-  notices on the next read. `GET /v1/notices`,
-  `POST /v1/notices/{id}/dismiss`, `POST /v1/notices/dismiss-all`,
-  `POST /v1/notices/{id}/actions/{actionId}`, and the user-only
-  `notice.changed` event. Store: `<dataDir>/users/<user>/notices.json`
-  (inside the `data` backup section).
-- **Notices UI** — a bell with a count on every tab (rail on desktop,
-  tab header on phones), a notices pane that docks on Chats and slides
-  over every other tab, an inline stack above the composer (at most
-  three, then "N more"), and a 6 s peek that never takes focus. The TUI
-  gains an inline line, a status-bar count, and an overlay
-  (`ctrl+g` / `gN` / `M-N`).
-- **Ambient buttons work (webui).** The webui's ambient renderer now
-  dispatches `navigate` and `open` actions (links open with
-  `rel="noopener noreferrer"`) instead of dropping them. The TUI's
-  ambient dispatcher is wired the same way but has no production caller
-  yet.
-- **Views are tabs (webui).** The webui shell registers views as rail
-  tabs with remembered routes; the chat view keeps the conversation
-  list and right panel to itself. Below the tablet breakpoint a phone
-  bottom tab bar (with a More sheet) replaces the rail.
-- **`page.selection`** — a server-declared, presentation-only
-  list-first drill-in for compact widths (`{selected, back}` on a
-  `page`; webui and TUI render it, `toText` ignores it).
-- **Core views.** Core attaches its own view surfaces under the
-  reserved `core` slug and lists them as `coreViews` (one
-  `CoreViewInfo {id, title, icon, refreshMs?}` per view) on
-  `/v1/extensions` and `/v1/meta`; they are never `extensions[]` rows,
-  so the health dot is unaffected. `job.changed` now bumps every
-  rendered core/jobs instance.
-- **The Jobs tab** (`core/jobs`): the jobs surface as a core blocks
-  view — sidebar of the caller-visible jobs, drill-in with summary,
-  paged runs and revisions (a selected revision diffs its spec JSON
-  against the previous one), Run now / Reset state for write access,
-  and per-row navigation into a run's conversation. The Jobs panel is
-  gone.
-- **The Skills tab** (`core/skills`): every skill root the deployment
-  serves — Workspace / Learned / Config dir (the deployment-wide
-  `<config-dir>/skills/`, read-only) / one group per installed package
-  (`· <pkg>`, with a per-row package badge) / Deleted — with shadowing visible, owned-skill CRUD, per-skill git
-  history (25 entries per page, per-file diffs, restore), deleted-skill
-  restore, and per-user overlays as the only write to the read-only
-  shared roots. Some surface actions return `navigate`; the webui
-  applies that navigation, the TUI does not yet (a known channel gap).
-- **Every-root skill discovery** (`src/skills/roots.ts`): workspace,
-  learned, user dir, and every installed package's skills listed in one
-  pass, with precedence/shadowing resolution and symlink-safe reads.
-- **GitHistory** (`src/history/git.ts`) — isolated local git for
-  sigrun-owned history stores: execFile with explicit `--git-dir` /
-  `--work-tree`, a hermetic git env, per-repo locking, and fail-soft
-  writes (a broken repo is quarantined aside and re-initialized;
-  mutations never fail because history did).
-- **Curation stores on git** (Task 9): each user's learned skills,
-  overlays, and curator state live in a per-user git history repo; the
-  change feed's `actor` widens to `"outside"` and its `id`/`before`/
-  `after` are commit SHAs. A once-per-process migration imports the
-  pre-git store (the legacy files are left read-only, outside the
-  repo's pathspec).
-- **Workspace skills history** (Task 10): the workspace `skills/`
-  tree gets its own per-user repo (git dir outside the work tree),
-  caught up on settled runs and tab opens; ownerless conversations
-  skip it.
-- **`perConversation` panels**: a panel surface declared with
-  `perConversation: true` attaches with
-  `params: { conversationId: <open conversation id> }` (empty params
-  while nothing is open), follows the open conversation (a switch
-  refetches the new conversation's instance and remounts the panel so a
-  late response for the previous conversation cannot land), and routes
-  `changed` events per conversation instance. The id is
-  client-supplied — the extension must check the caller's access to the
-  conversation before rendering or acting on it.
-
-### Changed
-- **The curation seal**: workspaces and grants that sit inside or
-  contain a user's `curation/` tree are rejected; boot revalidates
-  stored records and names each failing one loudly. A user whose
-  workspace was the bare user area loses agent tools until an admin
-  re-points it: `PATCH /v1/users/<u> {"workspace": "<userArea>/workspace"}`.
-  History tamper-resistance holds under active sandbox isolation; a
-  single-user install without isolation runs the agent unsandboxed
-  (the existing trust model).
-- Extension panels open from **header toggles** (one icon per declared
-  panel, beside Outline and Workspace) instead of right-panel tabs; an
-  installed panel stays closed until the user opens it.
-
-### Fixed
-- An installed extension panel no longer locks the right panel open and
-  no longer auto-opens its surface.
 
 ## [0.6.0] - 2026-11-02
 

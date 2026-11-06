@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.9.0] - 2026-11-05
+
+- `InteractionRecord` gains optional `declinable: true` and settled `declinedVia:
+  "button" | "message"` (the ask-user decline wire surface — additive, optional).
+- `InteractionDeclined` wire type beside `InteractionAnswered` (the decline route's
+  200 body).
+
 ## [0.8.0] - 2026-11-04
 
 - New `./notices` subpath: the `UserNotice*` wire types, `NOTICE_LIMITS`, and the

@@ -746,6 +746,48 @@ describe("App shell", () => {
 		).toHaveLength(0);
 	});
 
+	test("the header menu on an archived conversation offers Unarchive and un-archives it", async () => {
+		const { client, createEventSource, calls } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const openMenu = async (): Promise<void> => {
+			await act(async () => {
+				(
+					renderer.root.findByProps({ "aria-label": "more actions" })
+						.props as { onClick: () => unknown }
+				).onClick();
+			});
+		};
+		const clickArchiveItem = async (): Promise<void> => {
+			await act(async () => {
+				await (
+					renderer.root
+						.findByProps({ className: "chat-menu" })
+						.findByProps({ "data-menu-action": "archive" })
+						.props as { onClick: () => unknown }
+				).onClick();
+			});
+		};
+		const patches = (): unknown[] =>
+			calls
+				.filter((call) => call.method === "PATCH")
+				.map((call) => JSON.parse(String(call.body)));
+		await openMenu();
+		await clickArchiveItem();
+		expect(patches()).toEqual([{ archived: true }]);
+		// The active conversation is archived now: the same item reads
+		// Unarchive and sends archived:false.
+		await openMenu();
+		const item = renderer.root
+			.findByProps({ className: "chat-menu" })
+			.findByProps({ "data-menu-action": "archive" });
+		expect(item.children).toEqual(["Unarchive"]);
+		await clickArchiveItem();
+		expect(patches()).toEqual([{ archived: true }, { archived: false }]);
+		renderer.unmount();
+	});
+
 	test("the rail's Settings button opens the settings PAGE at #/settings", async () => {
 		const { client, createEventSource } = makeHarness();
 		const renderer = await renderAsync(

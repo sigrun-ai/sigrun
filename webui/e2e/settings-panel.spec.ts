@@ -322,3 +322,25 @@ test("create a token in Settings → API tokens and authenticate with it", async
 		await authed.cleanup();
 	}
 });
+
+// UI feedback 2026-11-05: the section forms read as page content, not
+// overlay leftovers — the Save button sizes to its label and fields cap
+// at a readable width on a desktop viewport.
+test("a settings form's Save is content-width and its fields cap their width", async ({ page }) => {
+	await page.setViewportSize({ width: 1440, height: 900 });
+	await page.goto(`${server.url}/#/settings/general`);
+	const settings = page.locator(".settings-page");
+	const save = settings.getByRole("button", { name: /^save$/i });
+	await expect(save).toBeVisible();
+	const form = settings.locator(".blk-form").first();
+	const saveBox = await save.boundingBox();
+	const formBox = await form.boundingBox();
+	expect(saveBox).not.toBeNull();
+	expect(formBox).not.toBeNull();
+	expect(saveBox!.width).toBeLessThan(160);
+	expect(saveBox!.width).toBeLessThan(formBox!.width / 3);
+	const model = settings.locator('[data-name="defaultModel"] input');
+	await expect(model).toBeVisible();
+	const modelBox = await model.boundingBox();
+	expect(modelBox!.width).toBeLessThanOrEqual(720);
+});

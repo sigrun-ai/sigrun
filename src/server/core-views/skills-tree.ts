@@ -146,7 +146,6 @@ export interface SkillFormData {
 	readonly name: string;
 	readonly description: string;
 	readonly body: string;
-	readonly where: "workspace" | "learned";
 }
 
 /** The view's params (spec §7.3: JSON, size-capped by the route). */
@@ -439,20 +438,11 @@ function skillActions(params: SkillsViewParams, historyAvailable: boolean, delet
 	return buttons;
 }
 
-/** The form fields (new skill vs edit: the name is read-only on an existing skill). */
+/** The form fields (new skill vs edit: the name is read-only on an
+ *  existing skill). A new skill always lands in the workspace: the
+ *  learned root is the curator's, so the form offers no choice. */
 function formFields(editingExisting: boolean): JsonObject[] {
-	const whereChoice: JsonObject = {
-		type: "choice",
-		name: "where",
-		label: "Where",
-		required: true,
-		options: [
-			{ id: "workspace", label: "Workspace" },
-			{ id: "learned", label: "Learned" },
-		],
-	};
 	return [
-		...(editingExisting ? [] : [whereChoice]),
 		{
 			type: "text",
 			name: "name",
