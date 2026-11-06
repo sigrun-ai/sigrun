@@ -1009,6 +1009,42 @@ test("a factory result with a nonexistent skill dir is quarantined", async () =>
 	}
 });
 
+test("an extension job with a 501-char description quarantines the extension", async () => {
+	// The same fail-loud contract as the other factory-result fields: an
+	// extension that THINKS it declared a job must not silently lose it.
+	const fixtureDir = await mkdtemp(join(tmpdir(), "sigrun-badjob-fixture-"));
+	const { writeFileSync } = await import("node:fs");
+	writeFileSync(
+		join(fixtureDir, "index.js"),
+		"import { defineExtension } from \"@earendil-works/pi-durable\";\n" +
+			"export default function create() {\n" +
+			"\treturn { extension: defineExtension({ name: \"sigrun-bad-job\", sections: [], tools: [] }), jobs: [{ name: \"tick\", schedule: { every: \"60s\" }, action: { kind: \"task\", task: \"prune\" }, description: \"x\".repeat(501) }] };\n" +
+		"}\n",
+	);
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-badjob-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [pathToFileURL(join(fixtureDir, "index.js")).href],
+		});
+		try {
+			const quarantined = opened.extensionOutcomes.filter(
+				(outcome) => outcome.status === "quarantined",
+			);
+			expect(quarantined).toHaveLength(1);
+			expect(quarantined[0]?.error).toContain("description");
+			const jobs = await opened.jobs.list();
+			expect(jobs.some((job) => job.id === "ext:sigrun-bad-job:tick")).toBe(false);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+		await rm(fixtureDir, { recursive: true, force: true });
+	}
+});
+
 test("the core-owned jobs slug is quarantined before install", async () => {
 	const fixtureDir = await mkdtemp(join(tmpdir(), "sigrun-jobs-slug-fixture-"));
 	const entry = join(fixtureDir, "index.js");

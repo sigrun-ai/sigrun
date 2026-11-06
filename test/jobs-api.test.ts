@@ -243,6 +243,28 @@ describe("POST/GET/PATCH/DELETE /v1/jobs — the CRUD round trip as alice", () =
 		).toBe(200);
 	});
 
+	test("create with a description serves it on the wire and in the revision", async () => {
+		const { app, alice } = await bootServer();
+		const created = await call(
+			app,
+			"POST",
+			"/v1/jobs",
+			alice,
+			promptSpec({ description: "acme digest" }),
+		);
+		expect(created.status).toBe(201);
+		expect(created.json.job.description).toBe("acme digest");
+
+		const revisions = await call(
+			app,
+			"GET",
+			`/v1/jobs/${created.json.job.id}/revisions`,
+			alice,
+		);
+		expect(revisions.status).toBe(200);
+		expect(revisions.json.revisions[0].spec.description).toBe("acme digest");
+	});
+
 	test("an unknown id is 404 job_not_found everywhere", async () => {
 		const { app, alice } = await bootServer();
 		expect(await call(app, "GET", "/v1/jobs/api:none", alice)).toMatchObject({

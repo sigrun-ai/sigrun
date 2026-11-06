@@ -8,9 +8,13 @@
  * and component-state assertions — structure, not pixels.
  */
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
+import type { JsonObject, SurfaceLoad } from "@sigrun/shared/blocks";
+import { SurfaceView } from "../src/blocks/surface-view.js";
 import { TuiApp } from "../src/ui/app.js";
+import { StatusBar } from "../src/ui/status-bar.js";
+import { plainTuiTheme } from "../src/theme.js";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
 import { Sidebar, type SidebarSelection } from "../src/ui/sidebar.js";
 import type {
@@ -62,6 +66,10 @@ function stubClient(init: {
 	/** Park createConversation until released (sampling mid-swap, A1: the
 	 * shorter refresh chain no longer spans tick() on its own). */
 	holdCreate?: { readonly promise: Promise<void> };
+	/** Task 6: a fetch handler answering the ext-view surface loads (the
+	 * stub client carries it so openExtView's transport fetches land in
+	 * tests, the settings view's fakeWire shape). */
+	fetch?: (input: RequestInfo | URL, requestInit?: RequestInit) => Promise<Response>;
 }) {
 	const submitCalls: { id: number; text: string }[] = [];
 	const forkCalls: number[] = [];
@@ -137,6 +145,11 @@ function stubClient(init: {
 		},
 		getBootMeta() {
 			return Promise.resolve({ supervised: true });
+		},
+		// The settings view's surface transports consume the client's
+		// fetch (the ext views' hub transports do too, Task 6).
+		get fetch() {
+			return init.fetch as unknown as typeof globalThis.fetch;
 		},
 	};
 	return {
@@ -801,33 +814,222 @@ describe("Extension views (UI-blocks U3 Task 5)", () => {
 		expect(selections).toEqual([{ view: { slug: "fixture-surfaces", id: "board" } }]);
 	});
 
-	test("the TuiApp opens a view in the main pane (openExtView)", async () => {
-		const { client } = stubClient({});
-		const app = new TuiApp(client, { tui: fakeTui });
-		await app.openExtView("fixture-surfaces", "board");
-		// The pane's ext-surface state renders the surface title placeholder
-		// (the block renderer is U2's; U3's pane carries the title + state).
+	/** The board view's page tree (acme job rows + a Row details action,
+	 *  so `.` opens the page's actions menu — the overlay test's menu). */
+	const BOARD_TREE: SurfaceLoad["tree"] = {
+		v: 1,
+		root: {
+			type: "page",
+			title: "Acme board",
+			actions: [
+				{ id: "act-new", label: "New job", action: { type: "submit", name: "newJob" } },
+			],
+			main: [
+				{
+					type: "collection",
+					id: "acme-jobs",
+					items: { $: "/jobs" },
+					item: { title: { $: "/name" } },
+					display: "list",
+				},
+			],
+		},
+	};
+
+	/** The board view's load payload (two acme jobs). */
+	const BOARD_DATA = {
+		jobs: [
+			{ id: "acme-a", name: "acme-nightly" },
+			{ id: "acme-b", name: "acme-cleanup" },
+		],
+	};
+
+	/** A fetch handler answering the board view's loads (params echo back
+	 *  into the data so the Esc-back-to-list test sees the swap). */
+	function boardFetch(): (input: RequestInfo | URL, requestInit?: RequestInit) => Promise<Response> {
+		const json = (body: unknown): Response =>
+			new Response(JSON.stringify(body), {
+				status: 200,
+				headers: { "content-type": "application/json" },
+			});
+		return (input, requestInit) => {
+			const url = String(input);
+			if (
+				url.includes("/v1/ext/fixture-surfaces/surfaces/board/actions") &&
+				requestInit?.method === "POST"
+			) {
+				// Every board action accepts with a toast (the notice test's
+				// notice).
+				return Promise.resolve(
+					json({ ok: true, rev: 2, toast: "acme action accepted" }),
+				);
+			}
+			if (url.includes("/v1/ext/fixture-surfaces/surfaces/board")) {
+				const params = new URL(url).searchParams.get("params");
+				const load: SurfaceLoad = {
+					tree: BOARD_TREE,
+					data: params === null
+						? BOARD_DATA
+						: { ...BOARD_DATA, params: JSON.parse(params) as JsonObject },
+					rev: 1,
+					treeRev: 1,
+					access: "write",
+				};
+				return Promise.resolve(json(load));
+			}
+			return Promise.resolve(json({ error: `unstubbed: ${url}` }));
+		};
+	}
+
+	/** An app over the board fetch, after the board view's load settles
+	 *  (the fetch's async json() spans macrotasks — flush them). */
+	async function openBoard(params?: JsonObject) {
+		const { client } = stubClient({ fetch: boardFetch() });
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watchOptions: { baseUrl: "http://app.test" },
+		});
+		await app.openExtView("fixture-surfaces", "board", params);
+		await flush();
+		return app;
+	}
+
+	/** Flush microtask + macrotask chains (the surface load's async
+	 *  response.json() resolves over event-loop turns). */
+	async function flush(): Promise<void> {
+		for (let index = 0; index < 5; index += 1) {
+			await new Promise((resolve) => setImmediate(resolve));
+		}
+	}
+
+	test("the TuiApp records the open view's identity (openExtView)", async () => {
+		const app = await openBoard();
 		expect(app.extView?.slug).toBe("fixture-surfaces");
 		expect(app.extView?.id).toBe("board");
+		expect(app.extView?.params).toEqual({});
 	});
 
-	test("Esc closes an open ext view (the keepalive stops with the view)", async () => {
-		const { client } = stubClient({});
-		const app = new TuiApp(client, { tui: fakeTui });
-		await app.openExtView("fixture-surfaces", "board");
-		expect(app.extView).toBeDefined();
-		// Esc closes the view → the conversation pane is back; a second
-		// Esc falls through (nothing open).
+	test("openExtView mounts a SurfaceView in the main content", async () => {
+		const app = await openBoard();
+		expect(app.mainContent.current).toBeInstanceOf(SurfaceView);
+		expect(app.extViewState).toBeDefined();
+		// The mounted view renders the page (the title paints).
+		expect(app.mainContent.current.render(100).join("\n")).toContain("Acme board");
+	});
+
+	test("closeExtView restores the conversation pane and disposes the state", async () => {
+		const app = await openBoard();
+		const state = app.extViewState;
+		const disposeSpy = vi.spyOn(state!, "dispose");
+		expect(app.closeExtView()).toBe(true);
+		expect(disposeSpy).toHaveBeenCalledOnce();
+		expect(app.mainContent.current).toBe(app.pane);
+		expect(app.extViewState).toBeUndefined();
+	});
+
+	test("keys route to the open view", async () => {
+		const app = await openBoard();
+		const view = app.mainContent.current;
+		const spy = vi.spyOn(view, "handleInput");
+		app.handleKeybinding("j");
+		expect(spy).toHaveBeenCalledWith("j");
+	});
+
+	test("Esc returns to the list, then closes", async () => {
+		const app = await openBoard({ job: "acme" });
+		await tick();
+		expect(app.extView?.params).toEqual({ job: "acme" });
+		// Esc with non-empty params: back to the LIST (the same view
+		// reopens with {}), still open.
+		expect(app.handleKeybinding("\x1b")).toBe(true);
+		await flush();
+		expect(app.extView?.params).toEqual({});
+		expect(app.mainContent.current).toBeInstanceOf(SurfaceView);
+		// Esc again with empty params closes the view → the pane is back.
 		expect(app.handleKeybinding("\x1b")).toBe(true);
 		expect(app.extView).toBeUndefined();
+		expect(app.mainContent.current).toBe(app.pane);
 		expect(app.handleKeybinding("\x1b")).toBe(false);
 	});
 
+	test("Esc closes the actions menu before the view", async () => {
+		const app = await openBoard();
+		// `.` opens the page's actions menu (an overlay owns Esc).
+		app.handleKeybinding(".");
+		expect(app.mainContent.current.render(100).join("\n")).toContain("New job");
+		// Esc goes to the VIEW (the menu closes; the view stays open).
+		expect(app.handleKeybinding("\x1b")).toBe(true);
+		expect(app.extView).toBeDefined();
+		expect(app.mainContent.current.render(100).join("\n")).not.toContain("New job");
+		// The menu closed, so the next Esc closes the view.
+		expect(app.handleKeybinding("\x1b")).toBe(true);
+		expect(app.extView).toBeUndefined();
+	});
+
+	test("dispose() disposes the open view's state", async () => {
+		const app = await openBoard();
+		const state = app.extViewState;
+		const disposeSpy = vi.spyOn(state!, "dispose");
+		app.dispose();
+		expect(disposeSpy).toHaveBeenCalledOnce();
+	});
+
+	test("surface notices land as pane notices", async () => {
+		const app = await openBoard();
+		const state = app.extViewState!;
+		// A rejected action's notice queues on the state; the app's
+		// onChange drains it into the pane.
+		state.dispatch({ type: "submit", name: "acmeAction" }, {});
+		await flush();
+		const rendered = app.pane.render(100).join("\n");
+		expect(rendered).toContain("[notice]");
+		expect(state.consumeNotices()).toEqual([]);
+	});
+
+	test("surface notices ALSO flash the status bar (the pane is unpainted while the view owns the slot)", async () => {
+		const app = await openBoard();
+		// A mounted status bar (the launcher's shape): the steady state
+		// snapshot must exist BEFORE the flash or #flashStatus no-ops.
+		const statusBar = new StatusBar({ theme: plainTuiTheme(), messageMs: 60_000 });
+		statusBar.set({ conversation: "acme", hints: [] });
+		app.setStatusBar(statusBar);
+		const state = app.extViewState!;
+		state.dispatch({ type: "submit", name: "acmeAction" }, {});
+		await flush();
+		// The toast flashed the bar AND still landed as a pane notice.
+		expect(statusBar.getState().message).toBe("acme action accepted");
+		expect(app.pane.render(100).join("\n")).toContain("[notice] acme action accepted");
+	});
+
+	test("params-only navigate reopens the view with those params (jobs-editor Task 7)", async () => {
+		const app = await openBoard();
+		app.extViewState!.dispatch(
+			{ type: "navigate", params: { job: "acme-a" } },
+			{},
+		);
+		await flush();
+		expect(app.extView?.slug).toBe("fixture-surfaces");
+		expect(app.extView?.id).toBe("board");
+		expect(app.extView?.params).toEqual({ job: "acme-a" });
+	});
+
+	test("a target navigate routes through navigateCoreTarget (jobs-editor Task 7)", async () => {
+		const app = await openBoard();
+		const spy = vi
+			.spyOn(app, "navigateCoreTarget")
+			.mockResolvedValue(undefined);
+		app.extViewState!.dispatch(
+			{ type: "navigate", target: { settings: "acme" } },
+			{},
+		);
+		await flush();
+		expect(spy).toHaveBeenCalledWith({ settings: "acme" });
+		spy.mockRestore();
+	});
+
 	test("a new events stream id lands on the open view's transport handle", async () => {
-		const { client } = stubClient({});
-		const app = new TuiApp(client, { tui: fakeTui });
+		const app = await openBoard();
 		app.setEventsStreamId("stream-one");
-		await app.openExtView("fixture-surfaces", "board");
 		// The reconnect: a NEW stream id must reach the OPEN view (the
 		// handle's setStreamId — the transport-level header assertion
 		// lives in ext-transport.test.ts).

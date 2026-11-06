@@ -2,8 +2,8 @@
  * The TUI's extension-surface transport (UI-blocks U3 Task 5): implements
  * the shared `SurfaceTransport` contract over the U3 routes (spec §7.2)
  * as the TUI's remote client. One transport = one surface instance
- * (slug + id + params); the wire `k` (hashed instance key) keys the
- * change-event routing in {@link ExtSurfaceHub}.
+ * (slug + id + params); the hub routes change events by (slug, id) —
+ * the wire `k` is not matched (see ExtSurfaceHub).
  *
  * Like the webui twin, every fetch carries `X-Sigrun-Stream` once the
  * launcher hands the stream id in (the watcher entry's stream);
@@ -71,13 +71,26 @@ export function transportKey(options: ExtSurfaceTransportOptions): string {
 	return instanceKey(options.params ?? {});
 }
 
+/** The surface path WITHOUT any query — suffix routes (/data, /actions,
+ *  /uploads) build from this and add their own query last (appending a
+ *  suffix after `?params=` would land after the query string — the
+ *  webui's E8 find, now the TUI's fetchData fix). */
+function surfaceBase(options: ExtSurfaceTransportOptions): string {
+	return `/v1/ext/${encodeURIComponent(options.slug)}/surfaces/${encodeURIComponent(options.id)}`;
+}
+
+/** The URL-encoded params JSON. */
+function paramsQuery(options: ExtSurfaceTransportOptions): string {
+	return encodeURIComponent(JSON.stringify(options.params ?? {}));
+}
+
 /** The base path for one surface instance (`?params=` omitted when `{}`). */
 function surfacePath(options: ExtSurfaceTransportOptions): string {
-	const base = `/v1/ext/${encodeURIComponent(options.slug)}/surfaces/${encodeURIComponent(options.id)}`;
+	const base = surfaceBase(options);
 	if (options.params === undefined || Object.keys(options.params).length === 0) {
 		return base;
 	}
-	return `${base}?params=${encodeURIComponent(JSON.stringify(options.params))}`;
+	return `${base}?params=${paramsQuery(options)}`;
 }
 
 function withQuery(path: string, key: string, value: string): string {
@@ -134,7 +147,7 @@ export function createExtSurfaceTransport(
 			return get<SurfaceLoad>(surfacePath(options));
 		},
 		fetchData(since?: number): Promise<SurfaceFetch> {
-			const path = `${surfacePath(options)}/data`;
+			const path = `${surfaceBase(options)}/data?params=${paramsQuery(options)}`;
 			return get<SurfaceFetch>(
 				since === undefined ? path : withQuery(path, "since", String(since)),
 			);
@@ -146,7 +159,7 @@ export function createExtSurfaceTransport(
 			actionId: string;
 		}): Promise<SurfaceActResult> {
 			const response = await doFetch(
-				`${baseUrl}${surfacePath(options)}/actions`,
+				`${baseUrl}${surfaceBase(options)}/actions`,
 				{
 					method: "POST",
 					headers: { ...headers(), "content-type": "application/json" },
@@ -156,7 +169,7 @@ export function createExtSurfaceTransport(
 			return (await response.json()) as SurfaceActResult;
 		},
 		async upload(body: SurfaceUploadBody): Promise<SurfaceActResult> {
-			const base = surfacePath(options);
+			const base = surfaceBase(options);
 			const path = withQuery(
 				`${baseUrl}${base}/uploads/${encodeURIComponent(body.field)}/${encodeURIComponent(body.name)}`,
 				"params",
@@ -193,19 +206,25 @@ export function createExtSurfaceTransport(
 /**
  * The change-event router (the launcher's dispatch seam): `attach`
  * creates a transport whose `onChanged` subscribes into the hub under
- * the instance's (slug, id, k); `dispatch` fans a `surface.changed`
- * event out to the matching subscriptions only.
+ * the instance's (slug, id); `dispatch` fans a `surface.changed` event
+ * out to every subscription of the event's view. The event's `k` is NOT
+ * matched: the server hashes the principal-scoped instance key (jobs /
+ * skills / curator fold the user in), which no client hash can
+ * reproduce. The server already targets the event at the streams
+ * watching that exact instance (watchers.streamsFor), so matching the
+ * view is safe; a second instance of the same view refetches once.
  */
 export class ExtSurfaceHub {
 	readonly #subscriptions = new Set<{
 		readonly slug: string;
 		readonly id: string;
-		readonly keyHash: string;
 		readonly listener: (event: SurfaceChangedEvent) => void;
 	}>();
 
-	/** Create a transport whose `onChanged` subscribes into this hub. */
-	attach(options: ExtSurfaceTransportOptions, keyHash: string): ExtSurfaceTransportHandle {
+	/** Create a transport whose `onChanged` subscribes into this hub. The
+	 *  `keyHash` argument is retained for call-site compatibility (dispatch
+	 *  no longer routes on it — see the class doc). */
+	attach(options: ExtSurfaceTransportOptions, _keyHash: string): ExtSurfaceTransportHandle {
 		const base = createExtSurfaceTransport(options);
 		const hub = this;
 		const transport: SurfaceTransport = {
@@ -218,7 +237,6 @@ export class ExtSurfaceHub {
 				const subscription = {
 					slug: options.slug,
 					id: options.id,
-					keyHash,
 					listener,
 				};
 				hub.#subscriptions.add(subscription);
@@ -233,7 +251,8 @@ export class ExtSurfaceHub {
 		};
 	}
 
-	/** Fire every subscription matching the event's (slug, id, k). */
+	/** Fire every subscription of the event's (slug, id), whatever the
+	 *  event's `k`. */
 	dispatch(event: {
 		readonly slug: string;
 		readonly id: string;
@@ -244,8 +263,7 @@ export class ExtSurfaceHub {
 		for (const subscription of this.#subscriptions) {
 			if (
 				subscription.slug === event.slug &&
-				subscription.id === event.id &&
-				subscription.keyHash === event.k
+				subscription.id === event.id
 			) {
 				subscription.listener({ rev: event.rev, treeRev: event.treeRev });
 			}

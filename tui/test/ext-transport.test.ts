@@ -3,7 +3,7 @@
  * `SurfaceTransport` over the U3 routes as a REMOTE client (baseUrl +
  * identity headers). Tests pin the same wire shapes as the webui twin
  * plus the TUI-only headers (x-sigrun-user, bearer token) and the
- * hub's (slug, id, k) change-event routing.
+ * hub's (slug, id) change-event routing.
  */
 
 import { describe, expect, test } from "vitest";
@@ -100,9 +100,25 @@ describe("createExtSurfaceTransport", () => {
 			fetch: stub.fetch,
 		}).transport;
 		await transport.fetchData(2);
-		expect(stub.calls[0]?.input).toContain("/data");
-		expect(stub.calls[0]?.input).toContain("params=");
-		expect(stub.calls[0]?.input).toContain("since=2");
+		// The EXACT url (final-review fix wave): the suffix bug this branch
+		// fixed landed /data AFTER ?params=, and the toContain assertions
+		// below would have passed against it.
+		expect(stub.calls[0]?.input).toBe(
+			`http://127.0.0.1:8080/v1/ext/fixture-surfaces/surfaces/board/data?params=${encodeURIComponent(JSON.stringify({ board: "b2" }))}&since=2`,
+		);
+	});
+
+	test("act() posts to /actions on the query-free base (params ride the body)", async () => {
+		const stub = stubFetch();
+		const transport = createExtSurfaceTransport({
+			...BASE,
+			params: { board: "b2" },
+			fetch: stub.fetch,
+		}).transport;
+		await transport.act({ action: "openJob", type: "edit", payload: {}, actionId: "a1" });
+		expect(stub.calls[0]?.input).toBe(
+			"http://127.0.0.1:8080/v1/ext/fixture-surfaces/surfaces/board/actions",
+		);
 	});
 
 	test("image() rejects (the route ships with U7)", async () => {
@@ -132,32 +148,46 @@ describe("createExtSurfaceTransport", () => {
 });
 
 describe("ExtSurfaceHub (tui)", () => {
-	test("dispatch fires only the matching (slug, id, k) subscription", () => {
+	test("dispatch fires every subscription of the event's view, whatever k", () => {
+		// The server's k hashes the PRINCIPAL-scoped instance key, which the
+		// client can never reproduce — matching on it silently starved the
+		// jobs/skills/curator views. The server already targets an event at
+		// the streams watching that exact instance (watchers.streamsFor), so
+		// matching the view is safe; a second instance of it refetches once.
 		const hub = new ExtSurfaceHub();
 		const stub = stubFetch();
-		const board = hub.attach({ ...BASE, fetch: stub.fetch }, "k-board").transport;
-		const stats = hub.attach(
+		const boardB1 = hub.attach(
+			{ ...BASE, params: { board: "b1" }, fetch: stub.fetch },
+			"k-b1",
+		).transport;
+		const boardB2 = hub.attach(
+			{ ...BASE, params: { board: "b2" }, fetch: stub.fetch },
+			"k-b2",
+		).transport;
+		const other = hub.attach(
 			{ ...BASE, id: "stats", fetch: stub.fetch },
 			"k-stats",
 		).transport;
-		const seenBoard: number[] = [];
-		const seenStats: number[] = [];
-		board.onChanged((event) => seenBoard.push(event.rev));
-		stats.onChanged((event) => seenStats.push(event.rev));
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-board", rev: 4, treeRev: 1 });
-		expect(seenBoard).toEqual([4]);
-		expect(seenStats).toEqual([]);
+		const seenB1: { rev: number; treeRev: number }[] = [];
+		const seenB2: { rev: number; treeRev: number }[] = [];
+		const seenOther: { rev: number; treeRev: number }[] = [];
+		boardB1.onChanged((event) => seenB1.push({ rev: event.rev, treeRev: event.treeRev }));
+		boardB2.onChanged((event) => seenB2.push({ rev: event.rev, treeRev: event.treeRev }));
+		other.onChanged((event) => seenOther.push({ rev: event.rev, treeRev: event.treeRev }));
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "server-side-key", rev: 9, treeRev: 7 });
+		expect(seenB1).toEqual([{ rev: 9, treeRev: 7 }]);
+		expect(seenB2).toEqual([{ rev: 9, treeRev: 7 }]);
+		expect(seenOther).toEqual([]);
 	});
 
-	test("a same-slug/id event under a different k does NOT fire (multi-instance)", () => {
+	test("the unsubscribe silences the instance under the (slug, id) rule", () => {
 		const hub = new ExtSurfaceHub();
 		const board = hub.attach({ ...BASE, fetch: stubFetch().fetch }, "k-b1").transport;
 		const seen: number[] = [];
 		const off = board.onChanged((event) => seen.push(event.rev));
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b2", rev: 9, treeRev: 1 });
-		expect(seen).toEqual([]);
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b1", rev: 1, treeRev: 1 });
 		off();
-		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b1", rev: 10, treeRev: 1 });
-		expect(seen).toEqual([]);
+		hub.dispatch({ slug: "fixture-surfaces", id: "board", k: "k-b1", rev: 2, treeRev: 1 });
+		expect(seen).toEqual([1]);
 	});
 });

@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Jobs editor in the `core/jobs` view: a New job form (prompt jobs, schedule cron/every/once,
+  model + thinking pickers from the served catalogue), Edit/Delete for api jobs (edit preserves
+  conversation/deliver/runSharing/task targets; clearing the description removes it), details
+  and provenance rows (Defined in / Owner / action fields) with a read-only callout for declared
+  (`file:`/`ext:`) jobs, and the job description as the sidebar row subtitle.
+- `description` on `JobSpec` (optional, trimmed, ≤ 500 chars) for every job source — settings.json
+  boot-gates an invalid one; an extension's declaration quarantines.
+- TUI: extension views (Jobs, Skills, every extension surface) now render in the main pane with
+  key routing, Esc back-to-list/close, overlay-aware Esc, notice flashes on the status bar, and
+  block navigation (row activation, page actions like New job, post-action navigation) — plus a
+  fix for the TUI ext-transport URL builder (suffix routes were appended after `?params=`).
+- Live refresh for principal-scoped views (`core/jobs`, `core/skills`, curator): both clients'
+  surface hubs now dispatch `surface.changed` by (slug, id) instead of a client-side params hash
+  that never matched the server's principal-scoped key — background job runs now appear in an
+  open view without a reload.
+
 ## [0.9.0] - 2026-11-05
 
 ### Added

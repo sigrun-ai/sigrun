@@ -55,6 +55,8 @@ export type JobAction =
 /** A job's declared shape — what every source (api/file/extension) supplies. */
 export type JobSpec = {
 	name: string;
+	/** Optional ≤500-char human description, shown in the Jobs view. */
+	description?: string;
 	schedule: JobSchedule;
 	action: JobAction;
 	overlap?: "skip" | "queue";
@@ -71,6 +73,8 @@ export type JobWire = {
 	source: "api" | "file" | "extension";
 	owner?: string;
 	sharing?: Sharing;
+	/** Optional ≤500-char human description, shown in the Jobs view. */
+	description?: string;
 	schedule: JobSchedule;
 	action: JobAction;
 	enabled: boolean;

@@ -69,6 +69,8 @@ import {
 	type ExtSurfaceTransportHandle,
 } from "../blocks/ext-transport.js";
 import { ChatSurfaceHub } from "../blocks/chat-transport.js";
+import { SurfaceState } from "../blocks/surface.js";
+import { SurfaceView } from "../blocks/surface-view.js";
 import { watchConversation, type Unwatch, type WatchHandlers, type WatchOptions } from "../sse.js";
 import { spawnSync } from "node:child_process";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
@@ -222,7 +224,10 @@ export class TuiApp implements Component, ActionHost {
 	#extView: {
 		readonly slug: string;
 		readonly id: string;
+		readonly params: JsonObject;
 		readonly handle: ExtSurfaceTransportHandle;
+		readonly state: SurfaceState;
+		readonly view: SurfaceView;
 	} | undefined;
 	/** The app's theme (the settings view's SurfaceView reuses it). */
 	readonly #theme: TuiTheme;
@@ -416,10 +421,21 @@ export class TuiApp implements Component, ActionHost {
 
 	/** The open extension view's identity (undefined = the conversation
 	 *  pane is the main content). */
-	get extView(): { readonly slug: string; readonly id: string } | undefined {
+	get extView():
+		| { readonly slug: string; readonly id: string; readonly params: JsonObject }
+		| undefined {
 		return this.#extView === undefined
 			? undefined
-			: { slug: this.#extView.slug, id: this.#extView.id };
+			: {
+					slug: this.#extView.slug,
+					id: this.#extView.id,
+					params: this.#extView.params,
+				};
+	}
+
+	/** The open view's surface state (tests + Task 7's navigation). */
+	get extViewState(): SurfaceState | undefined {
+		return this.#extView?.state;
 	}
 
 	/**
@@ -429,12 +445,13 @@ export class TuiApp implements Component, ActionHost {
 	 * the transport + identity here so U2's mount is one prop pass.
 	 */
 	async openExtView(slug: string, id: string, params?: JsonObject): Promise<void> {
-		const key = transportKey({ slug, id, baseUrl: this.#watchOptions.baseUrl, ...(params === undefined ? {} : { params }) });
+		const instanceParams: JsonObject = params ?? {};
+		const key = transportKey({ slug, id, baseUrl: this.#watchOptions.baseUrl, params: instanceParams });
 		const handle = this.#extHub.attach(
 			{
 				slug,
 				id,
-				...(params === undefined ? {} : { params }),
+				params: instanceParams,
 				baseUrl: this.#watchOptions.baseUrl,
 				...(this.#watchOptions.user === undefined
 					? {}
@@ -445,10 +462,47 @@ export class TuiApp implements Component, ActionHost {
 				...(this.#eventsStreamId === undefined
 					? {}
 					: { streamId: this.#eventsStreamId }),
+				// A test-injected client fetch carries the view's loads (the
+				// settings view's shape; production's client leaves it ambient).
+				...(this.#client.fetch === undefined
+					? {}
+					: { fetch: this.#client.fetch }),
 			},
 			surfaceKeyHash(slug, id, key),
 		);
-		this.#extView = { slug, id, handle };
+		// A swap disposes the previous view's state BEFORE the new one
+		// opens (the settings view's openSection shape): no orphaned
+		// subscriptions or action timers survive a re-open.
+		this.#extView?.state.dispose();
+		const state = new SurfaceState(handle.transport);
+		// Navigation wiring (jobs-editor Task 7): a navigate action or an
+		// accepted result's `navigate` reopens THIS view with the params
+		// (params-only) or routes a core target through the shell — never
+		// posted to the server (SurfaceState.dispatch short-circuits it).
+		state.onNavigate = (nav) =>
+			nav.target !== undefined
+				? void this.navigateCoreTarget(nav.target)
+				: void this.openExtView(slug, id, nav.params ?? {});
+		const view = new SurfaceView(state, {
+			theme: this.#theme,
+			unicode: this.#unicode,
+		});
+		state.onChange(() => {
+			// The surface's notices (action toasts, rejections) land as
+			// pane notices (the post-close backlog) AND flash the status
+			// bar while mounted — the pane is not painted while this view
+			// owns the main slot, so the flash is the visible channel
+			// (SurfaceState's contract names the status bar as the host
+			// notice seam).
+			for (const notice of state.consumeNotices()) {
+				this.pane.showNotice(notice);
+				this.#flashStatus(notice);
+			}
+			this.#tui.requestRender();
+		});
+		this.#extView = { slug, id, params: instanceParams, handle, state, view };
+		this.mainContent.set(view);
+		void state.load();
 		this.#tui.requestRender();
 	}
 
@@ -506,7 +560,9 @@ export class TuiApp implements Component, ActionHost {
 	 */
 	closeExtView(): boolean {
 		if (this.#extView === undefined) return false;
+		this.#extView.state.dispose();
 		this.#extView = undefined;
+		this.mainContent.set(this.pane);
 		this.#tui.requestRender();
 		return true;
 	}
@@ -852,11 +908,32 @@ export class TuiApp implements Component, ActionHost {
 			this.#abortActive();
 			return true;
 		}
-		// Esc closes an open extension view — back to the
-		// conversation pane; the surface's fetches stop (the keepalive
-		// stops with the view, spec §7.3's stop-when-hidden).
-		if (matchesKey(data, Key.escape) && this.#extView !== undefined) {
-			return this.closeExtView();
+		// The open extension view owns its keys (Task 6): Esc forwards to
+		// the view while its page has an overlay (actions menu, sidebar
+		// drawer, pushed detail — spec §12.3's page contract); otherwise
+		// Esc with params reopens the view at the list (`{}`), and Esc at
+		// the list closes the view. Non-Esc keys route to the view.
+		if (this.#extView !== undefined) {
+			if (matchesKey(data, Key.escape)) {
+				const inner = this.#extView.view.inner as
+					| { hasOverlay?: boolean }
+					| undefined;
+				if (inner?.hasOverlay === true) {
+					this.#extView.view.handleInput(data);
+					return true;
+				}
+				if (Object.keys(this.#extView.params).length > 0) {
+					void this.openExtView(this.#extView.slug, this.#extView.id, {}).catch(
+						(error: unknown) => {
+							this.pane.showError(describeCommandError("open view", error));
+						},
+					);
+					return true;
+				}
+				return this.closeExtView();
+			}
+			this.#extView.view.handleInput(data);
+			return true;
 		}
 		return false;
 	}
@@ -1111,6 +1188,8 @@ export class TuiApp implements Component, ActionHost {
 		this.#restartGeneration += 1;
 		this.interactions.dispose();
 		this.ambient.dispose();
+		this.#extView?.state.dispose();
+		this.#extView = undefined;
 		// The pane's chat-block surface states hold live hub subscriptions
 		// + action timers — the shell owns their teardown (the pane never
 		// leaves a subscription behind).

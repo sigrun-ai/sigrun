@@ -47,8 +47,21 @@ import type {
 	SurfaceRenderResult,
 } from "../../extension.js";
 import type { JobsService } from "../../jobs/index.js";
+import {
+	JobDeclaredError,
+	JobNotFoundError,
+} from "../../jobs/index.js";
 import { jobAccess } from "../jobs-access.js";
 import { isSuperuser } from "../auth/principal.js";
+import {
+	createSpecOf,
+	emptyForm,
+	formFromJob,
+	formValuesOf,
+	jobFormFields,
+	savePatchOf,
+	type JobFormData,
+} from "./jobs-form.js";
 
 /** The runs page size and the revisions page size (the plan refinement). */
 export const PAGE_SIZE = 25;
@@ -57,6 +70,7 @@ export const PAGE_SIZE = 25;
 interface JobRow {
 	readonly id: string;
 	readonly name: string;
+	readonly description: string | null;
 	readonly scheduleSummary: string;
 	readonly nextRun: string | null;
 	readonly lastOutcome: string | null;
@@ -89,6 +103,21 @@ interface RevisionRow {
 interface JobHeader {
 	readonly id: string;
 	readonly name: string;
+	readonly description: string | null;
+	/** The provenance line ({@link definedInOf}). */
+	readonly definedIn: string;
+	readonly owner: string | null;
+	readonly source: "api" | "file" | "extension";
+	readonly kind: "prompt" | "task";
+	// Prompt-action fields (null on a task job).
+	readonly prompt: string | null;
+	readonly model: string | null;
+	readonly thinking: string | null;
+	readonly conversation: string | null;
+	readonly deliver: string | null;
+	// Task-action fields (null on a prompt job).
+	readonly task: string | null;
+	readonly taskInputMarkdown: string | null;
 	readonly scheduleSummary: string;
 	readonly nextRun: string | null;
 	readonly lastOutcome: string | null;
@@ -122,10 +151,20 @@ interface MainData {
 	};
 }
 
+/** One model picker option (Default first, id "default"). */
+interface ModelOption {
+	readonly id: string;
+	readonly label: string;
+}
+
 /** The whole data document the tree binds against. */
 interface JobsViewData {
 	readonly jobs: readonly JobRow[];
 	readonly main: MainData;
+	/** The New job form's seeded values (bind target `/form`). */
+	readonly form: JobFormData;
+	/** The model choice's options (the `{$: "/modelOptions"}` binding). */
+	readonly modelOptions: readonly ModelOption[];
 }
 
 /** The view's params (spec §7.3: JSON, size-capped by the route). */
@@ -134,6 +173,8 @@ interface JobsViewParams {
 	readonly revision?: number;
 	readonly revCursor?: number;
 	readonly runCursor?: string;
+	/** New-job form (jobs-editor Task 3): the form branch of the main column. */
+	readonly edit?: true;
 }
 
 /** A schedule's summary text (the JobsPanel rule, verbatim). */
@@ -145,6 +186,25 @@ function scheduleSummary(schedule: JobSchedule): string {
 	}
 	if ("every" in schedule) return `every ${schedule.every}`;
 	return `at ${schedule.at}`;
+}
+
+/**
+ * The provenance line for one job, derived from its id (the id prefix IS
+ * the source). Exported for the view's tests (jobs-editor Task 2).
+ */
+export function definedInOf(id: string, source: JobWire["source"]): string {
+	if (source === "file") {
+		return `settings.json (jobs → ${id.slice("file:".length)})`;
+	}
+	if (source === "extension") {
+		return `the ${extensionSlugOf(id)} extension`;
+	}
+	return "created in sigrun";
+}
+
+/** The declaring extension's slug (`ext:<slug>:<name>` — the middle). */
+function extensionSlugOf(id: string): string {
+	return id.slice("ext:".length).split(":")[0];
 }
 
 /** One job's sidebar/header summary fields. */
@@ -196,7 +256,9 @@ function paramsOf(params: JsonObject): JobsViewParams {
 		revision?: number;
 		revCursor?: number;
 		runCursor?: string;
+		edit?: true;
 	} = {};
+	if (params.edit === true) out.edit = true;
 	if (typeof params.job === "string" && params.job !== "") out.job = params.job;
 	if (Number.isInteger(params.revision) && (params.revision as number) > 0) {
 		out.revision = params.revision as number;
@@ -254,6 +316,7 @@ async function readData(
 	jobs: JobsService,
 	principal: AccessPrincipal,
 	params: JobsViewParams,
+	models: () => readonly ModelOption[],
 ): Promise<JobsViewData> {
 	const rows: JobRow[] = [];
 	let selected: (Omit<JobWire, "access"> & { access: Access }) | undefined;
@@ -261,7 +324,12 @@ async function readData(
 		const { access: _stamped, ...row } = wire;
 		const access = jobAccess(principal, row);
 		if (access === "none") continue;
-		rows.push({ id: row.id, name: row.name, ...summaryFields(row) });
+		rows.push({
+			id: row.id,
+			name: row.name,
+			description: row.description ?? null,
+			...summaryFields(row),
+		});
 		if (params.job !== undefined && row.id === params.job) {
 			selected = { ...row, access };
 		}
@@ -273,7 +341,19 @@ async function readData(
 		runs: { items: [], hasMore: false, nextRunCursor: null },
 		revisions: { items: [], hasMore: false, nextRevCursor: null },
 	};
-	if (selected === undefined) return { jobs: rows, main };
+	if (selected === undefined)
+		return { jobs: rows, main, form: emptyForm(), modelOptions: models() };
+
+	// The Task 4 edit seed: `{job, edit}` on a WRITABLE api job seeds
+	// `/form` from the job's current spec (a declared or read job in edit
+	// mode renders the details instead — the details keep the plain
+	// empty form, which the tree never shows there).
+	const form: JobFormData =
+		params.edit === true &&
+		selected.source === "api" &&
+		selected.access === "write"
+			? formFromJob(selected)
+			: emptyForm();
 
 	// Runs: newest first; the cursor IS a run key (opaque to clients).
 	// The service's list is bounded by the retention cap, so the view
@@ -306,9 +386,33 @@ async function readData(
 	};
 
 	main.found = true;
+	const action = selected.action;
 	main.job = {
 		id: selected.id,
 		name: selected.name,
+		description: selected.description ?? null,
+		definedIn: definedInOf(selected.id, selected.source),
+		owner: selected.owner ?? null,
+		source: selected.source,
+		kind: action.kind,
+		prompt: action.kind === "prompt" ? action.prompt : null,
+		model: action.kind === "prompt" ? (action.model ?? null) : null,
+		thinking: action.kind === "prompt" ? (action.thinking ?? null) : null,
+		conversation:
+			action.kind === "prompt"
+				? action.conversation === "new"
+					? "new"
+					: `#${action.conversation}`
+				: null,
+		deliver:
+			action.kind === "prompt" && action.deliver !== undefined
+				? action.deliver.join(", ")
+				: null,
+		task: action.kind === "task" ? action.task : null,
+		taskInputMarkdown:
+			action.kind === "task" && action.input !== undefined
+				? `\`\`\`json\n${JSON.stringify(action.input, null, 2)}\n\`\`\``
+				: null,
 		...summaryFields(selected),
 		state: selected.state,
 		enabled: selected.enabled,
@@ -317,7 +421,7 @@ async function readData(
 		// the fallback only satisfies the narrowing.
 		access: selected.access === "none" ? "read" : selected.access,
 	};
-	return { jobs: rows, main };
+	return { jobs: rows, main, form, modelOptions: models() };
 }
 
 /** The one revision selected for the diff, plus its previous (baseline). */
@@ -339,12 +443,21 @@ function selectDiff(
 export function createJobsView(deps: {
 	jobs: JobsService;
 	now(): Date;
+	/** The model catalog as picker entries (jobs-editor Task 3):
+	 *  `listModels` over the opened harness, projected to id+label. */
+	models(): readonly ModelOption[];
 	/** The directory-aware principal (groups included), wired in
 	 *  src/server/index.ts as `(p) => accessPrincipalOf(p,
 	 *  opened.identity.users)` — the same projection the routes use. */
 	accessPrincipal(principal: Principal): AccessPrincipal;
 }): SurfaceDef<"view"> {
 	const { jobs } = deps;
+	/** The model options: Default first (id "default"), then the
+	 *  catalog rows (id is the full `provider/modelId`). */
+	const modelOptions = (): readonly ModelOption[] => [
+		{ id: "default", label: "Default" },
+		...deps.models(),
+	];
 
 	/** The caller's directory-aware principal (undefined user = anonymous).
 	 *  Whole-branch review I3: the USERLESS SUPERUSER (the naive
@@ -395,8 +508,9 @@ export function createJobsView(deps: {
 					onActivate: { type: "edit", name: "openJob" },
 					item: {
 						title: { $: "./name" },
-						subtitle: { $: "./scheduleSummary" },
+						subtitle: { $: "./description" },
 						meta: [
+							{ text: { $: "./scheduleSummary" }, icon: "clock" },
 							{ text: { $: "./nextRun" }, icon: "clock" },
 							{ text: { $: "./lastOutcome" }, icon: "info" },
 						],
@@ -440,7 +554,31 @@ export function createJobsView(deps: {
 		// Blocks are built as loose JSON objects (the validator owns the
 		// wire shape; the service validates every tree before serving).
 		const main: Record<string, unknown>[] = [];
-		if (data.main.found && data.main.job !== null) {
+		// `{edit: true}` alone is the New-job form; `{job, edit}` edits THAT
+		// job. A declared (file:/ext:) or read-access job in edit mode falls
+		// through to the DETAILS (the editor is api+write only); an unknown
+		// `job` param with edit keeps the Task 3 rule (the form wins over
+		// "Job not found") only when NO job is selected.
+		const editingJob =
+			params.edit === true &&
+			params.job !== undefined &&
+			data.main.found &&
+			data.main.job !== null &&
+			data.main.job.source === "api" &&
+			data.main.job.access === "write";
+		if (params.edit === true && (params.job === undefined || editingJob)) {
+			main.push({
+				type: "form",
+				id: "job-form",
+				bind: "/form",
+				mode: "submit",
+				onSubmit: editingJob ? "saveJob" : "createJob",
+				submitLabel: editingJob ? "Save" : "Create",
+				children: jobFormFields(
+					editingJob && data.main.job !== null ? data.main.job.kind : "prompt",
+				),
+			});
+		} else if (data.main.found && data.main.job !== null) {
 			const job = data.main.job;
 			// IMPORTANT 3 (review fix): per-run conversation buttons ride
 			// the card's `actions` as per-row LITERALS. The block contract's
@@ -482,6 +620,38 @@ export function createJobsView(deps: {
 									},
 								},
 							},
+							// Edit/Delete are api-only (declared jobs are read-only
+							// declarations — the `job-declared` callout says where to
+							// edit them). The confirm copy promises the run history
+							// survives (deleteApi retires the record; history routes
+							// answer for retired ids).
+							...(job.source === "api"
+								? [
+										{
+											id: "job-edit",
+											label: "Edit",
+											icon: "edit",
+											action: {
+												type: "navigate",
+												params: { job: job.id, edit: true },
+											},
+										},
+										{
+											id: "job-delete",
+											label: "Delete",
+											icon: "delete",
+											action: {
+												type: "submit",
+												name: "deleteJob",
+												confirm: {
+													title: "Delete this job?",
+													body: "Its run history is kept.",
+													tone: "bad",
+												},
+											},
+										},
+									]
+								: []),
 						]
 					: [];
 
@@ -494,14 +664,34 @@ export function createJobsView(deps: {
 						{
 							type: "fields",
 							rows: [
+								{ label: "Description", value: { $: "/main/job/description" } },
+								{ label: "Defined in", value: { $: "/main/job/definedIn" } },
+								{ label: "Owner", value: { $: "/main/job/owner" } },
 								{ label: "Schedule", value: { $: "/main/job/scheduleSummary" } },
 								{ label: "Next run", value: { $: "/main/job/nextRun" } },
 								{ label: "Last outcome", value: { $: "/main/job/lastOutcome" } },
 								{ label: "Last error", value: { $: "/main/job/lastError" } },
 								{ label: "State", value: { $: "/main/job/state" } },
 								{ label: "Version", value: { $: "/main/job/version" } },
+								{ label: "Model", value: { $: "/main/job/model" } },
+								{ label: "Thinking", value: { $: "/main/job/thinking" } },
+								{ label: "Conversation", value: { $: "/main/job/conversation" } },
+								{ label: "Deliver", value: { $: "/main/job/deliver" } },
+								{ label: "Task", value: { $: "/main/job/task" } },
 							],
 						},
+						// The action body blocks: BOTH are emitted UNCONDITIONALLY.
+						// The earlier kind-conditional form rested on a false invariant —
+						// `bumpRev` advances `rev` only (treeRev is never written), so a
+						// REST PATCH that changes a job's action kind would leave an open
+						// client showing the stale body block until reload (the clients
+						// apply fresh DATA to the SAME tree). The data-bound fix is
+						// unconditional blocks: the off-kind binding resolves null, and
+						// both clients render a null/empty markdown text as NOTHING
+						// visible (webui boundString → "" in a zero-height div; pi-tui
+						// Markdown returns zero lines for empty text).
+						{ type: "markdown", text: { $: "/main/job/prompt" } },
+						{ type: "markdown", text: { $: "/main/job/taskInputMarkdown" } },
 					],
 				},
 				...(writeActions.length === 0
@@ -513,6 +703,22 @@ export function createJobsView(deps: {
 								tone: "neutral",
 								title: "Actions",
 								actions: writeActions,
+							},
+						]),
+				// Declared jobs (file:/ext:) are READ-ONLY declarations: no edit
+				// affordances here (the editor, Tasks 3-4, is api-only) — a
+				// callout points the user at the declaring source instead.
+				...(job.source === "api"
+					? []
+					: [
+							{
+								type: "callout",
+								id: "job-declared",
+								tone: "neutral",
+								title:
+									job.source === "file"
+										? "Defined in settings.json — edit it there"
+										: `Declared by the ${extensionSlugOf(job.id)} extension`,
 							},
 						]),
 				{
@@ -642,11 +848,21 @@ export function createJobsView(deps: {
 			...tree,
 			root: {
 				...tree.root,
+				// The New job affordance renders for ANY identified caller
+				// (createJob admits via callerOf; the form itself is inert).
+				actions: [
+					{
+						id: "job-new",
+						label: "New job",
+						icon: "add",
+						action: { type: "navigate", params: { edit: true } },
+					},
+				],
 				selection: {
-					selected: params.job !== undefined,
+					selected: params.job !== undefined || params.edit === true,
 					back: {},
 				},
-				...(data.main.found
+				...(data.main.found || params.edit === true
 					? {}
 					: {
 							empty: {
@@ -697,7 +913,7 @@ export function createJobsView(deps: {
 				return { tree: noneTree(), data: {}, access: "none" };
 			}
 			const params = paramsOf(ctx.params);
-			const data = await readData(jobs, caller, params);
+			const data = await readData(jobs, caller, params, modelOptions);
 			const revisions =
 				params.job === undefined || !data.main.found
 					? []
@@ -725,7 +941,7 @@ export function createJobsView(deps: {
 			const caller = callerOf(ctx);
 			if (caller === undefined) return { data: {}, access: "none" };
 			const params = paramsOf(ctx.params);
-			const data = await readData(jobs, caller, params);
+			const data = await readData(jobs, caller, params, modelOptions);
 			return {
 				// SAFETY: same JSON-mirror cast as `render`'s (the comment there).
 				data: data as unknown as SurfaceRenderResult["data"],
@@ -733,16 +949,55 @@ export function createJobsView(deps: {
 			};
 		},
 		actions: {
+			// The New job form's submit (jobs-editor Task 3): callerOf
+			// admission (anonymous non-superuser → forbidden; the userless
+			// superuser creates with an undefined owner, matching
+			// POST /v1/jobs), then the form-owned spec assembly. Field
+			// errors come back field-scoped so the channels mark the field.
+			createJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const caller = callerOf(ctx);
+				if (caller === undefined) {
+					return { ok: false, error: { message: "forbidden" } };
+				}
+				const assembled = createSpecOf(formValuesOf(payload));
+				if (!assembled.ok) {
+					return {
+						ok: false,
+						error: { message: assembled.message, field: assembled.field },
+					};
+				}
+				let created;
+				try {
+					created = await jobs.createApi(assembled.spec, caller.user);
+				} catch (error) {
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return {
+					ok: true,
+					toast: `Created ${assembled.spec.name}`,
+					navigate: { type: "navigate", params: { job: created.id } },
+				};
+			},
 			// The sidebar row's drill-in (review Critical 2): the `edit`
 			// activation carries {itemId} = the row's id — the JOB id, the
 			// collection rows' own `id` field (the channels derive item ids
 			// from it, spec §5.5) — and the accepted result carries the
 			// navigate back (§6.3: SurfaceActOk.navigate passes the wire
-			// unchanged). The webui applies it (useSurface routes
-			// result.navigate through onNavigate); the TUI does NOT apply
-			// result.navigate yet — a PRE-EXISTING channel gap for every
-			// ext view's action-result navigation, out of scope here
-			// (whole-branch review ledger).
+			// unchanged). Both channels apply it: the webui's useSurface
+			// routes result.navigate through onNavigate, and the TUI's
+			// SurfaceState does the same (jobs-editor Task 7) — its
+			// accepted-result branch fires onNavigate LAST, and the app's
+			// wiring reopens the view with the params. The compact page's
+			// Esc-back dispatch (tui/src/blocks/page.ts) is genuinely
+			// routed through the same seam.
 			openJob: async (
 				ctx: SurfaceContext,
 				payload: unknown,
@@ -788,6 +1043,102 @@ export function createJobsView(deps: {
 				return {
 					ok: true,
 					navigate: { type: "navigate", params: { job: jobId, revision } },
+				};
+			},
+			// The Edit form's submit (jobs-editor Task 4): the job rides
+			// the instance params (the surface is principal-scoped, so the
+			// params identify the selected job — the same shape runNow
+			// uses). The caller needs write access; a declared job is the
+			// 409-class refusal; the patch rules live in savePatchOf.
+			saveJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const jobId = jobIdOf(payload) ?? paramsOf(ctx.params).job;
+				if (jobId === undefined) {
+					return {
+						ok: false,
+						error: { message: "saveJob needs a selected job (params.job)" },
+					};
+				}
+				const resolved = await actionAccess(ctx, jobId);
+				if ("error" in resolved) return resolved.error;
+				if (resolved.row.source !== "api") {
+					return { ok: false, error: { message: "job_declared" } };
+				}
+				const patched = savePatchOf(formValuesOf(payload), resolved.row);
+				if (!patched.ok) {
+					return {
+						ok: false,
+						error: { message: patched.message, field: patched.field },
+					};
+				}
+				const caller = callerOf(ctx);
+				try {
+					await jobs.updateApi(
+						jobId,
+						patched.patch,
+						caller?.user ?? "api",
+					);
+				} catch (error) {
+					if (
+						error instanceof JobDeclaredError ||
+						error instanceof JobNotFoundError
+					) {
+						return { ok: false, error: { message: error.message } };
+					}
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return {
+					ok: true,
+					toast: `Saved ${patched.patch.name ?? resolved.row.name}`,
+					navigate: { type: "navigate", params: { job: jobId } },
+				};
+			},
+			// Delete: write access, api-only, then the retired job leaves
+			// the list — navigate back to the unselected view ({}).
+			deleteJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const jobId = jobIdOf(payload) ?? paramsOf(ctx.params).job;
+				if (jobId === undefined) {
+					return {
+						ok: false,
+						error: { message: "deleteJob needs a selected job (params.job)" },
+					};
+				}
+				const resolved = await actionAccess(ctx, jobId);
+				if ("error" in resolved) return resolved.error;
+				if (resolved.row.source !== "api") {
+					return { ok: false, error: { message: "job_declared" } };
+				}
+				const caller = callerOf(ctx);
+				try {
+					await jobs.deleteApi(jobId, caller?.user ?? "api");
+				} catch (error) {
+					if (
+						error instanceof JobDeclaredError ||
+						error instanceof JobNotFoundError
+					) {
+						return { ok: false, error: { message: error.message } };
+					}
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return {
+					ok: true,
+					toast: `Deleted ${resolved.row.name}`,
+					navigate: { type: "navigate", params: {} },
 				};
 			},
 			runNow: async (

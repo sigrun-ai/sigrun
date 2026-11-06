@@ -25,7 +25,10 @@ import type { JobAction, JobSpec, JsonValue } from "@sigrun/shared/jobs";
 import { cronFor, parseEvery } from "./schedule.js";
 
 /** Job names double as the file/extension id suffix (Global Constraints). */
-const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+export const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
+
+/** The longest a job description may be (spec §8.2). */
+export const DESCRIPTION_MAX = 500;
 
 /** A validation rejection: the offending field path plus why. */
 export interface InvalidJobSpec {
@@ -80,11 +83,28 @@ export function validateJobSpec(value: unknown): ValidationResult {
 		return invalid("sharing", "sharing must be a Sharing value");
 	}
 
+	if (record.description !== undefined && typeof record.description !== "string") {
+		return invalid("description", "description must be a string");
+	}
+	const description =
+		typeof record.description === "string"
+			? record.description.trim()
+			: undefined;
+	if (description !== undefined && description.length > DESCRIPTION_MAX) {
+		return invalid(
+			"description",
+			`description must be at most ${DESCRIPTION_MAX} characters`,
+		);
+	}
+
 	const spec: JobSpec = {
 		name: record.name,
 		schedule: schedule.schedule,
 		action: action.action,
 	};
+	if (description !== undefined && description.length > 0) {
+		spec.description = description;
+	}
 	if (record.overlap !== undefined) spec.overlap = record.overlap;
 	if (record.catchUp !== undefined) spec.catchUp = record.catchUp;
 	if (record.enabled !== undefined) spec.enabled = record.enabled;

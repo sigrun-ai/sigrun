@@ -405,3 +405,60 @@ describe("SurfaceState — the optimistic overlay (§6.3)", () => {
 		expect(state.view.notices[49]).toBe("reject-54");
 	});
 });
+
+// ─── SurfaceState — navigation (jobs-editor Task 7) ─────────────────────
+//
+// Navigate actions are SHELL-LOCAL: they route through `onNavigate` and
+// never reach the transport (spec §6.1). An accepted act result's
+// `navigate` routes the same way — as the LAST step of the accepted
+// branch (the app's handler may dispose this state).
+describe("SurfaceState — navigation (jobs-editor Task 7)", () => {
+	test("a navigate action calls onNavigate and never posts", async () => {
+		const surface = fakeSurface();
+		const state = new SurfaceState(surface.transport);
+		await state.load();
+		const seen: Action[] = [];
+		state.onNavigate = (action) => {
+			seen.push(action);
+		};
+		state.dispatch(
+			{ type: "navigate", params: { job: "acme-a" } },
+			{ itemId: "acme-a" },
+		);
+		await flush();
+		expect(surface.acts).toHaveLength(0);
+		expect(seen).toEqual([{ type: "navigate", params: { job: "acme-a" } }]);
+	});
+
+	test("an accepted result's navigate calls onNavigate", async () => {
+		const surface = fakeSurface();
+		const state = new SurfaceState(surface.transport);
+		await state.load();
+		const seen: Action[] = [];
+		state.onNavigate = (action) => {
+			seen.push(action);
+		};
+		state.dispatch({ type: "edit", name: "openJob" }, { itemId: "acme-a" });
+		surface.answer({
+			ok: true,
+			rev: 1,
+			navigate: { type: "navigate", params: { job: "acme" } },
+		});
+		await flush();
+		expect(seen).toEqual([{ type: "navigate", params: { job: "acme" } }]);
+	});
+
+	test("an accepted result without navigate never calls onNavigate", async () => {
+		const surface = fakeSurface();
+		const state = new SurfaceState(surface.transport);
+		await state.load();
+		const seen: Action[] = [];
+		state.onNavigate = (action) => {
+			seen.push(action);
+		};
+		state.dispatch({ type: "edit", name: "acmeAction" }, {});
+		surface.answer({ ok: true, rev: 1 });
+		await flush();
+		expect(seen).toEqual([]);
+	});
+});

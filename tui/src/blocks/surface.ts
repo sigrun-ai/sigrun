@@ -31,6 +31,7 @@
 import type {
 	Action,
 	CollectionBlock,
+	CoreTarget,
 	JsonObject,
 	JsonValue,
 	SurfaceFetch,
@@ -250,6 +251,12 @@ export class SurfaceState {
 	 *  never reaches the transport. */
 	#viewBranch: JsonObject = {};
 	#actionSeq = 0;
+	/** The shell's navigate sink (jobs-editor Task 7): navigate actions
+	 *  and accepted results' `navigate` route here — shell-local, never
+	 *  posted (spec §6.1; the webui's useSurface.onNavigate). */
+	onNavigate:
+		| ((action: { type: "navigate"; params?: JsonObject; target?: CoreTarget }) => void)
+		| undefined;
 	/** The highest rev a change event announced (gap detect). */
 	#announcedRev = 0;
 	readonly #timers = new Map<string, ReturnType<typeof setTimeout>>();
@@ -476,8 +483,14 @@ export class SurfaceState {
 		}
 	}
 
-	/** Dispatch an action to the surface; a move joins the overlay first. */
+	/** Dispatch an action to the surface; a move joins the overlay first.
+	 *  A navigate action is SHELL-LOCAL: it routes through `onNavigate`
+	 *  and never reaches the transport (spec §6.1). */
 	dispatch(action: Action, payload: JsonValue): void {
+		if (action.type === "navigate") {
+			this.onNavigate?.(action);
+			return;
+		}
 		const payloadObject: JsonObject =
 			typeof payload === "object" && payload !== null && !Array.isArray(payload)
 				? (payload as JsonObject)
@@ -529,7 +542,16 @@ export class SurfaceState {
 					return;
 				}
 				this.#serverErrors = {};
-				if (result.toast !== undefined) this.#notice(result.toast);
+				// An accepted act's `navigate` routes through the shell LAST
+				// (jobs-editor Task 7, plan-review P2): after the toast and
+				// after the non-move refetch is kicked off — the app's
+				// handler may dispose this state.
+				const finishAccept = (): void => {
+					if (result.toast !== undefined) this.#notice(result.toast);
+					if (result.navigate?.type === "navigate") {
+						this.onNavigate?.(result.navigate);
+					}
+				};
 				if (!isMove) {
 					// A non-move accept (the settings save): the rev already
 					// bumped server-side (the optimistic check needs the form's
@@ -539,6 +561,7 @@ export class SurfaceState {
 					// surface.changed hub — the app owns the probe).
 					this.#rev = result.rev;
 					void this.#fullRefetch();
+					finishAccept();
 					return;
 				}
 				if (result.ops !== undefined) {
@@ -547,6 +570,7 @@ export class SurfaceState {
 					} catch (error) {
 						if (error instanceof DataOpError) {
 							void this.#fullRefetch();
+							finishAccept();
 							return;
 						}
 						throw error;
@@ -559,6 +583,7 @@ export class SurfaceState {
 					}
 					this.#overlay = this.#overlay.filter((entry) => entry.actionId !== actionId);
 					this.#emit();
+					finishAccept();
 				} else {
 					// Accept without ops: hold the entry until confirmed reaches
 					// the accepted rev (no snap-back flicker, §6.3).
@@ -572,6 +597,7 @@ export class SurfaceState {
 						entry.actionId === actionId ? { ...entry, untilRev: result.rev } : entry,
 					);
 					this.#emit();
+					finishAccept();
 				}
 			})
 			.catch(() => {
