@@ -116,7 +116,22 @@ export interface ViewConversation {
 /** The upstream view, as the channel reads it. */
 export interface ConversationViewBase {
 	readonly conversation: ViewConversation;
+	/**
+	 * D1-A (the binding contract): `entries` is the conversation's
+	 * append-only, fork-aware RAW HISTORY keyed by entry id — NEVER the
+	 * model's context, and nothing in core cuts entries at a
+	 * `pi.compaction`/`pi.reset` head marker. The server's watch window is
+	 * pinned so it never slides (`FULL_HISTORY_WINDOW`), so this list only
+	 * ever grows; head markers sit where they were written.
+	 */
 	readonly entries: readonly ViewEntry[];
+	/**
+	 * ID of the entry just before the window (pi-durable 1.5.0's
+	 * `ConversationView.before`). Absent under the server's full-history
+	 * watch — the window always starts the transcript — but declared so a
+	 * client folding a foreign/resumed view stays structurally sound.
+	 */
+	readonly before?: number;
 	/** Built-in conversation documents keyed by kind; absent documents are absent. */
 	readonly docs: Readonly<Record<string, JsonObject>>;
 }

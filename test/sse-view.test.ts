@@ -592,12 +592,13 @@ describe("GET /v1/conversations/:id/stream", () => {
 		}
 	});
 
-	test("a forced compaction mid-stream falls back to a fresh snapshot frame", async () => {
+	test("a forced compaction mid-stream appends its divider as a delta (D1-A)", async () => {
 		// Review Focus 1: the blocking threshold is contextWindow −
 		// reserveTokens = 600 tokens (the compaction.test.ts pattern), so turn
-		// two's transcript crosses it; compaction rewrites the entry list with
-		// a NEW head marker first — not a suffix append — so diffViews returns
-		// undefined and the stream sends `event: snapshot` instead of a delta.
+		// two's transcript crosses it. Under D1-A the compaction's new head
+		// marker APPENDS in place (nothing is cut), so diffViews stays
+		// representable and the divider rides as `event: delta` — never a
+		// snapshot fallback (the pre-D1-A shape this test pinned).
 		const server = await bootServer({
 			env: {
 				SIGRUN_COMPACTION_RESERVE_TOKENS: "127400",
@@ -628,9 +629,10 @@ describe("GET /v1/conversations/:id/stream", () => {
 					),
 			);
 			expect(await first).toBe(202);
-			// Turn two crosses the threshold: the compaction rewrite lands as a
-			// SECOND snapshot frame (the fallback), and the folded view carries
-			// the pi.compaction summary entry.
+			const entriesBefore = folded(connection).entries.length;
+			// Turn two crosses the threshold: the compaction lands as a delta
+			// whose append carries the pi.compaction summary entry, and the
+			// folded view keeps every pre-compaction entry (D1-A: nothing cut).
 			const second = submit(
 				server,
 				root.id,
@@ -638,10 +640,8 @@ describe("GET /v1/conversations/:id/stream", () => {
 			);
 			await connection.waitFor(
 				(event) =>
-					event.event === "snapshot" &&
-					connection.eventsSoFar().filter((e) => e.event === "snapshot")
-						.length >= 2 &&
-					folded(connection).entries.some(
+					event.event === "delta" &&
+					(deltaOf(event).entries?.append ?? []).some(
 						(entry) => entry.kind === "pi.compaction",
 					),
 				15_000,
@@ -656,15 +656,19 @@ describe("GET /v1/conversations/:id/stream", () => {
 				15_000,
 			);
 			expect(await second).toBe(202);
+			// Exactly ONE snapshot total (the connect frame): the window never
+			// slides, so every change — compaction included — folds as deltas.
 			expect(
 				connection.eventsSoFar().filter((e) => e.event === "snapshot")
 					.length,
-			).toBe(2);
+			).toBe(1);
+			const foldedView = folded(connection);
 			expect(
-				folded(connection).entries.some(
+				foldedView.entries.some(
 					(entry) => entry.kind === "pi.compaction",
 				),
 			).toBe(true);
+			expect(foldedView.entries.length).toBeGreaterThan(entriesBefore);
 		} finally {
 			connection.destroy();
 		}
