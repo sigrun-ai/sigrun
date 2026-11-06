@@ -317,7 +317,7 @@ test("a declared Earendil peer range excluding the host quarantines; the healthy
 				{
 					name: specifier,
 					status: "quarantined",
-					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.4.0",
+					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.5.0",
 				},
 				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
@@ -365,7 +365,7 @@ test("a dist-entry package's root peer manifest quarantines an excluding range",
 				{
 					name: specifier,
 					status: "quarantined",
-					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.4.0",
+					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.5.0",
 				},
 			]);
 			expect(opened.registry.snapshot().extension("dist-peer-ext")).toBeUndefined();
@@ -411,7 +411,7 @@ test("a chord peer range excluding the host quarantines", async () => {
 				{
 					name: specifier,
 					status: "quarantined",
-					error: "peer @earendil-works/chord 1.3.0 excludes host 1.4.0",
+					error: "peer @earendil-works/chord 1.3.0 excludes host 1.5.0",
 				},
 			]);
 		} finally {
@@ -453,9 +453,9 @@ test("an unparseable owning manifest passes the declared-peer guard", async () =
 });
 
 test.each([
-	["widened range", { "@earendil-works/pi-durable": "1.3.0 || 1.4.0" }],
-	// Review Focus 4: ^1.3.0 admits 1.4.0, so this is deliberately not quarantined.
-	["caret range", { "@earendil-works/pi-durable": "^1.3.0" }],
+	["widened range", { "@earendil-works/pi-durable": "1.4.0 || 1.5.0" }],
+	// Review Focus 4: ^1.4.0 admits 1.5.0, so this is deliberately not quarantined.
+	["caret range", { "@earendil-works/pi-durable": "^1.4.0" }],
 	["wildcard", { "@earendil-works/pi-durable": "*" }],
 	["file specifier", { "@earendil-works/pi-durable": "file:../sigrun" }],
 	["unrelated exact pin", { typebox: "1.3.27" }],

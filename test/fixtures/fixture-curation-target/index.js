@@ -29,7 +29,7 @@
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { randomUUID } from "node:crypto";
 
 /** `notes_write` executes: `{user, text}` per call. */

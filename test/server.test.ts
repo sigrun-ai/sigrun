@@ -34,7 +34,7 @@ import { seededIdentity } from "./helpers/identity.js";
 import type { FastifyInstance } from "fastify";
 
 /** The pi-durable version `GET /v1/meta` must report (pinned dependency). */
-const PI_DURABLE_VERSION = "1.4.0";
+const PI_DURABLE_VERSION = "1.5.0";
 
 /** The test fixture extension package's entry (loader contract: default factory). */
 const FIXTURE_SPECIFIER = pathToFileURL(
@@ -215,7 +215,10 @@ describe("GET /v1/conversations/:id", () => {
 		const kinds = view.entries.map((entry: { kind: string }) => entry.kind);
 		expect(kinds).toContain("pi.user");
 		expect(kinds).toContain("pi.assistant");
-		expect(view.docs["pi.usage"].models["faux/m"].input).toBeGreaterThan(0);
+		// pi-durable 1.5.0's usage accounting reports the faux turn's prompt
+		// tokens as cache writes (input stays 0) — the settled-turn signal is
+		// totalTokens, provider-shaped token fields are upstream's own call.
+		expect(view.docs["pi.usage"].models["faux/m"].totalTokens).toBeGreaterThan(0);
 		// The settled turn is complete: steer back to idle on the wire view.
 		expect(view.steer).toEqual({ busy: false, queued: 0 });
 	});

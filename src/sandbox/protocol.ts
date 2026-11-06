@@ -4,7 +4,7 @@ import {
 	ExecutionError,
 	FileError,
 	type ShellOutputSkip,
-	type WatchChange,
+	type FileChange,
 } from "@earendil-works/pi-durable/env";
 
 export type DecodedValue =
@@ -199,7 +199,7 @@ export function decodeError(error: WireError): FileError | ExecutionError {
 			);
 }
 
-export function decodeWatchChange(value: DecodedValue): WatchChange {
+export function decodeWatchChange(value: DecodedValue): FileChange {
 	if (typeof value !== "object" || value === null || Array.isArray(value)) {
 		throw new TypeError("invalid watcher change");
 	}
@@ -227,16 +227,17 @@ export function decodeWatchChange(value: DecodedValue): WatchChange {
 			throw new TypeError("invalid watcher error");
 		}
 		return {
+			kind: "failed",
 			error: new FileError(code as ConstructorParameters<typeof FileError>[0], message, path),
 		};
 	}
-	if ("overflow" in value && value.overflow === true) return { overflow: true };
+	if ("overflow" in value && value.overflow === true) return { kind: "overflow" };
 	if (
 		"paths" in value &&
 		Array.isArray(value.paths) &&
 		value.paths.every((path) => typeof path === "string")
 	) {
-		return { paths: value.paths };
+		return { kind: "paths", paths: value.paths };
 	}
 	throw new TypeError("invalid watcher change");
 }

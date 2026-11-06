@@ -211,16 +211,27 @@ export function createJobsService(deps: JobsServiceDeps): JobsService {
 	// the subscription is the only publish trigger.
 	if (deps.onChange !== undefined) {
 		const onChange = deps.onChange;
-		deps.harness.subscribeCommits((publication) => {
-			const seen = new Set<string>();
-			for (const change of publication.changes) {
-				if (change.type !== "document") continue;
-				if (change.record.kind !== JobDoc.definition.kind) continue;
-				const jobId = change.record.key;
-				if (jobId === undefined || seen.has(jobId)) continue;
-				seen.add(jobId);
-				onChange(jobId);
-			}
+		deps.harness.observeCommits({
+			advance: (publication) => {
+				try {
+					const seen = new Set<string>();
+					for (const change of publication.changes) {
+						if (change.type !== "document") continue;
+						if (change.record.kind !== JobDoc.definition.kind) continue;
+						const jobId = change.record.key;
+						if (jobId === undefined || seen.has(jobId)) continue;
+						seen.add(jobId);
+						onChange(jobId);
+					}
+				} catch (error) {
+					console.error("jobs/index: commit observer failed", error);
+				}
+			},
+			end: (end) => {
+				if (end.kind === "ended") return;
+				if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+				console.error("jobs/index: commit observation failed", end.kind === "failed" ? end.error : end);
+			},
 		});
 	}
 

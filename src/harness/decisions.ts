@@ -11,8 +11,8 @@
  * credential (scrubbed) nor the submitted request.
  */
 
-import { Type } from "@earendil-works/pi-ai";
-import type { TSchema } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
+import type { TSchema } from "typebox";
 import { Compile } from "typebox/compile";
 import type { Validator } from "typebox/compile";
 import {

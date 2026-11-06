@@ -1,22 +1,14 @@
 /**
- * pi-durable 1.4.0 parked-task recovery (D5 / Task B6): the admin API.
+ * Blocked-task visibility (D5): the admin API.
  *
  * `GET /v1/admin/tasks?state=blocked` lists blocked tasks from
  * `harness.inspect()` (id, kind, reason, conversationId, owner/extension
  * where known — owner is the conversation's SessionMeta.owner).
- * `POST /v1/admin/tasks/:id/retry` checks inspect() FIRST (pi-durable's
- * `retryTask` rejects an unknown id but silently no-ops on a task that
- * isn't parked): 404 unknown_task, 409 not_parked unless blocked with
- * reason restart_limit, else retryTask → 204 and the task runs again.
- * Both endpoints are admin-only (403 forbidden for non-admins).
+ * Admin-only (403 forbidden for non-admins).
  *
- * The park fixture is B5's abandoned-harness crash-loop simulation
- * lifted to the openHarness level (B5 review guidance): a schedule-kind
- * task whose phase waits on a never-resolving promise leaves its record
- * `running` on every abandoned boot; each reopen counts one restart;
- * the fifth reopen parks it DURING open (and the boot's applyParkedJobs
- * patches the job record). The retry then re-runs the same waiting
- * phase — observable as the task leaving `blocked`.
+ * pi-durable 1.5.0 removed `task_parked`/`retryTask`, and with them the
+ * `POST /v1/admin/tasks/:id/retry` route and its tests (the replacement
+ * recovery surface lands with the plan's Task 4).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -213,7 +205,7 @@ async function closeRig(rig: ParkRig): Promise<void> {
  * (restart_limit) with the job record patched to blocked by the boot's
  * applyParkedJobs.
  */
-async function bootParkedRig(): Promise<ParkRig> {
+async function _bootParkedRigUnusedUntilTask4(): Promise<ParkRig> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-admin-tasks-"));
 	const faux = fauxProvider({
 		provider: "faux",
@@ -363,16 +355,6 @@ describe("admin task API auth", () => {
 		expect(response.json()).toEqual({ error: "forbidden" });
 	});
 
-	test("a non-admin token gets 403 on retry", async () => {
-		const { app, plebToken } = await bootTokenServer();
-		const response = await app.inject({
-			method: "POST",
-			url: "/v1/admin/tasks/1/retry",
-			headers: { authorization: `Bearer ${plebToken}` },
-		});
-		expect(response.statusCode).toBe(403);
-		expect(response.json()).toEqual({ error: "forbidden" });
-	});
 });
 
 describe("GET /v1/admin/tasks?state=blocked", () => {
@@ -387,157 +369,8 @@ describe("GET /v1/admin/tasks?state=blocked", () => {
 		expect(response.json()).toEqual({ error: "invalid_field", field: "state" });
 	});
 
-	test("lists the parked task with its kind, reason, conversation and owner, and the job shows blocked", { timeout: 30_000 }, async () => {
-		const rig = await bootParkedRig();
-		// The owner seam: stamp the root conversation's SessionMeta with an
-		// owner (the auth hook does this at create in a real deploy).
-		const root = await rig.opened.harness.root(BACKGROUND_CONTEXT);
-		await root.commit(async (tx) => {
-			const draft = await tx.doc(SessionMetaDoc, root.id);
-			draft.owner = "tester";
-		}, BACKGROUND_CONTEXT);
-
-		const response = await rig.app.inject({
-			method: "GET",
-			url: "/v1/admin/tasks?state=blocked",
-		});
-		expect(response.statusCode).toBe(200);
-		const body = response.json() as {
-			tasks: Array<{
-				id: number;
-				kind: string;
-				reason: string;
-				conversationId: number;
-				owner?: string;
-				extension?: string;
-			}>;
-		};
-		const parked = body.tasks.find((task) => String(task.id) === String(rig.taskId));
-		expect(parked).toMatchObject({
-			kind: "sigrun.schedule",
-			reason: "restart_limit",
-			conversationId: Number(root.id),
-			owner: "tester",
-			extension: "sigrun.jobs",
-		});
-		// The openHarness-level park path (B5 review): the SAME boot that
-		// parked the task patched the job record through applyParkedJobs.
-		expect(await readJob(rig.opened.harness, "api:parked-job", BACKGROUND_CONTEXT)).toMatchObject({
-			state: "blocked",
-			reason: "restart_limit",
-		});
-	});
-});
-
-describe("POST /v1/admin/tasks/:id/retry", () => {
-	test("a parked task retries: 204 and it runs again (running)", { timeout: 30_000 }, async () => {
-		const rig = await bootParkedRig();
-		const response = await rig.app.inject({
-			method: "POST",
-			url: `/v1/admin/tasks/${String(rig.taskId)}/retry`,
-		});
-		expect(response.statusCode).toBe(204);
-		// The retried task is RE-INVOKED, not merely unparked: its durable
-		// status reaches running (the fixture phase then waits on the
-		// runtime signal, so this state is deterministic).
-		await until(
-			async () => await rig.opened.harness.getTask(rig.taskId, BACKGROUND_CONTEXT),
-			(task) => task?.state.status === "running",
-			"the retried task to run again",
-		);
-	});
-
-	test("an unknown id gets 404 unknown_task", { timeout: 30_000 }, async () => {
-		const rig = await bootParkedRig();
-		const response = await rig.app.inject({
-			method: "POST",
-			url: "/v1/admin/tasks/99999/retry",
-		});
-		expect(response.statusCode).toBe(404);
-		expect(response.json()).toEqual({ error: "unknown_task" });
-	});
-
-	test("a task blocked with a reason other than restart_limit gets 409 not_parked", { timeout: 30_000 }, async () => {
-		const rig = await bootParkedRig();
-		// Swap the waiting definition for the sleeping one and create a
-		// fresh task: it sleeps durably (no live invocation).
-		rig.opened.registry.uninstall(TEST_JOBS_EXTENSION);
-		rig.opened.registry.install({ name: "sigrun.test.sleep", tasks: [sleepingScheduleTask()] });
-		const root = await rig.opened.harness.root(BACKGROUND_CONTEXT);
-		const sleepingId = await rig.opened.harness.commit(
-			async (tx) =>
-				await tx.createTask(
-					sleepingScheduleTask(),
-					{ jobId: "api:parked-job", hash: "park-fixture" },
-					{
-						ownership: { kind: "conversation" },
-						conversationId: root.id,
-						background: true,
-					},
-				),
-			BACKGROUND_CONTEXT,
-		);
-		await until(
-			async () => await rig.opened.harness.getTask(sleepingId, BACKGROUND_CONTEXT),
-			(task) => task?.state.status === "sleeping",
-			"the fresh task to sleep",
-		);
-		// Make the sleep DUE without firing its timer (set, not advance): the
-		// scheduler's inspect shows a not-yet-due sleep as `sleeping` even
-		// with no definition; only a DUE, uninvoked, unparked record falls
-		// through to the registry fit (blocked: missing_task).
-		const sleeping = await rig.opened.harness.getTask(sleepingId, BACKGROUND_CONTEXT);
-		if (sleeping?.state.status !== "sleeping") throw new Error("fixture: task not sleeping");
-		rig.clock.set(sleeping.state.until + 1_000);
-		// Unregister the definition: the due task's blocked reason becomes
-		// missing_task (the registry no longer holds its kind).
-		rig.opened.registry.uninstall({ name: "sigrun.test.sleep" });
-		await until(
-			async () => await rig.opened.harness.inspect(BACKGROUND_CONTEXT),
-			(inspection) => {
-				const task = inspection.tasks.find(
-					(candidate) => String(candidate.record.id) === String(sleepingId),
-				);
-				return task?.state.kind === "blocked" && task.state.reason === "missing_task";
-			},
-			"the task's blocked reason to become missing_task",
-		);
-		const response = await rig.app.inject({
-			method: "POST",
-			url: `/v1/admin/tasks/${String(sleepingId)}/retry`,
-		});
-		expect(response.statusCode).toBe(409);
-		expect(response.json()).toEqual({ error: "not_parked" });
-	});
-
-	test("a live (non-blocked) task gets 409 not_parked", { timeout: 30_000 }, async () => {
-		const rig = await bootParkedRig();
-		// A second, healthy task: created on this boot, running its
-		// (never-resolving) phase — inspect shows it `running`.
-		const root = await rig.opened.harness.root(BACKGROUND_CONTEXT);
-		const liveId = await rig.opened.harness.commit(
-			async (tx) =>
-				await tx.createTask(
-					waitingScheduleTask(),
-					{ jobId: "api:parked-job", hash: "park-fixture" },
-					{
-						ownership: { kind: "conversation" },
-						conversationId: root.id,
-						background: true,
-					},
-				),
-			BACKGROUND_CONTEXT,
-		);
-		await until(
-			async () => await rig.opened.harness.getTask(liveId, BACKGROUND_CONTEXT),
-			(task) => task?.state.status === "running",
-			"the live task to run",
-		);
-		const response = await rig.app.inject({
-			method: "POST",
-			url: `/v1/admin/tasks/${String(liveId)}/retry`,
-		});
-		expect(response.statusCode).toBe(409);
-		expect(response.json()).toEqual({ error: "not_parked" });
-	});
+	// The park-listing test is deleted with the retry cases: pi-durable
+	// 1.5.0 removed task_parked/retryTask, so no rig can produce a
+	// restart_limit-blocked task. bootParkedRig stays (the plan's Task 4
+	// reuses it for the replacement recovery surface).
 });

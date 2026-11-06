@@ -33,7 +33,8 @@
  *   implementation and this contract cannot drift silently.
  */
 
-import type { AssistantMessage, Provider, TSchema } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Provider } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type {
 	ConversationDocToken,
 	ConversationId,

@@ -76,7 +76,8 @@ export const NPM_TIMEOUT_MS = 120_000;
  * Runtime modules the HOST ships that extension packages may import bare.
  * Extension packages declare these devDependencies-only (the
  * provider-plugins dependency posture: pi-ai/pi-durable ship with sigrun,
- * typebox ships as pi-ai's own dependency — structural typing at runtime,
+ * and typebox ships as sigrun's OWN direct dependency (pi-durable 1.5.0:
+ * pi-ai no longer carries or re-exports it) — structural typing at runtime,
  * never identity), and npm never installs a dependency's devDependencies,
  * so a package installed into the packages dir cannot resolve them on its
  * own. {@link ensureHostModuleLinks} links sigrun's own copies into the

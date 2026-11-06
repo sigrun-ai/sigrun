@@ -171,7 +171,7 @@ describe("SandboxedExecutionEnv workspace operations", { timeout: 30_000 }, () =
 		await new Promise((resolve) => setTimeout(resolve, 50));
 		await writeFile(join(workspace, "watched"), "change");
 		await vi.waitFor(() => expect(changes.flat().some((path) => path.includes("watched"))).toBe(true));
-		await watcher.close(context);
+		await watcher.stop(context);
 	});
 
 	test("exposes and forwards listFiles when the worker advertises it", async () => {

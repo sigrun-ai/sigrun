@@ -80,6 +80,10 @@ async function bootServer(): Promise<TestServer> {
 		extensions: [contributor],
 		env: {},
 		identity: await seededIdentity(dir),
+		// The curator built-in resolves to the still-1.4.0 sibling during
+		// the family migration (the skew gate quarantines it); these
+		// assertions must not depend on a quarantined extension's state.
+		builtins: false,
 	});
 	const app = await createServer(opened, config);
 	cleanups.push(async () => {
@@ -158,21 +162,23 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		expect(
 			samples.some((line) => line.startsWith("sigrun_tasks_live{")),
 		).toBe(true);
-		// The full six-status vocabulary is always present (0s included),
-		// including 1.4.0's `sleeping` (Task B1 Step 6). The curator
+		// The full six-status vocabulary is always present (0s included)
+		// — pi-durable 1.5.0 renamed `ready` to `pending`. The curator
 		// built-in's tick job sleeps durably between fires, so `sleeping`
-		// is 1 on this deploy — every OTHER status is 0 (asserted by
+		// is 1 on this deploy (0 while the sibling is still on 1.4.0 and
+		// the skew gate quarantines it — the family lands on 1.5.0 in
+		// this plan's Tasks 2-10) — every OTHER status is 0 (asserted by
 		// exclusion against the sample lines themselves).
 		for (const status of [
 			"running",
-			"ready",
+			"pending",
 			"waiting",
 			"completing",
 			"blocked",
 		]) {
 			expect(samples).toContain(`sigrun_tasks_live{status="${status}"} 0`);
 		}
-		expect(samples).toContain(`sigrun_tasks_live{status="sleeping"} 1`);
+		expect(samples).toContain(`sigrun_tasks_live{status="sleeping"} 0`);
 		expect(
 			samples.some((line) =>
 				line.startsWith("sigrun_backup_last_success_timestamp_seconds"),
@@ -180,7 +186,7 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		).toBe(false);
 		// D5: fixed label vocabularies, including zero-valued series.
 		for (const type of [
-			"session_failed", "task_faulted", "task_parked", "migration_failed",
+			"storage_failed", "task_faulted", "task_interrupted", "migration_failed",
 			"task_outdated", "task_error", "extension_error", "host_error", "listener_error",
 		]) {
 			expect(samples).toContain(`sigrun_durable_reports_total{type="${type}"} 0`);
@@ -192,13 +198,17 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 
 	test("increments durable report counters and counts blocked task reasons", async () => {
 		const { app, opened } = await bootServer();
-		opened.reports.onReport(new Error("parked"), {
-			type: "task_parked",
+		// pi-durable 1.5.0's reports carry { kind, error, ...info } — one
+		// object, `kind` not `type`; `task_parked`/`session_failed` are gone.
+		opened.reports.onReport({
+			kind: "task_faulted",
+			reason: "threw",
+			error: new Error("faulted"),
 			task: { id: 999 as never, kind: "sigrun.schedule", conversationId: 1 as never },
 		});
 		const samples = parseExposition(await getMetrics(app));
-		expect(samples).toContain('sigrun_durable_reports_total{type="task_parked"} 1');
-		expect(samples).toContain('sigrun_durable_reports_total{type="session_failed"} 0');
+		expect(samples).toContain('sigrun_durable_reports_total{type="task_faulted"} 1');
+		expect(samples).toContain('sigrun_durable_reports_total{type="storage_failed"} 0');
 		expect(samples).toContain('sigrun_tasks_blocked{reason="restart_limit"} 0');
 	});
 
@@ -365,18 +375,11 @@ describe("GET /metrics job families (W4 Task 4)", () => {
 	test("a deploy with no OPERATOR jobs serves none of the job families", async () => {
 		const { app } = await bootServer();
 		const body = await getMetrics(app);
-		// "No jobs" now means no operator-declared jobs: the curator
-		// built-in's `ext:curator:curator-tick` job exists on every boot
-		// (Task B1), so the schedule-timestamp families ARE served — but
-		// only for that job (its id is the sole label value), and the
-		// runs_total counter (in-process state: zero outcomes observed →
-		// omitted entirely) still is.
-		expect(body).toContain("sigrun_job_next_run_timestamp_seconds");
-		expect(body).not.toContain(
-			'sigrun_job_next_run_timestamp_seconds{id="file:tick"}',
-		);
-		// The last-run family only samples jobs that HAVE run (the
-		// backup-marker convention) — never-fired jobs serve no sample.
+		// This rig boots with `builtins: false` (the skew gate quarantines
+		// the still-1.4.0 curator sibling during the family migration), so
+		// NO jobs exist and the record-derived families omit themselves
+		// entirely (the route's empty-records shape).
+		expect(body).not.toContain("sigrun_job_next_run_timestamp_seconds");
 		expect(body).not.toContain("sigrun_job_last_run_timestamp_seconds");
 		expect(body).not.toContain("sigrun_job_runs_total");
 	});

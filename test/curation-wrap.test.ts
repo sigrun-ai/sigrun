@@ -220,6 +220,7 @@ async function liveRunOf(
 		live.run = {
 			taskId: 1 as TaskId,
 			inputs: inputs.map((input) => input as SubmissionId),
+			turns: 0,
 		};
 	}, BACKGROUND_CONTEXT);
 }

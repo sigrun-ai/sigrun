@@ -14,7 +14,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { Compile } from "typebox/compile";
 import type { Validator } from "typebox/compile";
-import type { TSchema } from "@earendil-works/pi-ai";
+import type { TSchema } from "typebox";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import type {
 	PublishedHook,

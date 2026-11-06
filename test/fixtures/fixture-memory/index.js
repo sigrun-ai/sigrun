@@ -41,7 +41,7 @@ import {
 	section,
 	UserEntry,
 } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 /** The stable placeholder text (mirrors the real package byte-for-byte). */
 export const MEMORY_PLACEHOLDER = "long-term memory backend not configured";

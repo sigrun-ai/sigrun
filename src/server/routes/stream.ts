@@ -140,9 +140,10 @@ export function registerStreamRoutes(
 			// view the diff loop measures against.
 			let prev = serializeConversationView(watch.value);
 			send("snapshot", prev);
-			watch.start(async (value) => {
+			watch.start(async (call) => {
 				if (finished) return; // the stream is over; drop the frame
-				const next = serializeConversationView(value);
+				if (call.kind !== "value") return;
+				const next = serializeConversationView(call.value);
 				const delta = diffViews(prev, next);
 				prev = next;
 				// Not representable as entries append/remove + changed docs (a

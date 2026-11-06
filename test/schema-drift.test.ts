@@ -90,9 +90,9 @@ async function captureLiveView(): Promise<ConversationView> {
 				BACKGROUND_CONTEXT,
 			);
 			await submission.wait(BACKGROUND_CONTEXT);
-			const viewState = await root.viewState(BACKGROUND_CONTEXT);
-			const view = viewState.value;
-			await viewState.dispose();
+			const watch = await root.watch(BACKGROUND_CONTEXT);
+			const view = watch.value;
+			await watch.stop();
 			return view;
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);

@@ -284,11 +284,13 @@ export function submissionId(id: number): SubmissionId {
 	return id as SubmissionId;
 }
 
-/** Read one conversation's current view frame; disposes the state handle. */
+/** Read one conversation's current view frame; disposes the watch handle. */
 export async function readView(conversation: Conversation) {
-	const state = await conversation.viewState(BACKGROUND_CONTEXT);
-	const view = serializeConversationView(state.value);
-	await state.dispose();
+	// Temporary Task 1 shape: the 1.5.0 watch replaces viewState; Task 2
+	// replaces this with conversation-watch routing.
+	const watch = await conversation.watch(BACKGROUND_CONTEXT);
+	const view = serializeConversationView(watch.value);
+	await watch.stop();
 	return view;
 }
 

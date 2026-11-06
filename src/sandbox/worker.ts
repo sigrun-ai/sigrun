@@ -5,7 +5,7 @@ import {
 	type BinaryReader,
 	type DirReader,
 	type TextLineReader,
-	type WatchChange,
+	type FileChange,
 	type WatchTarget,
 	type ListFilesOptions,
 } from "@earendil-works/pi-durable/env";
@@ -26,7 +26,7 @@ type Handle =
 	| { kind: "text"; value: TextLineReader }
 	| { kind: "binary"; value: BinaryReader }
 	| { kind: "dir"; value: DirReader }
-	| { kind: "watch"; value: { mode: "native" | "polling"; close(context: Context): Promise<void> } };
+	| { kind: "watch"; value: { mode: "native" | "polling"; stop(context: Context): Promise<void> } };
 
 const environments = new Map<string, NodeExecutionEnv>();
 /** Exec requests that have not reached pi-durable's synchronous spawn yet. */
@@ -99,7 +99,13 @@ async function handleCall(request: Request, args: unknown[]): Promise<unknown> {
 	const method = request.op.slice("handle.".length);
 	if (method === "close") {
 		handles.delete(id);
-		await handle.value.close(BACKGROUND_CONTEXT);
+		// pi-durable 1.5.0: readers close, watchers stop — the wire verb is
+		// "close" for both (a rename only).
+		if (handle.kind === "watch") {
+			await handle.value.stop(BACKGROUND_CONTEXT);
+		} else {
+			await handle.value.close(BACKGROUND_CONTEXT);
+		}
 		return null;
 	}
 	if (handle.kind === "text" && method === "readLine") {
@@ -174,7 +180,12 @@ async function dispatch(request: Request): Promise<unknown> {
 		case "watch": {
 			const result = await env.watch(
 				args[0] as readonly WatchTarget[],
-				(change: WatchChange) => write({ id: request.id, event: "watch", change: encodeValue("error" in change ? { error: wireError(change.error) } : change) }),
+				(change: FileChange) =>
+					write({
+						id: request.id,
+						event: "watch",
+						change: encodeValue(change.kind === "failed" ? { error: wireError(change.error) } : change.kind === "overflow" ? { overflow: true } : change),
+					}),
 				BACKGROUND_CONTEXT,
 			);
 			return result.ok
@@ -295,6 +306,12 @@ process.stdin.on("data", (chunk: string) => {
 process.stdin.on("end", () => {
 	for (const controller of active.values()) controller.abort();
 	for (const env of environments.values()) void env.cleanup(BACKGROUND_CONTEXT);
-	for (const handle of handles.values()) void handle.value.close(BACKGROUND_CONTEXT);
+	for (const handle of handles.values()) {
+		if (handle.kind === "watch") {
+			void handle.value.stop(BACKGROUND_CONTEXT);
+		} else {
+			void handle.value.close(BACKGROUND_CONTEXT);
+		}
+	}
 	process.exit(0);
 });

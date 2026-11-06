@@ -370,15 +370,15 @@ async function main(): Promise<never> {
 	}
 
 	// The structural view (spec §9.3): serializing it is itself an assertion.
-	const viewState = await root.viewState(BACKGROUND_CONTEXT);
+	const watch = await root.watch(BACKGROUND_CONTEXT);
 	let serialized = "";
 	try {
-		serialized = JSON.stringify(viewState.value);
+		serialized = JSON.stringify(watch.value);
 	} catch (error) {
-		await viewState.dispose();
+		await watch.stop();
 		return verifyFailed(`view does not serialize: ${String(error)}`);
 	}
-	await viewState.dispose();
+	await watch.stop();
 	if (serialized.length === 0) {
 		return verifyFailed("serialized view is empty");
 	}

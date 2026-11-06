@@ -27,7 +27,7 @@ import {
 	fauxToolCall,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
 	defineTool,
 	InboxDoc,
@@ -98,6 +98,11 @@ async function bootServer(
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
 		env: { SIGRUN_CONFIG_DIR: dir },
+		// The gateway built-in stays on 1.4.0 until the family migration
+		// (the skew gate quarantines it); the default-tools assertion
+		// below pins the core+skills set only until Task 8 re-pins the
+		// gateway's list_chats/send_message pair.
+		builtins: false,
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		settingsDir: dir,
 		settings: opts.settings,
@@ -794,18 +799,17 @@ describe("defaultTools and perModelThinking (the sigrun-resolved fields)", () =>
 		const fullAgent = await conv!.agent(BACKGROUND_CONTEXT);
 		// Every core-installed tool (7 named core tools + load_skill and
 		// the A6 skill_manage curation tool from the skills convention +
-		// the 2 U5 blocks tools + the gateway's two agent tools = 13) — the
-		// no-filter default for a built-in install.
+		// the 2 U5 blocks tools = 11) — the no-filter default for a
+		// builtins-disabled rig. The gateway's list_chats/send_message pair
+		// returns with the 1.5.0 built-ins (Task 8 re-pins them).
 		expect(fullAgent.tools.map((tool) => tool.name).sort()).toEqual([
 			"bash",
 			"edit",
 			"find",
 			"grep",
-			"list_chats",
 			"load_skill",
 			"ls",
 			"read",
-			"send_message",
 			"show_blocks",
 			"skill_manage",
 			"update_blocks",

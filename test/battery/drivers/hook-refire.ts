@@ -234,8 +234,8 @@ async function main(): Promise<never> {
 
 	// Exactly one final answer (the recovered run's answer) — the turn-level
 	// sanity the fire count rides on.
-	const viewState = await root.viewState(BACKGROUND_CONTEXT);
-	const view = viewState.value;
+	const watch = await root.watch(BACKGROUND_CONTEXT);
+	const view = watch.value;
 	const finalAnswers = assistantMessages(
 		view.entries as unknown as { kind: string; model?: readonly unknown[] }[],
 	).filter((message) => message.stopReason === "stop");
@@ -243,10 +243,10 @@ async function main(): Promise<never> {
 	try {
 		serialized = JSON.stringify(view);
 	} catch (error) {
-		await viewState.dispose();
+		await watch.stop();
 		return verifyFailed(`view does not serialize: ${String(error)}`);
 	}
-	await viewState.dispose();
+	await watch.stop();
 	if (finalAnswers.length !== 1) {
 		return verifyFailed(
 			`expected exactly one final answer after recovery, found ${finalAnswers.length}`,

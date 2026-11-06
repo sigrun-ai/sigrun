@@ -316,12 +316,12 @@ describe("boot refusals and fail-closed consumers", () => {
 		const root = await opened.harness.root(BACKGROUND_CONTEXT);
 		const submission = await root.submit({ type: "input", content: [{ type: "text", text: "run bash" }] }, BACKGROUND_CONTEXT);
 		await submission.wait(BACKGROUND_CONTEXT);
-		const view = await root.viewState(BACKGROUND_CONTEXT);
+		const watch = await root.watch(BACKGROUND_CONTEXT);
 		try {
-			const text = JSON.stringify(view.value.entries);
+			const text = JSON.stringify(watch.value.entries);
 			expect(text).toContain("isolation_unavailable: not linux");
 			expect(text).not.toContain("echo must-not-run\nmust-not-run");
-		} finally { await view.dispose(); }
+		} finally { await watch.stop(); }
 	});
 
 	test("GET files fails with isolation_unavailable", async () => {

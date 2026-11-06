@@ -170,15 +170,27 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 	// this process). A no-jobs harness pays ONE boolean check per terminal
 	// task, never a scan.
 	let jobsMayExist = false;
-	const offJobWrites = deps.harness.subscribeCommits((publication) => {
-		for (const change of publication.changes) {
-			if (change.type !== "document") continue;
-			if (change.record.kind === JobDoc.definition.kind) {
-				jobsMayExist = true;
-				return;
+	const offJobWritesObservation = deps.harness.observeCommits({
+		advance: (publication) => {
+			try {
+				for (const change of publication.changes) {
+					if (change.type !== "document") continue;
+					if (change.record.kind === JobDoc.definition.kind) {
+						jobsMayExist = true;
+						return;
+					}
+				}
+			} catch (error) {
+				console.error("jobs/observe: commit observer failed", error);
 			}
-		}
+		},
+		end: (end) => {
+			if (end.kind === "ended") return;
+			if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+			console.error("jobs/observe: commit observation failed", end.kind === "failed" ? end.error : end);
+		},
 	});
+	const offJobWrites = (): void => offJobWritesObservation.detach();
 	const offTaskSettled = deps.eventBus.onHostEvent((event) => {
 		if (event.type !== "taskSettled") return;
 		if (!jobsMayExist) return;

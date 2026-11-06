@@ -74,6 +74,10 @@ describe("@sigrun/sigrun/extension (the documented contract type)", () => {
 			expect(
 				specifier.startsWith("@earendil-works/pi-durable") ||
 					specifier.startsWith("@earendil-works/pi-ai") ||
+					// pi-durable 1.5.0: pi-ai no longer re-exports Type/TSchema —
+					// the contract's schema types come from typebox (a core
+					// dependency the loader host-links for extensions).
+					specifier === "typebox" ||
 					specifier.startsWith("@sigrun/shared/"),
 				`disallowed import "${specifier}" in dist/extension.d.ts`,
 			).toBe(true);

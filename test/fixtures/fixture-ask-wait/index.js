@@ -24,7 +24,7 @@
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { awaitWithContext } from "@earendil-works/chord/context";
 import { BLOCK_SET_VERSION } from "@sigrun/shared/blocks";
 

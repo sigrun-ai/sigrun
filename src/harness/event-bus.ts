@@ -503,9 +503,17 @@ export class EventBus {
 		if (options.onHostEvent !== undefined) {
 			this.onHostEvent(options.onHostEvent);
 		}
-		this.#unsubscribe = harness.subscribeCommits((publication) => {
-			this.observe(publication);
+		const observation = harness.observeCommits({
+			advance: (publication) => {
+				this.observe(publication);
+			},
+			end: (end) => {
+				if (end.kind === "ended") return;
+				if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+				console.error("event-bus: commit observation failed", end.kind === "failed" ? end.error : end);
+			},
 		});
+		this.#unsubscribe = () => observation.detach();
 		// The idle sweep is host-owned machinery (never an extension factory
 		// concern — the twill lesson) and binds to THIS bus's lifetime: close
 		// and shutdownSequence both clear it. Unref'd so a booted-but-idle
@@ -1060,7 +1068,7 @@ export class EventBus {
 				if (change.conversationId === undefined) continue;
 				this.#internal.set(
 					change.conversationId,
-					change.value?.internal === true,
+					change.kind === "change" && change.value.internal === true,
 				);
 			}
 			for (const change of publication.changes) {
@@ -1113,9 +1121,9 @@ export class EventBus {
 					// fork's document.copy carries no status transition).
 					if (
 						change.type === "document" &&
+						change.kind === "change" &&
 						kind === InteractionDoc.definition.kind &&
-						change.conversationId !== undefined &&
-						change.value !== null
+						change.conversationId !== undefined
 					) {
 						const record = change.value as {
 							kind?: unknown;
@@ -1240,7 +1248,7 @@ export class EventBus {
 					this.#metaBasis.set(conversationId, childBasis);
 					continue;
 				}
-				if (change.value === null) {
+				if (change.type === "document" && change.kind === "retire") {
 					this.#archivedBasis.delete(conversationId);
 					this.#metaBasis.delete(conversationId);
 					continue;

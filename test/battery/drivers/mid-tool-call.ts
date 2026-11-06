@@ -36,7 +36,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
 	fauxAssistantMessage,
 	fauxToolCall,
@@ -232,16 +232,16 @@ async function main(): Promise<never> {
 	);
 
 	// The structural view (spec §9.3): serializing it is itself an assertion.
-	const viewState = await root.viewState(BACKGROUND_CONTEXT);
-	const view = viewState.value;
+	const watch = await root.watch(BACKGROUND_CONTEXT);
+	const view = watch.value;
 	let serialized = "";
 	try {
 		serialized = JSON.stringify(view);
 	} catch (error) {
-		await viewState.dispose();
+		await watch.stop();
 		return verifyFailed(`view does not serialize: ${String(error)}`);
 	}
-	await viewState.dispose();
+	await watch.stop();
 
 	const unsafeExecutions = await executionCount(dir, UNSAFE_TOOL);
 	const safeExecutions = await executionCount(dir, SAFE_TOOL);

@@ -80,6 +80,10 @@ async function bootServer(
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)),
 		settingsDir: dir,
+		// The built-ins stay on 1.4.0 until the family migration (the
+		// skew gate quarantines them); the catalog merge asserts core +
+		// fixture rows until Task 8 re-pins the built-in tail.
+		builtins: false,
 	});
 	const { token: aliceToken } = await opened.identity.tokens.create(
 		"alice-cli",
@@ -194,12 +198,9 @@ describe("extension slash commands: the catalog merge", () => {
 			"thinking",
 			"jobs",
 			"settings",
-			// The gateway built-in's commands and the curator's `/learn`
-			// (Task B1) ride the merged catalog ahead of the fixture's
-			// `hello` (gateway Task 4, §8.2).
-			"pair",
-			"link",
-			"learn",
+			// The fixture's `hello` (the built-ins' pair/link/learn load
+			// with the built-ins, disabled in this rig — Task 8 re-pins
+			// the merged tail on the 1.5.0 family).
 			"hello",
 		]);
 	});

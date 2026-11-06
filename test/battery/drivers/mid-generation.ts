@@ -136,16 +136,16 @@ async function main(): Promise<never> {
 	);
 
 	// The structural view (spec §9.3): serializing it is itself an assertion.
-	const viewState = await root.viewState(BACKGROUND_CONTEXT);
-	const view = viewState.value;
+	const watch = await root.watch(BACKGROUND_CONTEXT);
+	const view = watch.value;
 	let serialized = "";
 	try {
 		serialized = JSON.stringify(view);
 	} catch (error) {
-		await viewState.dispose();
+		await watch.stop();
 		return verifyFailed(`view does not serialize: ${String(error)}`);
 	}
-	await viewState.dispose();
+	await watch.stop();
 
 	// A FINAL answer: a committed assistant entry that ended the turn
 	// (`stopReason: "stop"`). The interrupted attempt's partial converts to

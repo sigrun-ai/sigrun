@@ -566,7 +566,8 @@ describe("GET /v1/conversations/:id/stream", () => {
 			// server's cleanup ran stop() (single owner, exactly once).
 			const watch = server.watches[0];
 			expect(watch).toBeDefined();
-			await expect(watch.closed).resolves.toEqual({ reason: "stopped" });
+			// pi-durable 1.5.0's WatchEnd is kind-tagged (was `reason`).
+			await expect(watch.closed).resolves.toEqual({ kind: "stopped" });
 			// The mount is still healthy: a second connection receives frames.
 			const second = new SseConnection(
 				server.port,
@@ -584,7 +585,7 @@ describe("GET /v1/conversations/:id/stream", () => {
 			const secondWatch = server.watches[1];
 			expect(secondWatch).toBeDefined();
 			await expect(secondWatch.closed).resolves.toMatchObject({
-				reason: "stopped",
+				kind: "stopped",
 			});
 		} finally {
 			first.destroy();

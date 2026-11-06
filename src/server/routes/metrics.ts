@@ -57,7 +57,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import { REPORT_TYPES } from "../../harness/reports.js";
+import { REPORT_KINDS } from "../../harness/reports.js";
 import { readBackupMarker } from "../../backup/marker.js";
 import { scanJobs } from "../../jobs/docs.js";
 import { providerAuthStatus } from "../helpers.js";
@@ -146,11 +146,12 @@ export function registerMetricsRoutes(
 				[{ labels: {}, value: Math.round((oldestMs ?? 0) / 1000) }],
 			);
 			// Live tasks by scheduler state kind. The full six-kind
-			// vocabulary is emitted (0s included) for label stability
-			// (1.4.0 adds `sleeping` — the durable-sleep state).
+			// vocabulary is emitted (0s included) for label stability.
+			// pi-durable 1.5.0 renamed `ready` to `pending` (the queued,
+			// runnable-but-not-yet-admitted state).
 			const taskStatuses: Record<string, number> = {
 				running: 0,
-				ready: 0,
+				pending: 0,
 				waiting: 0,
 				sleeping: 0,
 				completing: 0,
@@ -237,13 +238,16 @@ export function registerMetricsRoutes(
 			[{ labels: {}, value: storage === "ok" ? 1 : 0 }],
 		);
 
-		// D5: process-local durable failure reports. Every known type is
+		// D5: process-local durable failure reports. Every known kind is
 		// emitted, including zeros, for scrape-stable alert expressions.
+		// pi-durable 1.5.0 kinds: `task_parked`/`session_failed` are gone;
+		// `storage_failed`/`task_interrupted` replaced them (label name
+		// `type` kept — a metrics-label rename would break alert queries).
 		const reportCounts = opened.reports.counts();
 		family(
 			"sigrun_durable_reports_total",
 			"Durable failure reports since process start",
-			REPORT_TYPES.map((type) => ({ labels: { type }, value: reportCounts[type] })),
+			REPORT_KINDS.map((kind) => ({ labels: { type: kind }, value: reportCounts[kind] })),
 			"counter",
 		);
 

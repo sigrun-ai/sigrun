@@ -1,10 +1,14 @@
 import { execFileSync } from "node:child_process";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, test } from "vitest";
 
 const ROOT = new URL("..", import.meta.url).pathname;
+// Deletions in a dirty worktree (the Task 1 migration deletes
+// src/jobs/parked.ts) must not be read — ls-files lists the index, which
+// still carries a deleted-until-committed path.
 const tracked = execFileSync("git", ["ls-files", "-z"], { cwd: ROOT, encoding: "utf8" })
-	.split("\0").filter(Boolean);
+	.split("\0").filter(Boolean)
+	.filter((p) => existsSync(`${ROOT}${p}`));
 const PRIVATE_DIRS = ["test-results/", "docs/superpowers/", "docs/interaction-seam-survey/"];
 const EXEMPT = new Set(["test/public-tree.test.ts"]);
 
