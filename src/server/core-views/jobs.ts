@@ -47,13 +47,19 @@ import type {
 	SurfaceRenderResult,
 } from "../../extension.js";
 import type { JobsService } from "../../jobs/index.js";
+import {
+	JobDeclaredError,
+	JobNotFoundError,
+} from "../../jobs/index.js";
 import { jobAccess } from "../jobs-access.js";
 import { isSuperuser } from "../auth/principal.js";
 import {
 	createSpecOf,
 	emptyForm,
+	formFromJob,
 	formValuesOf,
 	jobFormFields,
+	savePatchOf,
 	type JobFormData,
 } from "./jobs-form.js";
 
@@ -338,6 +344,17 @@ async function readData(
 	if (selected === undefined)
 		return { jobs: rows, main, form: emptyForm(), modelOptions: models() };
 
+	// The Task 4 edit seed: `{job, edit}` on a WRITABLE api job seeds
+	// `/form` from the job's current spec (a declared or read job in edit
+	// mode renders the details instead — the details keep the plain
+	// empty form, which the tree never shows there).
+	const form: JobFormData =
+		params.edit === true &&
+		selected.source === "api" &&
+		selected.access === "write"
+			? formFromJob(selected)
+			: emptyForm();
+
 	// Runs: newest first; the cursor IS a run key (opaque to clients).
 	// The service's list is bounded by the retention cap, so the view
 	// fetches it whole and pages in memory.
@@ -404,7 +421,7 @@ async function readData(
 		// the fallback only satisfies the narrowing.
 		access: selected.access === "none" ? "read" : selected.access,
 	};
-	return { jobs: rows, main, form: emptyForm(), modelOptions: models() };
+	return { jobs: rows, main, form, modelOptions: models() };
 }
 
 /** The one revision selected for the diff, plus its previous (baseline). */
@@ -537,19 +554,29 @@ export function createJobsView(deps: {
 		// Blocks are built as loose JSON objects (the validator owns the
 		// wire shape; the service validates every tree before serving).
 		const main: Record<string, unknown>[] = [];
-		if (params.edit === true) {
-			// The New job form (jobs-editor Task 3): resolved BEFORE the
-			// found/not-found fallback — an unknown `job` param never
-			// shows "Job not found" while the form is open. The values
-			// ride the data document at `/form` (the bind target).
+		// `{edit: true}` alone is the New-job form; `{job, edit}` edits THAT
+		// job. A declared (file:/ext:) or read-access job in edit mode falls
+		// through to the DETAILS (the editor is api+write only); an unknown
+		// `job` param with edit keeps the Task 3 rule (the form wins over
+		// "Job not found") only when NO job is selected.
+		const editingJob =
+			params.edit === true &&
+			params.job !== undefined &&
+			data.main.found &&
+			data.main.job !== null &&
+			data.main.job.source === "api" &&
+			data.main.job.access === "write";
+		if (params.edit === true && (params.job === undefined || editingJob)) {
 			main.push({
 				type: "form",
 				id: "job-form",
 				bind: "/form",
 				mode: "submit",
-				onSubmit: "createJob",
-				submitLabel: "Create",
-				children: jobFormFields("prompt"),
+				onSubmit: editingJob ? "saveJob" : "createJob",
+				submitLabel: editingJob ? "Save" : "Create",
+				children: jobFormFields(
+					editingJob && data.main.job !== null ? data.main.job.kind : "prompt",
+				),
 			});
 		} else if (data.main.found && data.main.job !== null) {
 			const job = data.main.job;
@@ -593,6 +620,38 @@ export function createJobsView(deps: {
 									},
 								},
 							},
+							// Edit/Delete are api-only (declared jobs are read-only
+							// declarations — the `job-declared` callout says where to
+							// edit them). The confirm copy promises the run history
+							// survives (deleteApi retires the record; history routes
+							// answer for retired ids).
+							...(job.source === "api"
+								? [
+										{
+											id: "job-edit",
+											label: "Edit",
+											icon: "edit",
+											action: {
+												type: "navigate",
+												params: { job: job.id, edit: true },
+											},
+										},
+										{
+											id: "job-delete",
+											label: "Delete",
+											icon: "delete",
+											action: {
+												type: "submit",
+												name: "deleteJob",
+												confirm: {
+													title: "Delete this job?",
+													body: "Its run history is kept.",
+													tone: "bad",
+												},
+											},
+										},
+									]
+								: []),
 						]
 					: [];
 
@@ -982,6 +1041,102 @@ export function createJobsView(deps: {
 				return {
 					ok: true,
 					navigate: { type: "navigate", params: { job: jobId, revision } },
+				};
+			},
+			// The Edit form's submit (jobs-editor Task 4): the job rides
+			// the instance params (the surface is principal-scoped, so the
+			// params identify the selected job — the same shape runNow
+			// uses). The caller needs write access; a declared job is the
+			// 409-class refusal; the patch rules live in savePatchOf.
+			saveJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const jobId = jobIdOf(payload) ?? paramsOf(ctx.params).job;
+				if (jobId === undefined) {
+					return {
+						ok: false,
+						error: { message: "saveJob needs a selected job (params.job)" },
+					};
+				}
+				const resolved = await actionAccess(ctx, jobId);
+				if ("error" in resolved) return resolved.error;
+				if (resolved.row.source !== "api") {
+					return { ok: false, error: { message: "job_declared" } };
+				}
+				const patched = savePatchOf(formValuesOf(payload), resolved.row);
+				if (!patched.ok) {
+					return {
+						ok: false,
+						error: { message: patched.message, field: patched.field },
+					};
+				}
+				const caller = callerOf(ctx);
+				try {
+					await jobs.updateApi(
+						jobId,
+						patched.patch,
+						caller?.user ?? "api",
+					);
+				} catch (error) {
+					if (
+						error instanceof JobDeclaredError ||
+						error instanceof JobNotFoundError
+					) {
+						return { ok: false, error: { message: error.message } };
+					}
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return {
+					ok: true,
+					toast: `Saved ${patched.patch.name ?? resolved.row.name}`,
+					navigate: { type: "navigate", params: { job: jobId } },
+				};
+			},
+			// Delete: write access, api-only, then the retired job leaves
+			// the list — navigate back to the unselected view ({}).
+			deleteJob: async (
+				ctx: SurfaceContext,
+				payload: unknown,
+			): Promise<ActionResult> => {
+				const jobId = jobIdOf(payload) ?? paramsOf(ctx.params).job;
+				if (jobId === undefined) {
+					return {
+						ok: false,
+						error: { message: "deleteJob needs a selected job (params.job)" },
+					};
+				}
+				const resolved = await actionAccess(ctx, jobId);
+				if ("error" in resolved) return resolved.error;
+				if (resolved.row.source !== "api") {
+					return { ok: false, error: { message: "job_declared" } };
+				}
+				const caller = callerOf(ctx);
+				try {
+					await jobs.deleteApi(jobId, caller?.user ?? "api");
+				} catch (error) {
+					if (
+						error instanceof JobDeclaredError ||
+						error instanceof JobNotFoundError
+					) {
+						return { ok: false, error: { message: error.message } };
+					}
+					return {
+						ok: false,
+						error: {
+							message: error instanceof Error ? error.message : String(error),
+						},
+					};
+				}
+				return {
+					ok: true,
+					toast: `Deleted ${resolved.row.name}`,
+					navigate: { type: "navigate", params: {} },
 				};
 			},
 			runNow: async (

@@ -1160,3 +1160,230 @@ describe("core/jobs New job (the form + createJob)", () => {
 		expect(result).toEqual({ ok: false, error: { message: "forbidden" } });
 	});
 });
+
+// ─── Edit + Delete (jobs-editor Task 4) ────────────────────────────────────
+
+describe("core/jobs Edit + Delete (saveJob/deleteJob)", () => {
+	test("clearing description removes the key", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, {
+			...promptSpec("acme-described"),
+			description: "acme digest",
+		});
+		// The instance renders first (the action route's access gate).
+		expect((await view(app, alice, { job: job.id, edit: true })).status).toBe(200);
+		const saved = await act(
+			app,
+			alice,
+			"saveJob",
+			{
+				values: {
+					name: "acme-described",
+					description: "",
+					scheduleType: "every",
+					schedule: "3600s",
+					prompt: "say ok",
+					model: "default",
+					thinking: "default",
+					enabled: true,
+				},
+			},
+			{ job: job.id, edit: true },
+		);
+		expect(saved.status).toBe(200);
+		expect(saved.json.ok).toBe(true);
+		expect(saved.json.navigate).toEqual({
+			type: "navigate",
+			params: { job: job.id },
+		});
+		// The served wire row and the latest revision's spec both lack
+		// the key entirely (the spread + JSON round-trip dropped it).
+		const fetched = await call(app, "GET", `/v1/jobs/${job.id}`, alice);
+		expect("description" in fetched.json.job).toBe(false);
+		const revisions = await call(app, "GET", `/v1/jobs/${job.id}/revisions`, alice);
+		const latest = revisions.json.revisions.find((one: any) => one.version === 2);
+		expect("description" in latest.spec).toBe(false);
+	});
+
+	test("saveJob renames and edits the prompt; navigates back to the job", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		expect((await view(app, alice, { job: job.id, edit: true })).status).toBe(200);
+		const saved = await act(
+			app,
+			alice,
+			"saveJob",
+			{
+				values: {
+					name: "acme-renamed",
+					description: "",
+					scheduleType: "every",
+					schedule: "2h",
+					prompt: "say tock",
+					model: "faux/m",
+					thinking: "low",
+					enabled: true,
+				},
+			},
+			{ job: job.id, edit: true },
+		);
+		expect(saved.json.ok).toBe(true);
+		expect(saved.json.navigate).toEqual({
+			type: "navigate",
+			params: { job: job.id },
+		});
+		const fetched = await call(app, "GET", `/v1/jobs/${job.id}`, alice);
+		expect(fetched.json.job.name).toBe("acme-renamed");
+		expect(fetched.json.job.action).toEqual({
+			kind: "prompt",
+			prompt: "say tock",
+			model: "faux/m",
+			thinking: "low",
+			conversation: "new",
+		});
+		expect(fetched.json.job.schedule).toEqual({ every: "2h" });
+	});
+
+	test("the edit branch renders the seeded form; a declared job renders the details instead", async () => {
+		const { app, alice } = await bootServer({
+			settings: {
+				jobs: [{ ...promptSpec("acme-file"), owner: "alice" }],
+			},
+		});
+		const job = await createJob(app, alice, {
+			...promptSpec("acme-nightly"),
+			description: "acme digest",
+		});
+		const rendered = await view(app, alice, { job: job.id, edit: true });
+		expect(rendered.status).toBe(200);
+		const form = findBlock(rendered.json.tree.root.main, "form");
+		expect(form).toBeDefined();
+		expect(form?.id).toBe("job-form");
+		expect(form?.onSubmit).toBe("saveJob");
+		expect(form?.submitLabel).toBe("Save");
+		// Seeded from the job's current spec.
+		const data = rendered.json.data as Record<string, any>;
+		expect(data.form).toMatchObject({
+			name: "acme-nightly",
+			description: "acme digest",
+			scheduleType: "every",
+			schedule: "3600s",
+			prompt: "say ok",
+			model: "default",
+			thinking: "default",
+			enabled: true,
+		});
+		// Write actions include edit+delete with the confirm copy.
+		const actionCallout = findBlocks(rendered.json.tree.root.main, "callout").find(
+			(one) => one.id === "job-actions",
+		);
+		// (edit mode renders the form, not the details — the buttons live
+		// on the DETAILS page.)
+		expect(actionCallout).toBeUndefined();
+		const details = await view(app, alice, { job: job.id });
+		const detailCallout = findBlocks(details.json.tree.root.main, "callout").find(
+			(one) => one.id === "job-actions",
+		);
+		const offered = (detailCallout?.actions ?? []).map((one: any) => one.id);
+		expect(offered).toEqual(["run-now", "reset-state", "job-edit", "job-delete"]);
+		const editButton = detailCallout?.actions.find((one: any) => one.id === "job-edit");
+		expect(editButton?.action).toEqual({
+			type: "navigate",
+			params: { job: job.id, edit: true },
+		});
+		const deleteButton = detailCallout?.actions.find((one: any) => one.id === "job-delete");
+		expect(deleteButton?.action).toEqual({
+			type: "submit",
+			name: "deleteJob",
+			confirm: {
+				title: "Delete this job?",
+				body: "Its run history is kept.",
+				tone: "bad",
+			},
+		});
+		assertActionBlocksValid(details.json.tree.root);
+
+		// A declared job in edit mode renders the DETAILS, not the form.
+		const declared = await view(app, alice, { job: "file:acme-file", edit: true });
+		expect(declared.status).toBe(200);
+		expect(findBlock(declared.json.tree.root.main, "form")).toBeUndefined();
+		const declaredMain = atPointer(declared.json.data, "/main") as Record<string, any>;
+		expect(declaredMain.found).toBe(true);
+		expect(declaredMain.job?.id).toBe("file:acme-file");
+	});
+
+	test("deleteJob retires the job; the list no longer shows it", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		expect((await view(app, alice, { job: job.id })).status).toBe(200);
+		const deleted = await act(app, alice, "deleteJob", null, { job: job.id });
+		expect(deleted.status).toBe(200);
+		expect(deleted.json.ok).toBe(true);
+		expect(deleted.json.navigate).toEqual({ type: "navigate", params: {} });
+		const fetched = await call(app, "GET", `/v1/jobs/${job.id}`, alice);
+		expect(fetched.status).toBe(404);
+		const list = await view(app, alice);
+		const ids = (atPointer(list.json.data, "/jobs") as any[]).map((row) => row.id);
+		expect(ids).not.toContain(job.id);
+	});
+
+	test("read access: no edit buttons, handlers forbidden", async () => {
+		const { app, alice, bob } = await bootServer();
+		const job = await createJob(
+			app,
+			alice,
+			promptSpec("acme-nightly", {
+				sharing: { scope: "household", level: "read" },
+			}),
+		);
+		// The reader's tree carries no edit/delete affordances.
+		const readers = await view(app, bob, { job: job.id });
+		expect(readers.status).toBe(200);
+		const actionIds = collectActionIds(readers.json.tree.root);
+		expect(actionIds).not.toContain("job-edit");
+		expect(actionIds).not.toContain("job-delete");
+		// Read access in edit mode renders the details, not the form.
+		const editView = await view(app, bob, { job: job.id, edit: true });
+		expect(findBlock(editView.json.tree.root.main, "form")).toBeUndefined();
+		// The handlers answer forbidden (the job-level write rule).
+		const saved = await act(
+			app,
+			bob,
+			"saveJob",
+			{ values: { name: "acme-stolen" } },
+			{ job: job.id, edit: true },
+		);
+		expect(saved.json).toEqual({ ok: false, error: { message: "forbidden" } });
+		const deleted = await act(app, bob, "deleteJob", null, { job: job.id });
+		expect(deleted.json).toEqual({ ok: false, error: { message: "forbidden" } });
+	});
+
+	test("declared jobs refuse save and delete", async () => {
+		const { app, alice } = await bootServer({
+			settings: {
+				jobs: [{ ...promptSpec("acme-file"), owner: "alice" }],
+			},
+		});
+		expect((await view(app, alice, { job: "file:acme-file" })).status).toBe(200);
+		const saved = await act(
+			app,
+			alice,
+			"saveJob",
+			{ values: { name: "acme-changed" } },
+			{ job: "file:acme-file", edit: true },
+		);
+		expect(saved.json).toEqual({
+			ok: false,
+			error: { message: "job_declared" },
+		});
+		const deleted = await act(app, alice, "deleteJob", null, { job: "file:acme-file" });
+		expect(deleted.json).toEqual({
+			ok: false,
+			error: { message: "job_declared" },
+		});
+		// No change landed.
+		const fetched = await call(app, "GET", "/v1/jobs/file:acme-file", alice);
+		expect(fetched.status).toBe(200);
+		expect(fetched.json.job.name).toBe("acme-file");
+	});
+});

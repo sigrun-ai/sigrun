@@ -65,7 +65,7 @@ export function emptyForm(): JobFormData {
  * only, but the shape ships here). Name stays editable on the field
  * list; model/thinking absent ⇒ `"default"`.
  */
-export function formFromJob(job: JobWire): JobFormData {
+export function formFromJob(job: Omit<JobWire, "access">): JobFormData {
 	const schedule = job.schedule;
 	const action = job.action;
 	return {
@@ -195,6 +195,99 @@ export function createSpecOf(
 		};
 	}
 	return { ok: true, spec: validated.spec };
+}
+
+/**
+ * The edit-save patch (jobs-editor Task 4, spec §4 save rules).
+ *
+ * `updateApi` merges ONE level deep (`{...prior.spec, ...patch}`), so
+ * every key the patch carries must be the WHOLE desired value:
+ *
+ * - the schedule is wholly form-owned (assembled from `scheduleType`
+ *   + `schedule` + `timezone`; switching type leaves no second
+ *   discriminant — cron→every drops the timezone);
+ * - a PROMPT job's action is `{...prior.action, prompt}` with
+ *   `model`/`thinking` set from the form or DELETED for `"default"`
+ *   (never a fresh literal — `conversation`, `runSharing`, `deliver`
+ *   carry over untouched);
+ * - a TASK job's patch carries NO `action` key at all (the editor
+ *   hides prompt/model/thinking; task + input carry over);
+ * - an emptied description becomes an OWN KEY `description: undefined`
+ *   after validation, so the spread overrides the prior value and the
+ *   stored record + hash drop it.
+ *
+ * For field-scoped errors the patch is spread over the prior spec
+ * (rebuilt from the flattened wire row — owner is not part of a spec)
+ * and the MERGED object is validated with `validateJobSpec`.
+ */
+export function savePatchOf(
+	values: JobFormData,
+	prior: Omit<JobWire, "access">,
+): { ok: true; patch: Partial<JobSpec> & { enabled?: boolean } } | { ok: false; field?: string; message: string } {
+	const schedule =
+		values.scheduleType === "every"
+			? { every: values.schedule.trim() }
+			: values.scheduleType === "at"
+				? { at: values.schedule.trim() }
+				: values.timezone.trim() === ""
+					? { cron: values.schedule.trim() }
+					: { cron: values.schedule.trim(), timezone: values.timezone.trim() };
+
+	const patch: Partial<JobSpec> & { enabled?: boolean } = {
+		name: values.name,
+		schedule,
+		enabled: values.enabled,
+	};
+	if (prior.action.kind === "prompt") {
+		const action = { ...prior.action, prompt: values.prompt };
+		if (values.model === "default") {
+			delete action.model;
+		} else {
+			action.model = values.model;
+		}
+		if (values.thinking === "default") {
+			delete action.thinking;
+		} else {
+			action.thinking = values.thinking;
+		}
+		patch.action = action;
+	}
+
+	// Field-scoped validation on the MERGED spec (the wire is
+	// flattened; owner lives on the record, not the spec).
+	const priorSpec: JobSpec = {
+		name: prior.name,
+		...(prior.description === undefined
+			? {}
+			: { description: prior.description }),
+		schedule: prior.schedule,
+		action: prior.action,
+		...(prior.sharing === undefined ? {} : { sharing: prior.sharing }),
+		enabled: prior.enabled,
+	};
+	const merged: JobSpec = {
+		...priorSpec,
+		...patch,
+		...(values.description.trim() === ""
+			? {}
+			: { description: values.description.trim() }),
+	};
+	const validated = validateJobSpec(merged);
+	if (!validated.ok) {
+		return {
+			ok: false,
+			field: formFieldOf(validated.field),
+			message: validated.message,
+		};
+	}
+	// Only AFTER validation does the cleared description land as the
+	// own key whose undefined value the spread + JSON round-trip drop.
+	if (values.description.trim() === "") {
+		patch.description = undefined;
+	} else {
+		patch.description = values.description.trim();
+	}
+	return { ok: true, patch };
 }
 
 /**

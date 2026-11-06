@@ -18,12 +18,31 @@
  */
 
 import { expect, test } from "vitest";
+import type { JobWire } from "@sigrun/shared/jobs";
 import {
 	createSpecOf,
 	emptyForm,
 	formFieldOf,
+	formFromJob,
 	formValuesOf,
+	savePatchOf,
 } from "../src/server/core-views/jobs-form.js";
+
+/** An api prompt job wire row (every 1h, prompt "old", conversation "new"), with overrides spread. */
+function wireOf(overrides: Partial<JobWire>): JobWire {
+	return {
+		id: "api:acme-1",
+		name: "acme-job",
+		source: "api",
+		schedule: { every: "1h" },
+		action: { kind: "prompt", prompt: "old", conversation: "new" },
+		enabled: true,
+		state: "waiting",
+		version: 1,
+		access: "write",
+		...overrides,
+	};
+}
 
 test("createSpecOf assembles a cron prompt job with conversation new", () => {
 	const result = createSpecOf({
@@ -109,4 +128,63 @@ test("formValuesOf reads the {values} envelope; an absent enabled means true", (
 	expect(formValuesOf({ values: { enabled: false } }).enabled).toBe(false);
 	// The plain-object (no envelope) shape resolves too.
 	expect(formValuesOf({ name: "acme-y", enabled: false }).name).toBe("acme-y");
+});
+
+test("save keeps conversation, deliver and runSharing", () => {
+	const prior = wireOf({
+		action: {
+			kind: "prompt",
+			prompt: "old",
+			conversation: 42,
+			runSharing: { scope: "people", users: ["acme-bob"], level: "read" },
+		},
+	});
+	const result = savePatchOf({ ...formFromJob(prior), prompt: "new" }, prior);
+	expect(result.ok && result.patch.action).toEqual({
+		kind: "prompt",
+		prompt: "new",
+		conversation: 42,
+		runSharing: { scope: "people", users: ["acme-bob"], level: "read" },
+	});
+});
+
+test("save keeps deliver on a conversation-new job", () => {
+	const prior = wireOf({
+		action: {
+			kind: "prompt",
+			prompt: "old",
+			conversation: "new",
+			deliver: ["acme:chan"],
+		},
+	});
+	const result = savePatchOf({ ...formFromJob(prior), prompt: "new" }, prior);
+	expect(result.ok && result.patch.action).toEqual({
+		kind: "prompt",
+		prompt: "new",
+		conversation: "new",
+		deliver: ["acme:chan"],
+	});
+});
+
+test("switching cron to every drops the timezone", () => {
+	const prior = wireOf({
+		schedule: { cron: "0 9 * * *", timezone: "America/St_Johns" },
+	});
+	const result = savePatchOf(
+		{ ...formFromJob(prior), scheduleType: "every", schedule: "15m" },
+		prior,
+	);
+	expect(result.ok && result.patch.schedule).toEqual({ every: "15m" });
+});
+
+test("a task job's patch carries no action", () => {
+	const prior = wireOf({
+		action: { kind: "task", task: "acme-task", input: { a: 1 } },
+	});
+	const result = savePatchOf(
+		{ ...formFromJob(prior), name: "acme-renamed" },
+		prior,
+	);
+	expect(result.ok && "action" in result.patch).toBe(false);
+	expect(result.ok && result.patch.name).toBe("acme-renamed");
 });

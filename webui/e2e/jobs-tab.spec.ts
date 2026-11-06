@@ -149,3 +149,71 @@ test("New job at phone width shows the form", async ({ browser }) => {
 		await context.close();
 	}
 });
+
+test("Edit a job's prompt, then delete it", async ({ browser }) => {
+	const context = await browser.newContext({
+		extraHTTPHeaders: { "x-sigrun-user": "tester" },
+	});
+	const page = await context.newPage();
+	try {
+		await page.goto(`${server.url}/#/ext/core/jobs`);
+
+		// Create the job over the REST API (the jobs-editor Task 4 edit
+		// target — the form itself creates conversation-new jobs only).
+		const jobId: string = await page.evaluate(async () => {
+			const response = await fetch("/v1/jobs", {
+				method: "POST",
+				headers: { "content-type": "application/json" },
+				body: JSON.stringify({
+					name: "acme-edit-me",
+					schedule: { every: "1h" },
+					action: {
+						kind: "prompt",
+						prompt: "say tick",
+						conversation: "new",
+					},
+				}),
+			});
+			if (!response.ok) {
+				throw new Error(`POST /v1/jobs failed: ${response.status}`);
+			}
+			const body = (await response.json()) as { job: { id: string } };
+			return body.job.id;
+		});
+
+		// Select the row, then Edit → the seeded form.
+		const row = page
+			.locator('[data-page-region="sidebar"] .blk-list-card', {
+				hasText: "acme-edit-me",
+			})
+			.first();
+		await expect(row).toBeVisible();
+		await row.click();
+		await expect(page).toHaveURL(
+			new RegExp(`#/ext/core/jobs\\?params=.*${encodeURIComponent(jobId)}`),
+		);
+		const main = page.locator('[data-page-region="main"]');
+		await main.getByRole("button", { name: "Edit", exact: true }).click();
+		await expect(page).toHaveURL(/edit/);
+		const prompt = page.getByRole("textbox", { name: "Prompt" });
+		await expect(prompt).toHaveValue("say tick");
+
+		// Edit the prompt; Save navigates back to the job, whose details
+		// show the new prompt.
+		await prompt.fill("say tock");
+		await page.getByRole("button", { name: "Save" }).click();
+		await expect(page).not.toHaveURL(/edit/);
+		await expect(main).toContainText("say tock");
+
+		// Delete (confirm), back at the list: the row is gone.
+		await main.getByRole("button", { name: "Delete" }).click();
+		await page.getByRole("button", { name: "Confirm" }).click();
+		await expect(
+			page.locator('[data-page-region="sidebar"] .blk-list-card', {
+				hasText: "acme-edit-me",
+			}),
+		).toHaveCount(0);
+	} finally {
+		await context.close();
+	}
+});
