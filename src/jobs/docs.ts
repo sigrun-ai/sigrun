@@ -280,8 +280,25 @@ export async function patchJob(
 	// draft — so the pre-read never shadows a concurrent change.
 	const prior = await harness.snapshot(JobDoc, id, ctx);
 	if (prior === undefined) return;
+	// pi-durable 1.5.0 address semantics: a `tx.doc` acquire whose address
+	// was RETIRED between the pre-read and this commit CREATES a fresh
+	// incarnation from the seed — patchJob would resurrect a deleted job
+	// (the retire from deleteApi is hidden, reconcile's abort pass sees a
+	// live record). Discriminate with a sentinel the live record can never
+	// carry: the seed alone has it, so a created draft shows it; a live
+	// record never does. A detected creation is retired in the same commit,
+	// leaving the address absent — never resurrected.
+	const PROBE = "__patchJobSentinel";
+	// SAFETY: the seed widens JobRecord with a sentinel the live record
+	// never carries; the draft read-back checks the same untyped key.
+	type ProbeSeed = JobRecord & { [PROBE]?: true };
 	await harness.commit(async (tx) => {
-		const draft = await tx.doc(JobDoc, id, { ...prior });
+		const seed: ProbeSeed = { ...prior, [PROBE]: true };
+		const draft = (await tx.doc(JobDoc, id, seed)) as ProbeSeed;
+		if (draft[PROBE] === true) {
+			await tx.retireDoc(JobDoc, id);
+			return;
+		}
 		change(draft);
 	}, ctx);
 }
