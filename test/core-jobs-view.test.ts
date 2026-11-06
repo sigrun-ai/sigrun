@@ -43,6 +43,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
 import { loadConfig } from "../src/config.js";
+import { definedInOf } from "../src/server/core-views/jobs.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { jobStateDir } from "../src/jobs/state-dir.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -66,8 +67,17 @@ afterAll(async () => {
 async function bootServer(options?: {
 	/** Give alice the stored group `acme-ops` (the group-share case). */
 	readonly aliceGroups?: readonly string[];
+	/** Settings-file contents, written BEFORE boot (the `file:` job source).
+	 *  The jobs-api.test.ts pattern; Task 4 reuses it. */
+	readonly settings?: Record<string, unknown>;
 }): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-core-jobs-view-"));
+	if (options?.settings !== undefined) {
+		await writeFile(
+			join(dir, "settings.json"),
+			`${JSON.stringify(options.settings, null, "\t")}\n`,
+		);
+	}
 	const faux = fauxProvider({
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
@@ -267,6 +277,31 @@ function assertActionBlocksValid(root: Record<string, any>): void {
 		// Card templates are not walked by the channels as blocks; their
 		// actions are validated by checkCard, not the block walk.
 	}
+}
+
+/** Every text-ish literal of a callout (title + body + per-button label). */
+function calloutsText(callouts: Record<string, any>[]): string[] {
+	const out: string[] = [];
+	for (const callout of callouts) {
+		for (const key of ["title", "text", "body"]) {
+			if (typeof callout[key] === "string") out.push(callout[key]);
+		}
+	}
+	return out;
+}
+
+/** Every action id anywhere in the tree (page/callout actions + card templates). */
+function collectActionIds(root: Record<string, any>): string[] {
+	const ids: string[] = [];
+	for (const node of walk([root])) {
+		for (const action of node.actions ?? []) {
+			if (typeof action?.id === "string") ids.push(action.id);
+		}
+		for (const action of node.item?.actions ?? []) {
+			if (typeof action?.id === "string") ids.push(action.id);
+		}
+	}
+	return ids;
 }
 
 /** Wait until `check` holds (the event-bus side lane is asynchronous). */
@@ -886,5 +921,96 @@ describe("core/jobs freshness", () => {
 			(one) => one.id === job.id,
 		);
 		expect(row.scheduleSummary).toBe("every 7200s");
+	});
+});
+
+// ─── details + provenance ───────────────────────────────────────────────
+
+describe("core/jobs details + provenance", () => {
+	test("definedInOf names the source from the id", () => {
+		expect(definedInOf("file:acme-nightly", "file")).toBe(
+			"settings.json (jobs → acme-nightly)",
+		);
+		expect(definedInOf("ext:acme-tool:acme-tick", "extension")).toBe(
+			"the acme-tool extension",
+		);
+		expect(definedInOf("api:0000", "api")).toBe("created in sigrun");
+	});
+
+	test("a prompt job's details bind description, provenance and action", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, {
+			...promptSpec("acme-nightly"),
+			description: "acme digest",
+		});
+		const rendered = await view(app, alice, { job: job.id });
+		expect(rendered.status).toBe(200);
+		const main = atPointer(rendered.json.data, "/main") as Record<string, any>;
+		expect(main.job.description).toBe("acme digest");
+		expect(main.job.definedIn).toBe("created in sigrun");
+		expect(main.job.source).toBe("api");
+		expect(main.job.kind).toBe("prompt");
+		expect(main.job.prompt).toBe("say ok");
+		expect(main.job.conversation).toBe("new");
+		expect(main.job.deliver).toBeNull();
+		// The sidebar row carries the description subtitle.
+		const rows = atPointer(rendered.json.data, "/jobs") as any[];
+		expect(rows.find((row) => row.id === job.id)?.description).toBe(
+			"acme digest",
+		);
+		// The tree binds the prompt as a markdown block.
+		const promptBlock = findBlocks(
+			rendered.json.tree.root.main,
+			"markdown",
+		).find((one) => (one.text as any)?.$ === "/main/job/prompt");
+		expect(promptBlock).toBeDefined();
+	});
+
+	test("a declared job shows the read-only callout and no edit/delete buttons", async () => {
+		const { app, alice } = await bootServer({
+			settings: {
+				jobs: [{ ...promptSpec("acme-file"), owner: "alice" }],
+			},
+		});
+		const rendered = await view(app, alice, { job: "file:acme-file" });
+		expect(rendered.status).toBe(200);
+		const callouts = findBlocks(rendered.json.tree.root.main, "callout");
+		expect(
+			calloutsText(callouts).some((text) =>
+				text.includes("Defined in settings.json — edit it there"),
+			),
+		).toBe(true);
+		// No edit affordances for a declared job anywhere in the tree.
+		const actionIds = collectActionIds(rendered.json.tree.root);
+		expect(actionIds).not.toContain("job-edit");
+		expect(actionIds).not.toContain("job-delete");
+	});
+
+	test("a task job's input renders as a bound json code block", async () => {
+		const { app, alice } = await bootServer({
+			settings: {
+				jobs: [
+					{
+						name: "acme-task-job",
+						owner: "alice",
+						schedule: { every: "3600s" },
+						action: { kind: "task", task: "acme-task", input: { a: 1 } },
+					},
+				],
+			},
+		});
+		const rendered = await view(app, alice, { job: "file:acme-task-job" });
+		expect(rendered.status).toBe(200);
+		const main = atPointer(rendered.json.data, "/main") as Record<string, any>;
+		expect(main.job.kind).toBe("task");
+		expect(main.job.task).toBe("acme-task");
+		expect(main.job.taskInputMarkdown).toBe(
+			'```json\n{\n  "a": 1\n}\n```',
+		);
+		const inputBlock = findBlocks(
+			rendered.json.tree.root.main,
+			"markdown",
+		).find((one) => (one.text as any)?.$ === "/main/job/taskInputMarkdown");
+		expect(inputBlock).toBeDefined();
 	});
 });

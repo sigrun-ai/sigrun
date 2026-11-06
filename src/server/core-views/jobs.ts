@@ -57,6 +57,7 @@ export const PAGE_SIZE = 25;
 interface JobRow {
 	readonly id: string;
 	readonly name: string;
+	readonly description: string | null;
 	readonly scheduleSummary: string;
 	readonly nextRun: string | null;
 	readonly lastOutcome: string | null;
@@ -89,6 +90,21 @@ interface RevisionRow {
 interface JobHeader {
 	readonly id: string;
 	readonly name: string;
+	readonly description: string | null;
+	/** The provenance line ({@link definedInOf}). */
+	readonly definedIn: string;
+	readonly owner: string | null;
+	readonly source: "api" | "file" | "extension";
+	readonly kind: "prompt" | "task";
+	// Prompt-action fields (null on a task job).
+	readonly prompt: string | null;
+	readonly model: string | null;
+	readonly thinking: string | null;
+	readonly conversation: string | null;
+	readonly deliver: string | null;
+	// Task-action fields (null on a prompt job).
+	readonly task: string | null;
+	readonly taskInputMarkdown: string | null;
 	readonly scheduleSummary: string;
 	readonly nextRun: string | null;
 	readonly lastOutcome: string | null;
@@ -145,6 +161,25 @@ function scheduleSummary(schedule: JobSchedule): string {
 	}
 	if ("every" in schedule) return `every ${schedule.every}`;
 	return `at ${schedule.at}`;
+}
+
+/**
+ * The provenance line for one job, derived from its id (the id prefix IS
+ * the source). Exported for the view's tests (jobs-editor Task 2).
+ */
+export function definedInOf(id: string, source: JobWire["source"]): string {
+	if (source === "file") {
+		return `settings.json (jobs → ${id.slice("file:".length)})`;
+	}
+	if (source === "extension") {
+		return `the ${extensionSlugOf(id)} extension`;
+	}
+	return "created in sigrun";
+}
+
+/** The declaring extension's slug (`ext:<slug>:<name>` — the middle). */
+function extensionSlugOf(id: string): string {
+	return id.slice("ext:".length).split(":")[0];
 }
 
 /** One job's sidebar/header summary fields. */
@@ -261,7 +296,12 @@ async function readData(
 		const { access: _stamped, ...row } = wire;
 		const access = jobAccess(principal, row);
 		if (access === "none") continue;
-		rows.push({ id: row.id, name: row.name, ...summaryFields(row) });
+		rows.push({
+			id: row.id,
+			name: row.name,
+			description: row.description ?? null,
+			...summaryFields(row),
+		});
 		if (params.job !== undefined && row.id === params.job) {
 			selected = { ...row, access };
 		}
@@ -306,9 +346,33 @@ async function readData(
 	};
 
 	main.found = true;
+	const action = selected.action;
 	main.job = {
 		id: selected.id,
 		name: selected.name,
+		description: selected.description ?? null,
+		definedIn: definedInOf(selected.id, selected.source),
+		owner: selected.owner ?? null,
+		source: selected.source,
+		kind: action.kind,
+		prompt: action.kind === "prompt" ? action.prompt : null,
+		model: action.kind === "prompt" ? (action.model ?? null) : null,
+		thinking: action.kind === "prompt" ? (action.thinking ?? null) : null,
+		conversation:
+			action.kind === "prompt"
+				? action.conversation === "new"
+					? "new"
+					: `#${action.conversation}`
+				: null,
+		deliver:
+			action.kind === "prompt" && action.deliver !== undefined
+				? action.deliver.join(", ")
+				: null,
+		task: action.kind === "task" ? action.task : null,
+		taskInputMarkdown:
+			action.kind === "task" && action.input !== undefined
+				? `\`\`\`json\n${JSON.stringify(action.input, null, 2)}\n\`\`\``
+				: null,
 		...summaryFields(selected),
 		state: selected.state,
 		enabled: selected.enabled,
@@ -395,8 +459,9 @@ export function createJobsView(deps: {
 					onActivate: { type: "edit", name: "openJob" },
 					item: {
 						title: { $: "./name" },
-						subtitle: { $: "./scheduleSummary" },
+						subtitle: { $: "./description" },
 						meta: [
+							{ text: { $: "./scheduleSummary" }, icon: "clock" },
 							{ text: { $: "./nextRun" }, icon: "clock" },
 							{ text: { $: "./lastOutcome" }, icon: "info" },
 						],
@@ -494,14 +559,37 @@ export function createJobsView(deps: {
 						{
 							type: "fields",
 							rows: [
+								{ label: "Description", value: { $: "/main/job/description" } },
+								{ label: "Defined in", value: { $: "/main/job/definedIn" } },
+								{ label: "Owner", value: { $: "/main/job/owner" } },
 								{ label: "Schedule", value: { $: "/main/job/scheduleSummary" } },
 								{ label: "Next run", value: { $: "/main/job/nextRun" } },
 								{ label: "Last outcome", value: { $: "/main/job/lastOutcome" } },
 								{ label: "Last error", value: { $: "/main/job/lastError" } },
 								{ label: "State", value: { $: "/main/job/state" } },
 								{ label: "Version", value: { $: "/main/job/version" } },
+								{ label: "Model", value: { $: "/main/job/model" } },
+								{ label: "Thinking", value: { $: "/main/job/thinking" } },
+								{ label: "Conversation", value: { $: "/main/job/conversation" } },
+								{ label: "Deliver", value: { $: "/main/job/deliver" } },
+								{ label: "Task", value: { $: "/main/job/task" } },
 							],
 						},
+						// The action body, as a bound markdown block. Kind-conditional
+						// blocks are fine: a job's kind cannot change without a new
+						// render (a PATCH that changes kind bumps the revision, and the
+						// tree rebuild binds the other block).
+						...(job.kind === "prompt"
+							? [{ type: "markdown", text: { $: "/main/job/prompt" } }]
+							: []),
+						...(job.kind === "task"
+							? [
+									{
+										type: "markdown",
+										text: { $: "/main/job/taskInputMarkdown" },
+									},
+								]
+							: []),
 					],
 				},
 				...(writeActions.length === 0
@@ -513,6 +601,22 @@ export function createJobsView(deps: {
 								tone: "neutral",
 								title: "Actions",
 								actions: writeActions,
+							},
+						]),
+				// Declared jobs (file:/ext:) are READ-ONLY declarations: no edit
+				// affordances here (the editor, Tasks 3-4, is api-only) — a
+				// callout points the user at the declaring source instead.
+				...(job.source === "api"
+					? []
+					: [
+							{
+								type: "callout",
+								id: "job-declared",
+								tone: "neutral",
+								title:
+									job.source === "file"
+										? "Defined in settings.json — edit it there"
+										: `Declared by the ${extensionSlugOf(job.id)} extension`,
 							},
 						]),
 				{
