@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.10.0] - 2026-11-06
+
+- Extension views render in the main pane (mount, key routing, overlay-aware Esc
+  back-to-list/close, dispose) with block navigation (`SurfaceState.onNavigate`), notice
+  flashes on the status bar, and the ext-transport URL fix (suffix routes after `?params=`).
+
 ## [0.9.0] - 2026-11-05
 
 - Decline on declinable interaction cards (`alt+s` in answer mode; `alt+d` is the
