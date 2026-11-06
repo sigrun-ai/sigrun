@@ -1426,8 +1426,8 @@ sigrun to apply" with no button. `GET /v1/meta` reports the posture
 
 A schedule cut off repeatedly without progress (a crash loop) hits
 pi-durable's restart limit: the run ENDS and the job's record is marked
-`blocked` with reason `restart_limit`; it does not fire again until an
-administrator resumes it. The `SigrunJobRestartLimited` alert fires on
+`blocked` with reason `restart_limit`; it does not fire again until
+someone with the job's write access resumes it. The `SigrunJobRestartLimited` alert fires on
 this (`sigrun_jobs_blocked{reason="restart_limit"} > 0`).
 
 - `POST /v1/jobs/:id/resume` — resumes a restart-blocked job: the
