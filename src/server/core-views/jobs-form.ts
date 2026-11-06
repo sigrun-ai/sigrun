@@ -155,6 +155,23 @@ export function formFieldOf(path: string): string | undefined {
 }
 
 /**
+ * The schedule assembly shared by create and edit-save (review fix:
+ * extracted so the rule can never drift between the two) — wholly
+ * form-owned: `scheduleType` picks the shape (`{cron, timezone?}` /
+ * `{every}` / `{at}`) and `schedule` carries the single text value;
+ * `timezone` rides cron only.
+ */
+function scheduleOf(values: JobFormData): JobSpec["schedule"] {
+	return values.scheduleType === "every"
+		? { every: values.schedule.trim() }
+		: values.scheduleType === "at"
+			? { at: values.schedule.trim() }
+			: values.timezone.trim() === ""
+				? { cron: values.schedule.trim() }
+				: { cron: values.schedule.trim(), timezone: values.timezone.trim() };
+}
+
+/**
  * Assemble the `JobSpec` for `createApi` from the form values, or
  * reject with the field-scoped failure. New jobs are prompt-only with
  * `conversation: "new"`; the `"default"` model/thinking omit the spec
@@ -163,14 +180,7 @@ export function formFieldOf(path: string): string | undefined {
 export function createSpecOf(
 	values: JobFormData,
 ): { ok: true; spec: JobSpec } | { ok: false; field: string; message: string } {
-	const schedule =
-		values.scheduleType === "every"
-			? { every: values.schedule.trim() }
-			: values.scheduleType === "at"
-				? { at: values.schedule.trim() }
-				: values.timezone.trim() === ""
-					? { cron: values.schedule.trim() }
-					: { cron: values.schedule.trim(), timezone: values.timezone.trim() };
+	const schedule = scheduleOf(values);
 	const spec: JobSpec = {
 		name: values.name,
 		...(values.description.trim() === ""
@@ -224,14 +234,7 @@ export function savePatchOf(
 	values: JobFormData,
 	prior: Omit<JobWire, "access">,
 ): { ok: true; patch: Partial<JobSpec> & { enabled?: boolean } } | { ok: false; field?: string; message: string } {
-	const schedule =
-		values.scheduleType === "every"
-			? { every: values.schedule.trim() }
-			: values.scheduleType === "at"
-				? { at: values.schedule.trim() }
-				: values.timezone.trim() === ""
-					? { cron: values.schedule.trim() }
-					: { cron: values.schedule.trim(), timezone: values.timezone.trim() };
+	const schedule = scheduleOf(values);
 
 	const patch: Partial<JobSpec> & { enabled?: boolean } = {
 		name: values.name,
