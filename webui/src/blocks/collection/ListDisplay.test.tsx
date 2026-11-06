@@ -223,6 +223,10 @@ describe("list display (spec §5.5)", () => {
 			boxes[0].props.onChange();
 			boxes[1].props.onChange();
 		});
+		// The bar counts the selection.
+		expect(
+			renderer.root.find((node) => node.props.className === "blk-bulk-count").children,
+		).toEqual(["2", " selected"]);
 		// The no-form bulk action dispatches {ids}.
 		const ping = renderer.root.find(
 			(node) =>

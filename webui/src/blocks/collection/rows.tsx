@@ -72,7 +72,10 @@ export function useActivate(block: CollectionBlock): (itemId: string) => void {
 }
 
 /** The multi-select bulk action bar (spec §5.5): offered when a
- *  selection exists. A bulk action with a `form` opens the FULL form
+ *  selection exists, with the selection count. It is sticky to the top
+ *  of the scroll container the collection sits in, so ticking rows far
+ *  down a long list never leaves the actions off screen. A bulk action
+ *  with a `form` opens the FULL form
  *  (Task 5's FormBlockView) and its submit dispatches `{ids, values}`;
  *  without a form it dispatches `{ids}`. Read access hides the bar
  *  entirely (bulk actions are edits). */
@@ -103,6 +106,7 @@ export function BulkActionBar(props: {
 
 	return (
 		<div className="blk-bulk" data-block="bulk-actions">
+			<span className="blk-bulk-count">{props.selection.length} selected</span>
 			{bulkActions.map((action) => {
 				const label = bound<string>(data, action.label) ?? action.id;
 				return (
