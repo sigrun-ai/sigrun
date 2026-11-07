@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.11.0] - 2026-11-07
+
+- Version-locked bump with the 0.11.0 core line (the pi-durable 1.5.0 release).
+
 ## [0.10.2] - 2026-11-06
 
 - Version-locked bump with the 0.10.2 core line (no changes).

@@ -298,8 +298,8 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
 			// The peer-widening line appends each new shared minor; the
 			// acceptance is the cumulative chain ending at the line's
-			// newest minor (0.10.2 as of 0.1.21).
-			/^0\.3\.0( \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2)?)?)?)?)?)?)?)?)?)?)?)?$/,
+			// newest minor (0.11.0 as of the core 0.11.0 line).
+			/^0\.3\.0( \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2( \|\| 0\.11\.0)?)?)?)?)?)?)?)?)?)?)?)?)?$/,
 		);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not
