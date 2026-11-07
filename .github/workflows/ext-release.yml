@@ -167,12 +167,21 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - name: Build core (file:-linked repos)
+      - name: Build core and the built-in siblings (file:-linked repos)
         if: inputs.needs-core
-        working-directory: sigrun
         run: |
-          npm ci
-          npm run build
+          # Core plus every built-in sibling the file: links resolve into:
+          # the links point at the sibling CHECKOUTS, so their deps must be
+          # installed there too (pi-durable 1.5.0: ext-mcp's dist imports
+          # typebox at runtime, resolved from its own node_modules).
+          npm ci --prefix sigrun && (cd sigrun && npm run build)
+          for repo in sigrun-ext-codemode sigrun-ext-curator \
+            sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-oauth \
+            sigrun-memory-markdown; do
+            if [ -d "$repo" ] && [ "$repo" != "${{ github.event.repository.name }}" ]; then
+              npm ci --prefix "$repo" >/dev/null 2>&1 || npm install --prefix "$repo" >/dev/null 2>&1 || true
+            fi
+          done
       - name: Resolve the package working directory
         id: workdir
         shell: bash
@@ -229,12 +238,21 @@ jobs:
       - uses: actions/setup-node@v5
         with:
           node-version: "22"
-      - name: Build core (file:-linked repos)
+      - name: Build core and the built-in siblings (file:-linked repos)
         if: inputs.needs-core
-        working-directory: sigrun
         run: |
-          npm ci
-          npm run build
+          # Core plus every built-in sibling the file: links resolve into:
+          # the links point at the sibling CHECKOUTS, so their deps must be
+          # installed there too (pi-durable 1.5.0: ext-mcp's dist imports
+          # typebox at runtime, resolved from its own node_modules).
+          npm ci --prefix sigrun && (cd sigrun && npm run build)
+          for repo in sigrun-ext-codemode sigrun-ext-curator \
+            sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-oauth \
+            sigrun-memory-markdown; do
+            if [ -d "$repo" ] && [ "$repo" != "${{ github.event.repository.name }}" ]; then
+              npm ci --prefix "$repo" >/dev/null 2>&1 || npm install --prefix "$repo" >/dev/null 2>&1 || true
+            fi
+          done
       - name: Resolve the package working directory
         id: workdir
         shell: bash
