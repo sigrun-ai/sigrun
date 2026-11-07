@@ -365,6 +365,40 @@ describe("runSettled contract", () => {
 		).toBe(true);
 	});
 
+	test("runSettled reports turn_limit as unanswered (pi-durable 1.5.0 maxTurns)", async () => {
+		// 1.5.0 AgentChange.maxTurns: a tool round reaching the limit ends the
+		// run `unanswered` with reason "turn_limit" (generation.js — the run
+		// ends like a failure, `afterFailedRun` policy "keep" by default).
+		const { opened, fixture } = await bootFixture({
+			responses: [
+				// Round 1 asks for a tool; the tool result lands, and the limit
+				// (1 turn) ends the run BEFORE a second model round happens —
+				// the scripted answer is never consumed.
+				fauxAssistantMessage([fauxToolCall("bash", { command: "true" })], {
+					stopReason: "toolUse",
+				}),
+				fauxAssistantMessage("unreached answer"),
+			],
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		await root.configure({ maxTurns: 1 }, BACKGROUND_CONTEXT);
+		const submission = await root.submit(
+			{ type: "input", content: "hello" },
+			BACKGROUND_CONTEXT,
+		);
+		const record = await submission.wait(BACKGROUND_CONTEXT);
+		expect(record.status).toBe("unanswered");
+
+		const [event] = await nextDelivered(fixture);
+		expect(event.outcome).toEqual({
+			status: "unanswered",
+			reason: "turn_limit",
+		});
+		expect(event.inputTexts).toEqual(["hello"]);
+	});
+
 	test("runSettled fires once for a run whose final attempt follows a retry", async () => {
 		const { opened, fixture } = await bootFixture({
 			settings: { retry: { enabled: true, maxRetries: 1, baseDelayMs: 1 } },

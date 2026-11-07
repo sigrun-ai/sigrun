@@ -32,8 +32,10 @@ import type { JobRuntimeDeps } from "./fire.js";
 
 /** The `sigrun.job.run` key a run record was written under. */
 function runKeyOf(run: JobRunWire): string {
+	// Manual runs key on FIREAT (the same clock reading `runNow` used for
+	// the fire-key tail), never startedAt — see docs.ts's runKeyOf note.
 	if (run.manual) {
-		return `${run.jobId}:manual:${Date.parse(run.startedAt)}`;
+		return `${run.jobId}:manual:${Date.parse(run.fireAt)}`;
 	}
 	return `${run.jobId}:${Date.parse(run.fireAt)}`;
 }
@@ -170,15 +172,27 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 	// this process). A no-jobs harness pays ONE boolean check per terminal
 	// task, never a scan.
 	let jobsMayExist = false;
-	const offJobWrites = deps.harness.subscribeCommits((publication) => {
-		for (const change of publication.changes) {
-			if (change.type !== "document") continue;
-			if (change.record.kind === JobDoc.definition.kind) {
-				jobsMayExist = true;
-				return;
+	const offJobWritesObservation = deps.harness.observeCommits({
+		advance: (publication) => {
+			try {
+				for (const change of publication.changes) {
+					if (change.type !== "document") continue;
+					if (change.record.kind === JobDoc.definition.kind) {
+						jobsMayExist = true;
+						return;
+					}
+				}
+			} catch (error) {
+				console.error("jobs/observe: commit observer failed", error);
 			}
-		}
+		},
+		end: (end) => {
+			if (end.kind === "ended") return;
+			if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+			console.error("jobs/observe: commit observation failed", end.kind === "failed" ? end.error : end);
+		},
 	});
+	const offJobWrites = (): void => offJobWritesObservation.detach();
 	const offTaskSettled = deps.eventBus.onHostEvent((event) => {
 		if (event.type !== "taskSettled") return;
 		if (!jobsMayExist) return;

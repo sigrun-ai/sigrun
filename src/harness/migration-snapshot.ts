@@ -15,10 +15,30 @@
  */
 
 import { existsSync } from "node:fs";
+import { readFile, writeFile } from "node:fs/promises";
+import { createRequire } from "node:module";
 import { DatabaseSync } from "node:sqlite";
 import { CURRENT_SQLITE_SCHEMA_VERSION } from "@earendil-works/pi-durable/storage/sqlite";
 
 export const SKIP_MIGRATION_SNAPSHOT_ENV = "SIGRUN_SKIP_MIGRATION_SNAPSHOT";
+
+/**
+ * The sidecar recording which pi-durable version last opened a store
+ * (spec D4, 1.5.0 upgrade): `<storagePath>.durable-version`. A missing
+ * marker means the store predates the marker convention and counts as
+ * older than any running version.
+ */
+export const DURABLE_VERSION_MARKER_SUFFIX = ".durable-version";
+
+/**
+ * The running pi-durable package version, read from the installed
+ * package's manifest through `createRequire` (the same bundler-stable
+ * shape `schema-fixture.ts` uses for HARNESS_VERSION), so a dependency
+ * bump moves the upgrade guard without a source edit.
+ */
+const DURABLE_PACKAGE_VERSION: string = createRequire(import.meta.url)(
+	"@earendil-works/pi-durable/package.json",
+).version as string;
 
 /** A required pre-migration snapshot could not be written. */
 export class MigrationSnapshotError extends Error {
@@ -127,4 +147,115 @@ export async function snapshotBeforeMigration(
 	} finally {
 		db.close();
 	}
+}
+
+/** Compare two `major.minor[.patch]` versions by their minor. */
+const MARKER_VERSION = /^(\d+)\.(\d+)(?:\.(\d+))?/;
+
+function minorIsOlder(version: string, running: string): boolean {
+	const parse = (v: string): [number, number] | undefined => {
+		const match = /^(\d+)\.(\d+)(?:\.(\d+))?/.exec(v.trim());
+		if (match === null) return undefined;
+		return [Number(match[1]), Number(match[2])];
+	};
+	const marked = parse(version);
+	const current = parse(running);
+	if (marked === undefined || current === undefined) return false;
+	return (
+		marked[0] < current[0] ||
+		(marked[0] === current[0] && marked[1] < current[1])
+	);
+}
+
+/**
+ * Pre-upgrade snapshot (spec D4, pi-durable 1.5.0): before pi-durable opens
+ * a store last written by an OLDER minor, preserve a copy the previous
+ * release can read. The version signal is the `<storagePath>.durable-version`
+ * sidecar — a missing marker (a pre-1.5 store, or one written before the
+ * convention) counts as older, so an unmarked existing store snapshots once
+ * and then never again once {@link writeDurableVersionMarker} has run.
+ *
+ * No-op when the skip env is set or the store file is absent (fresh
+ * installs have nothing to preserve). A failure to write a NEEDED snapshot
+ * throws `MigrationSnapshotError` with the same skip-env hint as the
+ * schema-migration guard. Returns the snapshot path, or `undefined`.
+ */
+export async function snapshotBeforeDurableUpgrade(
+	storagePath: string,
+	opts: MigrationSnapshotOptions,
+): Promise<string | undefined> {
+	if (opts.env[SKIP_MIGRATION_SNAPSHOT_ENV] === "1") {
+		opts.log(
+			`sigrun: durable upgrade snapshot skipped (${SKIP_MIGRATION_SNAPSHOT_ENV}=1): ${storagePath}`,
+		);
+		return undefined;
+	}
+	if (!existsSync(storagePath)) return undefined;
+
+	const markerPath = `${storagePath}${DURABLE_VERSION_MARKER_SUFFIX}`;
+	let marked: string | undefined;
+	try {
+		marked = (await readFile(markerPath, "utf8")).trim();
+	} catch {
+		marked = undefined;
+	}
+	if (
+		marked !== undefined &&
+		MARKER_VERSION.test(marked) &&
+		!minorIsOlder(marked, DURABLE_PACKAGE_VERSION)
+	) {
+		return undefined;
+	}
+
+	const snapshotPath = `${storagePath}.pre-pi-durable-${DURABLE_PACKAGE_VERSION}-${compactUtcStamp(opts.now())}.bak`;
+	let db: DatabaseSync;
+	try {
+		db = new DatabaseSync(storagePath);
+	} catch (error) {
+		opts.log(
+			`sigrun: durable upgrade snapshot skipped; probe could not open ${storagePath}: ${messageOf(error)}`,
+		);
+		return undefined;
+	}
+	try {
+		try {
+			db.exec(`VACUUM INTO ${sqlString(snapshotPath)}`);
+		} catch (error) {
+			// A non-database file defers to the real storage opener, whose
+			// error reports the underlying problem better than a snapshot
+			// guard's skip-env hint (the same deferral snapshotBeforeMigration
+			// makes for its schema probe).
+			if (messageOf(error).includes("file is not a database")) {
+				opts.log(
+					`sigrun: durable upgrade snapshot skipped; ${storagePath} is not a database: ${messageOf(error)}`,
+				);
+				return undefined;
+			}
+			throw new MigrationSnapshotError(
+				`could not snapshot ${storagePath} to ${snapshotPath} before the pi-durable ${marked ?? "unmarked"} → ${DURABLE_PACKAGE_VERSION} upgrade: ${messageOf(error)}; set ${SKIP_MIGRATION_SNAPSHOT_ENV}=1 only when you have an independent backup`,
+				{ cause: error },
+			);
+		}
+	} finally {
+		db.close();
+	}
+	opts.log(
+		`sigrun: durable upgrade snapshot ${snapshotPath} (${marked ?? "unmarked"} → ${DURABLE_PACKAGE_VERSION})`,
+	);
+	return snapshotPath;
+}
+
+/**
+ * Stamp the running pi-durable version beside the store. Boot calls this
+ * only after `openNodeSqliteStorage` succeeds, so the marker never claims a
+ * version the store has not actually been opened by.
+ */
+export async function writeDurableVersionMarker(
+	storagePath: string,
+): Promise<void> {
+	await writeFile(
+		`${storagePath}${DURABLE_VERSION_MARKER_SUFFIX}`,
+		DURABLE_PACKAGE_VERSION,
+		"utf8",
+	);
 }

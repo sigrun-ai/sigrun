@@ -1,0 +1,9 @@
+{
+	"name": "fixture-peer-1-4",
+	"version": "0.1.0",
+	"private": true,
+	"description": "Test-fixture extension whose declared peer range (1.3.0 || 1.4.0) excludes a 1.5.0 host — the pre-import peer guard must quarantine it.",
+	"type": "module",
+	"main": "index.js",
+	"peerDependencies": { "@earendil-works/pi-durable": "1.3.0 || 1.4.0" }
+}

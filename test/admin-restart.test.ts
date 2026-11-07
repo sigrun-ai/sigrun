@@ -513,11 +513,11 @@ describe("restart durability (Review Focus 4)", () => {
 			const answerDeadline = Date.now() + 15_000;
 			let answered = false;
 			while (Date.now() < answerDeadline) {
-				const state = await handle.viewState(BACKGROUND_CONTEXT);
-				const viewText = state.value.entries
+				const watch = await handle.watch(BACKGROUND_CONTEXT);
+				const viewText = watch.value.entries
 					.map((e) => JSON.stringify(e))
 					.join("\n");
-				await state.dispose();
+				await watch.stop();
 				if (
 					viewText.includes(
 						"a long slow answer that keeps the run streaming through the restart",

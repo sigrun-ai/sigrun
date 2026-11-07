@@ -18,6 +18,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
+import { watchFullHistory } from "./conversation-watch.js";
 import { accessOf as accessOfShared } from "@sigrun/shared/access";
 import type {
 	DecisionRequest,
@@ -191,14 +192,18 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				// acquisition revision is the first listener call, then every
 				// watch revision after (pending frames flow because start
 				// never invokes the listener inline).
-				const watch = await conversation.watch(BACKGROUND_CONTEXT);
+				const watch = await watchFullHistory(
+					conversation,
+					BACKGROUND_CONTEXT,
+				);
 				listener(serializeConversationView(watch.value));
-				watch.start((value) => {
+				watch.start((call) => {
+					if (call.kind !== "value") return Promise.resolve();
 					// An extension listener that throws (or returns a rejecting
 					// promise — async listeners) must not end the watch or the
 					// process — warn and keep delivering.
 					return Promise.resolve()
-						.then(() => listener(serializeConversationView(value)))
+						.then(() => listener(serializeConversationView(call.value)))
 						.catch((cause: unknown) => {
 							console.warn(
 								`host bridge: watch listener failed: ${

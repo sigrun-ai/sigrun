@@ -5,7 +5,7 @@
  */
 
 import { defineExtension } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 /** Every run of THIS provider's `recall.echo`. */
 export const altRuns = [];

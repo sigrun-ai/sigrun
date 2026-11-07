@@ -978,7 +978,8 @@ backup — are omitted rather than zeroed):
 | `sigrun_ready` | 1 when the readiness storage check (the root-conversation read `/readyz` gates on) succeeds; 0 when it fails — fires even while the process and the scrape stay up. |
 | `sigrun_live_runs` | Conversations with a placed-but-unsettled input submission. |
 | `sigrun_inflight_submission_oldest_seconds` | Age of the oldest in-flight submission's admission (0 when none; in-process clock — a pre-restart run is invisible until it settles). |
-| `sigrun_tasks_live{status}` | Live tasks by scheduler state (running/ready/waiting/completing/blocked, 0s included). |
+| `sigrun_tasks_live{status}` | Live tasks by scheduler state (running/pending/waiting/completing/blocked, 0s included). |
+| `sigrun_jobs_blocked{reason}` | Jobs whose record is blocked, by reason (`restart_limit` — the schedule hit pi-durable's restart limit; resume via `POST /v1/jobs/:id/resume`). |
 | `sigrun_provider_ready{provider,status}` | 1 per provider at its current auth-readiness status (`ready`, `degraded`, `invalid`, `not_ready`, `not_configured`). |
 | `sigrun_extensions{status}` | Configured extensions by load outcome (`ok` / `quarantined`). |
 | `sigrun_job_last_run_timestamp_seconds{job,outcome}` | Unix time of each job's last run, by outcome. |
@@ -995,6 +996,7 @@ backup — are omitted rather than zeroed):
 | `SigrunSubmissionWedged` | `sigrun_inflight_submission_oldest_seconds > 1800` for 5m — a live run is making no progress. |
 | `SigrunProviderNotReady` | A provider sits at a non-ready auth status for 15m. |
 | `SigrunJobFailed` | `increase(sigrun_job_runs_total{outcome="failed"}[1h]) > 0` — a scheduled job failed. |
+| `SigrunJobRestartLimited` | `sigrun_jobs_blocked{reason="restart_limit"} > 0` for 5m — a job hit the restart limit and is blocked until resumed (`POST /v1/jobs/:id/resume`; see Blocked jobs). |
 | `SigrunBackupStale` | The backup marker is older than 36h while backup is enabled (the rule is absent on an unbacked deploy). |
 
 ## Extensions
@@ -1420,32 +1422,30 @@ launcher) is not supervised either; there the callout says "Restart
 sigrun to apply" with no button. `GET /v1/meta` reports the posture
 (`supervised`).
 
-## Parked tasks
+## Blocked jobs
 
-A task cut off repeatedly without progress (a crash loop) is parked by
-pi-durable's restart limit: it shows `blocked` with reason
-`restart_limit` and does not run again until an administrator retries
-it. The `SigrunTaskParked` alert fires on this. Two admin-only
-endpoints inspect and recover parked tasks:
+A schedule cut off repeatedly without progress (a crash loop) hits
+pi-durable's restart limit: the run ENDS and the job's record is marked
+`blocked` with reason `restart_limit`; it does not fire again until
+someone with the job's write access resumes it. The `SigrunJobRestartLimited` alert fires on
+this (`sigrun_jobs_blocked{reason="restart_limit"} > 0`).
 
-- `GET /v1/admin/tasks?state=blocked` — lists blocked tasks with
-  `{id, kind, reason, conversationId, owner?, extension?}` per row
+- `POST /v1/jobs/:id/resume` — resumes a restart-blocked job: the
+  record returns to its normal scheduled state and the next fire
+  proceeds. (Admin-only; 409 for a job that isn't blocked.)
+- `GET /v1/admin/tasks?state=blocked` — lists blocked scheduler tasks
+  with `{id, kind, reason, conversationId, owner?, extension?}` per row
   (owner is the conversation's session owner when it has one; extension
   is the registered task definition's owner when known).
-- `POST /v1/admin/tasks/:id/retry` — re-runs a restart-parked task:
-  204 on success, 404 `unknown_task` for an unknown id, 409
-  `not_parked` for a task that isn't parked (including one blocked for
-  another reason, such as `missing_task`). A retried schedule job's
-  status returns to `waiting` as the task runs again.
 
 ```sh
 # List blocked tasks (admin token).
 curl -H "Authorization: Bearer $TOKEN" \
   "http://localhost:3000/v1/admin/tasks?state=blocked"
 
-# Retry a parked task.
+# Resume a restart-blocked job.
 curl -X POST -H "Authorization: Bearer $TOKEN" \
-  http://localhost:3000/v1/admin/tasks/7/retry
+  http://localhost:3000/v1/jobs/7/resume
 ```
 
 ## API sketch
@@ -1457,8 +1457,9 @@ curl -X POST -H "Authorization: Bearer $TOKEN" \
   differs from boot) and PATCH reports `{applied, pending}`.
 - `POST /v1/admin/restart` — graceful restart (admin, supervised
   deploys only; see Restarting).
-- `GET /v1/admin/tasks?state=blocked`, `POST /v1/admin/tasks/{id}/retry`
-  — parked-task inspection and recovery (admin; see Parked tasks).
+- `GET /v1/admin/tasks?state=blocked`, `POST /v1/jobs/{id}/resume`
+  — blocked-task inspection and blocked-job recovery (admin; see
+  Blocked jobs).
 - `GET /v1/jobs`, `POST /v1/jobs`, `PATCH`/`DELETE /v1/jobs/{id}` —
   the jobs surface (see [Jobs](#jobs)); `POST /v1/jobs/{id}/run` fires
   now; `GET /v1/jobs/{id}/runs` and `GET /v1/jobs/{id}/revisions` are

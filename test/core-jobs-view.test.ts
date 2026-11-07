@@ -654,6 +654,12 @@ describe("core/jobs selected job", () => {
 			);
 		}
 		// 26 runs, fired straight through the service (the faux model settles).
+		// Regression pin (pi-durable 1.5.0 lane): the manual run-record key
+		// is derived from the fire's fireAt — the SAME clock reading as the
+		// fire-key tail — never startedAt. When the clock rolls over one ms
+		// between the two stamps, a startedAt-derived settle key misses the
+		// stored run doc by 1ms and the run wedges `running` forever; 26
+		// rapid fires make that rollover near-certain.
 		for (let run = 0; run < 26; run += 1) {
 			await opened.jobs.runNow(job.id);
 		}

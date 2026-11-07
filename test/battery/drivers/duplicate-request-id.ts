@@ -93,16 +93,16 @@ async function serializedView(
 	serialized: string;
 	entries: { kind: string; model?: readonly unknown[] }[];
 }> {
-	const viewState = await root.viewState(BACKGROUND_CONTEXT);
-	const entries = viewState.value.entries as unknown as {
+	const watch = await root.watch(BACKGROUND_CONTEXT);
+	const entries = watch.value.entries as unknown as {
 		kind: string;
 		model?: readonly unknown[];
 	}[];
 	let serialized = "";
 	try {
-		serialized = JSON.stringify(viewState.value);
+		serialized = JSON.stringify(watch.value);
 	} finally {
-		await viewState.dispose();
+		await watch.stop();
 	}
 	return { serialized, entries };
 }

@@ -1131,11 +1131,14 @@ describe("chat block routes (spec §8.2)", () => {
 			get id(): ConversationId {
 				return real.id;
 			},
-			agent: (context) => real.agent(context),
-			configure: (change, context) => real.configure(change, context),
-			submit: (submission, context) => real.submit(submission, context),
-			reset: (handoff, context) => real.reset(handoff, context),
-			compact: (instructions, context) => real.compact(instructions, context),
+			// Bound-method forwarding preserves pi-durable 1.5.0's submit
+			// overloads ((submission, context) and the tx-shaped pair) —
+			// arrow wrappers collapse them to the first overload's params.
+			agent: real.agent.bind(real),
+			configure: real.configure.bind(real),
+			submit: real.submit.bind(real),
+			reset: real.reset.bind(real),
+			compact: real.compact.bind(real),
 			commit<T>(change: (tx: Tx) => T | Promise<T>, context: Context): Promise<T> {
 				if (!competed) {
 					competed = true;
@@ -1161,14 +1164,15 @@ describe("chat block routes (spec §8.2)", () => {
 				}
 				return real.commit(change, context);
 			},
-			context: (context, options) => real.context(context, options),
-			entries: (query, limit, cursor, context) =>
-				real.entries(query, limit, cursor, context),
-			fork: (at, options, context) => real.fork(at, options, context),
-			abort: (context, options) => real.abort(context, options),
-			waitForIdle: (context) => real.waitForIdle(context),
-			viewState: (context) => real.viewState(context),
-			watch: (context) => real.watch(context),
+			context: real.context.bind(real),
+			entries: real.entries.bind(real),
+			fork: real.fork.bind(real),
+			abort: real.abort.bind(real),
+			waitForIdle: real.waitForIdle.bind(real),
+			// pi-durable 1.5.0 removed viewState; the wrapper forwards the
+			// watch() replacement only (no route call reaches viewState now).
+
+			watch: real.watch.bind(real),
 		};
 		// A Proxy (not a prototype spread): every member forwards BOUND
 		// to the real instance, so pi-durable's private fields stay

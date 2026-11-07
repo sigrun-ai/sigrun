@@ -74,6 +74,28 @@ const COLLISION_SPECIFIER = pathToFileURL(
 	),
 ).href;
 
+/**
+ * The 1.4-era peer fixture (1.5.0 upgrade Task 6 / spec D3): its declared
+ * peer range `1.3.0 || 1.4.0` excludes the 1.5.0 host, so the PRE-IMPORT
+ * declared-peer guard quarantines it. Its index.js deliberately imports
+ * `Type` from pi-ai, which throws at module evaluation on a 1.5.0 host —
+ * that failure is the point: a peer-range quarantine message (not the
+ * SyntaxError) proves the guard ran BEFORE the import. Do not "repair"
+ * the fixture to a clean import; that would un-pin the ordering.
+ */
+const PEER_1_4_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-peer-1-4", "index.js"),
+).href;
+
+/**
+ * The 1.5-era peer fixture: its declared peer range `~1.5.0` admits the
+ * 1.5.0 host — the positive control proving the pre-import guard only
+ * quarantines excluding ranges.
+ */
+const PEER_1_5_SPECIFIER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-peer-1-5", "index.js"),
+).href;
+
 function configWith(dir: string) {
 	return loadConfig({
 		SIGRUN_MODEL: "openai/gpt-4o",
@@ -317,7 +339,7 @@ test("a declared Earendil peer range excluding the host quarantines; the healthy
 				{
 					name: specifier,
 					status: "quarantined",
-					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.4.0",
+					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.5.0",
 				},
 				{ name: "sigrun-fixture-ext", status: "ok" },
 			]);
@@ -365,7 +387,7 @@ test("a dist-entry package's root peer manifest quarantines an excluding range",
 				{
 					name: specifier,
 					status: "quarantined",
-					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.4.0",
+					error: "peer @earendil-works/pi-durable 1.3.0 excludes host 1.5.0",
 				},
 			]);
 			expect(opened.registry.snapshot().extension("dist-peer-ext")).toBeUndefined();
@@ -411,7 +433,7 @@ test("a chord peer range excluding the host quarantines", async () => {
 				{
 					name: specifier,
 					status: "quarantined",
-					error: "peer @earendil-works/chord 1.3.0 excludes host 1.4.0",
+					error: "peer @earendil-works/chord 1.3.0 excludes host 1.5.0",
 				},
 			]);
 		} finally {
@@ -453,9 +475,9 @@ test("an unparseable owning manifest passes the declared-peer guard", async () =
 });
 
 test.each([
-	["widened range", { "@earendil-works/pi-durable": "1.3.0 || 1.4.0" }],
-	// Review Focus 4: ^1.3.0 admits 1.4.0, so this is deliberately not quarantined.
-	["caret range", { "@earendil-works/pi-durable": "^1.3.0" }],
+	["widened range", { "@earendil-works/pi-durable": "1.4.0 || 1.5.0" }],
+	// Review Focus 4: ^1.4.0 admits 1.5.0, so this is deliberately not quarantined.
+	["caret range", { "@earendil-works/pi-durable": "^1.4.0" }],
 	["wildcard", { "@earendil-works/pi-durable": "*" }],
 	["file specifier", { "@earendil-works/pi-durable": "file:../sigrun" }],
 	["unrelated exact pin", { typebox: "1.3.27" }],
@@ -491,6 +513,69 @@ test.each([
 			expect(opened.extensionOutcomes).toEqual([
 				{ name: "passing-peer-ext", status: "ok", version: "0.1.0" },
 			]);
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a 1.4-era extension quarantines on its peer range before import", async () => {
+	// D3 (1.5.0 upgrade): the declared-peer guard runs BEFORE the import —
+	// a 1.4-era extension's factory (which may destructure 1.4-era host
+	// shapes at module scope) never executes. fixture-peer-1-4's module-level
+	// `Type` import from pi-ai THROWS on evaluation (pi-ai 1.5.0 exports no
+	// Type), so the peer-range message asserted below — not a SyntaxError —
+	// is the proof of pre-import ordering; fixture-ext in the same load
+	// still reports ok.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-preimport-peer-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [PEER_1_4_SPECIFIER, FIXTURE_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{
+					name: PEER_1_4_SPECIFIER,
+					status: "quarantined",
+					error: "peer @earendil-works/pi-durable 1.3.0 || 1.4.0 excludes host 1.5.0",
+				},
+				{ name: "sigrun-fixture-ext", status: "ok" },
+			]);
+			expect(
+				opened.registry.snapshot().extension("fixture-peer-1-4"),
+			).toBeUndefined();
+			expect(
+				opened.registry.snapshot().extension("sigrun-fixture-ext"),
+			).toBeDefined();
+		} finally {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		}
+	} finally {
+		await rm(dir, { recursive: true, force: true });
+	}
+});
+
+test("a ~1.5.0 peer loads on a 1.5.0 host", async () => {
+	// Positive control for the pre-import peer guard: fixture-peer-1-5
+	// declares ~1.5.0, which admits the running host — it must load ok.
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-loader-preimport-peer-ok-"));
+	try {
+		const opened = await openHarness(configWith(dir), {
+			builtins: false,
+			env: {},
+			extensionSpecifiers: [PEER_1_5_SPECIFIER],
+		});
+		try {
+			expect(opened.extensionOutcomes).toEqual([
+				{ name: "fixture-peer-1-5", status: "ok", version: "0.1.0" },
+			]);
+			expect(
+				opened.registry.snapshot().extension("fixture-peer-1-5"),
+			).toBeDefined();
 		} finally {
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		}
@@ -784,7 +869,7 @@ test("a skills-only git package loads ok: the .ts pi extension is skipped with o
 	// SYNTAX ERROR inside, proving the module is never imported.
 	const fixtureDir = join(import.meta.dirname, "fixtures", "fixture-skills-only");
 	const repoDir = await (async () => {
-		const { cpSync, mkdirSync, readdirSync, rmSync, writeFileSync } = await import("node:fs");
+		const { cpSync, rmSync } = await import("node:fs");
 		const { execFileSync } = await import("node:child_process");
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-git-skillsonly-"));
 		cpSync(fixtureDir, dir, { recursive: true });

@@ -478,12 +478,12 @@ describe("GET /v1/conversations lean list", () => {
 		});
 		await createViaRoute(app);
 		// Every conversation handle shares ConversationImpl's prototype, so
-		// ONE spy there observes viewState on every instance the route (or
+		// ONE spy there observes watch() on every instance the route (or
 		// anything else in this request) could resolve.
 		const proto = Object.getPrototypeOf(root) as {
-			viewState: (context: unknown) => Promise<unknown>;
+			watch: (context: unknown) => Promise<unknown>;
 		};
-		const spy = vi.spyOn(proto, "viewState");
+		const spy = vi.spyOn(proto, "watch");
 		try {
 			const response = await app.inject({ method: "GET", url: "/v1/conversations" });
 			expect(response.statusCode).toBe(200);

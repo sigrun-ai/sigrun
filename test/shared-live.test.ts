@@ -19,6 +19,7 @@ import {
 	liveDoc,
 	liveGenerationPartial,
 	liveGenerationText,
+	liveRunFailure,
 	liveToolSlots,
 } from "@sigrun/shared/live";
 import type { ConversationViewBase } from "@sigrun/shared/views";
@@ -97,6 +98,69 @@ describe("liveCompactionFailure", () => {
 			"pi.live": { compactionFailure: { error: "summarize failed" } },
 		});
 		expect(liveCompactionFailure(view)).toBe("summarize failed");
+	});
+});
+
+describe("liveRunFailure", () => {
+	it("returns the reason + detail of a run that ended without an answer", () => {
+		const view = viewWith({
+			"pi.live": {
+				runFailure: { reason: "model_error", detail: "upstream 502" },
+			},
+		});
+		expect(liveRunFailure(view)).toEqual({
+			reason: "model_error",
+			detail: "upstream 502",
+		});
+	});
+
+	it("returns undefined for the user-caused reasons (aborted, reset)", () => {
+		expect(
+			liveRunFailure(
+				viewWith({ "pi.live": { runFailure: { reason: "aborted" } } }),
+			),
+		).toBeUndefined();
+		expect(
+			liveRunFailure(
+				viewWith({ "pi.live": { runFailure: { reason: "reset" } } }),
+			),
+		).toBeUndefined();
+	});
+
+	it("returns undefined when the doc is absent or carries no failure", () => {
+		expect(liveRunFailure(viewWith({}))).toBeUndefined();
+		expect(liveRunFailure(viewWith({ "pi.live": {} }))).toBeUndefined();
+	});
+
+	it("returns undefined while a newer run is in flight (run present)", () => {
+		const view = viewWith({
+			"pi.live": {
+				run: { id: "t1" },
+				runFailure: { reason: "model_error", detail: "upstream 502" },
+			},
+		});
+		expect(liveRunFailure(view)).toBeUndefined();
+	});
+
+	it("fails soft on drift (non-object failure, empty reason)", () => {
+		expect(
+			liveRunFailure(
+				viewWith({ "pi.live": { runFailure: "model_error" } }),
+			),
+		).toBeUndefined();
+		expect(
+			liveRunFailure(
+				viewWith({ "pi.live": { runFailure: { reason: "" } } }),
+			),
+		).toBeUndefined();
+		// A detail that is not a string is dropped, not surfaced.
+		expect(
+			liveRunFailure(
+				viewWith({
+					"pi.live": { runFailure: { reason: "faulted", detail: 42 } },
+				}),
+			),
+		).toEqual({ reason: "faulted" });
 	});
 });
 

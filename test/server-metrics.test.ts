@@ -158,14 +158,14 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		expect(
 			samples.some((line) => line.startsWith("sigrun_tasks_live{")),
 		).toBe(true);
-		// The full six-status vocabulary is always present (0s included),
-		// including 1.4.0's `sleeping` (Task B1 Step 6). The curator
+		// The full six-status vocabulary is always present (0s included)
+		// — pi-durable 1.5.0 renamed `ready` to `pending`. The curator
 		// built-in's tick job sleeps durably between fires, so `sleeping`
 		// is 1 on this deploy — every OTHER status is 0 (asserted by
 		// exclusion against the sample lines themselves).
 		for (const status of [
 			"running",
-			"ready",
+			"pending",
 			"waiting",
 			"completing",
 			"blocked",
@@ -180,26 +180,38 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		).toBe(false);
 		// D5: fixed label vocabularies, including zero-valued series.
 		for (const type of [
-			"session_failed", "task_faulted", "task_parked", "migration_failed",
+			"storage_failed", "task_faulted", "task_interrupted", "migration_failed",
 			"task_outdated", "task_error", "extension_error", "host_error", "listener_error",
 		]) {
 			expect(samples).toContain(`sigrun_durable_reports_total{type="${type}"} 0`);
 		}
-		for (const reason of ["missing_task", "task_too_old", "migration_failed", "restart_limit"]) {
+		for (const reason of ["missing_task", "task_too_old", "migration_failed"]) {
 			expect(samples).toContain(`sigrun_tasks_blocked{reason="${reason}"} 0`);
 		}
+		// pi-durable 1.5.0 (D2): restart_limit is no longer a task blocked
+		// reason — the restart-limited signal moved to the job record gauge.
+		expect(samples).toContain('sigrun_jobs_blocked{reason="restart_limit"} 0');
+		expect(
+			samples.some((line) =>
+				line.startsWith('sigrun_tasks_blocked{reason="restart_limit"}'),
+			),
+		).toBe(false);
 	});
 
 	test("increments durable report counters and counts blocked task reasons", async () => {
 		const { app, opened } = await bootServer();
-		opened.reports.onReport(new Error("parked"), {
-			type: "task_parked",
+		// pi-durable 1.5.0's reports carry { kind, error, ...info } — one
+		// object, `kind` not `type`; `task_parked`/`session_failed` are gone.
+		opened.reports.onReport({
+			kind: "task_faulted",
+			reason: "threw",
+			error: new Error("faulted"),
 			task: { id: 999 as never, kind: "sigrun.schedule", conversationId: 1 as never },
 		});
 		const samples = parseExposition(await getMetrics(app));
-		expect(samples).toContain('sigrun_durable_reports_total{type="task_parked"} 1');
-		expect(samples).toContain('sigrun_durable_reports_total{type="session_failed"} 0');
-		expect(samples).toContain('sigrun_tasks_blocked{reason="restart_limit"} 0');
+		expect(samples).toContain('sigrun_durable_reports_total{type="task_faulted"} 1');
+		expect(samples).toContain('sigrun_durable_reports_total{type="storage_failed"} 0');
+		expect(samples).toContain('sigrun_jobs_blocked{reason="restart_limit"} 0');
 	});
 
 	test("a scrape racing shutdown (harness closed) answers 200 with sigrun_up 0", async () => {
@@ -373,7 +385,7 @@ describe("GET /metrics job families (W4 Task 4)", () => {
 		// omitted entirely) still is.
 		expect(body).toContain("sigrun_job_next_run_timestamp_seconds");
 		expect(body).not.toContain(
-			'sigrun_job_next_run_timestamp_seconds{id="file:tick"}',
+			'sigrun_job_next_run_timestamp_seconds{job="file:tick"}',
 		);
 		// The last-run family only samples jobs that HAVE run (the
 		// backup-marker convention) — never-fired jobs serve no sample.

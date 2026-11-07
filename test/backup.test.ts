@@ -552,9 +552,9 @@ describe("restore drill: live-harness backup resumes", () => {
 			restored.harness.close(BACKGROUND_CONTEXT).catch(() => {}),
 		);
 		const restoredRoot = await restored.harness.root(BACKGROUND_CONTEXT);
-		const state = await restoredRoot.viewState(BACKGROUND_CONTEXT);
-		const view = state.value;
-		await state.dispose();
+		const watch = await restoredRoot.watch(BACKGROUND_CONTEXT);
+		const view = watch.value;
+		await watch.stop();
 		const userTurns = view.entries
 			.filter((e) => e.kind === "pi.user")
 			.map((e) => JSON.stringify(e));
@@ -566,9 +566,9 @@ describe("restore drill: live-harness backup resumes", () => {
 		);
 		const settled = await restoredSubmission.wait(BACKGROUND_CONTEXT);
 		expect(settled.status).toBe("done");
-		const postState = await restoredRoot.viewState(BACKGROUND_CONTEXT);
-		const postView = postState.value;
-		await postState.dispose();
+		const postWatch = await restoredRoot.watch(BACKGROUND_CONTEXT);
+		const postView = postWatch.value;
+		await postWatch.stop();
 		expect(
 			postView.entries
 				.map((e) => JSON.stringify(e))

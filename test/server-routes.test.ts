@@ -107,6 +107,8 @@ const ROUTES: ReadonlyArray<readonly [string, string]> = [
 	["POST", "/v1/image"],
 	// The cross-conversation pending inbox (W3 Task 5, spec §7.5).
 	["GET", "/v1/interactions"],
+	// The jobs restart-limit recovery route (pi-durable 1.5.0, Task 4).
+	["POST", "/v1/jobs/:id/resume"],
 	// The notices routes (notices Task 4, spec §3/§4).
 	["GET", "/v1/notices"],
 	["POST", "/v1/notices/:id/dismiss"],
@@ -378,7 +380,6 @@ describe("server route table", () => {
 				"/metrics",
 				"/v1/admin/restart",
 				"/v1/admin/tasks",
-				"/v1/admin/tasks/:id/retry",
 				"/v1/meta",
 				"/v1/commands",
 				"/v1/auth/accounts",
@@ -421,6 +422,7 @@ describe("server route table", () => {
 				"/v1/jobs",
 				"/v1/jobs/:id",
 				"/v1/jobs/:id/revisions",
+				"/v1/jobs/:id/resume",
 				"/v1/jobs/:id/run",
 				"/v1/jobs/:id/runs",
 				"/v1/jobs/:id/state/reset",

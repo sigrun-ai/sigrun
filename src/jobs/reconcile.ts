@@ -282,7 +282,16 @@ export async function reconcileJobs(
 				for (const task of live) {
 					await deps.harness.abortTask(task.id, ctx);
 				}
-				await createExecutor(deps, id, record, ctx);
+				// D2: a restart-limited record (state blocked, reason
+				// restart_limit) gets NO new executor — its executor ended
+				// faulted and only an explicit resume re-arms it. The guard
+				// wraps ONLY the creation: stale-task pruning above (and the
+				// hash-mismatch aborts below) still runs.
+				if (
+					!(record.state === "blocked" && record.reason === "restart_limit")
+				) {
+					await createExecutor(deps, id, record, ctx);
+				}
 			}
 			// A matching live task exists: leave it (the same task id
 			// survives an unchanged reboot). Extra stale live tasks for
@@ -362,8 +371,10 @@ async function patchRecord(
 	await patchJob(harness, id, change as never, ctx);
 }
 
-/** Create the schedule task for one enabled record (ONE commit). */
-async function createExecutor(
+/** Create the schedule task for one enabled record (ONE commit).
+ *  Exported for `JobsService.resume` (D2): a restart-limited job's
+ *  re-arm rides the same creation path. */
+export async function createExecutor(
 	deps: ReconcileDeps,
 	id: string,
 	record: JobRecord,

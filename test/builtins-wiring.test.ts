@@ -35,6 +35,7 @@ import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { basename, join } from "node:path";
 import YAML from "yaml";
 import { describe, expect, test } from "vitest";
+import { satisfies } from "semver";
 import { BUILTIN_EXTENSIONS } from "../src/harness/builtins.js";
 
 /** Repo root (test/ → ..). */
@@ -295,7 +296,10 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		// line — is skew.
 		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.([3-9]|1[0-9]|2[01])$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			/^(0\.2\.1( \|\| 0\.3\.0)?|0\.3\.0 \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2)?)?)?)?)?)?)?)?)?)?)?)?$/,
+			// The peer-widening line appends each new shared minor; the
+			// acceptance is the cumulative chain ending at the line's
+			// newest minor (0.11.0 as of the core 0.11.0 line).
+			/^0\.3\.0( \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2( \|\| 0\.11\.0)?)?)?)?)?)?)?)?)?)?)?)?)?$/,
 		);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not
@@ -364,16 +368,25 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 			for (const [module, pin] of Object.entries(sibling.manifest.peerDependencies ?? {})) {
 				const own = core.dependencies?.[module];
 				if (own !== undefined) {
-					// Phase-1 peers deliberately accept both host majors while
-					// core develops against 1.4.0. A range that excludes core's
-					// pin is the skew class this test exists to catch.
+					// A peer range that excludes core's pin is the skew class
+					// this test exists to catch. Peers may be exact literals or
+					// ranges ("1.3.0 || 1.4.0" in the 1.4 era, "~1.5.0" now) —
+					// semver's satisfies answers both.
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
+					// An invalid range throws RangeError out of satisfies; that IS
+					// the skew this test names — fail the expect, not the loop.
+					let rangeAccepts = false;
+					try {
+						rangeAccepts = satisfies(own, pin);
+					} catch {
+						rangeAccepts = false;
+					}
 					expect(
 						module === "@sigrun/shared"
 							? [...accepted].some((entry) =>
 								acceptedSharedPeers(name, sibling.manifest.version, pin, own).has(entry),
 							)
-							: accepted.has(own),
+							: accepted.has(own) || rangeAccepts,
 						`${name} peer ${module} accepts core's pin ${own}`,
 					).toBe(true);
 				} else {
@@ -385,7 +398,7 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 					).version as string;
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
 					expect(
-						accepted.has(resolved),
+						accepted.has(resolved) || satisfies(resolved, pin),
 						`${name} peer ${module} accepts core's resolved ${resolved}`,
 					).toBe(true);
 				}

@@ -10,7 +10,7 @@ import {
 	type ListFilesOptions,
 	type ShellExecOptions,
 	type ShellExecResult,
-	type WatchChange,
+	type FileChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 
@@ -49,7 +49,7 @@ export class UnavailableExecutionEnv implements ExecutionEnv {
 		return this.file();
 	}
 	openDirReader(): ReturnType<ExecutionEnv["openDirReader"]> { return this.file(); }
-	watch(_targets: readonly WatchTarget[], _onChange: (change: WatchChange) => void, _context: Context): Promise<{ ok: false; error: FileError }> {
+	watch(_targets: readonly WatchTarget[], _onChange: (change: FileChange) => void, _context: Context): Promise<{ ok: false; error: FileError }> {
 		return this.file<FileWatcher>();
 	}
 	canonicalPath(): ReturnType<ExecutionEnv["canonicalPath"]> { return this.file(); }

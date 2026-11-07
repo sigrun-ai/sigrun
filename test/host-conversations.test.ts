@@ -234,8 +234,10 @@ async function agentLive(
 	if (conversation === undefined) {
 		throw new Error(`conversation ${id} not found`);
 	}
-	const view = await conversation.viewState(BACKGROUND_CONTEXT);
-	return view.value.docs["pi.live"];
+	const watch = await conversation.watch(BACKGROUND_CONTEXT);
+	const live = watch.value.docs["pi.live"];
+	await watch.stop();
+	return live;
 }
 
 describe("host.conversations over the shared conversation ops", () => {

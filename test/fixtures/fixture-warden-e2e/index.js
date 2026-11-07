@@ -20,7 +20,7 @@
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 /** Every judge `evaluate` call: the raw request the warden sent. */
 export const calls = [];

@@ -5,6 +5,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { readFullConversationView } from "./conversation-watch.js";
 import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, resolve } from "node:path";
@@ -284,12 +285,13 @@ export function submissionId(id: number): SubmissionId {
 	return id as SubmissionId;
 }
 
-/** Read one conversation's current view frame; disposes the state handle. */
+/** Read one conversation's current view frame; disposes the watch handle. */
 export async function readView(conversation: Conversation) {
-	const state = await conversation.viewState(BACKGROUND_CONTEXT);
-	const view = serializeConversationView(state.value);
-	await state.dispose();
-	return view;
+	// Task 2 (D1-A): the full-history read — the window never slides, so
+	// `entries` is the raw append-only history, never cut at a head marker.
+	return serializeConversationView(
+		await readFullConversationView(conversation),
+	);
 }
 
 /**

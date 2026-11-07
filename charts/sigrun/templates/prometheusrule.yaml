@@ -111,28 +111,31 @@ spec:
               last hour — a scheduled job failed. Check the job's
               conversation (the failure reason is in its transcript) and
               the scheduler's logs.
-        - alert: SigrunTaskParked
-          # D5: a task cut off five times without progress is parked until
-          # an administrator retries it. Readiness deliberately stays up.
-          expr: sigrun_tasks_blocked{reason="restart_limit"} > 0
+        - alert: SigrunJobRestartLimited
+          # pi-durable 1.5.0 (D2): a task cut off five times without
+          # progress ENDS (no park state); a schedule job's record is
+          # marked blocked/restart_limit until an administrator resumes
+          # it (POST /v1/jobs/:id/resume). Readiness deliberately stays up.
+          expr: sigrun_jobs_blocked{reason="restart_limit"} > 0
           for: 5m
           labels:
             severity: warning
           annotations:
-            summary: a sigrun durable task is parked
+            summary: a sigrun job is restart-limited
             description: >-
-              A task has reached the restart limit and is blocked until
-              retry. Check the durable report logs and the task inspection;
-              schedule jobs also show blocked/restart_limit on their record.
-        - alert: SigrunDurableSessionFailed
-          # D5: a storage/session failure closes the durable Session.
-          expr: increase(sigrun_durable_reports_total{type="session_failed"}[10m]) > 0
+              A job has reached the restart limit and is blocked until
+              resumed. Check the durable report logs and the job's record
+              (state blocked, reason restart_limit); resume it with
+              POST /v1/jobs/:id/resume.
+        - alert: SigrunDurableStorageFailed
+          # D5: a storage failure is reported by the durable runtime.
+          expr: increase(sigrun_durable_reports_total{type="storage_failed"}[10m]) > 0
           labels:
             severity: warning
           annotations:
-            summary: a sigrun durable session failed
+            summary: a sigrun durable storage failure was reported
             description: >-
-              A durable session_failed report was emitted within the last
+              A durable storage_failed report was emitted within the last
               ten minutes. Check the pod logs for the report and its stack,
               then inspect storage health and the restart path.
 {{- if .Values.controllers.backup.enabled }}

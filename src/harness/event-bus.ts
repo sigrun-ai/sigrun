@@ -3,7 +3,7 @@
  * side lane + idle detection + shutdown sequencing. See the memory-seam
  * spec §"Design".
  *
- * The bus subscribes to pi-durable's `Session.subscribeCommits` (sigrun's
+ * The bus subscribes to pi-durable's `Session.observeCommits` (sigrun's
  * harness IS a Session) and reduces each `CommitPublication` into the
  * memory seam's host events — settled-run groups and conversation
  * lifecycle — without touching run logic. The upstream listener contract
@@ -13,10 +13,10 @@
  * deadline-bounded (`Promise.race` against `hookDeadlineMs`), rejections
  * are caught + logged, and overflow drops the OLDEST queued event.
  *
- * Detection rules (verified against pi-durable 1.2.0's publication shapes
+ * Detection rules (verified against pi-durable 1.5.0's publication shapes
  * — table changes are the raw `StorageWrite` records; document changes are
  * `DocumentCommitChange`s whose `record.createdAt === publication.seq`
- * marks creation, `value === null` marks retirement):
+ * marks creation, the tagged `kind === "retire"` marks retirement):
  *
  * - **Settle**: a `submission` table write with `value.type === "input"`
  *   and a terminal status (`done`/`unanswered`). Write-type submissions
@@ -503,9 +503,17 @@ export class EventBus {
 		if (options.onHostEvent !== undefined) {
 			this.onHostEvent(options.onHostEvent);
 		}
-		this.#unsubscribe = harness.subscribeCommits((publication) => {
-			this.observe(publication);
+		const observation = harness.observeCommits({
+			advance: (publication) => {
+				this.observe(publication);
+			},
+			end: (end) => {
+				if (end.kind === "ended") return;
+				if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+				console.error("event-bus: commit observation failed", end.kind === "failed" ? end.error : end);
+			},
 		});
+		this.#unsubscribe = () => observation.detach();
 		// The idle sweep is host-owned machinery (never an extension factory
 		// concern — the twill lesson) and binds to THIS bus's lifetime: close
 		// and shutdownSequence both clear it. Unref'd so a booted-but-idle
@@ -1060,7 +1068,7 @@ export class EventBus {
 				if (change.conversationId === undefined) continue;
 				this.#internal.set(
 					change.conversationId,
-					change.value?.internal === true,
+					change.kind === "change" && change.value.internal === true,
 				);
 			}
 			for (const change of publication.changes) {
@@ -1113,9 +1121,9 @@ export class EventBus {
 					// fork's document.copy carries no status transition).
 					if (
 						change.type === "document" &&
+						change.kind === "change" &&
 						kind === InteractionDoc.definition.kind &&
-						change.conversationId !== undefined &&
-						change.value !== null
+						change.conversationId !== undefined
 					) {
 						const record = change.value as {
 							kind?: unknown;
@@ -1240,7 +1248,7 @@ export class EventBus {
 					this.#metaBasis.set(conversationId, childBasis);
 					continue;
 				}
-				if (change.value === null) {
+				if (change.type === "document" && change.kind === "retire") {
 					this.#archivedBasis.delete(conversationId);
 					this.#metaBasis.delete(conversationId);
 					continue;

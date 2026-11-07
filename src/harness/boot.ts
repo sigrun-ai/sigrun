@@ -25,12 +25,16 @@ import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite
 import { DECISION_TIMEOUT_ENV, effectiveMethods, type Env, type SigrunConfig } from "../config.js";
 import { requiresProxyVouch } from "../server/auth/proxy-only.js";
 import { wireActivity } from "./activity.js";
-import { snapshotBeforeMigration } from "./migration-snapshot.js";
+import {
+	snapshotBeforeDurableUpgrade,
+	snapshotBeforeMigration,
+	writeDurableVersionMarker,
+} from "./migration-snapshot.js";
 import type { JobRuntimeDeps } from "../jobs/fire.js";
 import { createScheduleTask } from "../jobs/task.js";
 import { createJobsService, jobWireOf, type JobsService } from "../jobs/index.js";
 import { reconcileJobs } from "../jobs/reconcile.js";
-import { applyParkedJobs } from "../jobs/parked.js";
+import { markRestartLimitedJob } from "../jobs/restart-limit.js";
 import { createDurableReports } from "./reports.js";
 import { registerJobObservers } from "../jobs/observe.js";
 import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
@@ -173,7 +177,6 @@ import {
 	type IsolationAvailability,
 } from "../sandbox/availability.js";
 import {
-	BUILTIN_EXTENSIONS,
 	resolveBuiltins,
 	type ResolvedBuiltins,
 } from "./builtins.js";
@@ -844,7 +847,7 @@ export interface OpenHarnessOptions {
 	 * Observe pi-durable failure reports (D5). Composed with the boot's own
 	 * logging/counting; observer failures are contained.
 	 */
-	readonly onReport?: (error: unknown, info: import("@earendil-works/pi-durable").ReportInfo) => void;
+	readonly onReport?: (report: import("@earendil-works/pi-durable").Report) => void;
 	/**
 	 * A server WILL bind the host bridge in this process (polish A1, spec
 	 * §5.2), default `false`. While `false`, a bridge-backed `host.*`
@@ -1110,12 +1113,32 @@ export async function openHarness(
 		// openNodeSqliteStorage applies its one-way durable migration. The
 		// injected clock keeps snapshots deterministic in tests; a needed
 		// snapshot failure aborts boot here, before any migration write.
-		await snapshotBeforeMigration(config.storagePath, {
+		const schemaSnapshot = await snapshotBeforeMigration(config.storagePath, {
 			env,
 			now: options.now ?? (() => new Date()),
 			log: (line) => console.log(line),
 		});
-		return await openNodeSqliteStorage(config.storagePath);
+		// D4 (1.5.0 upgrade): a store last written by an older pi-durable
+		// minor gets its own snapshot — skipped when the schema guard above
+		// already wrote one this boot. The version marker is written only
+		// AFTER a successful open, so it never claims a version the store
+		// has not actually been opened by.
+		if (schemaSnapshot === undefined) {
+			await snapshotBeforeDurableUpgrade(config.storagePath, {
+				env,
+				now: options.now ?? (() => new Date()),
+				log: (line) => console.log(line),
+			});
+		}
+		const opened = await openNodeSqliteStorage(config.storagePath);
+		try {
+			await writeDurableVersionMarker(config.storagePath);
+		} catch (error) {
+			// A failed stamp must not leak the open storage handle.
+			await opened.close(BACKGROUND_CONTEXT).catch(() => {});
+			throw error;
+		}
+		return opened;
 	})();
 	const registry = createRegistry();
 	// Late-filled by the loader: factories publish through the same registry
@@ -2019,7 +2042,7 @@ export async function openHarness(
 	// the jobs tests' time-injection lever).
 	const clockNow = options.now ?? (() => new Date());
 	// D5: reports may arrive inside Harness.open. The collector logs/counts
-	// synchronously and queues parks; job patches drain after binding below.
+	// synchronously (no durable follow-up work from a report survives 1.5.0).
 	const reports = createDurableReports({
 		log: (line) => console.error(line),
 		onReport: options.onReport,
@@ -2091,6 +2114,11 @@ export async function openHarness(
 					);
 				},
 				toolExecution: callerSettings?.toolExecution,
+				// pi-durable 1.5.0: restart-limited tasks END instead of parking
+				// (no file backing — caller seam and default only, like
+				// toolExecution). The battery pins it to make crash outcomes
+				// deterministic.
+				restartLimit: callerSettings?.restartLimit,
 				compaction: {
 					...config.compaction,
 					...(config.compaction.modelOverrides === undefined &&
@@ -2125,9 +2153,8 @@ export async function openHarness(
 	jobRuntimeDeps.harness = harness;
 	jobRuntimeDeps.storage = storage;
 	jobRuntimeDeps.interactiveTools = new Set(loadedInteractiveTools);
-	// Drain the restart-limit parks reported during open before scheduling
-	// resumes. A failed status patch is logged and dropped by applyParkedJobs.
-	await applyParkedJobs(harness, reports.takeParked(), BACKGROUND_CONTEXT);
+	// pi-durable 1.5.0 removed task_parked/retryTask (the parked-job drain
+	// existed for that pair); Task 4 wires the replacement recovery surface.
 	// The memory-seam event bus (Tasks 2-4): subscribe BEFORE `resume()` so
 	// recovery settles (faulted/orphaned submissions the scheduler drains)
 	// are observed like any other commit. Extension handlers register under
@@ -2292,13 +2319,24 @@ export async function openHarness(
 	// open, and a no-op once the queue is found empty. Events enqueued
 	// while a drain is already pumping are picked up by that same loop.
 	let drainTimer: ReturnType<typeof setTimeout> | undefined;
-	harness.subscribeCommits(() => {
-		if (drainTimer !== undefined) return;
-		drainTimer = setTimeout(() => {
-			drainTimer = undefined;
-			void eventBus.drain(hookDeadlineMs, BACKGROUND_CONTEXT);
-		});
-		drainTimer.unref?.();
+	harness.observeCommits({
+		advance: () => {
+			try {
+				if (drainTimer !== undefined) return;
+				drainTimer = setTimeout(() => {
+					drainTimer = undefined;
+					void eventBus.drain(hookDeadlineMs, BACKGROUND_CONTEXT);
+				});
+				drainTimer.unref?.();
+			} catch (error) {
+				console.error("boot: commit observer failed", error);
+			}
+		},
+		end: (end) => {
+			if (end.kind === "ended") return;
+			if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+			console.error("boot: commit observation failed", end.kind === "failed" ? end.error : end);
+		},
 	});
 	// A failed Session closes itself (the upstream contract): the bus's
 	// sweep + subscription must not outlive it. shutdownSequence (the
@@ -2393,16 +2431,28 @@ export async function openHarness(
 	// the counter feeds `sigrun_job_runs_total{outcome}`). A creation
 	// write of an already-settled run (the overlap skip, the catch-up
 	// skip) counts once at creation; a `running` run counts at its settle;
-	// prune retirements (value null) never count.
+	// prune retirements (tagged `kind === "retire"`) never count.
 	const jobRunTotals = new Map<string, number>();
-	harness.subscribeCommits((publication) => {
-		for (const change of publication.changes) {
-			if (change.type !== "document") continue;
-			if (change.record.kind !== JobRunDoc.definition.kind) continue;
-			const outcome = (change.value as { outcome?: unknown } | null)?.outcome;
-			if (typeof outcome !== "string" || outcome === "running") continue;
-			jobRunTotals.set(outcome, (jobRunTotals.get(outcome) ?? 0) + 1);
-		}
+	harness.observeCommits({
+		advance: (publication) => {
+			try {
+				for (const change of publication.changes) {
+					if (change.type !== "document") continue;
+					if (change.kind !== "change") continue;
+					if (change.record.kind !== JobRunDoc.definition.kind) continue;
+					const outcome = (change.value as { outcome?: unknown })?.outcome;
+					if (typeof outcome !== "string" || outcome === "running") continue;
+					jobRunTotals.set(outcome, (jobRunTotals.get(outcome) ?? 0) + 1);
+				}
+			} catch (error) {
+				console.error("boot: commit observer failed", error);
+			}
+		},
+		end: (end) => {
+			if (end.kind === "ended") return;
+			if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+			console.error("boot: commit observation failed", end.kind === "failed" ? end.error : end);
+		},
 	});
 	jobs = createJobsService({
 		harness,
@@ -2451,6 +2501,19 @@ export async function openHarness(
 			);
 		}
 	}
+	// D2 restart-limit recovery: reports that arrived DURING
+	// Harness.open sat queued in the collector. Register the live
+	// listener now (drains the backlog via setImmediate, then every
+	// later restart-limited report flows straight to it); the listener
+	// owns all Harness reads/commits — the collector never calls the
+	// Harness from inside onReport.
+	reports.onRestartLimited((task) => {
+		void markRestartLimitedJob(harness, task, BACKGROUND_CONTEXT).catch(
+			(error: unknown) => {
+				console.error("jobs: restart-limited listener failed:", error);
+			},
+		);
+	});
 	harness.resume();
 	return {
 		harness,

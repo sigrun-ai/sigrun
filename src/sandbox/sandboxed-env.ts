@@ -20,7 +20,7 @@ import {
 	type ShellOutputInfo,
 	type TextLine,
 	type TextLineReader,
-	type WatchChange,
+	type FileChange,
 	type WatchTarget,
 } from "@earendil-works/pi-durable/env";
 import {
@@ -105,6 +105,10 @@ abstract class BaseRemoteHandle implements RemoteHandle {
 		} finally {
 			this.client.releaseHandle(this.id);
 		}
+	}
+	/** pi-durable 1.5.0 renamed `FileWatcher.close` to `stop`; the wire verb stays "close". */
+	async stop(context: Context): Promise<void> {
+		await this.close(context);
 	}
 	protected async call<T>(method: string, args: JsonValue[], context: Context): Promise<T> {
 		if (this.closed) throw new FileError("invalid", "sandbox handle is closed");
@@ -230,7 +234,7 @@ export class SandboxedExecutionEnv implements ExecutionEnv {
 		const result = await this.call<Result<DecodedValue, FileError>>("openDirReader", [path], context);
 		return result.ok ? { ok: true, value: new RemoteDirReader(this.client, handleId(result.value)) } : result;
 	}
-	async watch(targets: readonly WatchTarget[], onChange: (change: WatchChange) => void, context: Context): Promise<Result<FileWatcher, FileError>> {
+	async watch(targets: readonly WatchTarget[], onChange: (change: FileChange) => void, context: Context): Promise<Result<FileWatcher, FileError>> {
 		const result = await this.call<Result<{ handle: DecodedValue; mode: "native" | "polling" }, FileError>>(
 			"watch",
 			[targets],

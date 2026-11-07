@@ -7,7 +7,7 @@
  */
 
 import { defineExtension } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 export default function createFixtureHookBadSchema() {
 	return {

@@ -13,7 +13,8 @@
 
 import { defineExtension, section } from "@earendil-works/pi-durable";
 import type { ConversationId } from "@earendil-works/pi-durable";
-import { createProvider, Type } from "@earendil-works/pi-ai";
+import { createProvider } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { Provider } from "@earendil-works/pi-ai";
 import type {
 	Access,

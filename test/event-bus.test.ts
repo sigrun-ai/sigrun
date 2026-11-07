@@ -1,7 +1,7 @@
 /**
  * Memory-seam Task 2: the event bus — commit observation + side lane.
  *
- * `EventBus` subscribes to pi-durable's `Session.subscribeCommits` (the
+ * `EventBus` subscribes to pi-durable's `harness observeCommits` (the
  * harness IS a Session) and reduces each `CommitPublication` into settled
  * runs (`SettleGroup`) and conversation lifecycle events, delivering them
  * through one bounded drain loop.
@@ -33,6 +33,8 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../src/config.js";
+import { createJobsService } from "../src/jobs/index.js";
+import { JobDoc } from "../src/jobs/docs.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import {
 	EventBus,
@@ -732,6 +734,172 @@ describe("lifecycle detection", () => {
 			{ type: "conversationArchived", conversationId: root.id, archived: true },
 			{ type: "conversationArchived", conversationId: child.id, archived: false },
 		]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// pi-durable 1.5.0 commit semantics (Task 3 pins): tagged document kinds,
+// observer-throw isolation, and the quiet session-closed end.
+// ---------------------------------------------------------------------------
+
+describe("pi-durable 1.5.0 commit semantics", () => {
+	test("archive and unarchive still emit after tagged changes (kind === \"retire\" rewrite)", async () => {
+		// 1.5.0 tags every document change's `kind` (`create` / `change` /
+		// `retire`); pre-1.5.0 the presence of `value` marked a change. This
+		// pins the bus's flip detection on the POST-1.5.0 stream shape: a
+		// true flip emits `archived: true`, a false flip `archived: false`.
+		const { bus, root } = await bootBus();
+		const { lifecycle } = recordAll(bus);
+		// Materialize the meta doc first (a creation — fires nothing), so
+		// both flips below are plain `change` records against a baseline.
+		await patchMeta(root, (draft) => {
+			draft.pinned = true;
+		});
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(
+			lifecycle.filter((event) => event.type === "conversationArchived"),
+		).toHaveLength(0);
+
+		await patchMeta(root, (draft) => {
+			draft.archived = true;
+		});
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		await patchMeta(root, (draft) => {
+			draft.archived = false;
+		});
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		expect(
+			lifecycle.filter((event) => event.type === "conversationArchived"),
+		).toEqual([
+			{ type: "conversationArchived", conversationId: root.id, archived: true },
+			{
+				type: "conversationArchived",
+				conversationId: root.id,
+				archived: false,
+			},
+		]);
+	});
+
+	test("a throwing job-change hook does not detach the jobs observer", async () => {
+		// Pins Task 1's try/catch inside the jobs service's `observeCommits`
+		// advance body (src/jobs/index.ts): a throwing onChange is caught and
+		// logged, and LATER commits still invoke the hook — a throwing
+		// listener must never detach the observation.
+		const { opened } = await bootBus();
+		const calls: string[] = [];
+		let armed = false;
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			createJobsService({
+				harness: opened.harness,
+				storage: opened.storage,
+				runtime: {
+					harness: opened.harness,
+					storage: opened.storage,
+					registry: opened.registry,
+					models: opened.models,
+					defaultModel: opened.defaultModel,
+					now: () => Date.now(),
+					defaultTz: "UTC",
+					gatewayLoaded: false,
+					effectiveOwner: (owner: string | undefined) => owner,
+				},
+				effectiveOwner: (owner: string | undefined) => owner,
+				rootId: 0,
+				sources: () => ({ file: [], extensions: [] }),
+				settings: () => ({}),
+				onChange: (jobId: string) => {
+					// The built-ins load in this rig (1.5.0 family), so the
+					// curator's tick-job row also fires onChange; the test owns
+					// only its own job-* rows.
+					if (!jobId.startsWith("job-")) return;
+					calls.push(jobId);
+					if (!armed) {
+						armed = true;
+						throw new Error("first call exploded");
+					}
+				},
+			});
+
+			const write = async (jobId: string, pinned: number) => {
+				await opened.harness.commit(async (tx) => {
+					const draft = await tx.doc(JobDoc, jobId, {
+						source: "api",
+						spec: {
+							name: jobId,
+							schedule: { every: "1h" },
+							action: { kind: "prompt", prompt: "x", conversation: "new" },
+						},
+						enabled: true,
+						createdAt: new Date(0).toISOString(),
+						hash: "h",
+						state: "waiting",
+						version: 1,
+						updatedAt: new Date(0).toISOString(),
+					});
+					draft.updatedAt = new Date(pinned).toISOString();
+				}, BACKGROUND_CONTEXT);
+			};
+
+			await write("job-a", 1);
+			await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(1), {
+				timeout: 5_000,
+				interval: 50,
+			});
+			// The throw happened on the first call; it was caught + logged by
+			// the observer body, and the observation is still attached.
+			expect(calls).toEqual(["job-a"]);
+			expect(
+				spy.mock.calls.some((call) =>
+					call.map(String).join(" ").includes("commit observer failed"),
+				),
+			).toBe(true);
+
+			await write("job-b", 2);
+			await write("job-c", 3);
+			await vi.waitFor(() => expect(calls.length).toBeGreaterThanOrEqual(3), {
+				timeout: 5_000,
+				interval: 50,
+			});
+			expect(calls).toEqual(["job-a", "job-b", "job-c"]);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("harness close does not log an observer failure (quiet session-closed end)", async () => {
+		// pi-durable 1.5.0 ends every `observeCommits` observation with a
+		// `failed` end carrying a `session closed` Error on harness close —
+		// an EXPECTED teardown path. The bus's and the jobs observer's `end`
+		// handlers must swallow it quietly: no `console.error` mentioning
+		// `observeCommits` or `session closed` across a close.
+		const { opened, bus, root } = await bootBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		recordAll(bus);
+		await runTurn(root, "hello");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		bus.close();
+
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			await opened.harness.close(BACKGROUND_CONTEXT);
+			// The observer ends land on the close's settle; give the side
+			// lane a beat to flush anything it would log.
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const failures = spy.mock.calls.filter((call) => {
+				const text = call.map(String).join(" ");
+				return (
+					text.includes("observeCommits") ||
+					text.includes("session closed") ||
+					text.includes("commit observation failed")
+				);
+			});
+			expect(failures).toEqual([]);
+		} finally {
+			spy.mockRestore();
+		}
 	});
 });
 

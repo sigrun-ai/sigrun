@@ -1,23 +1,30 @@
 /**
  * Crash-battery item 3 driver (plan Task 12 step 3, spec §7 M1 battery,
- * Review Focus #5): `kill -9` during a background compaction → resume
- * succeeds, NO half-written summary, committed turns intact, the view
- * serializes, and subsequent submits succeed.
+ * Review Focus #5; 1.5.0 crash semantics per spec §3.2-e): `kill -9`
+ * during a background compaction → the restart-limited compaction no
+ * longer parks nor re-runs: with `settings.restartLimit` pinned to 1,
+ * the FIRST recovery ENDS the cut-off compaction task into
+ * `pi.live.compactionFailure` (visible state; the summarize request
+ * fired in SETUP only — it is never re-requested), NO summary entry is
+ * ever placed (no half-written summary is possible), the committed
+ * turns stay intact, the view serializes, and subsequent submits
+ * succeed.
  *
  * setup mode:
  * 1. Boot a REAL harness on `<dir>/sigrun.db` with the faux provider slowed
  *    deterministically (`tokensPerSecond: 2`, `tokenSize` pinned) and the
- *    compaction policy forced through the OpenHarnessOptions.settings seam
- *    to thresholds calibrated for the curator era: the eight core tool
- *    schemas (the A6 skill_manage curation tool included) ride in every
- *    request, so the warm-up turn and turn 2 both start from a tools-sized
- *    baseline. Blocking threshold 5000 (`contextWindow - reserveTokens`),
- *    background band from 3000 (`blocking - backgroundTokens`),
- *    `keepRecentTokens: 1`. A short warm-up turn stays under the band;
- *    turn 2's preparation (thousands of estimated tokens, baseline plus
- *    filler) lands inside it, so upstream
- *    creates a conversation-owned BACKGROUND compaction task while turn
- *    2's generation proceeds.
+ *    compaction policy forced through the OpenHarnessOptions.settings seam.
+ *    Band 2200..5000 (`contextWindow - reserveTokens` = 5000 blocking;
+ *    background floor 2200 via `backgroundTokens: 2_800`),
+ *    `keepRecentTokens: 1`. Calibration is against the MEASURED-USAGE
+ *    baseline: upstream's estimateContext reads the last assistant
+ *    message's totalTokens, and the faux provider's simulated cache
+ *    counts prompt tokens in cacheWrite (input 0), inflating totalTokens
+ *    to ~2× the prompt — warm-up measured ≈2142, turn 2 ≈2505 (see the
+ *    inline comment at the settings object). A short warm-up turn stays
+ *    under the band; turn 2 (baseline plus filler) lands inside it, so
+ *    upstream creates a conversation-owned BACKGROUND compaction task
+ *    while turn 2's generation proceeds.
  * 2. All faux responses are content-discriminating factories: the
  *    summarizer's request serializes the pre-cut transcript (it contains the
  *    warm-up ANSWER text but never turn 2's marker), so routing needs no
@@ -33,17 +40,17 @@
  *    marker fires within ~10s of boot).
  *
  * verify mode:
- * 1. Reopen the SAME storage dir and resume, with factories serving a fresh
- *    summary plus the post-kill turn's answer.
- * 2. `waitForTask` the recorded compaction task → must complete; the write
- *    submission places the summary entry (poll with deadline).
- * 3. Assert: exactly ONE `pi.compaction` entry, well-formed (upstream's
- *    summary wrapper + the full scripted summary text including its END
- *    sentinel — a half-written summary would be truncated), `reason:
- *    "threshold"`, the summarize marker file shows the request fired in BOTH
- *    processes (setup started it; verify re-requested it from the durable
- *    checkpoint), the pre-kill turns are all present, the view serializes,
- *    and a subsequent submit settles `done`.
+ * 1. Reopen the SAME storage dir and resume, with `restartLimit: 1`
+ *    pinned: the cut-off compaction task is at the limit, so it ENDS.
+ * 2. `waitForTask` the recorded compaction task → its outcome is FAILED
+ *    (restart-limited), and `pi.live.compactionFailure` records it
+ *    (polled with a deadline — the task-settling commit can publish a
+ *    beat after the wait resolves).
+ * 3. Assert: ZERO `pi.compaction` entries (no summary — half-written is
+ *    impossible by construction: the verify summarizer is never asked),
+ *    the summarize marker file shows the request fired in SETUP ONLY
+ *    (`["setup"]`), the pre-kill turns are all present, the view
+ *    serializes, and a subsequent submit settles `done`.
  */
 
 import { appendFileSync } from "node:fs";
@@ -66,6 +73,7 @@ import {
 	marker,
 	parseDriverArgs,
 	readScenarioState,
+	STORE_SETTLE_MS,
 	verifyFailed,
 	verified,
 	withDeadline,
@@ -87,16 +95,13 @@ const TURN3_ANSWER = "third answer";
  * discriminator marker.
  */
 const SETUP_SUMMARY = `background compaction summary payload ${"s".repeat(2_800)}`;
-/** The summary the VERIFY pass's re-request serves; the sentinel proves completeness. */
-const RECOVERED_SUMMARY = "recovered compaction summary payload SUMMARY-END";
-/** Upstream's summary wrapper prefix (observed in test/compaction.test.ts). */
-const SUMMARY_WRAPPER = "compacted into the following summary";
 
 /** Marker-wait deadlines INSIDE the driver (fail loud, never hang). */
 const COMPACTION_DEADLINE_MS = 30_000;
 const SETTLE_DEADLINE_MS = 30_000;
-const SUMMARY_ENTRY_DEADLINE_MS = 15_000;
-/** Poll cadence for the setup conditions and the verify summary entry. */
+/** Deadline for the verify pass's pi.live.compactionFailure poll. */
+const COMPACTION_FAILURE_DEADLINE_MS = 15_000;
+/** Poll cadence for the setup conditions and the verify compactionFailure poll. */
 const POLL_MS = 100;
 
 /** The shape the driver reads from a conversation's history entries. */
@@ -140,10 +145,9 @@ function routingResponses(
 	mode: "setup" | "verify",
 	copies = 8,
 ): FauxResponseFactory[] {
-	const summaryText = mode === "setup" ? SETUP_SUMMARY : RECOVERED_SUMMARY;
 	const summarizer = () => {
 		countSummarizeRequest(dir, mode);
-		return fauxAssistantMessage(summaryText);
+		return fauxAssistantMessage(SETUP_SUMMARY);
 	};
 	return Array.from(
 		{ length: copies },
@@ -192,18 +196,25 @@ async function main(): Promise<never> {
 			{ tokensPerSecond: 2, tokenSize: { min: 8, max: 8 } },
 			{
 			// The T8 settings seam (OpenHarnessOptions.settings): forced
-			// thresholds recalibrated for the curator era (see header) — the
-			// eight core tool schemas (skill_manage included) ride in every
-			// request, so the warm-up turn's tools-sized baseline is now ~2150
-			// estimated tokens and the old 2000/4000 band put the WARM-UP itself
-			// inside it (turn 2 then queued behind the warm-up's own slow
-			// summarizer). Band 3000..5000: the warm-up stays under the floor,
-			// turn 2 (~4400, baseline plus filler) lands inside it.
+			// thresholds calibrated against the 1.5.0 measured-usage baseline
+			// (upstream's estimateContext reads the LAST assistant message's
+			// totalTokens, then estimates forward). The faux provider's
+			// simulated cache counts prompt tokens in cacheWrite (input 0),
+			// so totalTokens ≈ promptTokens + cacheWrite ≈ 2× the prompt:
+			// measured warm-up answer ≈ 2142, turn 2's baseline ≈ 2505
+			// (warm-up totalTokens + turn-2 user ~350 + system patches).
+			// Band 2200..5000 (background = 5000 - 2800): the warm-up
+			// generation (measured 0 → estimated ~2200) stays under the
+			// floor, turn 2 (~2500+) lands inside it.
 				compaction: {
 					reserveTokens: 123_000,
 					keepRecentTokens: 1,
-					backgroundTokens: 2_000,
+					backgroundTokens: 2_800,
 				},
+				// 1.5.0 pin: the cut-off compaction task is at the limit on the
+				// first recovery, so it ENDS into pi.live.compactionFailure
+				// instead of re-running (deterministic — no re-summarize race).
+				restartLimit: 1,
 			},
 		);
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -220,9 +231,22 @@ async function main(): Promise<never> {
 			SETTLE_DEADLINE_MS,
 			"warm-up settlement",
 		);
-		// Turn 2: ~550 estimated tokens — inside the background band
-		// (300 … 700). Upstream creates a conversation-owned background
-		// compaction while this turn's generation proceeds.
+		// Turn 2: the warm-up answer's measured totalTokens (~2142) plus the
+		// filler (~350) land the request inside the background band
+		// (2200 … 5000). Upstream creates a conversation-owned background
+		// compaction while this turn's generation proceeds. Guard: NO
+		// compaction may exist before turn 2 — a warm-up drift into the band
+		// would make the killed compaction the wrong one.
+		const liveBeforeTurn2 = await opened.harness.snapshot(
+			LiveDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+		if ((liveBeforeTurn2?.compactions ?? []).length !== 0) {
+			return verifyFailed(
+				`a compaction already exists before turn 2 (${JSON.stringify(liveBeforeTurn2?.compactions)}) — the warm-up drifted into the band; the killed compaction would be the wrong one`,
+			);
+		}
 		const second = await root.submit(
 			{
 				type: "input",
@@ -274,6 +298,12 @@ async function main(): Promise<never> {
 			}
 			await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 		}
+		// 1.5.0 deferred persistence: `pi.live` (the compactions listing) is
+		// SHOWN at once but STORED only within settings.progress.
+		// persistWithinMs (default 1,000 ms) — the kill marker waits the store
+		// window plus slack so the kill lands after the listing is STORED
+		// (STORE_SETTLE_MS, drivers/lib.ts).
+		await new Promise((resolve) => setTimeout(resolve, STORE_SETTLE_MS));
 		await writeScenarioState(dir, {
 			submissionId: second.id,
 			compactionTaskId,
@@ -285,78 +315,73 @@ async function main(): Promise<never> {
 		return new Promise<never>(() => {});
 	}
 
-	// verify mode: reopen, resume (the compaction task re-runs from its
-	// durable summarize checkpoint), and check every Review-Focus-#5 leg.
-	const opened = await bootScenarioHarness(dir, routingResponses(dir, mode));
+	// verify mode: reopen and resume with restartLimit 1 — the cut-off
+	// compaction task is at the limit, so it ENDS into
+	// pi.live.compactionFailure and the summarize request is NEVER
+	// re-issued (1.5.0 restart-limit semantics).
+	const opened = await bootScenarioHarness(
+		dir,
+		routingResponses(dir, mode),
+		undefined,
+		{ restartLimit: 1 },
+	);
 	const state = await readScenarioState(dir);
 	const root = await opened.harness.root(BACKGROUND_CONTEXT);
-	const taskId = state.compactionTaskId as TaskId<CompactionResult>;	// The resumed compaction must complete (a failed recovery is a finding).
+	const taskId = state.compactionTaskId as TaskId<CompactionResult>;
+	// The cut-off compaction task must END (a failed recovery is the 1.5.0
+	// outcome, not a completion).
 	const task = await withDeadline(
 		opened.harness.waitForTask(taskId, BACKGROUND_CONTEXT),
 		SETTLE_DEADLINE_MS,
-		"resumed compaction task settlement",
+		"restart-limited compaction task settlement",
 	);
 	const outcome = task.state.outcome;
-	if (outcome.status !== "completed") {
+	if (outcome.status !== "failed") {
 		return verifyFailed(
-			`the resumed compaction task did not complete (outcome=${JSON.stringify(outcome)})`,
+			`the restart-limited compaction task did not end failed (outcome=${JSON.stringify(outcome)})`,
 		);
 	}
 
-	// The summary entry appears when the compaction's write submission places
-	// it at the next boundary (the conversation is idle → at once).
-	let summaries: EntryLike[] = [];
-	const entryDeadline = Date.now() + SUMMARY_ENTRY_DEADLINE_MS;
+	// `pi.live.compactionFailure` records the failure (polled — the ending
+	// commit can publish a beat after waitForTask resolves).
+	let compactionFailure: unknown;
+	const failureDeadline = Date.now() + COMPACTION_FAILURE_DEADLINE_MS;
 	for (;;) {
-		const entries = await conversationEntries(root);
-		summaries = entries.filter((entry) => entry.kind === "pi.compaction");
-		if (summaries.length > 0) break;
-		if (Date.now() > entryDeadline) {
+		const live = await opened.harness.snapshot(
+			LiveDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+		compactionFailure = live?.compactionFailure;
+		if (compactionFailure !== undefined) break;
+		if (Date.now() > failureDeadline) {
 			return verifyFailed(
-				"no pi.compaction summary entry appeared after the resumed task completed",
+				`pi.live.compactionFailure never appeared after the restart-limited compaction ended (live: ${JSON.stringify(live)})`,
 			);
 		}
 		await new Promise((resolve) => setTimeout(resolve, POLL_MS));
 	}
-	if (summaries.length !== 1) {
+
+	// NO summary entry: the compaction ended, so no pi.compaction entry may
+	// EVER be placed (a short settle window makes a late placement visible).
+	await new Promise((resolve) => setTimeout(resolve, 1_000));
+	const entries = await conversationEntries(root);
+	const summaries = entries.filter((entry) => entry.kind === "pi.compaction");
+	if (summaries.length !== 0) {
 		return verifyFailed(
-			`expected exactly one compaction summary entry, found ${summaries.length}`,
+			`expected NO compaction summary entry after the restart-limited compaction ended (found ${summaries.length})`,
 		);
 	}
-	const summaryText = entryText(summaries[0]);
-	// NO half-written summary: upstream's wrapper plus the COMPLETE scripted
-	// summary — a summary cut mid-write loses the trailing sentinel.
-	if (!summaryText.includes(SUMMARY_WRAPPER)) {
-		return verifyFailed(
-			`summary entry lacks upstream's wrapper prefix (text head: ${JSON.stringify(summaryText.slice(0, 120))})`,
-		);
-	}
-	if (!summaryText.includes("SUMMARY-END")) {
-		return verifyFailed(
-			"summary entry is truncated — the scripted summary's end sentinel is missing (half-written summary)",
-		);
-	}
-	const summaryData = summaries[0].data;
-	if (JSON.stringify(summaryData) !== JSON.stringify({ reason: "threshold" })) {
-		return verifyFailed(
-			`summary entry data is ${JSON.stringify(summaryData)}, expected {"reason":"threshold"}`,
-		);
-	}
-	// The summarize request fired in BOTH processes: setup started it (the
-	// kill was mid-flight) and verify re-requested it from the checkpoint.
+	// The summarize request fired in SETUP ONLY — the restart-limited
+	// compaction never re-requests it (no half-written summary is possible).
 	const requests = await summarizeRequests(dir);
-	if (
-		requests.length !== 2 ||
-		requests[0] !== "setup" ||
-		requests[1] !== "verify"
-	) {
+	if (requests.length !== 1 || requests[0] !== "setup") {
 		return verifyFailed(
-			`summarize request markers are ${JSON.stringify(requests)}, expected ["setup","verify"]`,
+			`summarize request markers are ${JSON.stringify(requests)}, expected ["setup"] (a verify re-request would mean the cut-off compaction re-ran)`,
 		);
 	}
 
 	// Committed turns intact: every pre-kill turn is still in the history.
-	const entries = await conversationEntries(root);
 	const userTexts = entries
 		.filter((entry) => entry.kind === "pi.user")
 		.map(entryText)
@@ -370,15 +395,15 @@ async function main(): Promise<never> {
 	}
 
 	// The structural view (spec §9.3): serializing it is itself an assertion.
-	const viewState = await root.viewState(BACKGROUND_CONTEXT);
+	const watch = await root.watch(BACKGROUND_CONTEXT);
 	let serialized = "";
 	try {
-		serialized = JSON.stringify(viewState.value);
+		serialized = JSON.stringify(watch.value);
 	} catch (error) {
-		await viewState.dispose();
+		await watch.stop();
 		return verifyFailed(`view does not serialize: ${String(error)}`);
 	}
-	await viewState.dispose();
+	await watch.stop();
 	if (serialized.length === 0) {
 		return verifyFailed("serialized view is empty");
 	}
@@ -402,9 +427,8 @@ async function main(): Promise<never> {
 	await opened.harness.close(BACKGROUND_CONTEXT);
 	return verified({
 		compactionOutcome: outcome.status,
-		summaryVia: outcome.result.entryId !== undefined ? "entryId" : "submissionId",
-		summaryEntries: 1,
-		summaryWellFormed: true,
+		compactionFailureRecorded: compactionFailure !== undefined,
+		summaryEntries: summaries.length,
 		summarizeRequests: requests,
 		preKillTurnsIntact: true,
 		viewSerializes: true,

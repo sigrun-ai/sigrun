@@ -8,7 +8,7 @@
  */
 
 import { defineExtension, defineTool, section } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 const marker = defineTool({
 	name: "fixture_marker",

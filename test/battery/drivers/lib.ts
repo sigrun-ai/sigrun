@@ -163,6 +163,20 @@ export async function withDeadline<T>(
 	}
 }
 
+/**
+ * pi-durable 1.5.0 changelog (deferred persistence): streamed partials
+ * and running tool output are SHOWN to watches at once but STORED only
+ * at the next boundary commit or after `settings.progress.persistWithinMs`
+ * (default 1,000 ms). The battery's
+ * kill observable must be STORED state — a crash before the first store
+ * leaves no aborted entry at all — so after an in-memory observable
+ * (LiveDoc `generation.message`, a compaction listed in `pi.live`)
+ * appears, a setup driver waits this long before printing its kill
+ * marker: the deferred commit has then crossed to storage and the kill
+ * provably lands after persisted progress.
+ */
+export const STORE_SETTLE_MS = 1_500;
+
 /** The one-shot success exit: flush the marker, then exit 0. */
 export async function verified(payload: unknown): Promise<never> {
 	await flushMarker(`VERIFIED:${JSON.stringify(payload)}`);

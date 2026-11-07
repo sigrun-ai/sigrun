@@ -32,7 +32,7 @@
  * default subscriber set is empty, so nothing is lost by not wiring it.
  */
 
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import type { HostEventWire } from "@sigrun/shared/views";
 import {
 	defineExtension,

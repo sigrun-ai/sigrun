@@ -127,6 +127,40 @@ describe("ConversationPane auth notices (polish task 12)", () => {
 });
 
 describe("ConversationPane (C2 turn rendering)", () => {
+	test("a pi.live runFailure renders one dim `run ended:` line under the last turn", () => {
+		const pane = new ConversationPane();
+		const withDocs = (
+			docs: ConversationViewWire["docs"],
+		): ConversationViewWire => ({
+			...view(1, rootFilesystemEntries()),
+			docs,
+		});
+		pane.showView(
+			withDocs({
+				"pi.live": {
+					runFailure: { reason: "model_error", detail: "upstream 502" },
+				},
+			}),
+		);
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain("run ended: model_error: upstream 502");
+		// The user-caused reasons render nothing.
+		pane.showView(
+			withDocs({ "pi.live": { runFailure: { reason: "aborted" } } }),
+		);
+		expect(pane.render(80).join("\n")).not.toContain("run ended:");
+		// A newer run in flight hides the older failure.
+		pane.showView(
+			withDocs({
+				"pi.live": {
+					run: { id: "t1" },
+					runFailure: { reason: "model_error", detail: "upstream 502" },
+				},
+			}),
+		);
+		expect(pane.render(80).join("\n")).not.toContain("run ended:");
+	});
+
 	test("turns() groups entries into user + assistant turns", () => {
 		const pane = new ConversationPane();
 		pane.showView(view(1, rootFilesystemEntries()));

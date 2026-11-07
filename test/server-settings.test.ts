@@ -27,7 +27,7 @@ import {
 	fauxToolCall,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
 	defineTool,
 	InboxDoc,

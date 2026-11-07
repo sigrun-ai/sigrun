@@ -32,7 +32,7 @@ import {
 	resolveJob,
 	type ResolvedJob,
 } from "../jobs-access.js";
-import { JobDeclaredError, JobNotFoundError } from "../../jobs/index.js";
+import { JobDeclaredError, JobNotBlockedError, JobNotFoundError } from "../../jobs/index.js";
 import { validateJobSpec } from "../../jobs/spec.js";
 
 /**
@@ -54,6 +54,9 @@ async function domainError(reply: FastifyReply, error: unknown) {
 	}
 	if (error instanceof JobNotFoundError) {
 		return await reply.code(404).send({ error: "job_not_found" });
+	}
+	if (error instanceof JobNotBlockedError) {
+		return await reply.code(409).send({ error: "not_blocked" });
 	}
 	throw error;
 }
@@ -258,6 +261,32 @@ export function registerJobRoutes(
 			return await deny(reply, "forbidden");
 		}
 		return await jobs.runNow(id);
+	});
+
+	// POST /v1/jobs/:id/resume — restart-limit recovery (D2). EXACTLY
+	// the run route's access checks: unknown or hidden → 404
+	// job_not_found; read-only → 403 forbidden. A job that is not
+	// restart-limited → 409 not_blocked; a blocked/restart_limit job
+	// re-arms (state waiting, executor recreated) → 200 with the wire.
+	app.post("/v1/jobs/:id/resume", async (request, reply) => {
+		const { id } = request.params as { id: string };
+		const wire = await jobs.get(id);
+		if (wire === undefined) {
+			return await deny(reply, "job_not_found");
+		}
+		const access = jobAccess(accessPrincipal(request), wire);
+		if (access === "none") {
+			return await deny(reply, "job_not_found");
+		}
+		if (access === "read") {
+			return await deny(reply, "forbidden");
+		}
+		try {
+			const resumed = await jobs.resume(id);
+			return { job: resumed };
+		} catch (error) {
+			return await domainError(reply, error);
+		}
 	});
 
 	// GET /v1/jobs/:id/runs?limit= — newest first; answers for retired

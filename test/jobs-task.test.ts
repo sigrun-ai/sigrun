@@ -343,6 +343,12 @@ describe("the schedule task on durable sleeps", () => {
 		const record = await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT);
 		expect(record?.state).toBe("waiting");
 		expect(record?.nextRun).toBe(new Date(firstAt).toISOString());
+		// The patchJob sentinel never reaches a live record: the seed's
+		// discriminator key exists only on a fresh creation, and this record
+		// was loaded, not created (docs.ts `__patchJobSentinel`).
+		expect(
+			(record as Record<string, unknown>)["__patchJobSentinel"],
+		).toBeUndefined();
 		// The checkpoint is the durable `due` continuation.
 		const taskRecord = await rig.opened.harness.getTask(taskId, BACKGROUND_CONTEXT);
 		expect(taskRecord?.state.status).toBe("sleeping");
@@ -524,38 +530,6 @@ describe("the schedule task on durable sleeps", () => {
 		const runs = await listRuns(rig.opened.storage, id, 10, BACKGROUND_CONTEXT);
 		expect(runs).toHaveLength(1);
 		expect(runs[0]!.fireAt).toBe(new Date(firstAt).toISOString());
-	});
-
-	test("retry clears restart_limit when the schedule waits again", async () => {
-		const rig = await bootRig({});
-		const id = "api:job-retry-reason";
-		const { hash } = await seedJob(rig, id, everyMinuteSpec());
-		const firstAt = rig.now() + 60_000;
-		const taskId = await createTask(rig, id, hash, firstAt);
-		expect(await waitSleeping(rig, taskId)).toBe(firstAt);
-		await rig.close();
-		await rig.reopen();
-
-		// B5 parks the durable task and stamps the owning job on reopen.
-		// Seed that exact recovery surface, then retry the real task.
-		await patchJob(
-			rig.opened.harness,
-			id,
-			(draft) => {
-				draft.state = "blocked";
-				draft.reason = "restart_limit";
-			},
-			BACKGROUND_CONTEXT,
-		);
-		await rig.opened.harness.retryTask(taskId, BACKGROUND_CONTEXT);
-		const record = await until(
-			rig.clock,
-			() => readJob(rig.opened.harness, id, BACKGROUND_CONTEXT),
-			(job) => job?.state === "waiting",
-			"the retried job to wait again",
-		);
-		expect(record?.state).toBe("waiting");
-		expect(record).not.toHaveProperty("reason");
 	});
 
 	test("afterFailedRun stays keep", async () => {
@@ -993,9 +967,9 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 				conversationId as never,
 				BACKGROUND_CONTEXT,
 			);
-			const state = await conversation!.viewState(BACKGROUND_CONTEXT);
-			const found = state.value.entries.some((entry) => entry.kind === "pi.assistant");
-			await state.dispose();
+			const watch = await conversation!.watch(BACKGROUND_CONTEXT);
+			const found = watch.value.entries.some((entry) => entry.kind === "pi.assistant");
+			await watch.stop();
 			return found;
 		},
 		(found) => found,
@@ -1005,8 +979,8 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 		conversationId as never,
 		BACKGROUND_CONTEXT,
 	);
-	const state = await conversation!.viewState(BACKGROUND_CONTEXT);
-	const entries = state.value.entries;
+	const watch = await conversation!.watch(BACKGROUND_CONTEXT);
+	const entries = watch.value.entries;
 	const user = entries.find((entry) => entry.kind === "pi.user");
 	const content = user?.model?.[0]?.content;
 	const text = Array.isArray(content)
@@ -1018,7 +992,7 @@ test("a job prompt naming a prompt template sends the expanded text", async () =
 	expect(
 		entries.some((entry) => entry.kind === "sigrun.user.expanded"),
 	).toBe(false);
-	await state.dispose();
+	await watch.stop();
 	await (await import("node:fs/promises")).rm(promptsDir, {
 		recursive: true,
 		force: true,

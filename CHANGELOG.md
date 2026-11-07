@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-11-07
+
+### Changed
+
+- BREAKING: pi-durable 1.5.0. Conversation data written by this release cannot be read by 0.9.x;
+  the first boot under a NEWER pi-durable minor writes `<db>.pre-pi-durable-1.5.0-<stamp>.bak`
+  (when no schema-migration snapshot was already taken this boot — a store jumping several
+  schema versions snapshots at the schema guard instead); downgrade = restore that file.
+- BREAKING: Transcripts now show the full raw history: turns before a compaction stay above the
+  "context compacted" divider.
+- BREAKING: `POST /v1/admin/tasks/:id/retry` removed; a schedule that hits the restart limit
+  blocks its job; resume with `POST /v1/jobs/:id/resume`.
+- BREAKING: Durable report metric labels follow pi-durable 1.5.0 (`session_failed` →
+  `storage_failed`, `task_parked` removed, `task_interrupted` added); the live-task status label
+  `ready` is now `pending`.
+- BREAKING: Every conversation read (SSE connect, `GET /v1/conversations/:id`, extension
+  watches) now loads the full history; very long conversations cost more until windowed
+  streaming lands.
+- BREAKING: A host killed mid-answer no longer resends the request on restart; the run retries
+  per `settings.retry` or ends `interrupted`.
+- BREAKING: Extensions built for pi-durable 1.4 are quarantined with a peer-range message.
+
 ## [0.10.2] - 2026-11-06
 
 ### Fixed

@@ -57,7 +57,7 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import { REPORT_TYPES } from "../../harness/reports.js";
+import { REPORT_KINDS } from "../../harness/reports.js";
 import { readBackupMarker } from "../../backup/marker.js";
 import { scanJobs } from "../../jobs/docs.js";
 import { providerAuthStatus } from "../helpers.js";
@@ -67,7 +67,7 @@ import { checkStorage } from "../readiness.js";
 /** The exposition content type (spec §6.9's format rule). */
 const EXPOSITION_CONTENT_TYPE = "text/plain; version=0.0.4; charset=utf-8";
 
-const BLOCKED_REASONS = ["missing_task", "task_too_old", "migration_failed", "restart_limit"] as const;
+const BLOCKED_REASONS = ["missing_task", "task_too_old", "migration_failed"] as const;
 
 /** Escape one label value per the exposition format: `\` → `\\`,
  *  `"` → `\"`, newline → `\n`. */
@@ -146,11 +146,12 @@ export function registerMetricsRoutes(
 				[{ labels: {}, value: Math.round((oldestMs ?? 0) / 1000) }],
 			);
 			// Live tasks by scheduler state kind. The full six-kind
-			// vocabulary is emitted (0s included) for label stability
-			// (1.4.0 adds `sleeping` — the durable-sleep state).
+			// vocabulary is emitted (0s included) for label stability.
+			// pi-durable 1.5.0 renamed `ready` to `pending` (the queued,
+			// runnable-but-not-yet-admitted state).
 			const taskStatuses: Record<string, number> = {
 				running: 0,
-				ready: 0,
+				pending: 0,
 				waiting: 0,
 				sleeping: 0,
 				completing: 0,
@@ -218,6 +219,29 @@ export function registerMetricsRoutes(
 								],
 				),
 			);
+			// D2: the job-record blocked gauge. pi-durable 1.5.0 has no
+			// task park state — a restart-limited schedule task ends
+			// faulted and its JOB record carries blocked/restart_limit —
+			// so the alertable signal lives on the job records. Emitted
+			// for restart_limit plus zero-valued label stability; other
+			// blocked reasons (fire-time blocks) ride the same gauge when
+			// they occur.
+			const jobBlockedReasons: Record<string, number> = {
+				restart_limit: 0,
+			};
+			for (const { record } of jobRecords) {
+				if (record.state !== "blocked") continue;
+				const reason = record.reason ?? "unknown";
+				jobBlockedReasons[reason] = (jobBlockedReasons[reason] ?? 0) + 1;
+			}
+			family(
+				"sigrun_jobs_blocked",
+				"Jobs blocked by record reason",
+				Object.entries(jobBlockedReasons).map(([reason, count]) => ({
+					labels: { reason },
+					value: count,
+				})),
+			);
 		} catch (error) {
 			up = 0;
 			console.error("metrics: harness inspection failed:", error);
@@ -237,13 +261,16 @@ export function registerMetricsRoutes(
 			[{ labels: {}, value: storage === "ok" ? 1 : 0 }],
 		);
 
-		// D5: process-local durable failure reports. Every known type is
+		// D5: process-local durable failure reports. Every known kind is
 		// emitted, including zeros, for scrape-stable alert expressions.
+		// pi-durable 1.5.0 kinds: `task_parked`/`session_failed` are gone;
+		// `storage_failed`/`task_interrupted` replaced them (label name
+		// `type` kept — a metrics-label rename would break alert queries).
 		const reportCounts = opened.reports.counts();
 		family(
 			"sigrun_durable_reports_total",
 			"Durable failure reports since process start",
-			REPORT_TYPES.map((type) => ({ labels: { type }, value: reportCounts[type] })),
+			REPORT_KINDS.map((kind) => ({ labels: { type: kind }, value: reportCounts[kind] })),
 			"counter",
 		);
 

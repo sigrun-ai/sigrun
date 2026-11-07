@@ -29,7 +29,7 @@
 
 import type { Context } from "@earendil-works/chord";
 import type { ImageContent } from "@earendil-works/pi-ai";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import {
 	createBashTool,
 	createEditTool,

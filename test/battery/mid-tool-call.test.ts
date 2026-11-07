@@ -1,10 +1,14 @@
 /**
- * Crash-battery item 2 (plan Task 12 step 2, spec §7 M1): `kill -9`
- * mid-tool-call → safe tools may re-execute; unsafe tools must NOT silently
- * re-execute (ended failed with visible state). Two-process orchestration
- * via test/battery/lib.ts; the scenario driver is
- * test/battery/drivers/mid-tool-call.ts (its header documents the marker
- * protocol and the at-most-once execution-marker evidence).
+ * Crash-battery item 2 (plan Task 12 step 2, spec §7 M1; 1.5.0 crash
+ * semantics per spec §3.2-e): `kill -9` mid-tool-call → restart-limited
+ * tools no longer park. With `settings.restartLimit` pinned to 1, the
+ * first recovery of the cut-off round ENDS each cut-off tool with a
+ * visible error result carrying diagnostic code `restart_limit` — NEITHER
+ * tool's body re-runs (the execution marker files are the
+ * no-duplicate-side-effect evidence: exactly one execution each, from the
+ * killed process). Two-process orchestration via test/battery/lib.ts;
+ * the scenario driver is test/battery/drivers/mid-tool-call.ts (its
+ * header documents the marker protocol and the restart_limit semantics).
  */
 
 import { mkdtemp, rm } from "node:fs/promises";
@@ -19,7 +23,7 @@ const KILL_MARKER_DEADLINE_MS = 30_000;
 const VERIFY_DEADLINE_MS = 60_000;
 
 test(
-	"kill -9 mid-tool-call → restart → unsafe tool never silently re-executes (at-most-once marker), safe tool may",
+	"kill -9 mid-tool-call → restart → both cut-off tools end restart_limited, never re-executed (at-most-once marker)",
 	{ timeout: 120_000 },
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-battery-tool-"));
@@ -39,25 +43,27 @@ test(
 			expect(exit.code).toBeNull();
 			expect(exit.signal).toBe("SIGKILL");
 
-			// Verify pass: reopen + resume; the tool tasks recover under the
-			// replay rule and the assertions run in the driver (fail-loud
-			// VERIFY-FAIL reasons surface through runVerifyPass).
+			// Verify pass: reopen + resume; the restart-limited tools END and
+			// the assertions run in the driver (fail-loud VERIFY-FAIL reasons
+			// surface through runVerifyPass).
 			const payload = await runVerifyPass(
 				driverPath,
 				["verify", dir],
 				VERIFY_DEADLINE_MS,
 			);
-			// The unsafe-tool invariant (the item's exit criterion): at most
-			// one execution across both processes, and its result entry is a
-			// VISIBLE interrupted error, never a silent re-execution.
-			expect(payload.unsafeExecutions).toBeLessThanOrEqual(1);
-			expect(payload.unsafeInterrupted).toBe(true);
-			// The safe tool may re-execute once on recovery.
-			expect(payload.safeExecutions).toBeGreaterThanOrEqual(1);
-			expect(payload.safeExecutions).toBeLessThanOrEqual(2);
-			// The recovered conversation completes with one final answer.
-			expect(payload.settledStatus).toBe("done");
-			expect(payload.finalAnswers).toBe(1);
+			// The no-duplicate-side-effect invariant (1.5.0: at the pinned
+			// limit NEITHER tool re-executes): exactly one execution each.
+			expect(payload.unsafeExecutions).toBe(1);
+			expect(payload.safeExecutions).toBe(1);
+			// The run ENDED (never stuck busy); the driver asserts the failing
+			// branch's runFailure reason is restart_limit and the done branch's
+			// answer accounting — record which branch occurred.
+			expect(payload.runCleared).toBe(true);
+			expect(
+				payload.runFailureReason === "restart_limit" ||
+					payload.settledStatus === "done",
+			).toBe(true);
+			expect(payload.finalAnswers).toBeLessThanOrEqual(1);
 		} finally {
 			// Reap the setup driver promptly on the failure path (on the happy
 			// path it is already dead; kill() is best-effort and never throws).

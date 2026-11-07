@@ -377,7 +377,7 @@ export async function driveRun(
 	// records; two watches run in ONE listener — (a) this run's tool
 	// results (the maxToolCalls budget), and (b) the PARENT's drift.
 	// Both are synchronous reads of the publication's own changes (the
-	// subscribeCommits listener contract: no blocking, no Session calls).
+	// observeCommits listener contract: no blocking, no Session calls).
 	//
 	// Parent drift, precisely: an ENTRY change on the parent beyond the
 	// start-captured head (a reset/compaction marker or a newly admitted
@@ -403,72 +403,84 @@ export async function driveRun(
 	let watcher: (() => void) | undefined;
 	const watch = (): void => {
 		watcher?.();
-		watcher = harness.subscribeCommits((publication: CommitPublication) => {
-			for (const change of publication.changes) {
-				if (change.type === "entry") {
-					if (
-						runId !== undefined &&
-						change.value.conversationId === runId &&
-						change.value.kind === ToolResultEntry.kind
-					) {
-						toolResults += 1;
-						if (toolResults >= opts.maxToolCalls) {
-							stop({ kind: "maxToolCalls" });
+		const observation = harness.observeCommits({
+			advance: (publication: CommitPublication) => {
+				try {
+					for (const change of publication.changes) {
+						if (change.type === "entry") {
+							if (
+								runId !== undefined &&
+								change.value.conversationId === runId &&
+								change.value.kind === ToolResultEntry.kind
+							) {
+								toolResults += 1;
+								if (toolResults >= opts.maxToolCalls) {
+									stop({ kind: "maxToolCalls" });
+								}
+							}
+							if (parent !== undefined && start !== undefined) {
+								if (
+									change.value.conversationId === parent &&
+									change.value.id !== start.head &&
+									isAfter(change.value.id, start.head)
+								) {
+									stop({
+										kind: "parent",
+										what:
+											change.value.kind === "pi.reset"
+												? "the conversation was reset or compacted"
+												: "a new run was admitted",
+									});
+								}
+							}
+							continue;
+						}
+						if (parent === undefined || start === undefined) continue;
+						if (change.type === "submission") {
+							if (change.value.conversationId === parent) {
+								stop({ kind: "parent", what: "a new run was admitted" });
+							}
+							continue;
+						}
+						if (change.type === "document") {
+							if (
+								change.conversationId === parent &&
+								change.record.kind === "sigrun.session-meta" &&
+								change.kind === "change"
+							) {
+								// Compare the COMMITTED VALUE's owner/sharing fields —
+								// the activity stamper writes `lastActivityAt` on the
+								// same doc after every settle (a benign change that
+								// must never cancel a review). SAFETY: the value is
+								// the adopted JSON revision; the structural read
+								// touches two optional fields only.
+								const value = change.value as {
+									owner?: string;
+									sharing?: Sharing;
+								};
+								if (
+									value.owner !== start.owner ||
+									sharingKey(value.sharing) !== sharingKey(start.sharing)
+								) {
+									stop({
+										kind: "parent",
+										what: "the parent's owner or sharing changed",
+									});
+								}
+							}
 						}
 					}
-					if (parent !== undefined && start !== undefined) {
-						if (
-							change.value.conversationId === parent &&
-							change.value.id !== start.head &&
-							isAfter(change.value.id, start.head)
-						) {
-							stop({
-								kind: "parent",
-								what:
-									change.value.kind === "pi.reset"
-										? "the conversation was reset or compacted"
-										: "a new run was admitted",
-								});
-						}
-					}
-					continue;
-				}
-				if (parent === undefined || start === undefined) continue;
-				if (change.type === "submission") {
-					if (change.value.conversationId === parent) {
-						stop({ kind: "parent", what: "a new run was admitted" });
-					}
-					continue;
-				}
-				if (change.type === "document") {
-					if (
-						change.conversationId === parent &&
-						change.record.kind === "sigrun.session-meta" &&
-						change.value !== null
-					) {
-						// Compare the COMMITTED VALUE's owner/sharing fields —
-						// the activity stamper writes `lastActivityAt` on the
-						// same doc after every settle (a benign change that
-						// must never cancel a review). SAFETY: the value is
-						// the adopted JSON revision; the structural read
-						// touches two optional fields only.
-						const value = change.value as {
-							owner?: string;
-							sharing?: Sharing;
-						};
-						if (
-							value.owner !== start.owner ||
-							sharingKey(value.sharing) !== sharingKey(start.sharing)
-						) {
-							stop({
-								kind: "parent",
-								what: "the parent's owner or sharing changed",
-							});
-						}
-					}
-				}
+				} catch (error) {
+				console.error("curation/runs: commit observer failed", error);
 			}
-		});
+		},
+		end: (end) => {
+			if (end.kind === "ended") return;
+			if (end.kind === "failed" && end.error instanceof Error && end.error.message === "session closed") return;
+			console.error("curation/runs: commit observation failed", end.kind === "failed" ? end.error : end);
+		},
+	});
+	watcher = () => observation.detach();
 	};
 	watch();
 	const cleanup = (): void => {

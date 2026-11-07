@@ -36,8 +36,11 @@ import { CURRENT_SQLITE_SCHEMA_VERSION } from "@earendil-works/pi-durable/storag
 import { loadConfig } from "../src/config.js";
 import { openHarness } from "../src/harness/boot.js";
 import {
+	DURABLE_VERSION_MARKER_SUFFIX,
 	MigrationSnapshotError,
+	snapshotBeforeDurableUpgrade,
 	snapshotBeforeMigration,
+	writeDurableVersionMarker,
 } from "../src/harness/migration-snapshot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { readJob } from "../src/jobs/docs.js";
@@ -90,6 +93,13 @@ function schemaVersion(path: string): number {
 function snapshots(dir: string): Promise<string[]> {
 	return readdir(dir).then((names) =>
 		names.filter((name) => name.includes(".pre-durable-schema-v")),
+	);
+}
+
+/** pi-durable minor-upgrade snapshots (1.5.0 upgrade Task 6 / spec D4). */
+function upgradeSnapshots(dir: string): Promise<string[]> {
+	return readdir(dir).then((names) =>
+		names.filter((name) => name.includes(".pre-pi-durable-")),
 	);
 }
 
@@ -362,5 +372,75 @@ describe("snapshotBeforeMigration", () => {
 		).resolves.toBeUndefined();
 		expect(await snapshots(dir)).toEqual([]);
 		expect(log.lines).toHaveLength(1);
+	});
+});
+
+describe("snapshotBeforeDurableUpgrade", () => {
+	test("an unmarked existing store is snapshotted once", async () => {
+		const dir = await tempDir();
+		const storagePath = join(dir, "sigrun.db");
+		await cp(FIXTURE_DB, storagePath);
+		const before = await readFile(storagePath);
+		const log = opts();
+
+		const snapshot = await snapshotBeforeDurableUpgrade(storagePath, log.values);
+		expect(snapshot).toMatch(/\.pre-pi-durable-1\.5\.0-\d{8}T\d+Z\.bak$/);
+		// The injected clock (2026-10-28T12:34:56.789Z) makes the stamp exact.
+		expect(snapshot).toBe(
+			join(dir, "sigrun.db.pre-pi-durable-1.5.0-20261028T123456789Z.bak"),
+		);
+		expect(await readFile(storagePath)).toEqual(before);
+		expect(log.lines.join("\n")).toContain("unmarked");
+		expect(log.lines.join("\n")).toContain("1.5.0");
+
+		// After the marker is written (boot does this only after open
+		// succeeds), a second call sees the current version and skips.
+		await writeDurableVersionMarker(storagePath);
+		const second = opts();
+		await expect(
+			snapshotBeforeDurableUpgrade(storagePath, second.values),
+		).resolves.toBeUndefined();
+		expect(await upgradeSnapshots(dir)).toHaveLength(1);
+	});
+
+	test("a fresh store is never snapshotted", async () => {
+		const dir = await tempDir();
+		const storagePath = join(dir, "absent.db");
+		const log = opts();
+		await expect(
+			snapshotBeforeDurableUpgrade(storagePath, log.values),
+		).resolves.toBeUndefined();
+		expect(await upgradeSnapshots(dir)).toEqual([]);
+		// Boot then opens the store and stamps the marker with the running version.
+		await writeDurableVersionMarker(storagePath);
+		await expect(
+			readFile(`${storagePath}${DURABLE_VERSION_MARKER_SUFFIX}`, "utf8"),
+		).resolves.toBe("1.5.0");
+	});
+
+	test("same minor is not snapshotted", async () => {
+		const dir = await tempDir();
+		const storagePath = join(dir, "sigrun.db");
+		await cp(FIXTURE_DB, storagePath);
+		await writeFile(`${storagePath}${DURABLE_VERSION_MARKER_SUFFIX}`, "1.5.0");
+		await expect(
+			snapshotBeforeDurableUpgrade(storagePath, opts().values),
+		).resolves.toBeUndefined();
+		expect(await upgradeSnapshots(dir)).toEqual([]);
+	});
+
+	test("skip env skips", async () => {
+		const dir = await tempDir();
+		const storagePath = join(dir, "sigrun.db");
+		await cp(FIXTURE_DB, storagePath);
+		const log = opts();
+		await expect(
+			snapshotBeforeDurableUpgrade(storagePath, {
+				...log.values,
+				env: { SIGRUN_SKIP_MIGRATION_SNAPSHOT: "1" },
+			}),
+		).resolves.toBeUndefined();
+		expect(await upgradeSnapshots(dir)).toEqual([]);
+		expect(log.lines.join("\n")).toContain("SIGRUN_SKIP_MIGRATION_SNAPSHOT");
 	});
 });

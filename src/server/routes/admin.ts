@@ -18,15 +18,13 @@
  * graceful-shutdown + `process.exit(0)`) owns the exit — the route
  * never calls exit itself.
  *
- * D5 parked-task recovery (pi-durable 1.4.0, Task B6):
+ * D5 blocked-task visibility (pi-durable 1.5.0):
  * `GET /v1/admin/tasks?state=blocked` lists blocked tasks from
  * `harness.inspect()` (id, kind, reason, conversationId, owner from the
- * conversation's SessionMeta when present); `POST /v1/admin/tasks/:id/retry`
- * returns 404 unknown_task / 409 not_parked unless the task is blocked
- * with reason restart_limit, else calls `harness.retryTask(id)` → 204.
- * The inspect-first check is load-bearing: retryTask rejects an unknown
- * id but SILENTLY no-ops for a task that isn't parked. Both endpoints
- * are admin-only (403 forbidden).
+ * conversation's SessionMeta when present). Admin-only (403 forbidden).
+ * The LISTING stays; the retry route is gone — 1.5.0 removed
+ * task_parked/retryTask, and its replacement recovery surface is the
+ * job-level `POST /v1/jobs/:id/resume` (Task 4, D2).
  *
  * Durability (Review Focus 4): the restart rides the SAME ordered
  * shutdown as the SIGTERM path — the event bus drains pending settles
@@ -36,7 +34,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { TaskId, TaskInspection } from "@earendil-works/pi-durable";
+import type { TaskInspection } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../context.js";
 import { SessionMetaDoc } from "../session-meta.js";
@@ -88,9 +86,8 @@ export function registerAdminRoutes(
 		return await reply.code(202).send({ restarting: true });
 	});
 
-	// D5 parked-task recovery. `GET /v1/admin/tasks?state=blocked` lists
-	// blocked tasks from `harness.inspect()`; `POST /v1/admin/tasks/:id/retry`
-	// re-runs a restart-parked task. Both admin-only (403 before any
+	// D5 blocked-task visibility. `GET /v1/admin/tasks?state=blocked` lists
+	// blocked tasks from `harness.inspect()` — admin-only (403 before any
 	// inspection, so a non-admin learns nothing about the task graph).
 	app.get("/v1/admin/tasks", async (request, reply) => {
 		if (!request.principal.admin) {
@@ -151,34 +148,5 @@ export function registerAdminRoutes(
 			};
 		});
 		return await reply.send({ tasks });
-	});
-
-	app.post("/v1/admin/tasks/:id/retry", async (request, reply) => {
-		if (!request.principal.admin) {
-			return await reply.code(403).send({ error: "forbidden" });
-		}
-		const { id } = request.params as Record<string, string>;
-		const taskId = Number(id);
-		if (!Number.isInteger(taskId) || taskId < 0 || String(taskId) !== id) {
-			return await reply.code(404).send({ error: "unknown_task" });
-		}
-		// Check inspect() FIRST: pi-durable's retryTask rejects an unknown
-		// id but SILENTLY no-ops for a task that isn't parked — the 409
-		// must come from the inspection, not from retryTask.
-		const inspection = await ctx.opened.harness.inspect(BACKGROUND_CONTEXT);
-		const task = inspection.tasks.find(
-			(candidate) => String(candidate.record.id) === id,
-		);
-		if (task === undefined) {
-			return await reply.code(404).send({ error: "unknown_task" });
-		}
-		if (task.state.kind !== "blocked" || task.state.reason !== "restart_limit") {
-			return await reply.code(409).send({ error: "not_parked" });
-		}
-		// For a schedule task the job's status fields return to `waiting`
-		// on the task's next committed state (the task's own phases patch
-		// the record) — the route deliberately does NOT hand-patch the job.
-		await ctx.opened.harness.retryTask(task.record.id as TaskId, BACKGROUND_CONTEXT);
-		return await reply.code(204).send();
 	});
 }

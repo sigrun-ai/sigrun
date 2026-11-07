@@ -11,7 +11,7 @@
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 const notesWrite = defineTool({
 	name: "notes_write",

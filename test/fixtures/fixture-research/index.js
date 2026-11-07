@@ -9,7 +9,7 @@
  */
 
 import { defineExtension, defineTool } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 
 const search = defineTool({
 	name: "acme/search",

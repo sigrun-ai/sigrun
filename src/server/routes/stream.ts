@@ -21,6 +21,7 @@ import {
 	isEmptyDelta,
 	type ViewDelta,
 } from "@sigrun/shared/view-delta";
+import { watchFullHistory } from "../conversation-watch.js";
 
 /** Register the SSE view stream route. */
 export function registerStreamRoutes(
@@ -52,7 +53,10 @@ export function registerStreamRoutes(
 			// error event. `value` is the acquisition revision (the snapshot
 			// source); frames published between here and start() are held by the
 			// watch's bounded pending delivery, so nothing is lost.
-			const watch = await conversation.watch(BACKGROUND_CONTEXT);
+			const watch = await watchFullHistory(
+				conversation,
+				BACKGROUND_CONTEXT,
+			);
 			// Watcher bookkeeping (W5 Task 6, spec §9.6): one attached client.
 			// The exactly-once `finish` below decrements — the notifications
 			// surface's `"unwatched"` runSettled rule reads this count.
@@ -140,9 +144,10 @@ export function registerStreamRoutes(
 			// view the diff loop measures against.
 			let prev = serializeConversationView(watch.value);
 			send("snapshot", prev);
-			watch.start(async (value) => {
+			watch.start(async (call) => {
 				if (finished) return; // the stream is over; drop the frame
-				const next = serializeConversationView(value);
+				if (call.kind !== "value") return;
+				const next = serializeConversationView(call.value);
 				const delta = diffViews(prev, next);
 				prev = next;
 				// Not representable as entries append/remove + changed docs (a

@@ -21,7 +21,7 @@ import {
 	type ToolExecutionApi,
 	type ToolRegistration,
 } from "@earendil-works/pi-durable";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import type { SigrunHost } from "../src/extension.js";

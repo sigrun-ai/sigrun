@@ -24,7 +24,7 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
-import { Type } from "@earendil-works/pi-ai";
+import { Type } from "typebox";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { TokenStore } from "../src/harness/identity/index.js";
