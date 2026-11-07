@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Multi-select collections with bulk actions always show the bulk bar
+  (it used to appear only after the first tick, so checkboxes read as
+  broken): a tri-state select-all checkbox, the selection count, and the
+  actions disabled until something is selected. List group headings get
+  their own select-all (e.g. every escalation from one job).
+
+### Fixed
+
+- A bulk action only counts and sends ids still present in the data; an
+  item removed elsewhere drops out of the selection instead of riding a
+  stale id into the action.
+
 ## [0.11.0] - 2026-11-07
 
 ### Changed

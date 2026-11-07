@@ -211,13 +211,19 @@ describe("list display (spec §5.5)", () => {
 				{ id: "t2", title: "Beta" },
 			],
 		});
-		// No selection yet: no bulk bar.
+		// No selection yet: the bar is already there (discoverable), its
+		// actions disabled until something is selected.
 		expect(
 			renderer.root.findAll((node) => node.props.className === "blk-bulk").length,
-		).toBe(0);
+		).toBe(1);
+		expect(
+			renderer.root
+				.findAll((node) => node.type === "button" && node.props.className === "blk-bulk-action")
+				.every((node) => node.props.disabled === true),
+		).toBe(true);
 		// Select both items.
 		const boxes = renderer.root.findAll(
-			(node) => node.type === "input" && node.props.className === "blk-select",
+			(node) => node.type === "input" && node.props.className === "blk-select" && node.props["data-select-all"] === undefined,
 		);
 		act(() => {
 			boxes[0].props.onChange();
@@ -269,6 +275,124 @@ describe("list display (spec §5.5)", () => {
 		expect(dispatch).toHaveBeenCalledWith(
 			{ type: "submit", name: "onSetState" },
 			{ ids: ["t1", "t2"], values: { state: "closed" } },
+		);
+	});
+
+	test("select all: the bar's checkbox selects every item, then clears", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: { title },
+			display: "list",
+			groupBy: "state",
+			select: "multi",
+			bulkActions: [{ id: "drop", label: "Drop", onSubmit: "onDrop" }],
+		};
+		const { renderer, dispatch } = renderCollection(block, {
+			tasks: [
+				{ id: "t1", title: "Alpha", state: "todo" },
+				{ id: "t2", title: "Beta", state: "todo" },
+				{ id: "t3", title: "Gamma", state: "done" },
+			],
+		});
+		const all = () =>
+			renderer.root.find(
+				(node) => node.type === "input" && node.props["data-select-all"] === "all",
+			);
+		expect(all().props.checked).toBe(false);
+		act(() => {
+			all().props.onChange();
+		});
+		expect(all().props.checked).toBe(true);
+		expect(
+			renderer.root.find((node) => node.props.className === "blk-bulk-count").children,
+		).toEqual(["3", " selected"]);
+		const drop = renderer.root.find(
+			(node) => node.type === "button" && node.props.className === "blk-bulk-action",
+		);
+		expect(drop.props.disabled).toBe(false);
+		act(() => {
+			drop.props.onClick();
+		});
+		// Display order: un-ordered groups sort by key ("done" before "todo").
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "submit", name: "onDrop" },
+			{ ids: ["t3", "t1", "t2"], values: {} },
+		);
+		act(() => {
+			all().props.onChange();
+		});
+		expect(all().props.checked).toBe(false);
+	});
+
+	test("a group heading checkbox selects only that group", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: { title },
+			display: "list",
+			groupBy: "state",
+			select: "multi",
+			bulkActions: [{ id: "drop", label: "Drop", onSubmit: "onDrop" }],
+		};
+		const { renderer, dispatch } = renderCollection(block, {
+			tasks: [
+				{ id: "t1", title: "Alpha", state: "todo" },
+				{ id: "t2", title: "Beta", state: "todo" },
+				{ id: "t3", title: "Gamma", state: "done" },
+			],
+		});
+		const groupBox = renderer.root.find(
+			(node) => node.type === "input" && node.props["data-select-all"] === "todo",
+		);
+		act(() => {
+			groupBox.props.onChange();
+		});
+		act(() => {
+			renderer.root
+				.find((node) => node.type === "button" && node.props.className === "blk-bulk-action")
+				.props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "submit", name: "onDrop" },
+			{ ids: ["t1", "t2"], values: {} },
+		);
+	});
+
+	test("selected ids that left the data are not counted or sent", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: { title },
+			display: "list",
+			select: "multi",
+			bulkActions: [{ id: "drop", label: "Drop", onSubmit: "onDrop" }],
+		};
+		const { dispatch, provider } = makeActions();
+		const view = (tasks: JsonObject[]) =>
+			h(SurfaceDataContext.Provider, { value: { data: { tasks }, locale: "en-US" } },
+				provider(h(CollectionBlockView, { block })));
+		const renderer = render(view([{ id: "t1", title: "Alpha" }, { id: "t2", title: "Beta" }]));
+		act(() => {
+			renderer.root
+				.find((node) => node.type === "input" && node.props["data-select-all"] === "all")
+				.props.onChange();
+		});
+		// t1 was dismissed elsewhere: the data no longer carries it.
+		act(() => {
+			renderer.update(view([{ id: "t2", title: "Beta" }]));
+		});
+		expect(
+			renderer.root.find((node) => node.props.className === "blk-bulk-count").children,
+		).toEqual(["1", " selected"]);
+		act(() => {
+			renderer.root
+				.find((node) => node.type === "button" && node.props.className === "blk-bulk-action")
+				.props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "submit", name: "onDrop" },
+			{ ids: ["t2"], values: {} },
 		);
 	});
 

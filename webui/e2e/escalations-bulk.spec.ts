@@ -1,6 +1,7 @@
 /**
- * The multi-select bulk bar stays on screen when the list it acts on is
- * scrolled: it rendered at the top of the list, so after scrolling down
+ * The multi-select bulk bar is always shown (select-all, count, actions
+ * disabled until a selection), offers per-group select-all, and stays
+ * on screen when the list it acts on is scrolled: it rendered at the top of the list, so after scrolling down
  * to tick rows the "Dismiss selected" button sat far above the viewport
  * (checkboxes with no visible action). Real escalations extension, 20
  * raised items, the sidebar scrolled to the bottom.
@@ -27,17 +28,28 @@ test("bulk actions stay reachable while a long inbox list is scrolled", async ({
 	await page.goto(`${server.url}/#/ext/escalations/inbox`);
 	await page.getByText("Job demo-job", { exact: true }).first().click();
 	await page.waitForTimeout(500);
-	const boxes = page.locator('[data-page-region="sidebar"] input[type="checkbox"]');
+	const boxes = page.locator('[data-page-region="sidebar"] input.blk-select:not(.blk-select-all)');
 	await expect(boxes).toHaveCount(20);
+	// The bar is there before anything is ticked (checkboxes with no
+	// visible action read as broken), its action disabled.
+	const action = page.getByRole("button", { name: "Dismiss selected" });
+	await expect(action).toBeVisible();
+	await expect(action).toBeDisabled();
+	await expect(page.locator(".blk-bulk")).toContainText("0 selected");
 	await page.locator('[data-page-region="sidebar"]').evaluate((e) => { e.scrollTop = e.scrollHeight; });
 	await boxes.nth(15).check();
 	await boxes.nth(16).check();
 	await page.waitForTimeout(500);
 	// The bar stays reachable while the list is scrolled to the bottom.
-	const action = page.getByRole("button", { name: "Dismiss selected" });
 	await expect(action).toBeInViewport();
 	await expect(page.locator(".blk-bulk")).toContainText("2 selected");
 	await action.click();
 	await expect(page.getByText("Dismissed 2 escalations").first()).toBeVisible();
 	await expect(boxes).toHaveCount(18);
+	// A group's select-all takes every remaining item of that source.
+	await page.getByRole("checkbox", { name: "Select all in Job demo-job" }).check();
+	await expect(page.locator(".blk-bulk")).toContainText("18 selected");
+	await action.click();
+	await expect(page.getByText("Dismissed 18 escalations").first()).toBeVisible();
+	await expect(boxes).toHaveCount(0);
 });

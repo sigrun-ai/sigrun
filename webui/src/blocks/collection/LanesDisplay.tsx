@@ -29,6 +29,7 @@ import {
 	type DragState,
 } from "./drag";
 import {
+	allItemIds,
 	BulkActionBar,
 	SelectBox,
 	useActivate,
@@ -260,7 +261,7 @@ export function LanesDisplay(props: {
 			data-layout={compact ? "single" : "side-by-side"}
 			onKeyDown={onKeyDown}
 		>
-			<BulkActionBar block={block} selection={view.selection} />
+			<BulkActionBar block={block} view={view} itemIds={allItemIds(props.groups)} />
 			{compact && props.groups.length > 1 && (
 				<select
 					className="blk-lane-switcher"

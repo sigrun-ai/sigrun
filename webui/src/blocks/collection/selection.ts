@@ -75,6 +75,30 @@ export function toggleKey(
 		: [...keys, key];
 }
 
+/** How much of `scope` the selection covers (a group, or the whole
+ *  collection): drives the tri-state select-all checkboxes. */
+export function selectionState(
+	selection: readonly string[],
+	scope: readonly string[],
+): "none" | "some" | "all" {
+	const picked = scope.filter((id) => selection.includes(id)).length;
+	if (picked === 0) return "none";
+	return picked === scope.length ? "all" : "some";
+}
+
+/** Select-all over `scope`: adds the missing ids (in scope order) unless
+ *  every one is already selected, in which case it clears them. Ids
+ *  outside the scope are kept either way. */
+export function toggleAll(
+	selection: readonly string[],
+	scope: readonly string[],
+): readonly string[] {
+	if (selectionState(selection, scope) === "all") {
+		return selection.filter((id) => !scope.includes(id));
+	}
+	return [...selection, ...scope.filter((id) => !selection.includes(id))];
+}
+
 /** The cycle a clicked sortable column takes: none → asc → desc → asc. */
 export function nextSort(
 	current: CollectionViewState["sort"],

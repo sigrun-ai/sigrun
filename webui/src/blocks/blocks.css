@@ -1008,6 +1008,22 @@
 	padding-bottom: 0.2rem;
 }
 
+/* A group heading with its select-all checkbox (bulk-select lists). */
+.blk-list-heading-row {
+	align-items: baseline;
+	display: flex;
+	gap: 0.5rem;
+}
+
+.blk-list-heading-row > .blk-list-heading {
+	flex: 1;
+}
+
+/* Select-all boxes sit on their row's line, not the card's top inset. */
+.blk-select.blk-select-all {
+	margin-top: 0;
+}
+
 .blk-quiet-toggle {
 	align-self: flex-start;
 	background: none;
@@ -1054,6 +1070,11 @@
 	font: inherit;
 	font-size: 0.85em;
 	padding: 0.3rem 0.8rem;
+}
+
+.blk-bulk-action:disabled {
+	cursor: default;
+	opacity: 0.5;
 }
 
 .blk-bulk-form {

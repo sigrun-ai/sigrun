@@ -12,6 +12,7 @@ import { useWidthClass, useWidthRem } from "../width";
 import { type PreparedGroup } from "./Collection";
 import { CardView } from "./Card";
 import {
+	allItemIds,
 	BulkActionBar,
 	useActivate,
 	useCollectionView,
@@ -59,7 +60,7 @@ export function GridDisplay(props: {
 			data-display="grid"
 			data-overflow={props.block.overflow ?? "wrap"}
 		>
-			<BulkActionBar block={props.block} selection={view.selection} />
+			<BulkActionBar block={props.block} view={view} itemIds={allItemIds(props.groups)} />
 			<div
 				className="blk-grid-items"
 				style={{

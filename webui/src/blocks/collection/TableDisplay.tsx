@@ -20,6 +20,7 @@ import { useWidthClass } from "../width";
 import { itemField, type PreparedGroup, type PreparedItem } from "./Collection";
 import { CardView } from "./Card";
 import {
+	allItemIds,
 	BulkActionBar,
 	SelectBox,
 	useActivate,
@@ -354,7 +355,7 @@ export function TableDisplay(props: {
 	]);
 	return (
 		<div className="blk blk-collection blk-table-block" data-display="table">
-			<BulkActionBar block={props.block} selection={view.selection} />
+			<BulkActionBar block={props.block} view={view} itemIds={allItemIds(props.groups)} />
 			{widthClass === "compact" ? (
 				<CompactTable
 					block={props.block}

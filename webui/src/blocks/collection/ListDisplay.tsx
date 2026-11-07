@@ -15,9 +15,12 @@ import { useSurfaceActions } from "../context";
 import { itemField, type PreparedGroup, type PreparedItem } from "./Collection";
 import { CardView } from "./Card";
 import {
+	allItemIds,
 	BulkActionBar,
+	SelectAllBox,
 	SelectBox,
 	useActivate,
+	useBulkSelect,
 	useCollectionView,
 	type CollectionView,
 } from "./rows";
@@ -131,6 +134,7 @@ function GroupRows(props: {
 	activate(itemId: string): void;
 }): ReactNode {
 	const { block, group, view, activate } = props;
+	const bulk = useBulkSelect(block);
 	const quietKey = `${group.id}:quiet`;
 	const quietShown = view.folded.includes(quietKey);
 	// A `collapsed` group starts folded behind its heading (spec §5.5);
@@ -142,18 +146,28 @@ function GroupRows(props: {
 	return (
 		<div className="blk-list-group" data-group={group.id || undefined}>
 			{group.title !== "" && (
-				<div
-					className="blk-list-heading"
-					dir="auto"
-					role={group.collapsed ? "button" : undefined}
-					tabIndex={group.collapsed ? 0 : undefined}
-					onClick={
-						group.collapsed
-							? () => view.toggleFold(collapsedKey)
-							: undefined
-					}
-				>
-					{group.title}
+				<div className="blk-list-heading-row">
+					{bulk && (
+						<SelectAllBox
+							scope={allItemIds([group])}
+							scopeName={group.id}
+							label={`Select all in ${group.title}`}
+							view={view}
+						/>
+					)}
+					<div
+						className="blk-list-heading"
+						dir="auto"
+						role={group.collapsed ? "button" : undefined}
+						tabIndex={group.collapsed ? 0 : undefined}
+						onClick={
+							group.collapsed
+								? () => view.toggleFold(collapsedKey)
+								: undefined
+						}
+					>
+						{group.title}
+					</div>
 				</div>
 			)}
 			{!collapsed && (
@@ -215,7 +229,7 @@ export function ListDisplay(props: {
 	const activate = useActivate(props.block);
 	return (
 		<div className="blk blk-collection blk-list" data-display="list">
-			<BulkActionBar block={props.block} selection={view.selection} />
+			<BulkActionBar block={props.block} view={view} itemIds={allItemIds(props.groups)} />
 			{props.groups.map((group, groupIndex) => (
 				<GroupRows
 					key={group.id || groupIndex}
