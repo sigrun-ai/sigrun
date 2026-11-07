@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-11-07
+
 ### Changed
 
 - Multi-select collections with bulk actions always show the bulk bar
@@ -38,6 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   place (switching tabs).
 - Surface toasts expire after 6 s, at most three show at once, and they
   stack in one column instead of painting over each other.
+- Companion published first: @sigrun/ext-gateway 0.1.23 (its
+  @sigrun/shared peer gains 0.11.1).
 
 ## [0.11.0] - 2026-11-07
 
