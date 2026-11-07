@@ -167,7 +167,7 @@ export function BlocksEntry(props: {
 						<BlockView block={surface.tree.root} />
 						{/* A rejected action's feedback (SurfaceView's toast row,
 						    inline — the chat column has no other notice surface).
-						    In-flow class: the fixed .blk-surface-toast chrome would
+						    In-flow class: the fixed .blk-surface-toasts column would
 						    leave the transcript's flow and stack multiple rejections
 						    on the same viewport coordinates. */}
 						{surface.toasts.map((toast, index) => (

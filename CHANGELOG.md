@@ -20,6 +20,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A bulk action only counts and sends ids still present in the data; an
   item removed elsewhere drops out of the selection instead of riding a
   stale id into the action.
+- Surface data could lose updates when two answers landed before the next
+  render: an action's toast vanished when a refetch arrived in the same
+  tick (a bulk dismiss's "Dismissed N" often never showed), and a burst
+  of change events (one per dismissed item) sent overlapping fetches from
+  the same base whose ops were applied more than once. Every snapshot
+  write now builds on the latest state, ops apply only on the base they
+  were fetched from (otherwise one full refetch), and stale answers are
+  ignored.
+- Opening an item on an extension page (e.g. reading an escalation) no
+  longer remounts the whole page: the page transport was gated on a
+  vestigial async key hash, so every params change unmounted the view,
+  flashed "loading…" and dropped its state — including ticked
+  selections. The transport now swaps in place; answers from the
+  previous transport are discarded (an action's toast still shows). A
+  collection's selection resets when a different collection takes its
+  place (switching tabs).
+- Surface toasts expire after 6 s, at most three show at once, and they
+  stack in one column instead of painting over each other.
 
 ## [0.11.0] - 2026-11-07
 

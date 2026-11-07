@@ -396,6 +396,42 @@ describe("list display (spec §5.5)", () => {
 		);
 	});
 
+	test("selection survives a re-sent tree for the same collection, resets for a different one", () => {
+		const block = (id: string): CollectionBlock => ({
+			type: "collection",
+			id,
+			items: { $: "/tasks" },
+			item: { title },
+			display: "list",
+			select: "multi",
+			bulkActions: [{ id: "drop", label: "Drop", onSubmit: "onDrop" }],
+		});
+		const { provider } = makeActions();
+		const data = { tasks: [{ id: "t1", title: "Alpha" }, { id: "t2", title: "Beta" }] };
+		const view = (b: CollectionBlock) =>
+			h(SurfaceDataContext.Provider, { value: { data, locale: "en-US" } },
+				provider(h(CollectionBlockView, { block: b })));
+		const renderer = render(view(block("inbox-open")));
+		act(() => {
+			renderer.root
+				.find((node) => node.type === "input" && node.props["data-select-all"] === "all")
+				.props.onChange();
+		});
+		const count = () =>
+			renderer.root.find((node) => node.props.className === "blk-bulk-count").children;
+		expect(count()).toEqual(["2", " selected"]);
+		// Opening an item re-sends an equal tree (a new object): kept.
+		act(() => {
+			renderer.update(view(block("inbox-open")));
+		});
+		expect(count()).toEqual(["2", " selected"]);
+		// Another tab's collection in the same slot: cleared.
+		act(() => {
+			renderer.update(view(block("inbox-dismissed")));
+		});
+		expect(count()).toEqual(["0", " selected"]);
+	});
+
 	test("a card action dispatches WITHOUT firing onActivate", () => {
 		const block: CollectionBlock = {
 			type: "collection",

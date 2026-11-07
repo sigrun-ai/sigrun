@@ -688,43 +688,37 @@ function AppShell(options: AppOptions = {}) {
 		),
 	});
 	// The open surface page's transport: the hub attach (its onChanged
-	// subscription is the routing registry entry) keyed on the wire `k`
-	// (sha256 of slug\0id\0canonical params). The async eventKeyWeb
-	// resolves per ext-route instance; the page renders only once the
-	// hash resolves (a render-time createExtTransport would leave its
-	// onChanged subscription outside the hub — the first Task-5 pass's
-	// bob-context bug). `streamId` joins the deps: a reconnect's new
-	// stream rebuilds the transport (X-Sigrun-Stream watcher identity).
+	// subscription is the routing registry entry). Built SYNCHRONOUSLY:
+	// this used to wait on an async eventKeyWeb hash the hub no longer
+	// routes on, and every params change (opening an inbox item) left the
+	// transport undefined for a tick — unmounting the page and dropping its
+	// view state (the inbox selection). The page is not keyed on params, so
+	// a params change now swaps the transport in place (useSurface reloads
+	// on the new transport). Identity tracks the canonical params STRING.
+	// `streamId` joins the deps: a reconnect's new stream rebuilds the
+	// transport (X-Sigrun-Stream watcher identity).
 	const extRoute = route.kind === "ext" ? route : null;
+	const extSlug = extRoute?.slug;
+	const extId = extRoute?.id;
 	const extKey = extRoute === null ? "" : canonicalJson(extRoute.params ?? {});
-	const [extKeyHash, setExtKeyHash] = useState<{ key: string; hash: string } | null>(null);
-	useEffect(() => {
-		if (extRoute === null) {
-			setExtKeyHash(null);
-			return;
-		}
-		let alive = true;
-		void eventKeyWeb(extRoute.slug, extRoute.id, extKey).then((hash) => {
-			if (alive) setExtKeyHash({ key: extKey, hash });
-		});
-		return () => {
-			alive = false;
-		};
-	}, [extRoute, extKey]);
 	const extTransport = useMemo(() => {
-		if (extRoute === null || extKeyHash === null || extKeyHash.key !== extKey) {
-			return undefined;
+		if (extSlug === undefined || extId === undefined) return undefined;
+		let params: JsonObject = {};
+		try {
+			params = JSON.parse(extKey) as JsonObject; // our own canonicalJson output
+		} catch {
+			params = {};
 		}
 		return extHub.attach(
 			{
-				slug: extRoute.slug,
-				id: extRoute.id,
-				params: extRoute.params,
+				slug: extSlug,
+				id: extId,
+				...(Object.keys(params).length === 0 ? {} : { params }),
 				...(list.streamId === undefined ? {} : { streamId: list.streamId }),
 			},
-			extKeyHash.hash,
+			"",
 		);
-	}, [extRoute, extKey, extKeyHash, extHub, list.streamId]);
+	}, [extSlug, extId, extKey, extHub, list.streamId]);
 
 	// The open extension PANEL's transport (spec §7.1/§7.3): created ONLY
 	// while an ext panel is the RESOLVED selection (todo Task 2 R2) — a

@@ -42,6 +42,15 @@ import { DataOpError, applyOps, resolvePointer } from "@sigrun/shared/blocks";
 /** An action has 10 s to answer before it counts as a reject (§6.3). */
 export const ACT_TIMEOUT_MS = 10_000;
 
+/** How long one toast stays on screen. */
+export const TOAST_MS = 6_000;
+
+/** At most this many toasts show at once; older ones drop first. */
+export const TOAST_LIMIT = 3;
+
+/** The per-page toast id counter (removal keys, never shown). */
+let TOAST_SEQ = 0;
+
 /** The per-page surface scope counter (the action-id prefix below). */
 let ACTION_SCOPE_SEQ = 0;
 
@@ -72,7 +81,7 @@ interface Snapshot {
 	readonly treeRev: number;
 	readonly access: SurfaceAccess;
 	readonly overlay: readonly OverlayEntry[];
-	readonly toasts: readonly string[];
+	readonly toasts: readonly { readonly id: number; readonly message: string }[];
 	/** The channel-owned `/view/` branch (spec §6.2). */
 	readonly viewState: JsonObject;
 	/** Server-side field errors from rejected actions, keyed by the
@@ -313,7 +322,7 @@ export function useSurface(
 		visible?: () => boolean;
 	},
 ): SurfaceState {
-	const [snapshot, setSnapshot] = useState<Snapshot>({
+	const [snapshot, setSnapshotState] = useState<Snapshot>({
 		status: "loading",
 		confirmed: {},
 		rev: 0,
@@ -324,9 +333,18 @@ export function useSurface(
 		viewState: {},
 		serverErrors: {},
 	});
-	// Async callbacks read the latest snapshot through this ref.
+	// Async callbacks read the latest snapshot through this ref. It is
+	// written EAGERLY by every `setSnapshot` (never on render): two async
+	// results landing before React re-renders (an act's toast and a
+	// surface.changed refetch — the bulk-dismiss race) must each build on
+	// the other's write, not on the last rendered snapshot, or the later
+	// whole-snapshot write silently drops the earlier one.
 	const ref = useRef(snapshot);
-	ref.current = snapshot;
+	const setSnapshot = (next: Snapshot | ((current: Snapshot) => Snapshot)): void => {
+		const value = typeof next === "function" ? next(ref.current) : next;
+		ref.current = value;
+		setSnapshotState(value);
+	};
 	// The action-id sequence is GLOBALLY unique per page (not per
 	// surface mount): the server's action dedup keys on the actionId
 	// per instance for 10 minutes, so a remounted surface re-using
@@ -336,10 +354,24 @@ export function useSurface(
 	const actionScope = useRef(`s${(ACTION_SCOPE_SEQ += 1)}`);
 	/** The highest rev a `surface.changed` event announced (gap detect). */
 	const announcedRev = useRef(0);
+	/** The surface's CURRENT transport (a params change swaps it in place):
+	 *  any load/fetch/act answer from an earlier transport is dropped. */
+	const transportRef = useRef(transport);
+	transportRef.current = transport;
 	const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+	const toastTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
 	const toast = (message: string): void => {
-		setSnapshot((s) => ({ ...s, toasts: [...s.toasts, message] }));
+		const id = (TOAST_SEQ += 1);
+		setSnapshot((s) => ({
+			...s,
+			toasts: [...s.toasts, { id, message }].slice(-TOAST_LIMIT),
+		}));
+		const timer = setTimeout(() => {
+			toastTimers.current.delete(timer);
+			setSnapshot((s) => ({ ...s, toasts: s.toasts.filter((entry) => entry.id !== id) }));
+		}, TOAST_MS);
+		toastTimers.current.add(timer);
 	};
 
 	const dropEntry = (actionId: string): void => {
@@ -354,7 +386,21 @@ export function useSurface(
 		}));
 	};
 
-	const applyFetch = (result: SurfaceFetch, opsOnlyFallback = false): void => {
+	/**
+	 * Apply one fetch answer. `base` is the `since` the request carried
+	 * (undefined for a full fetch) and `source` the transport it went
+	 * out on. Overlapping since-fetches (a burst of change events) all
+	 * leave with the same base, so an ops answer applies only while its
+	 * base is still the current rev; an answer at or below the current
+	 * rev is already seen, and a moved base refetches in full.
+	 */
+	const applyFetch = (
+		result: SurfaceFetch,
+		opsOnlyFallback = false,
+		base?: number,
+		source: SurfaceTransport = transport,
+	): void => {
+		if (source !== transportRef.current) return;
 		const s = ref.current;
 		if (result.treeRev !== s.treeRev) {
 			void doLoad();
@@ -369,6 +415,8 @@ export function useSurface(
 			return;
 		}
 		if (result.data !== undefined) {
+			// An older full answer than what we hold is stale.
+			if (result.rev < s.rev) return;
 			setSnapshot({
 				...s,
 				confirmed: result.data,
@@ -380,6 +428,14 @@ export function useSurface(
 			return;
 		}
 		if (result.ops !== undefined) {
+			// Already seen: an overlapping fetch applied these ops first.
+			if (result.rev <= s.rev) return;
+			// The ops are relative to `base`; once the rev moved past it
+			// they cannot apply — fetch the whole document instead.
+			if (base !== undefined && base !== s.rev) {
+				void fullRefetch();
+				return;
+			}
 			// Gap: the ops land behind the rev the event announced.
 			if (result.rev < announcedRev.current) {
 				void fullRefetch();
@@ -405,8 +461,9 @@ export function useSurface(
 	};
 
 	const fullRefetch = async (): Promise<void> => {
+		const source = transport;
 		try {
-			applyFetch(await transport.fetchData());
+			applyFetch(await source.fetchData(), false, undefined, source);
 		} catch {
 			// A failed refetch keeps the last confirmed data; the next
 			// event or keepalive retries (§7.3).
@@ -414,16 +471,21 @@ export function useSurface(
 	};
 
 	const refresh = async (): Promise<void> => {
+		const source = transport;
+		const base = ref.current.rev;
 		try {
-			applyFetch(await transport.fetchData(ref.current.rev), true);
+			applyFetch(await source.fetchData(base), true, base, source);
 		} catch {
 			// Keep confirmed; the next tick retries.
 		}
 	};
 
 	const doLoad = async (): Promise<void> => {
+		const source = transport;
 		try {
-			const result = await transport.load();
+			const result = await source.load();
+			// A load from a transport swapped out meanwhile is not ours.
+			if (source !== transportRef.current) return;
 			if (result.access === "none") {
 				setSnapshot((s) => ({ ...s, status: "notFound", access: "none" }));
 				return;
@@ -449,7 +511,9 @@ export function useSurface(
 						: s.viewState,
 			}));
 		} catch {
-			setSnapshot((s) => ({ ...s, status: "error" }));
+			if (source === transportRef.current) {
+				setSnapshot((s) => ({ ...s, status: "error" }));
+			}
 		}
 	};
 
@@ -471,18 +535,21 @@ export function useSurface(
 				return;
 			}
 			void (async (): Promise<void> => {
+				const base = ref.current.rev;
 				try {
-					applyFetch(await transport.fetchData(ref.current.rev));
+					applyFetch(await transport.fetchData(base), false, base, transport);
 				} catch {
 					// Keep confirmed; the next event retries.
 				}
 			})();
 		});
 		const timersAtMount = timers.current;
+		const toastTimersAtMount = toastTimers.current;
 		return () => {
 			unsubscribe();
 			if (poll !== undefined) clearInterval(poll);
 			for (const timer of timersAtMount.values()) clearTimeout(timer);
+			for (const timer of toastTimersAtMount) clearTimeout(timer);
 		};
 		// The transport is the surface's identity; a new transport re-runs.
 	}, [transport, opts?.refreshMs, opts?.visible]);
@@ -522,6 +589,14 @@ export function useSurface(
 		void transport
 			.act({ action: name, type: action.type, payload, actionId })
 			.then((result) => {
+				// The page swapped transports (opened another item) while this
+				// action was out: its feedback still shows, but its data/rev
+				// belong to the previous instance and its navigate is moot.
+				if (transport !== transportRef.current) {
+					if (!result.ok) toast(result.error.message);
+					else if (result.toast !== undefined) toast(result.toast);
+					return;
+				}
 				// A move whose entry is already gone (10 s timeout fired, or
 				// an earlier settle dropped it) is STALE: no toast, no ops —
 				// the user already saw the timeout outcome.
@@ -679,7 +754,7 @@ export function useSurface(
 			void doLoad();
 		},
 		refresh,
-		toasts: snapshot.toasts,
+		toasts: snapshot.toasts.map((entry) => entry.message),
 		serverErrors: snapshot.serverErrors,
 	};
 }

@@ -37,6 +37,18 @@ test("bulk actions stay reachable while a long inbox list is scrolled", async ({
 	await expect(action).toBeDisabled();
 	await expect(page.locator(".blk-bulk")).toContainText("0 selected");
 	await page.locator('[data-page-region="sidebar"]').evaluate((e) => { e.scrollTop = e.scrollHeight; });
+	// Opening an item to read it keeps the ticks (the page used to
+	// remount on every params change, dropping the selection).
+	await boxes.nth(0).check();
+	await boxes.nth(1).check();
+	await expect(page.locator(".blk-bulk")).toContainText("2 selected");
+	await page.locator('[data-page-region="sidebar"] .blk-list-card').nth(3).click();
+	await expect(page.locator('[data-page-region="main"]').getByText("Select an escalation from the list")).toHaveCount(0);
+	await expect(page.locator('[data-page-region="main"]').getByRole("button", { name: "Send answer" })).toBeVisible();
+	await expect(page.locator(".blk-bulk")).toContainText("2 selected");
+	await boxes.nth(0).uncheck();
+	await boxes.nth(1).uncheck();
+	await page.locator('[data-page-region="sidebar"]').evaluate((e) => { e.scrollTop = e.scrollHeight; });
 	await boxes.nth(15).check();
 	await boxes.nth(16).check();
 	await page.waitForTimeout(500);
@@ -45,6 +57,11 @@ test("bulk actions stay reachable while a long inbox list is scrolled", async ({
 	await expect(page.locator(".blk-bulk")).toContainText("2 selected");
 	await action.click();
 	await expect(page.getByText("Dismissed 2 escalations").first()).toBeVisible();
+	await expect(boxes).toHaveCount(18);
+	// Back to the Open tab (another in-place params swap): the item read
+	// above sits in the group, and an open item's page lists ITS tab.
+	await page.getByRole("button", { name: "Open", exact: true }).click();
+	await expect(page.locator('[data-page-region="main"]').getByText("Select an escalation from the list")).toBeVisible();
 	await expect(boxes).toHaveCount(18);
 	// A group's select-all takes every remaining item of that source.
 	await page.getByRole("checkbox", { name: "Select all in Job demo-job" }).check();

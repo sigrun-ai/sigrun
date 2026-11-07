@@ -136,11 +136,17 @@ export function SurfaceView(props: {
 							<BlockView block={surface.tree.root} />
 						)}
 					</ContainerWidth>
-					{surface.toasts.map((toast, index) => (
-						<p key={index} className="blk-surface-toast" role="status">
-							{toast}
-						</p>
-					))}
+					{surface.toasts.length > 0 && (
+						// One fixed column: separately fixed toasts painted on the
+						// same coordinates, so an older one could hide the newest.
+						<div className="blk-surface-toasts">
+							{surface.toasts.map((toast, index) => (
+								<p key={index} className="blk-surface-toast" role="status">
+									{toast}
+								</p>
+							))}
+						</div>
+					)}
 				</SurfaceActionsContext.Provider>
 			</SurfaceDataContext.Provider>
 		</div>

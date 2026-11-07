@@ -22,7 +22,7 @@ import type {
 	Tree,
 } from "@sigrun/shared/blocks";
 import { applyOps } from "@sigrun/shared/blocks";
-import { useSurface, type SurfaceState } from "./useSurface";
+import { TOAST_LIMIT, TOAST_MS, useSurface, type SurfaceState } from "./useSurface";
 
 afterEach(() => {
 	vi.useRealTimers();
@@ -410,6 +410,157 @@ describe("useSurface (spec §6.3)", () => {
 		});
 		expect(laneStates(latest().view as JsonObject, "todo")).toEqual([]);
 		expect(laneStates(latest().view as JsonObject, "doing")).toEqual(["b", "a"]);
+	});
+
+	test("an accept toast survives a refetch that lands before the next render", async () => {
+		// The bulk-dismiss race: the act result toasts, and a
+		// surface.changed refetch resolves in the same tick — before React
+		// re-renders. applyFetch must not rebuild the snapshot from the
+		// last RENDERED state (which has no toast yet).
+		const transport = new FakeTransport();
+		const { latest } = mount(transport);
+		await settleLoad();
+		act(() => {
+			latest().dispatch({ type: "submit", name: "dismiss-many" }, { ids: ["a"] });
+		});
+		act(() => transport.emitChanged(2, 1));
+		await act(async () => {
+			transport.resolveAct({ ok: true, rev: 2, toast: "Dismissed 18 escalations" });
+			transport.resolveFetch({ rev: 2, treeRev: 1, data: board([task("b", "todo")]) });
+		});
+		expect(latest().toasts).toContain("Dismissed 18 escalations");
+		expect(latest().view).toEqual(board([task("b", "todo")]));
+	});
+
+	test("a change event right after an unrendered apply fetches since the NEW rev", async () => {
+		// Without an eager ref the second fetch asks since the last
+		// RENDERED rev (1), re-receives rev 2's ops and double-applies them.
+		const transport = new FakeTransport();
+		const { latest } = mount(transport);
+		await settleLoad();
+		act(() => transport.emitChanged(2, 1));
+		await act(async () => {
+			transport.resolveFetch({ rev: 2, treeRev: 1, ops: [{ op: "insert", path: "/tasks/-", value: task("a", "todo") }] as DataOp[] });
+			await Promise.resolve();
+			await Promise.resolve();
+			transport.emitChanged(3, 1);
+			transport.resolveFetch({ rev: 3, treeRev: 1, ops: [{ op: "insert", path: "/tasks/-", value: task("b", "todo") }] as DataOp[] });
+		});
+		expect(transport.fetchCalls).toEqual([1, 2]);
+		expect(latest().view).toEqual(board([task("a", "todo"), task("b", "todo")]));
+		expect(latest().rev).toBe(3);
+	});
+
+	test("toasts expire after TOAST_MS and only the newest TOAST_LIMIT stay", async () => {
+		vi.useFakeTimers();
+		const transport = new FakeTransport();
+		const { latest } = mount(transport);
+		await settleLoad();
+		for (const label of ["one", "two", "three", "four"]) {
+			act(() => {
+				latest().dispatch({ type: "submit", name: "go" }, {});
+			});
+			await act(async () => {
+				transport.resolveAct({ ok: true, rev: 2, toast: label });
+			});
+		}
+		expect(latest().toasts).toEqual(["two", "three", "four"].slice(-TOAST_LIMIT));
+		await act(async () => {
+			vi.advanceTimersByTime(TOAST_MS - 1);
+		});
+		expect(latest().toasts.length).toBe(TOAST_LIMIT);
+		await act(async () => {
+			vi.advanceTimersByTime(1);
+		});
+		expect(latest().toasts).toEqual([]);
+	});
+
+	test("a transport swap (same mount) starts the new instance clean", async () => {
+		// Opening an item swaps the page's transport without remounting.
+		// The old instance's announced rev must not make the new
+		// instance's ops look like a gap, and an event that lands before
+		// the new load must reload rather than patch the old data.
+		const a = new FakeTransport();
+		const b = new FakeTransport();
+		b.loadResult = { ...b.loadResult, data: board([task("x", "todo")]), rev: 1 };
+		let latest: SurfaceState | undefined;
+		function Probe(props: { transport: SurfaceTransport }): null {
+			latest = useSurface(props.transport);
+			return null;
+		}
+		let renderer: TestRenderer.ReactTestRenderer | undefined;
+		act(() => {
+			renderer = TestRenderer.create(h(Probe, { transport: a }));
+		});
+		await settleLoad();
+		act(() => a.emitChanged(9, 1));
+		await act(async () => {
+			a.resolveFetch({ rev: 9, treeRev: 1, data: board([]) });
+		});
+		await act(async () => {
+			renderer!.update(h(Probe, { transport: b }));
+		});
+		await settleLoad();
+		expect(latest!.view).toEqual(board([task("x", "todo")]));
+		act(() => b.emitChanged(2, 1));
+		await act(async () => {
+			b.resolveFetch({ rev: 2, treeRev: 1, ops: [{ op: "insert", path: "/tasks/-", value: task("y", "todo") }] as DataOp[] });
+		});
+		// Applied as ops (no gap refetch) on the NEW instance's data.
+		expect(b.fetchCalls).toEqual([1]);
+		expect(latest!.view).toEqual(board([task("x", "todo"), task("y", "todo")]));
+	});
+
+	test("overlapping since-fetches do not re-apply the same ops", async () => {
+		// 18 dismissals fire 18 change events: every fetch leaves with the
+		// same `since` before any returns, and each answer carries the ops
+		// since that base. Only an answer whose base is still the current
+		// rev may apply; the rest are already-seen or must refetch.
+		const transport = new FakeTransport();
+		const { latest } = mount(transport);
+		await settleLoad();
+		act(() => transport.emitChanged(2, 1));
+		act(() => transport.emitChanged(3, 1));
+		expect(transport.fetchCalls).toEqual([1, 1]);
+		const both = [
+			{ op: "insert", path: "/tasks/-", value: task("a", "todo") },
+			{ op: "insert", path: "/tasks/-", value: task("b", "todo") },
+		] as DataOp[];
+		await act(async () => {
+			transport.resolveFetch({ rev: 3, treeRev: 1, ops: both });
+		});
+		await act(async () => {
+			transport.resolveFetch({ rev: 3, treeRev: 1, ops: both });
+		});
+		expect(latest().view).toEqual(board([task("a", "todo"), task("b", "todo")]));
+		expect(latest().rev).toBe(3);
+	});
+
+	test("an answer from the previous transport never lands on the new one", async () => {
+		const a = new FakeTransport();
+		a.loadResult = { ...a.loadResult, data: board([task("old", "todo")]) };
+		const b = new FakeTransport();
+		b.loadResult = { ...b.loadResult, data: board([task("new", "todo")]), rev: 1 };
+		let latest: SurfaceState | undefined;
+		function Probe(props: { transport: SurfaceTransport }): null {
+			latest = useSurface(props.transport);
+			return null;
+		}
+		let renderer: TestRenderer.ReactTestRenderer | undefined;
+		act(() => {
+			renderer = TestRenderer.create(h(Probe, { transport: a }));
+		});
+		await settleLoad();
+		act(() => a.emitChanged(2, 1)); // in flight on A
+		await act(async () => {
+			renderer!.update(h(Probe, { transport: b }));
+		});
+		await settleLoad();
+		await act(async () => {
+			a.resolveFetch({ rev: 9, treeRev: 1, data: board([task("old", "todo"), task("old2", "todo")]) });
+		});
+		expect(latest!.view).toEqual(board([task("new", "todo")]));
+		expect(latest!.rev).toBe(1);
 	});
 
 	test("reject drops the overlay entry (snap back) and toasts", async () => {

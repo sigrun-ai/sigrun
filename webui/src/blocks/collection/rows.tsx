@@ -33,12 +33,21 @@ export interface CollectionView {
 }
 
 /** Hold the selection/fold view state in component state, shaped for
- *  the `/view/` branch (Task 4 moves it verbatim). */
+ *  the `/view/` branch (Task 4 moves it verbatim). The state belongs to
+ *  ONE collection: a different block id rendered in the same slot (an
+ *  inbox tab switch) starts with an empty selection, while a re-sent
+ *  tree for the same collection (opening an item) keeps it. */
 export function useCollectionView(block: CollectionBlock): CollectionView {
 	const [selection, setSelection] = useState<readonly string[]>([]);
 	const [folded, setFolded] = useState<readonly string[]>([]);
+	const [owner, setOwner] = useState(block.id);
+	if (owner !== block.id) {
+		// Render-time reset (React's "adjust state on prop change").
+		setOwner(block.id);
+		setSelection([]);
+	}
 	return {
-		selection,
+		selection: owner === block.id ? selection : [],
 		folded,
 		toggleSelect: (id: string): void => {
 			setSelection((current) =>

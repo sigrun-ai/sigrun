@@ -1421,8 +1421,19 @@
 
 /* SurfaceView host states */
 .blk-surface { min-height: 0; }
-/* The fixed notice is a SurfaceView chrome; chat toasts (.blk-chat-toast)
-   stay in flow under the entry so multiple rejections stack in document
-   order instead of overlapping on the same viewport coordinates. */
-.blk-surface > .blk-surface-toast { position: fixed; bottom: 1rem; right: 1rem; }
+/* The fixed notice column is SurfaceView chrome: toasts stack in one
+   fixed column (newest last) instead of each sitting on the same
+   viewport coordinates. Chat toasts (.blk-chat-toast) stay in flow under
+   the entry. */
+.blk-surface > .blk-surface-toasts {
+	position: fixed;
+	bottom: 1rem;
+	right: 1rem;
+	z-index: 10;
+	display: flex;
+	flex-direction: column;
+	align-items: flex-end;
+	gap: 0.4rem;
+}
+.blk-surface-toasts > .blk-surface-toast { margin: 0; }
 .blk-chat-toast { margin: 0.25rem 0 0; }
