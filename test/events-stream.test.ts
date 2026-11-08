@@ -304,7 +304,8 @@ describe("GET /v1/events (W3 Task 4)", () => {
 					(f) =>
 						f.event === "conversation.changed" &&
 						f.data.type === "conversation.changed" &&
-						f.data.conversationId === id,
+						f.data.conversationId === id &&
+						f.data.fields.name !== undefined,
 				)
 				.catch((error: unknown) => {
 					throw new Error(

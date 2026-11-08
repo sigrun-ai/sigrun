@@ -1297,6 +1297,9 @@ export class EventBus {
 					if (next.owner !== basis.owner) {
 						moved.owner = next.owner === undefined ? null : next.owner;
 					}
+					if (next.source !== basis.source) {
+						moved.source = next.source === undefined ? null : next.source;
+					}
 					if (next.jobOutcome !== basis.jobOutcome) {
 						moved.jobOutcome = next.jobOutcome === undefined ? null : next.jobOutcome;
 					}

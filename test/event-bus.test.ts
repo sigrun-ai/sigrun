@@ -937,10 +937,10 @@ describe("conversation summary change events", () => {
 		expect(events).toContainEqual({
 			type: "conversation.changed",
 			conversationId: root.id,
-			fields: { jobOutcome: "failed" },
+			fields: { source: "cron", jobOutcome: "failed" },
 		});
 
-		// Source changes after the creation diff use the generalized path.
+		// Source changes after creation use the generalized path.
 		events.length = 0;
 		await writeServerMeta(root, (draft) => {
 			draft.source = "acme-scheduled";
