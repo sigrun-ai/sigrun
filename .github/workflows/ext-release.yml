@@ -170,11 +170,21 @@ jobs:
           run_id=
           sha=
           if [ -n "$TAG" ]; then
-            # Resolve the annotated tag to its commit; a dispatch re-run's
-            # triggering SHA is the branch head, not the tag's commit.
-            remote_ref="$(git ls-remote origin "refs/tags/${{ needs.guard.outputs.tag }}" | head -n 1 | cut -f 1 || true)"
-            if [ -n "$remote_ref" ]; then
-              sha="$(git rev-parse "${remote_ref}^{}" 2>/dev/null || printf '%s' "$remote_ref")"
+            # Resolve the tag through the API: this job has no checkout.
+            tag_response="$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/git/ref/tags/$TAG" || true)"
+            object_type="$(printf '%s' "$tag_response" | jq -r '.object.type // empty' 2>/dev/null || true)"
+            tag_sha="$(printf '%s' "$tag_response" | jq -r '.object.sha // empty' 2>/dev/null || true)"
+            if [ "$object_type" = "commit" ]; then
+              sha="$tag_sha"
+            elif [ "$object_type" = "tag" ] && [ -n "$tag_sha" ]; then
+              tag_object="$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+                -H "Accept: application/vnd.github+json" \
+                -H "X-GitHub-Api-Version: 2022-11-28" \
+                "https://api.github.com/repos/${{ github.repository }}/git/tags/${tag_sha}" || true)"
+              sha="$(printf '%s' "$tag_object" | jq -r '.object.sha // empty' 2>/dev/null || true)"
             fi
           fi
           if [ -n "$sha" ]; then
@@ -191,10 +201,7 @@ jobs:
             skip=true
             echo "::notice::tests already passed for ${sha} in ci run ${run_id}"
           fi
-          {
-            echo "skip=${skip}"
-            echo "run_id=${run_id}"
-          } >> "$GITHUB_OUTPUT"
+          echo "skip=${skip}" >> "$GITHUB_OUTPUT"
       - if: steps.ci-passed.outputs.skip != 'true'
         uses: sigrun-ai/sigrun/.github/actions/ext-test@main
         with:

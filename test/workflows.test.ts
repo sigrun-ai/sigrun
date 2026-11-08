@@ -1148,10 +1148,17 @@ describe(".github/workflows/ext-release.yml (family releases)", () => {
 		expect(jobs.guard?.outputs?.tag).toBe("${{ steps.tag.outputs.tag }}");
 		const lookup = jobs.test?.steps?.[0];
 		expect(lookup, "the ci-success lookup must exist").toBeDefined();
+		expect(lookup?.env?.TAG).toBe("${{ needs.guard.outputs.tag }}");
 		const body = runOf(lookup as Step);
-		expect(body).toContain('git ls-remote origin "refs/tags/${{ needs.guard.outputs.tag }}"');
-		expect(body).toContain('git rev-parse "${remote_ref}^{}"');
+		expect(body).toContain('if [ -n "$TAG" ]; then');
+		expect(body).toContain("/git/ref/tags/$TAG");
+		expect(body).toContain("/git/tags/${tag_sha}");
+		expect(body).toContain('[ "$object_type" = "tag" ]');
+		expect(body).toContain('[ "$object_type" = "commit" ]');
 		expect(body).not.toContain("github.sha");
+		expect(body, "the lookup runs before any checkout and cannot use git").not.toMatch(
+			/(^|\n)\s*git\s/,
+		);
 	});
 });
 
