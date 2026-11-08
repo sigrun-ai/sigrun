@@ -806,6 +806,46 @@ describe("SessionList", () => {
 		expect(onRestore).toHaveBeenCalledWith(2);
 	});
 
+	test("the Deleted toggle turns the Archived and Job runs toggles off", async () => {
+		const rows = [
+			summary({ id: 1, name: "Harbor dredging log" }),
+			summary({ id: 2, name: "Retired beacon audit", archived: true }),
+			summary({
+				id: 3,
+				name: "acme-daily",
+				source: "cron",
+				jobOutcome: "succeeded",
+			}),
+			summary({ id: 4, name: "Removed notes", deleted: true }),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		const archived = renderer.root.findByProps({
+			className: "session-archived-toggle",
+		});
+		const jobRuns = renderer.root.findByProps({
+			className: "session-job-runs-toggle",
+		});
+		const deleted = renderer.root.findByProps({
+			className: "session-deleted-toggle",
+		});
+		await click(archived);
+		await click(jobRuns);
+		expect(archived.props["aria-pressed"]).toBe(true);
+		expect(jobRuns.props["aria-pressed"]).toBe(true);
+
+		await click(deleted);
+		expect(deleted.props["aria-pressed"]).toBe(true);
+		expect(archived.props["aria-pressed"]).toBe(false);
+		expect(jobRuns.props["aria-pressed"]).toBe(false);
+		expect(rowIds(renderer)).toEqual([4]);
+
+		// Leaving the Deleted view does not silently resurrect either view.
+		await click(deleted);
+		expect(archived.props["aria-pressed"]).toBe(false);
+		expect(jobRuns.props["aria-pressed"]).toBe(false);
+		expect(rowIds(renderer)).toEqual([1]);
+	});
+
 	test("search does not reveal deleted rows", async () => {
 		const rows = [
 			summary({ id: 1, name: "Harbor dredging log" }),

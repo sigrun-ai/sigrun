@@ -500,7 +500,16 @@ export function SessionList(props: {
 				className="session-deleted-toggle"
 				aria-pressed={deletedOnly}
 				title="Show deleted conversations"
-				onClick={() => setDeletedOnly((shown) => !shown)}
+				onClick={() =>
+				setDeletedOnly((shown) => {
+					const next = !shown;
+					if (next) {
+						setIncludeArchived(false);
+						setIncludeJobRuns(false);
+					}
+					return next;
+				})
+			}
 			>
 				Deleted
 			</button>

@@ -200,6 +200,7 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 			return {
 				...(meta?.owner === undefined ? {} : { owner: meta.owner }),
 				internal: meta?.internal === true,
+				deleted: meta?.deleted === true,
 				ownerOnly,
 				unattributed,
 				...(page.items[0]?.id === undefined

@@ -1360,7 +1360,8 @@ export class EventBus {
 				};
 				const next = metaBasisOf(change.value);
 				// Built through a mutable mirror (the wire fields are readonly);
-				// cleared keys ride as null (explicit-clear semantics).
+				// cleared keys ride as null — except `deleted`, whose clears ride
+				// `false` on the event while the doc drops the key.
 				const moved: Record<string, unknown> = {};
 				if (next.name !== basis.name) {
 					moved.name = next.name === undefined ? null : next.name;

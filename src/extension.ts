@@ -549,6 +549,8 @@ export type CurationRunOpts = {
 export type CurationEligibility = {
 	readonly owner?: string;
 	readonly internal: boolean;
+	/** Deleted marker; consumed by the curator extension to gate loop-2 digests. */
+	readonly deleted: boolean;
 	/** Every user entry attributed to the owner. */
 	readonly ownerOnly: boolean;
 	/** Unattributed user entries. */
