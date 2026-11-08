@@ -1118,6 +1118,41 @@ describe(".github/workflows/ext-release.yml (family releases)", () => {
 		expect(runs).toContain("curl -sf");
 		expect(runs).toContain("registry.npmjs.org");
 	});
+
+	test("release test job skips when ci passed", () => {
+		const { jobs } = parsed();
+		const testJob = jobs.test;
+		expect(testJob, "the release test job must exist").toBeDefined();
+		expect(testJob?.permissions?.actions).toBe("read");
+		const steps = testJob?.steps ?? [];
+		const lookup = steps[0];
+		expect(lookup, "the ci-success lookup must be the first test step").toBeDefined();
+		expect(lookup?.id).toBe("ci-passed");
+		const body = runOf(lookup as Step);
+		expect(body).toContain("actions/runs?head_sha=");
+		expect(body).toContain("status=success");
+		expect(body).toContain('.workflow_runs[] | select(.name == "ci") | .id');
+		expect(body).toContain('::notice::tests already passed for ${sha} in ci run ${run_id}');
+		expect(steps.length).toBeGreaterThan(1);
+		for (const step of steps.slice(1)) {
+			expect(step.if, "later steps run only when ci has not already passed").toBe(
+				"steps.ci-passed.outputs.skip != 'true'",
+			);
+			expect(step).not.toHaveProperty("continue-on-error");
+		}
+		expect(testJob?.if, "a skipped test job would skip publish").toBeUndefined();
+	});
+
+	test("the lookup keys on the tag's commit, not github.sha", () => {
+		const { jobs } = parsed();
+		expect(jobs.guard?.outputs?.tag).toBe("${{ steps.tag.outputs.tag }}");
+		const lookup = jobs.test?.steps?.[0];
+		expect(lookup, "the ci-success lookup must exist").toBeDefined();
+		const body = runOf(lookup as Step);
+		expect(body).toContain('git ls-remote origin "refs/tags/${{ needs.guard.outputs.tag }}"');
+		expect(body).toContain('git rev-parse "${remote_ref}^{}"');
+		expect(body).not.toContain("github.sha");
+	});
 });
 
 describe(".github/workflows/chart-release.yml (chart decoupling)", () => {

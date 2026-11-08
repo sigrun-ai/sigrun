@@ -73,6 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       refs: ${{ steps.resolve.outputs.refs }}
+      tag: ${{ steps.tag.outputs.tag }}
     steps:
       # The repo under test with FULL history — the default fetch-depth 1
       # leaves origin/main absent and the ancestry check fails closed.
@@ -154,8 +155,48 @@ jobs:
   test:
     needs: guard
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
     steps:
-      - uses: sigrun-ai/sigrun/.github/actions/ext-test@main
+      - name: Check whether ci already passed for the tag's commit
+        id: ci-passed
+        shell: bash
+        env:
+          TAG: ${{ needs.guard.outputs.tag }}
+        run: |
+          skip=false
+          run_id=
+          sha=
+          if [ -n "$TAG" ]; then
+            # Resolve the annotated tag to its commit; a dispatch re-run's
+            # triggering SHA is the branch head, not the tag's commit.
+            remote_ref="$(git ls-remote origin "refs/tags/${{ needs.guard.outputs.tag }}" | head -n 1 | cut -f 1 || true)"
+            if [ -n "$remote_ref" ]; then
+              sha="$(git rev-parse "${remote_ref}^{}" 2>/dev/null || printf '%s' "$remote_ref")"
+            fi
+          fi
+          if [ -n "$sha" ]; then
+            # Fail open: any lookup problem leaves skip=false so tests run.
+            response="$(curl -sf -H "Authorization: Bearer ${{ github.token }}" \
+              -H "Accept: application/vnd.github+json" \
+              -H "X-GitHub-Api-Version: 2022-11-28" \
+              "https://api.github.com/repos/${{ github.repository }}/actions/runs?head_sha=${sha}&status=success" || true)"
+            if [ -n "$response" ]; then
+              run_id="$(printf '%s' "$response" | jq -r 'first(.workflow_runs[] | select(.name == "ci") | .id) // empty' 2>/dev/null || true)"
+            fi
+          fi
+          if [ -n "$run_id" ]; then
+            skip=true
+            echo "::notice::tests already passed for ${sha} in ci run ${run_id}"
+          fi
+          {
+            echo "skip=${skip}"
+            echo "run_id=${run_id}"
+          } >> "$GITHUB_OUTPUT"
+      - if: steps.ci-passed.outputs.skip != 'true'
+        uses: sigrun-ai/sigrun/.github/actions/ext-test@main
         with:
           package-dir: ${{ inputs.package-dir }}
           needs-core: ${{ inputs.needs-core }}
