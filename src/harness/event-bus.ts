@@ -839,6 +839,11 @@ export class EventBus {
 		return this.#storedThrough;
 	}
 
+	/** Freeze marker saves after a failed startup replay; the next boot retries. */
+	public markReplayFailed(): void {
+		this.#replayFailed = true;
+	}
+
 	/**
 	 * Rebuild and enqueue every terminal deliverable run at or above the
 	 * durable marker. Boot calls this after handler registration and before

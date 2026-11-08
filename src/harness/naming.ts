@@ -141,6 +141,9 @@ export function createAutoNamer(deps: AutoNamerDeps): AutoNamer {
 		const id = event.conversationId;
 		try {
 			if (event.outcome.status !== "answered") return;
+			// A startup replay is delivery recovery, not a new conversation
+			// turn: naming belongs only to the original live settle.
+			if (event.replayed === true) return;
 			if (event.continued === true && event.inputs.length === 1) return;
 			if (deps.readSettings().namingModel === false) return;
 			if (await deps.isTaskOwned(id)) return;

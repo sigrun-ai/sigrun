@@ -1789,18 +1789,19 @@ describe("delivered-through marker", () => {
 		}
 	});
 
-	test("no save without a delivered settle group", async () => {
+	test("no advance without a delivered settle group", async () => {
 		const { bus, opened } = await bootOpenedBus();
-		// Create a conversation (lifecycle events only, no settle groups).
+		// Boot initializes the marker even when history is empty; lifecycle
+		// commits alone must never advance it past that baseline.
+		const baseline = await storedThrough(opened);
+		expect(baseline).toBe(1);
 		await opened.harness.createConversation(
 			{ ownership: { kind: "ownerless" } },
 			BACKGROUND_CONTEXT,
 		);
 		await bus.drain(10_000, BACKGROUND_CONTEXT);
 
-		// The marker doc is never written (no settle group was delivered).
-		const through = await storedThrough(opened);
-		expect(through).toBeUndefined();
+		expect(await storedThrough(opened)).toBe(baseline);
 	});
 
 	test("the shutdown drains save the marker", async () => {
@@ -1856,13 +1857,12 @@ describe("startup replay", () => {
 		release: () => void,
 		options: { replayPage?: number } = {},
 	): Promise<{ restarted: TestBus; events: ReplayRecord[] }> {
-		first.bus.close();
-		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		await crashClose(first);
+		void release;
 		const restarted = await bootBus({
 			dir: first.dir,
 			...options,
 		});
-		void release;
 		const events: ReplayRecord[] = [];
 		restarted.bus.registerExtension("fixture-replay-recorder", {
 			runSettled: (event) => {
@@ -1873,6 +1873,13 @@ describe("startup replay", () => {
 			},
 		});
 		return { restarted, events };
+	}
+
+	/** A crash close: boot's replay pump must not drain at harness close. */
+	async function crashClose(first: TestBus): Promise<void> {
+		first.opened.eventBus.close();
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
 	}
 
 	/** One blocking delivery, with the abandoned call resolved on cleanup. */
@@ -2038,15 +2045,23 @@ describe("startup replay", () => {
 		}
 	});
 
-	test("first boot sets the marker and replays nothing", async () => {
+	test("first boot sets the marker and boot replays history once", async () => {
 		const first = await bootBus({ responses: [fauxAssistantMessage("history answer")] });
 		const history = await runTurn(first.root, "history before the marker existed");
 		expect(history.record.status).toBe("done");
-		first.bus.close();
-		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		await crashClose(first);
 		const restarted = await bootBus({ dir: first.dir });
+		const events: RunSettledEvent[] = [];
+		restarted.bus.registerExtension("fixture-first-boot-recorder", {
+			runSettled: (event) => { events.push(event); },
+		});
 
-		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		// Boot already performed the one-shot replay. A manual second call
+		// is idempotent (returns the same backlog size, queues nothing).
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({ inputs: [history.submission.id], replayed: true });
 		expect(restarted.bus.deliveredThrough()).toBeGreaterThan(history.submission.id);
 	});
 
@@ -2118,8 +2133,7 @@ describe("startup replay", () => {
 		first.faux.setResponses([fauxAssistantMessage("internal settled answer")]);
 		const settled = await runTurn(internal, "internal undelivered input");
 		expect(settled.record.status).toBe("done");
-		first.bus.close();
-		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		await crashClose(first);
 		const restarted = await bootBus({ dir: first.dir });
 		const events: RunSettledEvent[] = [];
 		restarted.bus.registerExtension("fixture-replay-recorder", {
@@ -2197,8 +2211,7 @@ describe("startup replay", () => {
 			through: expect.any(Number),
 		});
 		expect(first.bus.deliveredThrough()).toBeLessThanOrEqual(dropped.submission.id);
-		first.bus.close();
-		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		await crashClose(first);
 		const restarted = await bootBus({ dir: first.dir });
 		const events: RunSettledEvent[] = [];
 		restarted.bus.registerExtension("fixture-replay-recorder", {
@@ -2243,10 +2256,9 @@ describe("startup replay", () => {
 		}
 		const draining = first.bus.drain(10_000, BACKGROUND_CONTEXT);
 		await startedGate;
-		first.bus.close();
+		await crashClose(first);
 		release();
 		await draining;
-		await first.opened.harness.close(BACKGROUND_CONTEXT);
 		try {
 			const restarted = await bootBus({
 				dir: first.dir,

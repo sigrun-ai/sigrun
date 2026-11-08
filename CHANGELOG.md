@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- `runSettled` events now survive restarts: a run that settled but was not yet delivered is replayed at the next boot (`replayed: true`), before interrupted runs resume. Delivery is at-least-once.
+
 ## [0.11.4] - 2026-11-08
 
 ### Added

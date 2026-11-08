@@ -2357,6 +2357,20 @@ export async function openHarness(
 	// ordered path src/index.ts runs) closes the bus first, making this a
 	// no-op on the normal path.
 	harness.subscribeClose(() => eventBus.close());
+	// Deliver terminal runs left above the durable marker BEFORE resume
+	// restarts interrupted work. Replay enqueues without committing, so it
+	// needs this explicit pump; a failure freezes marker saves in the bus
+	// (replayUndelivered's own catch) and the next boot retries the tail.
+	try {
+		await eventBus.replayUndelivered(storage, BACKGROUND_CONTEXT);
+	} catch (error) {
+		eventBus.markReplayFailed();
+		console.error(
+			"boot: run-event replay failed; delivery marker saves are frozen until the next boot",
+			error,
+		);
+	}
+	void eventBus.drain(hookDeadlineMs, BACKGROUND_CONTEXT);
 	// The jobs service (W4 Task 3): the declared sources are read LIVE
 	// per reconcile — the settings store re-reads (a file edit lands on
 	// the next reconcile) and the loader's job bindings snapshot at boot

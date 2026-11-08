@@ -309,6 +309,22 @@ describe("createAutoNamer (stub deps)", () => {
 		expect(logs).toHaveLength(0);
 	});
 
+	test("a replayed run is not named", async () => {
+		const { models, calls } = stubModels(["acme/model-1"]);
+		const stub = stubHarness(undefined, { provider: "acme", modelId: "model-1" });
+		const namer = createAutoNamer({
+			harness: stub.harness,
+			models,
+			readSettings: () => ({}),
+			isTaskOwned: async () => false,
+		});
+		await namer.runSettled({ ...answeredEvent(), replayed: true }, stubApi, BACKGROUND_CONTEXT);
+		await namer.idle();
+		expect(calls).toHaveLength(0);
+		expect(stub.read()?.autoName).toBeUndefined();
+		expect(stub.read()?.autoNameAttempts).toBeUndefined();
+	});
+
 	test("task-owned conversations are never named", async () => {
 		const calls: unknown[][] = [];
 		const models = {
