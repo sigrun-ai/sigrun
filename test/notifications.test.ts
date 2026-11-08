@@ -754,6 +754,21 @@ describe("job.failed", () => {
 			(event) =>
 				event.type === "job.failed" && event.body === "model_error: boom",
 		);
+		// A succeeded run also re-arms (restore → succeed → delete).
+		server.opened.events.publish({
+				type: "job.changed",
+				job: {
+					...job,
+					lastRun: {
+						jobId: job.id,
+						version: 1,
+						fireAt: "2026-01-01T00:00:00.000Z",
+						manual: true,
+						outcome: "succeeded",
+						startedAt: "2026-01-01T00:02:30.000Z",
+					},
+				},
+		});
 		// And a deleted failure after the re-arm notifies again.
 		carry("2026-01-01T00:03:00.000Z", "conversation_deleted");
 		await waitFor(

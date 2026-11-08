@@ -307,6 +307,12 @@ export function startNotifications(ctx: ServerContext): () => void {
 	const lastNotifiedWasDeleted = new Set<string>();
 	const handleJobChanged = (job: Omit<JobWire, "access">): void => {
 		const run: JobRunWire | undefined = job.lastRun;
+		// A success also re-arms: delete → notice → restore → succeed →
+		// delete → fail must notify again.
+		if (run?.outcome === "succeeded") {
+			lastNotifiedWasDeleted.delete(job.id);
+			return;
+		}
 		if (run?.outcome !== "failed") return;
 		const identity = `${run.jobId}:${run.fireAt}:${run.manual}:${run.startedAt}`;
 		if (lastNotifiedFailedRun.get(job.id) === identity) return;

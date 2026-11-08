@@ -531,6 +531,71 @@ describe("block answers as InputEntry turns (spec §8.4)", () => {
 	});
 });
 
+describe("deleted conversations (Task 3 review)", () => {
+	test("a turn action on a deleted conversation refuses before the fold", async () => {
+		const server = await bootServer();
+		const { conversationId, entryIds } = await conversationWithBlocks(
+			server,
+			"private",
+			{ tree: RANKING_TREE, data: RANKING_DATA, title: "Ranking" },
+		);
+		const [rankingId] = entryIds;
+		// One unnoted edit, so a buggy pre-guard fold would advance
+		// notedThrough from 0 to 1.
+		const moved = await applyChatAction(
+			server.opened.harness,
+			conversationId,
+			rankingId!,
+			"alice",
+			"reorderCards",
+			{ itemId: "c4", from: { index: 3 }, to: { index: 0 } },
+		);
+		expect(moved).toMatchObject({ ok: true });
+		const before = await readBlocksState(
+			server.opened.harness,
+			conversationId as ConversationId,
+			rankingId!,
+			BACKGROUND_CONTEXT,
+		);
+		const submissionsBefore = await submissionsOf(
+			server.opened,
+			conversationId,
+		);
+		const deleted = await server.app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${conversationId}/meta`,
+			headers: { authorization: `Bearer ${server.aliceToken}` },
+			payload: { deleted: true },
+		});
+		expect(deleted.statusCode).toBe(200);
+
+		const answer = await postAction(
+			server,
+			server.aliceToken,
+			conversationId,
+			rankingId!,
+			"useOrder",
+			{ values: {} },
+			"act-deleted-order",
+		);
+		expect(answer.status).toBe(409);
+		expect(answer.body).toEqual({ error: "conversation_deleted" });
+		// The fold never ran: notedThrough is unchanged and no submission
+		// was admitted.
+		const after = await readBlocksState(
+			server.opened.harness,
+			conversationId as ConversationId,
+			rankingId!,
+			BACKGROUND_CONTEXT,
+		);
+		expect(after?.notedThrough).toBe(before?.notedThrough);
+		expect(after?.changes).toHaveLength(1);
+		expect(await submissionsOf(server.opened, conversationId)).toHaveLength(
+			submissionsBefore.length,
+		);
+	});
+});
+
 describe("the entry disjunction in submitOp (the brief's enforced invariant)", () => {
 	test("an answer submission skips expansion; a /skill input on the same path still expands; a forced both-set state throws before any submission", async () => {
 		const server = await bootServer();

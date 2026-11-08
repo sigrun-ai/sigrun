@@ -393,15 +393,23 @@ describe("what a deleted conversation still allows", () => {
 		// Let the run reach the gated model call before the deletion.
 		await waitFor(() => faux.state.callCount > 0);
 		await setDeleted(app, id, true);
-		// Abort on the live run succeeds (abortOp is not guarded). Release
-		// the gate first so the held model call resolves and the abort's
-		// idle wait cannot deadlock on the gated stream.
-		gate.release();
-		const aborted = await app.inject({
+		// Abort on the live run succeeds (abortOp is not guarded). Fire
+		// while the gate is HELD: a guard would reject immediately, so a
+		// still-pending request after a short wait proves no 409/404.
+		const aborted = app.inject({
 			method: "POST",
 			url: `/v1/conversations/${id}/abort`,
 		});
-		expect(aborted.statusCode).toBe(200);
+		let early: { statusCode: number } | undefined;
+		void aborted.then((response) => {
+			early = response;
+		});
+		await new Promise((resolve) => setTimeout(resolve, 50));
+		expect(early).toBeUndefined();
+		// Releasing the gate lets the held model call resolve and the
+		// abort's idle wait finish.
+		gate.release();
+		expect((await aborted).statusCode).toBe(200);
 		await waitSettled(opened);
 	});
 
@@ -477,6 +485,15 @@ describe("a fixed job aimed at a deleted conversation fails quietly", () => {
 			error: "conversation_deleted",
 			conversationId: id,
 		});
+		// The durable run record itself carries the same outcome (not just
+		// the job's lastRun mirror).
+		const runs = await opened.jobs.runs(job.id, 20);
+		expect(runs).toHaveLength(1);
+		expect(runs[0]).toMatchObject({
+			outcome: "failed",
+			error: "conversation_deleted",
+			conversationId: id,
+		});
 		// No submission and no note landed in the deleted conversation.
 		expect(await submissionsOf(opened, id)).toHaveLength(before.length);
 		expect(await entryKinds(opened, id)).not.toContain("sigrun.blocks.note");
@@ -506,8 +523,6 @@ describe("a deleted conversation is not eligible for fork review", () => {
 		const first = await submit(app, id, "hello");
 		expect(first.statusCode).toBe(202);
 		await waitSettled(opened);
-		// The auth:none create stamps no owner; the review needs one.
-		await patchMeta(app, id, { owner: "alice" });
 		await setDeleted(app, id, true);
 		const result = await opened.curationHost.forkReview(id as ConversationId, {
 			instruction: "Review the conversation.",
