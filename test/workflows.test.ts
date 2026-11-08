@@ -252,6 +252,20 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(install).toContain("npm install --save-exact ${pins} --package-lock-only");
 	});
 
+	test("the release keeps its fatal pins-live check", () => {
+		const steps = releaseWorkflow().jobs["publish-npm"]?.steps ?? [];
+		const check = steps.find((step) => step.name === "Pre-check: every built-in pin is live");
+		expect(check, "the release pre-check must exist").toBeDefined();
+		const body = runOf(check as Step);
+		expect(body).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
+		expect(body).toContain("await-registry.mjs");
+		expect(body).toContain("--timeout-min 0 ${pins}");
+		expect(body).toContain("set -euo pipefail");
+		expect(body).not.toContain("::notice::");
+		expect(body).not.toContain("live=false");
+		expect((check as Step & { "continue-on-error"?: boolean })["continue-on-error"]).not.toBe(true);
+	});
+
 	test("core release no longer publishes the chart (it has its own workflow)", () => {
 		// The chart has an independent version line, so a core tag must not
 		// push it: `helm push` refuses an existing chart version, and a
@@ -600,12 +614,14 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(checkouts).toHaveLength(1);
 		expect((checkouts[0]?.with as { path?: string } | undefined)?.path).toBe("sigrun");
 		// The siblings come from the composite family-checkout action,
-		// immediately after the core checkout.
+		// after the core checkout and the push-only settle wait.
 		const family = steps.find(
 			(s) => s.uses === "./sigrun/.github/actions/family-checkout",
 		);
 		expect(family, "the siblings check out via the family-checkout action").toBeDefined();
-		expect(steps.indexOf(family as Step)).toBe(steps.indexOf(checkouts[0] as Step) + 1);
+		expect(steps.indexOf(family as Step)).toBeGreaterThan(
+			steps.indexOf(checkouts[0] as Step),
+		);
 		// And the action's repository list IS the publish-deps list (so the
 		// checkout set covers the gateway built-in and can never drift from
 		// the packument rewrite — builtins-wiring.test.ts asserts the same
@@ -618,6 +634,52 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(actionRepositories.map((repo) => repo.split("/")[1]).sort()).toEqual(
 			[...listedDirs, "sigrun-memory-markdown"].sort(),
 		);
+	});
+
+	test("ci settles 180 s on push before checking siblings out", () => {
+		const { jobs } = workflow();
+		for (const name of ["test", "sandbox-it", "image-build"]) {
+			const steps = jobs[name]?.steps ?? [];
+			const settle = steps.find((step) => runOf(step).trim() === "sleep 180");
+			expect(settle, `${name} waits for the push batch`).toBeDefined();
+			expect(settle?.if).toBe("github.event_name == 'push'");
+			const family = steps.find(
+				(step) => step.uses === "./sigrun/.github/actions/family-checkout",
+			);
+			expect(family, `${name} checks out the family`).toBeDefined();
+			expect(steps.indexOf(settle as Step)).toBeLessThan(steps.indexOf(family as Step));
+		}
+		const chart = jobs["chart-lint"]?.steps ?? [];
+		expect(chart.some((step) => runOf(step).trim() === "sleep 180")).toBe(false);
+	});
+
+	test("image-build skips with a notice when a pin is not live", () => {
+		const steps = workflow().jobs["image-build"]?.steps ?? [];
+		const family = steps.find(
+			(step) => step.uses === "./sigrun/.github/actions/family-checkout",
+		);
+		const gate = steps.find((step) => step.id === "pins-live");
+		expect(gate, "the pins-live gate must exist").toBeDefined();
+		expect(steps.indexOf(gate as Step)).toBe(steps.indexOf(family as Step) + 1);
+		const body = runOf(gate as Step);
+		expect(body).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
+		expect(body).toContain('npm view "${pin}" version');
+		expect(body).toContain("live=false");
+		expect(body).toContain(
+			"::notice::image build skipped: ${missing[*]} not on npm yet (the release checks this)",
+		);
+		expect(body).not.toContain("continue-on-error");
+		const regen = steps.find((step) => runOf(step).includes("publish-deps.mjs registry"));
+		expect(steps.indexOf(gate as Step)).toBeLessThan(steps.indexOf(regen as Step));
+		const guarded = [
+			regen,
+			steps.find((step) => step.uses?.startsWith("docker/build-push-action@")),
+			steps.find((step) => runOf(step).includes("scripts/smoke-image.sh")),
+		];
+		for (const step of guarded) {
+			expect(step?.if).toBe("steps.pins-live.outputs.live == 'true'");
+		}
+		expect(workflow().jobs["image-build"]?.if).toBeUndefined();
 	});
 
 	test("the test job runs npm ci, the suite, and typecheck on node 22", () => {
