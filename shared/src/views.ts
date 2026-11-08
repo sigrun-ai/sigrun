@@ -370,6 +370,11 @@ export interface CompactResponse {
 	readonly taskId: number;
 }
 
+/** The admit response of `POST /v1/conversations/:id/continue`. */
+export interface ContinueResponse {
+	readonly submissionId: number;
+}
+
 // ─── Interaction seam wire types (docs/approval-ux-seams.md) ─────────────
 // The record rides as-is: envelope + body + details are already JSON-safe
 // by construction (the doc stores JSON). Channels render generically.

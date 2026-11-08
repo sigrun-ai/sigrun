@@ -79,6 +79,7 @@ async function bootBus(
 		queueMax?: number;
 		hookDeadlineMs?: number;
 		shutdownSettleWaitMs?: number;
+		idleThresholdMs?: number;
 	} = {},
 ): Promise<TestBus> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
@@ -119,6 +120,9 @@ async function bootBus(
 		...(options.shutdownSettleWaitMs === undefined
 			? {}
 			: { shutdownSettleWaitMs: options.shutdownSettleWaitMs }),
+		...(options.idleThresholdMs === undefined
+			? {}
+			: { idleThresholdMs: options.idleThresholdMs }),
 		// Required since the post-ship follow-ups (no bus-side default —
 		// config.ts owns the 600_000 production value; tests pick their own).
 		workerDeadlineMs: 10_000,
@@ -404,6 +408,212 @@ describe("harnessShutdown fan-out", () => {
 // Settle detection
 // ---------------------------------------------------------------------------
 
+describe("continue submissions", () => {
+	/** The deterministic first failure followed by the continue's response. */
+	async function bootContinue(
+		second: AssistantMessage,
+		idleThresholdMs?: number,
+	) {
+		return await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+			responses: [
+				fauxAssistantMessage("boom", {
+					stopReason: "error",
+					errorMessage: "faux provider failure",
+				}),
+				second,
+			],
+			...(idleThresholdMs === undefined ? {} : { idleThresholdMs }),
+		});
+	}
+
+	test("a continue-only run emits one settle group with kind continue", async () => {
+		const { bus, root } = await bootContinue(fauxAssistantMessage("resumed"));
+		const { settled } = recordAll(bus);
+		const failed = await runTurn(root, "hello");
+		expect(failed.record.status).toBe("unanswered");
+		const submission = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const group = settled[settled.length - 1]!;
+		expect(group.settled).toHaveLength(1);
+		expect(group.settled[0]).toMatchObject({
+			kind: "continue",
+			status: "done",
+			entryId: undefined,
+		});
+		expect(group.settled[0]!.answerEntryId).toBeTypeOf("number");
+	});
+
+	test("runSettled carries continued and an empty input text", async () => {
+		const { bus, root } = await bootContinue(fauxAssistantMessage("resumed"));
+		const events: Array<Record<string, unknown>> = [];
+		bus.registerExtension("fixture-continue", {
+			runSettled: (event) => {
+				events.push({
+					continued: event.continued,
+					inputs: [...event.inputs],
+					inputTexts: [...event.inputTexts],
+					outcome: event.outcome,
+				});
+			},
+		});
+		expect((await runTurn(root, "hello")).record.status).toBe("unanswered");
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		expect(events).toHaveLength(2);
+		expect(events[0]).toMatchObject({ continued: false });
+		expect(events[1]).toMatchObject({
+			continued: true,
+			inputTexts: [""],
+			outcome: { status: "answered" },
+		});
+		expect((events[1]!.inputs as unknown[]).length).toBe(1);
+	});
+
+	test("a continued run ends the live run", async () => {
+		const idleThresholdMs = 100;
+		const { bus, root } = await bootContinue(
+			fauxAssistantMessage("resumed"),
+			idleThresholdMs,
+		);
+		const { lifecycle } = recordAll(bus);
+		expect((await runTurn(root, "hello")).record.status).toBe("unanswered");
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(bus.oldestLiveAdmissionMs()).toBeUndefined();
+
+		expect(bus.sweepIdle(Date.now() + idleThresholdMs + 1)).toBe(1);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(lifecycle).toContainEqual({
+			type: "conversationIdle",
+			conversationId: root.id,
+			idleMs: expect.any(Number),
+		});
+	});
+
+	test("a failed continue ends the live run", async () => {
+		const { bus, root } = await bootContinue(
+			fauxAssistantMessage("still broken", {
+				stopReason: "error",
+				errorMessage: "faux continue failure",
+			}),
+		);
+		const { settled } = recordAll(bus);
+		expect((await runTurn(root, "hello")).record.status).toBe("unanswered");
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const group = settled[settled.length - 1]!;
+		expect(group.settled).toHaveLength(1);
+		expect(group.settled[0]).toMatchObject({
+			kind: "continue",
+			status: "unanswered",
+			reason: "model_error",
+		});
+		expect(bus.oldestLiveAdmissionMs()).toBeUndefined();
+	});
+
+	test("a continue emits run.admitted and run.settled host events", async () => {
+		const { bus, root } = await bootContinue(fauxAssistantMessage("resumed"));
+		const events: HostEvent[] = [];
+		bus.onHostEvent((event) => events.push(event));
+		expect((await runTurn(root, "hello")).record.status).toBe("unanswered");
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		expect(events).toContainEqual({
+			type: "run.admitted",
+			conversationId: root.id,
+			submissionId: continued.id,
+		});
+		expect(events).toContainEqual({
+			type: "run.settled",
+			conversationId: root.id,
+			outcome: "answered",
+		});
+	});
+
+	test("a continue that places a queued input settles both in one group", async () => {
+		const { bus, root, faux } = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+		});
+		let failFirst!: () => void;
+		const firstGate = new Promise<AssistantMessage>((resolve) => {
+			failFirst = () => resolve(fauxAssistantMessage("boom", {
+				stopReason: "error",
+				errorMessage: "faux provider failure",
+			}));
+		});
+		faux.setResponses([async () => await firstGate]);
+		const { settled } = recordAll(bus);
+		const events: Array<Record<string, unknown>> = [];
+		bus.registerExtension("fixture-continue", {
+			runSettled: (event) => {
+				events.push({
+					continued: event.continued,
+					inputs: [...event.inputs],
+					inputTexts: [...event.inputTexts],
+				});
+			},
+		});
+		const first = await root.submit(
+			{ type: "input", content: "first" },
+			BACKGROUND_CONTEXT,
+		);
+		const queued = await root.submit(
+			{ type: "input", content: "queued text", whenBusy: "steer" },
+			BACKGROUND_CONTEXT,
+		);
+		failFirst();
+		expect((await first.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		expect(faux.getPendingResponseCount()).toBe(0);
+		faux.setResponses([fauxAssistantMessage("resumed")]);
+
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await queued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const group = settled[settled.length - 1]!;
+		expect(group.settled.map((entry) => entry.id)).toEqual([
+			queued.id,
+			continued.id,
+		]);
+		expect(group.settled.map((entry) => entry.kind)).toEqual([
+			"input",
+			"continue",
+		]);
+		expect(events[events.length - 1]).toEqual({
+			continued: true,
+			inputs: [queued.id, continued.id],
+			inputTexts: ["queued text", ""],
+		});
+	});
+});
+
 describe("settle detection", () => {
 	test("a settled run emits one SettleGroup with entry + answer ids", async () => {
 		const { bus, root } = await bootBus({
@@ -419,6 +629,7 @@ describe("settle detection", () => {
 		expect(group.conversationId).toBe(root.id);
 		expect(group.settled).toHaveLength(1);
 		const [one] = group.settled;
+		expect(one.kind).toBe("input");
 		expect(one.id).toBe(submission.id);
 		expect(one.status).toBe("done");
 		expect(one.entryId).toBeTypeOf("number");

@@ -33,6 +33,7 @@ import type { CoreTarget, JsonObject } from "@sigrun/shared/blocks";
 import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
 import { groupTurns } from "@sigrun/shared/turns";
 import {
+	ApiError,
 	createClient,
 	type ConversationSummary,
 	type ConversationViewWire,
@@ -216,11 +217,40 @@ function ChatCenter(props: {
 	/** The dock height as bottom padding, so the last message clears the
 	 *  composer dock that overlays the scroll area (the scroll fade, B5). */
 	readonly dockPadding: number;
+	readonly readOnly?: boolean;
 	/** U5 Task 4: the chat-block transport attach seam (App's hub) — the
 	 *  inline BlocksEntry surfaces subscribe through it. */
 	readonly attachChatTransport: AttachChatTransport;
 }) {
 	const { activeId, view, status, error, showThinking, timeline } = props;
+	const [continuing, setContinuing] = useState(false);
+	const [continueError, setContinueError] = useState<string | undefined>();
+	const activeIdRef = useRef(activeId);
+	useEffect(() => {
+		activeIdRef.current = activeId;
+		setContinuing(false);
+		setContinueError(undefined);
+	}, [activeId]);
+	async function continueRun(): Promise<void> {
+		if (activeId === null || continuing) return;
+		const conversationId = activeId;
+		setContinuing(true);
+		setContinueError(undefined);
+		try {
+			await props.client.continueConversation(conversationId);
+		} catch (cause) {
+			if (activeIdRef.current !== conversationId) return;
+			setContinueError(
+				cause instanceof ApiError && cause.status === 409
+					? "The conversation is busy."
+					: cause instanceof Error
+						? cause.message
+						: String(cause),
+			);
+		} finally {
+			if (activeIdRef.current === conversationId) setContinuing(false);
+		}
+	}
 	if (activeId === null) {
 		// The empty state (Task 6): the composer below is LIVE — the first
 		// send creates the conversation, submits into it, and navigates here.
@@ -237,8 +267,8 @@ function ChatCenter(props: {
 	const compactionError =
 		view === null || compacting ? undefined : liveCompactionFailure(view);
 	// A run that ended without an answer surfaces why (pi-durable 1.5.0
-	// `pi.live.runFailure`); the shared reader hides the user-caused
-	// endings (aborted/reset) and any failure a newer run superseded.
+	// `pi.live.runFailure`); the shared reader hides user-caused endings,
+	// `nothing_to_answer`, and any failure a newer run superseded.
 	const runFailure = view === null ? undefined : liveRunFailure(view);
 	return (
 		<section
@@ -285,8 +315,21 @@ function ChatCenter(props: {
 					{runFailure !== undefined && (
 						<p className="chat-run-failure" role="alert">
 							run ended: {runFailure.reason}
-							{runFailure.detail ? `: ${runFailure.detail}` : ""}
+							{runFailure.detail ? `: ${runFailure.detail}` : ""}{" "}
+							{props.readOnly !== true && (
+								<button
+									type="button"
+									disabled={continuing}
+									onClick={() => void continueRun()}
+								>
+									Continue
+								</button>
+							)}
+							{runFailure.reason === "no_model" ? " Switch model, then continue." : ""}
 						</p>
+					)}
+					{continueError !== undefined && (
+						<p role="alert" className="chat-continue-error">{continueError}</p>
 					)}
 				</>
 			)}
@@ -1719,6 +1762,10 @@ function AppShell(options: AppOptions = {}) {
 							parent={parent}
 							onScrollRoot={setScrollRoot}
 							dockPadding={dockPadding}
+							readOnly={
+								list.rows.find((row) => row.id === activeId)?.access ===
+								"read"
+							}
 							attachChatTransport={attachChatTransport}
 						/>
 					{/* The scroll fade (B5): the pointer-events-none gradient +

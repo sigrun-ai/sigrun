@@ -40,6 +40,7 @@ import type {
 	ConversationId,
 	Harness,
 	JsonObject,
+	Tx,
 } from "@earendil-works/pi-durable";
 import type {
 	InteractionAnswer,
@@ -552,6 +553,33 @@ export function applyDecline(
  * `user` (the submitting principal's user, when identified); an
  * unidentified submitter still declines, just without attribution.
  */
+export async function declinePendingInTx(
+	tx: Tx,
+	conversationId: ConversationId,
+	user: string | undefined,
+	now: number,
+): Promise<readonly string[]> {
+	const index = await tx.doc(InteractionsIndexDoc);
+	const pending = index.pending[String(conversationId)] ?? [];
+	if (pending.length === 0) return [];
+	const declined: string[] = [];
+	for (const callId of pending) {
+		const draft = await tx.doc(
+			InteractionDoc,
+			conversationId,
+			callId,
+			callId,
+		);
+		const outcome = applyDecline(draft, "message", now, user);
+		if (outcome === "declined") {
+			indexSettled(index, conversationId, callId);
+			sweepSecretDelivery(conversationId, callId);
+			declined.push(callId);
+		}
+	}
+	return declined;
+}
+
 export async function declinePendingOnMessage(
 	harness: Harness,
 	conversationId: ConversationId,
@@ -559,27 +587,10 @@ export async function declinePendingOnMessage(
 	now: number,
 	context: Context,
 ): Promise<readonly string[]> {
-	return await harness.commit(async (tx) => {
-		const index = await tx.doc(InteractionsIndexDoc);
-		const pending = index.pending[String(conversationId)] ?? [];
-		if (pending.length === 0) return [];
-		const declined: string[] = [];
-		for (const callId of pending) {
-			const draft = await tx.doc(
-				InteractionDoc,
-				conversationId,
-				callId,
-				callId,
-			);
-			const outcome = applyDecline(draft, "message", now, user);
-			if (outcome === "declined") {
-				indexSettled(index, conversationId, callId);
-				sweepSecretDelivery(conversationId, callId);
-				declined.push(callId);
-			}
-		}
-		return declined;
-	}, context);
+	return await harness.commit(
+		(tx) => declinePendingInTx(tx, conversationId, user, now),
+		context,
+	);
 }
 
 /**

@@ -1171,6 +1171,20 @@ export class TuiApp implements Component, ActionHost {
 					);
 					return;
 				}
+				case "continue": {
+					if (parsed.args !== "") {
+						this.pane.showError("/continue takes no arguments");
+						return;
+					}
+					const id = this.#activeId;
+					if (id === undefined) {
+						this.pane.showError("/continue needs an active conversation");
+						return;
+					}
+					await this.#client.continueConversation(id);
+					this.pane.showNotice("continuing");
+					return;
+				}
 				case "jobs": {
 					// W4 Task 5: the job table into the pane's notice area — one
 					// row per job (name, next run, last outcome), framed by a

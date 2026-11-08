@@ -152,6 +152,8 @@ export type RunSettledEvent = {
 	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
 	 *  unresolvable/withdrawn → "" at that position. */
 	readonly inputTexts: readonly string[];
+	/** True when a Continue submission belongs to the run. */
+	readonly continued?: boolean;
 	readonly outcome:
 		| {
 				readonly status: "answered";

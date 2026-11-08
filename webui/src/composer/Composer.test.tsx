@@ -64,6 +64,7 @@ const COMMANDS = [
 	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
 	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
 	{ name: "compact", description: "Compact", argsHint: "[instructions]", endpoint: { method: "POST", path: "/v1/conversations/:id/compact" } },
+	{ name: "continue", description: "Resume the last failed run", endpoint: { method: "POST", path: "/v1/conversations/:id/continue" } },
 	{ name: "export", description: "Download JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
 	{ name: "import", description: "Import JSONL", argsHint: "<jsonl>", endpoint: { method: "POST", path: "/v1/conversations/import" } },
 	{ name: "name", description: "Name", argsHint: "<name>", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
@@ -93,8 +94,11 @@ function makeHarness(init?: {
 	/** The commands served on every GET /v1/commands AFTER the mount fetch
 	 *  (the live-catalog fix round: a template appearing mid-session). */
 	readonly laterCommands?: readonly unknown[];
+	/** Task 4: the Continue POST's status (the busy command test's 409). */
+	readonly continueStatus?: number;
 }) {
 	const calls: { input: string; method?: string; body?: string | Uint8Array }[] = [];
+	const continueStatus = init?.continueStatus ?? 202;
 	const meta: ConversationMeta = {
 		pinned: false,
 		tagged: [],
@@ -120,6 +124,17 @@ function makeHarness(init?: {
 					fetchCount > 1 && init?.laterCommands !== undefined
 						? { commands: [...COMMANDS, ...init.laterCommands] }
 						: { commands: COMMANDS };
+		}
+		else if (input.endsWith("/continue")) {
+			if (continueStatus === 409) {
+				return Promise.resolve({
+					ok: false,
+					status: 409,
+					json: () => Promise.resolve({ error: "busy" }),
+					text: () => Promise.resolve("busy"),
+				});
+			}
+			body = { submissionId: 11 };
 		}
 		else if (input.endsWith("/meta")) body = meta;
 		else if (input.endsWith("/interactions")) {
@@ -791,6 +806,7 @@ describe("Composer", () => {
 				"/new",
 				"/fork",
 				"/compact",
+				"/continue",
 				"/export",
 				"/import",
 				"/name",
@@ -971,6 +987,38 @@ describe("Composer", () => {
 			});
 			const exportCall = calls.find((c) => c.input.endsWith("/export"));
 			expect(exportCall?.method).toBe("GET");
+		});
+
+		test("/continue calls continueConversation", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/continue");
+			const continueCall = calls.find(
+				(c: { input: string; method?: string }) =>
+					c.method === "POST" && c.input.endsWith("/continue"),
+			);
+			expect(continueCall?.body).toBe(JSON.stringify({}));
+			expect(textContent(renderer.toJSON())).toContain("continuing");
+			expect(renderer.root.findAllByProps({ role: "alert" })).toHaveLength(0);
+		});
+
+		test("a busy /continue sets the busy notice", async () => {
+			const { client } = makeHarness({ continueStatus: 409 });
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/continue");
+			expect(textContent(renderer.toJSON())).toContain("The conversation is busy.");
+			expect(renderer.root.findAllByProps({ role: "alert" })).toHaveLength(0);
+		});
+
+		test("/continue now shows the usage error and calls nothing", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/continue now");
+			expect(
+				calls.filter((c: { input: string }) => c.input.endsWith("/continue")),
+			).toHaveLength(0);
+			const alert = renderer.root.findByProps({ role: "alert" });
+			expect(instanceText(alert)).toContain("usage: /continue (no arguments)");
 		});
 
 		test("`/compact instructions` passes the instructions in the body", async () => {

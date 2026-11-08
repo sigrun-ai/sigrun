@@ -591,6 +591,35 @@ describe("auto-naming through the booted harness", () => {
 		expect(server.faux.getPendingResponseCount()).toBe(1);
 	});
 
+	test("a continue-only run is not named", async () => {
+		const server = await bootServer({
+			retryOff: true,
+			responses: [
+				fauxAssistantMessage("boom", {
+					stopReason: "error",
+					errorMessage: "faux provider failure",
+				}),
+				fauxAssistantMessage("resumed"),
+				fauxAssistantMessage("Would-be auto name"),
+			],
+		});
+		const root = await rootConversation(server.opened);
+		const settled = await submitAndName(server, root.id, "hello");
+		expect(settled.status).toBe("unanswered");
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await server.opened.eventBus.drain(5_000, BACKGROUND_CONTEXT);
+		await server.opened.autoNamer.idle();
+
+		const meta = await readMeta(server.app, root.id);
+		expect(meta.autoName).toBeUndefined();
+		expect(meta.autoNameAttempts).toBeUndefined();
+		expect(server.faux.getPendingResponseCount()).toBe(1);
+	});
+
 	test("cron conversations (SessionMeta.source === \"cron\") are never named", async () => {
 		const server = await bootServer({
 			responses: [

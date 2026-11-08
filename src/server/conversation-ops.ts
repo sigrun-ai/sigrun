@@ -18,7 +18,11 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
-import { AgentDoc, configure } from "@earendil-works/pi-durable";
+import {
+	AgentDoc,
+	configure,
+	ConversationBusy,
+} from "@earendil-works/pi-durable";
 import type {
 	Conversation,
 	ConversationId,
@@ -31,6 +35,7 @@ import type {
 	Submission,
 	SubmissionRecord,
 	ToolRegistration,
+	Tx,
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
@@ -50,6 +55,7 @@ import {
 } from "../curation/attribution.js";
 import {
 	QueuedHumanInputsDoc,
+	declinePendingInTx,
 	declinePendingOnMessage,
 } from "../harness/interactions.js";
 import { UnservedModelError } from "../harness/providers/index.js";
@@ -85,6 +91,7 @@ import type {
 	AbortResponse,
 	CompactResponse,
 	ConfigureResponse,
+	ContinueResponse,
 	ConversationCreateResponse,
 	ConversationSummary,
 } from "./views.js";
@@ -465,6 +472,16 @@ export interface SubmitOpOptions {
  * creation-time `excludeInteractiveTools` filter stays after adoption —
  * interactive tools the run never offered stay unoffered.
  */
+async function writeAdoption(
+	tx: Tx,
+	conversationId: ConversationId,
+): Promise<void> {
+	const meta = await tx.doc(SessionMetaDoc, conversationId);
+	if (meta.source !== "cron" || meta.adopted === true) return;
+	meta.adopted = true;
+	await configure(tx, conversationId, { maxTurns: null });
+}
+
 async function adoptIfJobRun(
 	opened: OpenedHarness,
 	conversation: Conversation,
@@ -478,11 +495,99 @@ async function adoptIfJobRun(
 		ctx,
 	);
 	if (meta?.source !== "cron" || meta.adopted === true) return;
-	await conversation.commit(async (tx) => {
-		const draft = await tx.doc(SessionMetaDoc, conversation.id);
-		draft.adopted = true;
-		await configure(tx, conversation.id, { maxTurns: null });
-	}, ctx);
+	await opened.harness.commit(
+		(tx) => writeAdoption(tx, conversation.id),
+		ctx,
+	);
+}
+
+/**
+ * Admit a continue for an idle conversation. Unlike submitOp there is no
+ * served-model pre-check: pi-durable settles an unserved model as no_model,
+ * and a finished conversation as nothing_to_answer. The admission, job-run
+ * adoption, and pending-question declines share one commit, so a busy or
+ * conflicting continue leaves no side effects.
+ */
+export async function continueOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	opts: { readonly requestId?: unknown; readonly user?: string } = {},
+): Promise<ContinueResponse> {
+	const { opened } = ctx;
+	if (
+		opts.requestId !== undefined &&
+		(typeof opts.requestId !== "string" || opts.requestId.startsWith("job:"))
+	) {
+		throw new ConversationOpError({
+			error: "invalid_field",
+			field: "requestId",
+		});
+	}
+	const requestId = ensureRequestId(opts.requestId);
+	await writePendingNote(
+		opened.harness,
+		conversation,
+		undefined,
+		BACKGROUND_CONTEXT,
+	);
+	try {
+		let replay = false;
+		const submissionId = await opened.harness.commit(async (tx) => {
+			// pi-durable returns an existing requestId before its busy check.
+			// That replay admits nothing, so it must not decide a live run's
+			// pending question or clear its notices/activity.
+			replay =
+				(await tx.submissionByRequest(conversation.id, requestId)) !==
+				undefined;
+			const id = await conversation.submit(tx, {
+				type: "continue",
+				requestId,
+			});
+			await writeAdoption(tx, conversation.id);
+			if (!replay) {
+				await declinePendingInTx(
+					tx,
+					conversation.id,
+					opts.user,
+					Date.now(),
+				);
+			}
+			return id;
+		}, BACKGROUND_CONTEXT);
+		// A continue places no input entry, so there is no author to record.
+		if (!replay && opts.user !== undefined) {
+			try {
+				await ctx.notices.clearConversationFor(
+					opts.user,
+					Number(conversation.id),
+				);
+			} catch (error) {
+				console.warn(
+					`notices: clearing conversation ${String(conversation.id)} for ${opts.user} failed: ${String(error)}`,
+				);
+			}
+		}
+		if (!replay) {
+			await touchActivity(
+				opened.harness,
+				conversation.id,
+				opened.now,
+				BACKGROUND_CONTEXT,
+			);
+		}
+		return { submissionId };
+	} catch (error) {
+		if (error instanceof ConversationBusy) {
+			throw new ConversationOpError({ error: "conversation_busy" }, 409);
+		}
+		if (
+			error instanceof Error &&
+			error.message.includes("already identifies a submission of type")
+		) {
+			throw new ConversationOpError({ error: "request_conflict" }, 409);
+		}
+		throw error;
+	}
 }
 
 /**

@@ -19,12 +19,13 @@
  * marks creation, the tagged `kind === "retire"` marks retirement):
  *
  * - **Settle**: a `submission` table write with `value.type === "input"`
- *   and a terminal status (`done`/`unanswered`). Write-type submissions
- *   never run and never settle-emit. Input submissions settle exactly once
- *   per run — the retry path keeps the task running (only exhaustion or a
- *   final answer settles) — and all of a run's inputs settle in ONE commit
- *   (`endRun`), so one publication coalesces per conversation into one
- *   `SettleGroup` sorted by submission id (ids ascend in admission order).
+ *   or `"continue"` and a terminal status (`done`/`unanswered`). Write-type
+ *   submissions never run and never settle-emit. Input/continue submissions
+ *   settle exactly once per run — the retry path keeps the task running
+ *   (only exhaustion or a final answer settles) — and all of a run's inputs
+ *   settle in ONE commit (`endRun`), so one publication coalesces per
+ *   conversation into one `SettleGroup` sorted by submission id (ids ascend
+ *   in admission order).
  * - **Created/Forked**: a `conversation` table write. Every creation fires
  *   `conversationCreated` — a fork child is a new conversation too — and a
  *   record carrying `parent` additionally fires `conversationForked` with
@@ -39,12 +40,13 @@
  *   predates this process) compares against the materialization default
  *   `false` — archive detection stays commit-driven, nothing to re-arm.
  *
- * Idle detection (Task 4, spec §2's corrected ruling): idle = NO input
- * admission AND no live run. The listener records admissions (`submission`
- * writes with `type === "input"` + `status === "placed"` — a placement
- * both stamps the admission clock and marks the run live; write-type
- * submissions never touch either) and run ends (the settle statuses
- * decrement the live-run count). A host-owned sweep interval (`idleSweepMs`,
+ * Idle detection (Task 4, spec §2's corrected ruling): idle = NO input or
+ * continue admission AND no live run. The listener records admissions
+ * (`submission` writes with `type === "input"` or `"continue"` +
+ * `status === "placed"` — a placement both stamps the admission clock and
+ * marks the run live; write-type submissions never touch either) and run
+ * ends (the settle statuses decrement the live-run count). A host-owned
+ * sweep interval (`idleSweepMs`,
  * default 1s) then fires `conversationIdle` for every conversation whose
  * last admission is at least `idleThresholdMs` old, has no live run, and
  * has not already fired for its current quiet period (one fire per quiet
@@ -147,6 +149,7 @@ export type SettleGroup = {
 	readonly conversationId: ConversationId;
 	readonly settled: readonly {
 		readonly id: SubmissionId;
+		readonly kind: "input" | "continue";
 		readonly status: "done" | "unanswered";
 		readonly entryId: EntryId | undefined;
 		readonly answerEntryId: EntryId | undefined;
@@ -229,6 +232,8 @@ export type RunSettledEvent = {
 	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
 	 *  unresolvable/withdrawn → "" at that position. */
 	readonly inputTexts: readonly string[];
+	/** True when a Continue submission belongs to the run. */
+	readonly continued?: boolean;
 	readonly outcome:
 		| {
 				readonly status: "answered";
@@ -1452,7 +1457,7 @@ export class EventBus {
 			for (const change of publication.changes) {
 				if (change.type !== "submission") continue;
 				const value = change.value;
-				if (value.type !== "input") continue;
+				if (value.type !== "input" && value.type !== "continue") continue;
 				// Curator P5: an internal conversation's submissions are invisible
 				// on every surface the bus feeds — no idle bookkeeping (the run
 				// never arms the idle clock), no run.admitted/run.settled host
@@ -1462,8 +1467,8 @@ export class EventBus {
 				// The flag was warmed by the pre-pass; `markInternal` runs in the
 				// creating commit, which always precedes any submission.
 				if (this.#isInternal(value.conversationId)) continue;
-				// Idle bookkeeping (Task 4): a PLACED input both stamps the
-				// admission clock and marks the run live; a terminal input marks
+				// Idle bookkeeping (Task 4): a PLACED run input both stamps the
+				// admission clock and marks the run live; a terminal one marks
 				// the run end. Write-type submissions never touch either — a
 				// passive write must not reset the idle clock (spec §2). Queued
 				// inputs are not admissions (they have not placed an entry).
@@ -1477,16 +1482,17 @@ export class EventBus {
 					value.status === "done" ||
 					value.status === "unanswered"
 				) {
-					// Gate on the record's ENTRY: a placed-then-settled input keeps
-					// its entry (upstream `applySubmissionChange`: "an unanswered
-					// input keeps its entry"), while a queued-never-placed withdrawal
+					// A continue never carries an entry. For an input, gate on the
+					// record's ENTRY: a placed-then-settled input keeps its entry
+					// (upstream `applySubmissionChange`: "an unanswered input keeps
+					// its entry"), while a queued-never-placed withdrawal
 					// (abortSubmission on a queued id, Conversation.abort's withdrawal
 					// pass) settles with `entry === undefined` — it was never counted
 					// live, and decrementing for it would zero the run's count
 					// mid-run and let the sweep fire idle (Review Focus 6). The
 					// settle-group emission below is NOT gated: a withdrawal still
 					// emits runSettled (Task 3's position-preserving contract).
-					if (value.entry !== undefined) {
+					if (value.type === "continue" || value.entry !== undefined) {
 						// Skip when the key is absent: a conversation archived
 						// mid-run has its idle state pruned (see sweepIdle), and a
 						// settle arriving after the prune must NOT re-create the
@@ -1531,6 +1537,7 @@ export class EventBus {
 				const list = groups.get(value.conversationId) ?? [];
 				list.push({
 					id: value.id,
+					kind: value.type,
 					status: value.status,
 					entryId: value.entry,
 					answerEntryId: value.answer,
@@ -1740,6 +1747,7 @@ export class EventBus {
 					...ownerField,
 					inputs,
 					inputTexts,
+					continued: group.settled.some((one) => one.kind === "continue"),
 					outcome: { status: "answered", answerEntryId, answer: message },
 				};
 			}
@@ -1754,6 +1762,7 @@ export class EventBus {
 			...ownerField,
 			inputs,
 			inputTexts,
+			continued: group.settled.some((one) => one.kind === "continue"),
 			outcome: {
 				status: "unanswered",
 				reason: firstUnanswered?.reason ?? "unanswered",

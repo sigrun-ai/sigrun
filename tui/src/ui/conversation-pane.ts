@@ -8,9 +8,9 @@
  * wire carries no per-tool running marker, so `·` covers pending too).
  * `pi.compaction` renders the centred `── context compacted ──` divider.
  * A run that ended without an answer (`pi.live.runFailure`, pi-durable
- * 1.5.0) renders one dim `run ended: <reason>[: <detail>]` line under
- * the last turn; the shared reader hides the user-caused endings
- * (`aborted`/`reset`) and any failure a newer run superseded.
+ * 1.5.0) renders one dim `run ended: <reason>[: <detail>] · /continue
+ * to resume` line under the last turn; the shared reader hides
+ * user-caused endings, `nothing_to_answer`, and superseded failures.
  * The `[tool]`/`[thinking]` tags of
  * the entry-era pane are gone.
  *
@@ -395,7 +395,7 @@ export class ConversationPane implements Component {
 		this.#runFailureLine =
 			runFailure === undefined
 				? undefined
-				: `run ended: ${runFailure.reason}${runFailure.detail ? `: ${runFailure.detail}` : ""}`;
+				: `run ended: ${runFailure.reason}${runFailure.detail ? `: ${runFailure.detail}` : ""} · /continue to resume`;
 		if (this.#focus !== undefined && this.#focus >= this.#turns.length) {
 			this.#focus = undefined;
 		}

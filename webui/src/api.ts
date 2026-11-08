@@ -45,6 +45,7 @@ import type {
 	FileContentResponse as FileContentResponseWire,
 	UploadResponse as UploadResponseWire,
 	CompactResponse as CompactResponseWire,
+	ContinueResponse as ContinueResponseWire,
 	ConversationCreateResponse as ConversationCreatedWire,
 	SubmissionResponse as SubmissionResponseWire,
 	ConfigureResponse as ConfigureResponseWire,
@@ -495,6 +496,8 @@ export interface SigrunClient {
 		conversationId: number,
 		instructions?: string,
 	): Promise<CompactResponseWire>;
+	/** Resume the last failed run without a message (`POST .../continue`). */
+	continueConversation(conversationId: number): Promise<ContinueResponseWire>;
 	/** The slash-command catalog (`GET /v1/commands` — a boot constant). */
 	listCommands(): Promise<CommandsResponseWire>;
 	/**
@@ -936,6 +939,8 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 					? {}
 					: { instructions }),
 			}) as Promise<CompactResponseWire>,
+		continueConversation: (conversationId) =>
+			send("POST", `/v1/conversations/${conversationId}/continue`, {}) as Promise<ContinueResponseWire>,
 		listCommands: () => get<CommandsResponseWire>("/v1/commands"),
 		runCommand: (conversationId, name, args) =>
 			send(

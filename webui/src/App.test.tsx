@@ -9,6 +9,7 @@ import { act } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { App, locationHash, parseHash, resetLocationHashForTest, routeHash } from "./App";
 import {
+	ApiError,
 	createClient,
 	type ConversationMeta,
 	type FetchLike,
@@ -19,6 +20,7 @@ import { memoryStorage } from "./layout/extViews";
 import type { EventSourceFactory } from "./stream";
 import {
 	makeEntry,
+	instanceText,
 	makeView,
 	renderAsync,
 	StubEventSource,
@@ -71,6 +73,9 @@ function makeHarness(init?: {
 	 *  ready and remounts onto the closing server — this window is
 	 *  what catches it. */
 	readonly readyzLingerMs?: number;
+	/** Task 4: the Continue POST's scripted rejection (the busy test's 409). */
+	readonly continueResult?: () => ReturnType<FetchLike>;
+	readonly rootAccess?: "read" | "write";
 }) {
 	let metaPatchFails = init?.failFirstMetaPatch === true;
 	const restartCalls: number[] = [];
@@ -97,6 +102,7 @@ function makeHarness(init?: {
 			archived: false,
 			pinned: false,
 			name: "Tide table rewrite",
+			access: init?.rootAccess ?? ("write" as const),
 			lastActivityAt: new Date().toISOString(),
 			// The deleted marker (Task 4): absent = not deleted; the test's
 			// delete flow sets it, and the list rows carry it true-only.
@@ -108,6 +114,7 @@ function makeHarness(init?: {
 			archived: false,
 			pinned: false,
 			name: "Moor line inspection",
+			access: "write" as const,
 			lastActivityAt: new Date().toISOString(),
 			deleted: undefined as boolean | undefined,
 		},
@@ -169,6 +176,15 @@ function makeHarness(init?: {
 		}
 		const metaMatch = /^\/v1\/conversations\/(\d+)\/meta$/.exec(input);
 		let body: unknown;
+		if (/^\/v1\/conversations\/\d+\/continue$/.test(input)) {
+			if (init?.continueResult !== undefined) return init.continueResult();
+			return Promise.resolve({
+				ok: true,
+				status: 202,
+				json: () => Promise.resolve({ submissionId: 11 }),
+				text: () => Promise.resolve(""),
+			});
+		}
 		if (metaMatch !== null) {
 			const id = Number(metaMatch[1]);
 			if (init2?.method === "PATCH" && metaPatchFails) {
@@ -637,6 +653,206 @@ describe("App shell", () => {
 			);
 		});
 		expect(textContent(renderer.toJSON())).not.toContain("run ended:");
+	});
+
+	test("the failure line offers Continue", async () => {
+		let release!: () => void;
+		const { calls, client, createEventSource, sources } = makeHarness({
+			continueResult: () =>
+				new Promise((resolve) => {
+					release = () =>
+						resolve({
+							ok: true,
+							status: 202,
+							json: () => Promise.resolve({ submissionId: 11 }),
+							text: () => Promise.resolve(""),
+						});
+				}),
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						docs: { "pi.live": { runFailure: { reason: "model_error" } } },
+					}),
+				),
+			);
+		});
+		const button = renderer.root
+			.findAllByType("button")
+			.find((one) => instanceText(one) === "Continue");
+		expect(button).toBeDefined();
+		let pending!: Promise<void>;
+		act(() => {
+			pending = (button!.props as { onClick: () => Promise<void> }).onClick();
+		});
+		expect(button!.props.disabled).toBe(true);
+		await act(async () => {
+			release();
+			await pending;
+		});
+		expect(
+			calls.filter((one) => one.input === "/v1/conversations/1/continue"),
+		).toHaveLength(1);
+		expect(
+			renderer.root
+				.findAllByType("button")
+				.find((one) => instanceText(one) === "Continue")?.props.disabled,
+		).toBe(false);
+	});
+
+	test("read-only shares hide Continue", async () => {
+		const { client, createEventSource, sources } = makeHarness({
+			rootAccess: "read",
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						docs: { "pi.live": { runFailure: { reason: "model_error" } } },
+					}),
+				),
+			);
+		});
+		expect(
+			renderer.root
+				.findAllByType("button")
+				.find((one) => instanceText(one) === "Continue"),
+		).toBeUndefined();
+	});
+
+	test("no_model adds the switch-model hint", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						docs: { "pi.live": { runFailure: { reason: "no_model" } } },
+					}),
+				),
+			);
+		});
+		expect(textContent(renderer.toJSON())).toContain("Switch model, then continue.");
+	});
+
+	test("a busy continue says so", async () => {
+		const { client, createEventSource, sources } = makeHarness({
+			continueResult: () =>
+				Promise.resolve({
+					ok: false,
+					status: 409,
+					json: () => Promise.resolve({ error: "busy" }),
+					text: () => Promise.resolve("busy"),
+				}),
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const emitFailure = () =>
+			act(() => {
+				sources[1]?.source.emit(
+					"snapshot",
+					JSON.stringify(
+						makeView({
+							id: 1,
+							docs: { "pi.live": { runFailure: { reason: "model_error" } } },
+						}),
+					),
+				);
+			});
+		await emitFailure();
+		const button = renderer.root
+			.findAllByType("button")
+			.find((one) => instanceText(one) === "Continue");
+		await act(async () => {
+			await (button!.props as { onClick: () => Promise<void> }).onClick();
+		});
+		const alert = renderer.root.findByProps({ className: "chat-continue-error" });
+		expect(alert.props.role).toBe("alert");
+		expect(instanceText(alert)).toBe("The conversation is busy.");
+		// A 409 means another run started: the next frame hides the failure
+		// line, but the sibling error survives independently of runFailure.
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(makeView({ id: 1, docs: { "pi.live": { run: { id: "r1" } } } })),
+			);
+		});
+		expect(textContent(renderer.toJSON())).not.toContain("run ended:");
+		expect(
+			instanceText(renderer.root.findByProps({ className: "chat-continue-error" })),
+		).toBe("The conversation is busy.");
+	});
+
+	test("a late busy continue does not leak into the next conversation", async () => {
+		let rejectContinue!: (reason: unknown) => void;
+		const { client, createEventSource, sources } = makeHarness({
+			continueResult: () =>
+				new Promise((_, reject) => {
+					rejectContinue = reject;
+				}),
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		try {
+			act(() => {
+				sources[1]?.source.emit(
+					"snapshot",
+					JSON.stringify(
+						makeView({
+							id: 1,
+							docs: { "pi.live": { runFailure: { reason: "model_error" } } },
+						}),
+					),
+				);
+			});
+			const button = renderer.root
+				.findAllByType("button")
+				.find((one) => instanceText(one) === "Continue");
+			let pending!: Promise<void>;
+			act(() => {
+				pending = (button!.props as { onClick: () => Promise<void> }).onClick();
+			});
+			await clickConversation(renderer, "Moor line inspection");
+			act(() => {
+				sources[2]?.source.emit(
+					"snapshot",
+					JSON.stringify(makeView({ id: 2 })),
+				);
+			});
+			await act(async () => {
+				rejectContinue(
+					new ApiError({
+						method: "POST",
+						path: "/v1/conversations/1/continue",
+						status: 409,
+					}),
+				);
+				await pending;
+			});
+			expect(
+				renderer.root.findAllByProps({ className: "chat-continue-error" }),
+			).toHaveLength(0);
+			expect(textContent(renderer.toJSON())).not.toContain("The conversation is busy.");
+		} finally {
+			resetLocationHashForTest();
+		}
 	});
 
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {

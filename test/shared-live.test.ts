@@ -127,6 +127,14 @@ describe("liveRunFailure", () => {
 		).toBeUndefined();
 	});
 
+	it("nothing_to_answer is hidden", () => {
+		expect(
+			liveRunFailure(
+				viewWith({ "pi.live": { runFailure: { reason: "nothing_to_answer" } } }),
+			),
+		).toBeUndefined();
+	});
+
 	it("returns undefined when the doc is absent or carries no failure", () => {
 		expect(liveRunFailure(viewWith({}))).toBeUndefined();
 		expect(liveRunFailure(viewWith({ "pi.live": {} }))).toBeUndefined();

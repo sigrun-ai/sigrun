@@ -98,6 +98,7 @@ describe("GET /v1/commands", () => {
 			"new",
 			"fork",
 			"compact",
+			"continue",
 			"export",
 			"import",
 			"name",
@@ -129,6 +130,10 @@ describe("GET /v1/commands", () => {
 		expect(byName.get("export")?.argsHint).toBeUndefined();
 		expect(byName.get("fork")?.argsHint).toBe("[at]");
 		expect(byName.get("compact")?.argsHint).toBe("[instructions]");
+		expect(byName.get("continue")?.argsHint).toBeUndefined();
+		expect(byName.get("continue")?.description).toBe(
+			"Resume the last failed run",
+		);
 		expect(byName.get("import")?.argsHint).toBe("<jsonl>");
 		expect(byName.get("name")?.argsHint).toBe("<name>");
 		expect(byName.get("model")?.argsHint).toBe("<provider/model>");

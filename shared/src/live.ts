@@ -130,16 +130,17 @@ export function liveCompactionFailure(
 	return typeof error === "string" && error !== "" ? error : undefined;
 }
 
-/** The run-failure reasons the USER caused — hidden by design. */
-const USER_CAUSED_RUN_FAILURES = new Set(["aborted", "reset"]);
+/** The run-failure reasons the clients hide by design. */
+const HIDDEN_RUN_FAILURES = new Set(["aborted", "reset", "nothing_to_answer"]);
 
 /**
  * The newest run's failure (`pi.live.runFailure`, pi-durable 1.5.0), as
  * the clients display it: `{reason, detail?}`, or undefined when no
  * failure is recorded, when `run` is present (a newer run started — the
  * recorded failure is stale), when the reason is user-caused
- * (`aborted`/`reset` — the user watched themselves do it), or when the
- * doc shape drifted (fail soft to absent, like
+ * (`aborted`/`reset` — the user watched themselves do it), when the
+ * reason is `nothing_to_answer` (there is no failed response to
+ * continue), or when the doc shape drifted (fail soft to absent, like
  * {@link liveCompactionFailure}). A non-string detail is dropped, never
  * surfaced.
  */
@@ -152,7 +153,7 @@ export function liveRunFailure(
 	if (typeof failure !== "object" || failure === null) return undefined;
 	const reason = failure.reason;
 	if (typeof reason !== "string" || reason === "") return undefined;
-	if (USER_CAUSED_RUN_FAILURES.has(reason)) return undefined;
+	if (HIDDEN_RUN_FAILURES.has(reason)) return undefined;
 	const detail = failure.detail;
 	if (typeof detail === "string" && detail !== "") {
 		return { reason, detail };
