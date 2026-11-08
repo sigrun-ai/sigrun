@@ -2180,10 +2180,10 @@ export async function openHarness(
 	// (Task 6's `SIGRUN_*` knobs), with the caller's eventBus seam winning
 	// per-field (the hermetic-test override).
 	const memorySeam = config.memorySeam;
-	const hookDeadlineMs = memorySeam.hookDeadlineMs;
+	const hookDeadlineMs = options.eventBus?.hookDeadlineMs ?? memorySeam.hookDeadlineMs;
 	const eventBus = EventBus.open(harness, {
 		queueMax: options.eventBus?.queueMax ?? memorySeam.queueMax,
-		hookDeadlineMs: options.eventBus?.hookDeadlineMs ?? hookDeadlineMs,
+		hookDeadlineMs,
 		idleThresholdMs: options.eventBus?.idleThresholdMs ?? memorySeam.idleThresholdMs,
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
@@ -2357,10 +2357,11 @@ export async function openHarness(
 	// ordered path src/index.ts runs) closes the bus first, making this a
 	// no-op on the normal path.
 	harness.subscribeClose(() => eventBus.close());
-	// Deliver terminal runs left above the durable marker BEFORE resume
-	// restarts interrupted work. Replay enqueues without committing, so it
-	// needs this explicit pump; a failure freezes marker saves in the bus
-	// (replayUndelivered's own catch) and the next boot retries the tail.
+	// Queue terminal runs left above the durable marker ahead of live events,
+	// so replay handlers are entered before resumed-run events. Replay enqueues
+	// without committing, so it needs this explicit pump; a failure freezes
+	// marker saves in the bus (replayUndelivered's own catch) and the next boot
+	// retries the tail.
 	try {
 		await eventBus.replayUndelivered(storage, BACKGROUND_CONTEXT);
 	} catch (error) {

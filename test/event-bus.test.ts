@@ -1682,20 +1682,30 @@ describe("delivered-through marker", () => {
 		const gate = new Promise<AssistantMessage>((resolve) => {
 			release = () => resolve(fauxAssistantMessage("internal answer"));
 		});
+		let internalStarted!: () => void;
+		const internalStartedGate = new Promise<void>((resolve) => {
+			internalStarted = resolve;
+		});
 		faux.setResponses([
 			fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], {
 				stopReason: "toolUse",
 			}),
-			async () => await gate,
+			async () => {
+				internalStarted();
+				return await gate;
+			},
 		]);
 		const held = await internal.submit(
 			{ type: "input", content: "internal held run" },
 			BACKGROUND_CONTEXT,
 		);
 		// Wait for the internal run to be placed.
-		await new Promise((resolve) => setTimeout(resolve, 200));
-
-		// An ordinary conversation's run settles and drains.
+		await vi.waitFor(async () => {
+			expect((await held.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		});
+		await internalStartedGate;
+		// The ordinary run gets its own deterministic response while the
+		// internal run remains held.
 		faux.setResponses([fauxAssistantMessage("ordinary answer")]);
 		const ordinary = await runTurn(root, "ordinary");
 		expect(ordinary.record.status).toBe("done");
@@ -1863,6 +1873,9 @@ describe("startup replay", () => {
 			dir: first.dir,
 			...options,
 		});
+		// These tests drive replay explicitly on their own bus. Stop boot's
+		// automatic replay bus so the two buses cannot race the same tail.
+		restarted.opened.eventBus.close();
 		const events: ReplayRecord[] = [];
 		restarted.bus.registerExtension("fixture-replay-recorder", {
 			runSettled: (event) => {
@@ -2045,6 +2058,58 @@ describe("startup replay", () => {
 		}
 	});
 
+	test("a first-boot placed run keeps the marker pinned across restart", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+		});
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("held first-boot answer"));
+		});
+		first.faux.setResponses([async () => await gate]);
+		const placed = await first.root.submit(
+			{ type: "input", content: "held before the first marker" },
+			BACKGROUND_CONTEXT,
+		);
+		await vi.waitFor(async () => {
+			expect((await placed.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		});
+		await vi.waitFor(() => {
+			expect(first.opened.eventBus.oldestLiveAdmissionMs()).toBeDefined();
+		});
+		await crashClose(first);
+
+		const restarted = await bootBus({ dir: first.dir });
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		expect(restarted.opened.eventBus.deliveredThrough()).toBeLessThanOrEqual(placed.id);
+		let releaseDelivery!: () => void;
+		const deliveryGate = new Promise<void>((resolve) => {
+			releaseDelivery = resolve;
+		});
+		restarted.opened.eventBus.registerExtension("fixture-first-boot-block", {
+			runSettled: async () => await deliveryGate,
+		});
+		restarted.faux.setResponses([
+			fauxAssistantMessage("resumed held answer"),
+			fauxAssistantMessage("second run answer"),
+		]);
+		release();
+		const resumed = await restarted.opened.harness.submission(placed.id, BACKGROUND_CONTEXT);
+		expect((await resumed!.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		const second = await runTurn(restarted.root, "second run beside the placed run");
+		expect(second.record.status).toBe("done");
+		await vi.waitFor(() => {
+			expect(restarted.opened.eventBus.deliveredThrough()).toBeLessThanOrEqual(placed.id);
+		});
+		await crashClose(restarted);
+		releaseDelivery();
+
+		const again = await bootBus({ dir: first.dir });
+		expect(again.opened.eventBus.deliveredThrough()).toBeLessThanOrEqual(placed.id);
+		again.opened.eventBus.close();
+		expect(await again.bus.replayUndelivered(again.opened.storage, BACKGROUND_CONTEXT)).toBe(2);
+	});
+
 	test("first boot sets the marker and boot replays history once", async () => {
 		const first = await bootBus({ responses: [fauxAssistantMessage("history answer")] });
 		const history = await runTurn(first.root, "history before the marker existed");
@@ -2056,8 +2121,10 @@ describe("startup replay", () => {
 			runSettled: (event) => { events.push(event); },
 		});
 
-		// Boot already performed the one-shot replay. A manual second call
-		// is idempotent (returns the same backlog size, queues nothing).
+		// bootBus's own EventBus.open instance (not opened.eventBus) has not
+		// replayed yet. This manual call queues the group; the test proves
+		// boot's bus seeded the marker. Boot's own replay delivery is covered
+		// by event-bus-restart.test.ts.
 		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
 		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
 		expect(events).toHaveLength(1);
@@ -2235,7 +2302,7 @@ describe("startup replay", () => {
 				...Array.from({ length: 5 }, (_, index) => fauxAssistantMessage(`replay answer ${index + 1}`)),
 			],
 		});
-		await seedMarker(first.root, first.bus);
+		await seedMarker(first.root, first.opened.eventBus);
 		let release!: () => void;
 		let started!: () => void;
 		const startedGate = new Promise<void>((resolve) => {
@@ -2244,7 +2311,7 @@ describe("startup replay", () => {
 		const gate = new Promise<void>((resolve) => {
 			release = resolve;
 		});
-		first.bus.registerExtension("fixture-page-block", {
+		first.opened.eventBus.registerExtension("fixture-page-block", {
 			runSettled: async () => {
 				started();
 				await gate;
@@ -2254,7 +2321,7 @@ describe("startup replay", () => {
 		for (let index = 0; index < 5; index += 1) {
 			undelivered.push(await runTurn(first.root, `replay page input ${index + 1}`));
 		}
-		const draining = first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		const draining = first.opened.eventBus.drain(10_000, BACKGROUND_CONTEXT);
 		await startedGate;
 		await crashClose(first);
 		release();
@@ -2265,6 +2332,7 @@ describe("startup replay", () => {
 				replayPage: 2,
 				responses: [fauxAssistantMessage("live answer")],
 			});
+			restarted.opened.eventBus.close();
 			const events: ReplayRecord[] = [];
 			restarted.bus.registerExtension("fixture-replay-recorder", {
 				runSettled: (event) => {
@@ -2317,11 +2385,11 @@ describe("startup replay", () => {
 			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
 			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
 			expect(events.map((one) => one.event.inputs)).toEqual([
-				[original.id, queued.id, continued.id],
+				[queued.id, continued.id],
 			]);
 			expect(events[0]!.event).toMatchObject({
 				continued: true,
-				inputTexts: ["original failure", "queued for continue", ""],
+				inputTexts: ["queued for continue", ""],
 				replayed: true,
 				outcome: { status: "unanswered", reason: "model_error" },
 			});

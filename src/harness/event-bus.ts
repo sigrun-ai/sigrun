@@ -546,7 +546,7 @@ export class EventBus {
 	#inDispatch: SettleGroup | undefined;
 	/** The last `through` value read or saved (0 = never). */
 	#storedThrough = 0;
-	/** Task 3 sets this on replay failure; while true the pump never saves. */
+	/** Set by replayUndelivered's catch (boot's markReplayFailed is defensive); while true the pump never saves. */
 	#replayFailed = false;
 	/** Undelivered groups, ascending; the first id holds the marker back. */
 	#replayBacklog: SettleGroup[] = [];
@@ -886,6 +886,7 @@ export class EventBus {
 				}, durable);
 				this.#storedThrough = through;
 				this.#highestTerminalObserved = through - 1;
+				for (const submission of pending) this.#undeliveredLive.add(submission.id);
 				return 0;
 			}
 			this.#storedThrough = through;
@@ -990,10 +991,10 @@ export class EventBus {
 		};
 		for (const record of records) {
 			if (record.status === "done") {
-				const previous = current[0];
+				const first = current[0];
 				if (
-					previous !== undefined &&
-					(previous.status !== "done" || previous.answer !== record.answer)
+					first !== undefined &&
+					(first.status !== "done" || first.answer !== record.answer)
 				) {
 					flush();
 				}
@@ -1006,8 +1007,8 @@ export class EventBus {
 				flush();
 				continue;
 			}
-			const previous = current[0];
-			if (previous !== undefined && (previous.status !== "unanswered" || previous.reason !== record.reason)) {
+			const first = current[0];
+			if (first !== undefined && (first.status !== "unanswered" || first.reason !== record.reason)) {
 				flush();
 			}
 			current.push(record);
@@ -1035,8 +1036,8 @@ export class EventBus {
 	/**
 	 * Compute the highest safe `through`: the minimum of every id that
 	 * could still need delivery. Empty/undefined terms are skipped.
-	 * The in-dispatch term also guards a second drain observing the queue
-	 * empty while this pump awaits a handler.
+	 * The in-dispatch term is defensive; unreachable while a single pump
+	 * exists, but kept so the marker rule remains local and explicit.
 	 */
 	#computeThrough(): number {
 		const terms: number[] = [this.#highestTerminalObserved + 1];
@@ -1907,9 +1908,8 @@ export class EventBus {
 				return;
 			}
 			if (next.kind === "settled") {
-				// Mark before awaiting: another commit may start a drain while
-				// this group's handler is blocked, and that pump must not save
-				// past the in-flight group.
+				// Defensive bookkeeping: with drain() sharing one loop no second
+				// pump can observe this state, but keep the in-flight rule explicit.
 				this.#inDispatch = next.event;
 				this.#settledSinceSave = true;
 			}

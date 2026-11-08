@@ -267,8 +267,10 @@ what core does with each, and where its rules are documented:
 
 `runSettled` delivery is **at-least-once across restarts**. A run that
 settled but was not yet delivered is replayed at the next boot with
-`replayed: true`; a repeat is possible only after a crash between the run's
-handlers and the delivery-marker save. Replays never reach host events.
+`replayed: true`; a repeat is possible after a crash between the run's
+handlers and the delivery-marker save, or after a crash mid-replay (the
+unchanged marker re-replays the tail). Replays never reach host events and
+skip the auto-namer.
 
 `runSettled` also covers runs started by a **Continue** press. A Continue
 input has no entry and contributes `""` at its position in `inputTexts`.

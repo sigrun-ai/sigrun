@@ -56,7 +56,7 @@ afterEach(async () => {
 	for (const dir of dirs.splice(0)) await rm(dir, { recursive: true, force: true });
 });
 
-/** The bootBus shape, with retry off and a short blocked-handler deadline. */
+/** The bootBus shape, with retry off and a short shutdown settle wait. */
 async function boot(dir: string, faux: FauxProviderHandle): Promise<RestartRig> {
 	const configDir = join(dir, "config");
 	const env = {
@@ -76,7 +76,7 @@ async function boot(dir: string, faux: FauxProviderHandle): Promise<RestartRig> 
 		env,
 		settingsDir: dir,
 		settings: { retry: { enabled: false } },
-		eventBus: { hookDeadlineMs: 50, shutdownSettleWaitMs: 50 },
+		eventBus: { shutdownSettleWaitMs: 50 },
 	});
 	const rig = { dir, faux, opened };
 	rigs.push(rig);
