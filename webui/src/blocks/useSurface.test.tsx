@@ -835,6 +835,27 @@ describe("useSurface (spec §6.3)", () => {
 		expect(laneStates(latest().view as JsonObject, "doing")).toEqual(["a"]);
 	});
 
+	test("an accepted result carrying a binding does not reach the shell", async () => {
+		const transport = new FakeTransport();
+		const onNavigate = vi.fn();
+		const { latest } = mount(transport, { onNavigate });
+		await settleLoad();
+		act(() => {
+			latest().dispatch(MOVE, movePayload("a", { group: "todo", index: 0 }, { group: "doing", index: 0 }));
+		});
+		await act(async () => {
+			transport.resolveAct({
+				ok: true,
+				rev: 2,
+				navigate: {
+					type: "navigate",
+					target: { conversation: { $: "/selected" } },
+				} as never,
+			});
+		});
+		expect(onNavigate).not.toHaveBeenCalled();
+	});
+
 	test("applyOps import sanity (the shared applier the hook delegates to)", () => {
 		const result = applyOps(board([task("a", "todo")]), [
 			{ op: "set", path: "/tasks/0/state", value: "done" },

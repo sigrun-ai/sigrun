@@ -653,14 +653,16 @@ export function useSurface(
 				const finishAccept = (): void => {
 					if (result.toast !== undefined) toast(result.toast);
 					if (result.navigate !== undefined && result.navigate.type === "navigate") {
-						opts?.onNavigate?.({
-							...(result.navigate.params === undefined
-								? {}
-								: { params: result.navigate.params }),
-							...(result.navigate.target === undefined
-								? {}
-								: { target: result.navigate.target }),
+						const resolved = resolveActionBindings(result.navigate, {
+							data: ref.current.confirmed,
+							locale: "en",
 						});
+						if (resolved?.type === "navigate") {
+							opts?.onNavigate?.({
+								...(resolved.params === undefined ? {} : { params: resolved.params }),
+								...(resolved.target === undefined ? {} : { target: resolved.target }),
+							});
+						}
 					}
 				};
 				if (!isMove) {

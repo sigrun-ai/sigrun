@@ -33,7 +33,13 @@ import type {
 	Tone,
 } from "@sigrun/shared/blocks";
 import type { TuiTheme } from "../theme.js";
-import { bindRaw, bindText, bindTone, type BlockCtx } from "./context.js";
+import {
+	bindRaw,
+	bindText,
+	bindTone,
+	resolveActionBindings,
+	type BlockCtx,
+} from "./context.js";
 import { truncate } from "./width.js";
 import { iconGlyph } from "./icons.js";
 import { toneFg, toneMarker } from "./tones.js";
@@ -159,15 +165,14 @@ export function visibleActions(
 	actions: readonly ActionButton[] | undefined,
 	ctx: BlockCtx,
 ): ActionButton[] {
-	if (ctx.access === "read") {
-		return (actions ?? []).filter(
-			(button) =>
+	return (actions ?? []).filter(
+		(button) =>
+			(ctx.access === "write" ||
 				button.action.type === "copy" ||
 				button.action.type === "open" ||
-				button.action.type === "navigate",
-		);
-	}
-	return [...(actions ?? [])];
+				button.action.type === "navigate") &&
+			resolveActionBindings(button.action, ctx) !== undefined,
+	);
 }
 
 /** The URL schemes an `open` action may carry (§15: https/http/mailto). */

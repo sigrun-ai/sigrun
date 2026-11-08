@@ -224,6 +224,28 @@ describe("40-cell pane", () => {
 	});
 });
 
+describe("bound navigate buttons", () => {
+	test("a callout navigate with an unresolved binding is hidden", () => {
+		const block: Block = {
+			type: "callout",
+			tone: "info",
+			title: "Run",
+			actions: [
+				{
+					id: "open",
+					label: "Open run",
+					action: {
+						type: "navigate",
+						target: { conversation: { $: "/missing" } },
+					},
+				},
+			],
+		};
+		const { ctx } = makeCtx();
+		expect(renderBlock(block, ctx).render(72).join("\n")).not.toContain("Open run");
+	});
+});
+
 // ─── Confirm flow (spec §6.1) ─────────────────────────────────────────────
 
 describe("action confirm", () => {

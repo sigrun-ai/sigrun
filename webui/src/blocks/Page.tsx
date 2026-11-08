@@ -31,7 +31,13 @@ import type {
 } from "@sigrun/shared/blocks";
 import { resolvePointer } from "@sigrun/shared/blocks";
 import { BlockView } from "./BlockView";
-import { bound, boundString, useSurfaceActions, useSurfaceData } from "./context";
+import {
+	bound,
+	boundString,
+	resolveActionBindings,
+	useSurfaceActions,
+	useSurfaceData,
+} from "./context";
 import { Icon } from "./icons";
 import { useWidthClass } from "./width";
 
@@ -119,7 +125,12 @@ function Switcher(props: { field: ChoiceField }): ReactNode {
 function HeaderAction(props: { button: ActionButton }): ReactNode {
 	const data = useSurfaceData();
 	const actions = useSurfaceActions();
-	if (actions.access === "read") return null;
+	if (
+		actions.access === "read" ||
+		resolveActionBindings(props.button.action, data) === undefined
+	) {
+		return null;
+	}
 	return (
 		<button
 			type="button"

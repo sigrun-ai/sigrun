@@ -562,7 +562,16 @@ export class SurfaceState {
 				const finishAccept = (): void => {
 					if (result.toast !== undefined) this.#notice(result.toast);
 					if (result.navigate?.type === "navigate") {
-						this.onNavigate?.(result.navigate);
+						const resolved = resolveActionBindings(result.navigate, {
+							data: this.view.data,
+							theme: plainTuiTheme(),
+							locale: "en",
+							access: this.#access === "write" ? "write" : "read",
+							unicode: true,
+							dispatch: () => {},
+							view: { values: this.#viewBranch },
+						});
+						if (resolved?.type === "navigate") this.onNavigate?.(resolved);
 					}
 				};
 				if (!isMove) {

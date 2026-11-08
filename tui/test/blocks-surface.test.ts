@@ -448,6 +448,27 @@ describe("SurfaceState — navigation (jobs-editor Task 7)", () => {
 		expect(seen).toEqual([{ type: "navigate", params: { job: "acme" } }]);
 	});
 
+	test("an accepted result carrying a binding does not reach the shell", async () => {
+		const surface = fakeSurface();
+		const state = new SurfaceState(surface.transport);
+		await state.load();
+		const seen: Action[] = [];
+		state.onNavigate = (action) => {
+			seen.push(action);
+		};
+		state.dispatch({ type: "edit", name: "openJob" }, { itemId: "acme-a" });
+		surface.answer({
+			ok: true,
+			rev: 1,
+			navigate: {
+				type: "navigate",
+				target: { conversation: { $: "/selected" } },
+			} as never,
+		});
+		await flush();
+		expect(seen).toEqual([]);
+	});
+
 	test("an accepted result without navigate never calls onNavigate", async () => {
 		const surface = fakeSurface();
 		const state = new SurfaceState(surface.transport);
