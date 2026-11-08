@@ -8,6 +8,7 @@
 import { act } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { App, locationHash, parseHash, resetLocationHashForTest, routeHash } from "./App";
+import { ExtSurfaceHub } from "./blocks/extTransport";
 import {
 	createClient,
 	type ConversationMeta,
@@ -2186,19 +2187,14 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 			});
 			expect(holdFirst.resolve).toBeDefined();
 			// Switch 1 → 2: the transport re-attaches with the NEW id. The
-			// refetch chain runs through an ASYNC hash (eventKeyWeb) and a
-			// host remount; poll the REQUEST (the whole chain's observable
-			// end) instead of sleeping a fixed window.
+			// host's instance key remounts it synchronously; after the click,
+			// conversation 2's request is already the observable end.
 			await clickConversation(renderer, "Moor line inspection");
-			await vi.waitFor(() => {
-				expect(surfaceParams(calls, "convo").at(-1)).toEqual({
-					conversationId: 2,
-				});
+			expect(surfaceParams(calls, "convo").at(-1)).toEqual({
+				conversationId: 2,
 			});
-			// Conversation 2's response is NOT held: its render lands.
-			await vi.waitFor(() => {
-				expect(textContent(renderer.toJSON())).toContain("conversation 2");
-			});
+			// Conversation 2's response is NOT held: its render landed.
+			expect(textContent(renderer.toJSON())).toContain("conversation 2");
 			// NOW conversation 1's late response arrives. The composite
 			// ExtPanelHost key remounted the host, so the late response
 			// resolves against the UNMOUNTED conversation-1 instance and
@@ -2213,6 +2209,71 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 			restoreFetch();
 			// The clicks above left `#/c/2` in the module-level hash fallback;
 			// the next test must boot on the chat default.
+			resetLocationHashForTest();
+		}
+	});
+
+	test("a conversation switch never leaves the panel without a body", async () => {
+		const base = makeHarness({ meta: convoMeta() });
+		const { client, createEventSource, calls } = base;
+		// Conversation 1's held response also proves that the old instance
+		// cannot land after the switch; conversation 2 answers immediately.
+		const { fetchImpl, holdFirst } = convoStub(base.fetchImpl, calls);
+		const restoreFetch = stubGlobalFetch(fetchImpl);
+		try {
+			const renderer = await renderAsync(
+				<App client={client} createEventSource={createEventSource} />,
+			);
+			await clickConversation(renderer, "Tide table rewrite");
+			await act(async () => {
+				(
+					renderer.root.findByProps({
+						"data-panel": "ext:fixture-convo/convo",
+					}).props as { onClick: () => void }
+				).onClick();
+			});
+			await vi.waitFor(() => {
+				expect(surfaceParams(calls, "convo")).toEqual([{ conversationId: 1 }]);
+			});
+			expect(holdFirst.resolve).toBeDefined();
+
+			// Capture every panel attach and every commit that leaves its body
+			// absent. The old hash effect produced an undefined-transport frame.
+			const attach = ExtSurfaceHub.prototype.attach;
+			const emptyFrames: string[] = [];
+			try {
+				ExtSurfaceHub.prototype.attach = function (options, keyHash) {
+					const transport = attach.call(this, options, keyHash);
+					if (options.id === "convo") {
+						const panels = renderer.root.findAllByProps({ className: "right-panel" });
+						if (
+							panels.length === 1 &&
+							panels[0]?.props["data-panel"] === "ext" &&
+							panels[0]?.findAllByProps({ "data-ext-panel": "fixture-convo/convo" }).length === 0
+						) {
+							emptyFrames.push(textContent(renderer.toJSON()));
+						}
+					}
+					return transport;
+				};
+				await clickConversation(renderer, "Moor line inspection");
+			} finally {
+				ExtSurfaceHub.prototype.attach = attach;
+			}
+
+			expect(emptyFrames).toEqual([]);
+			expect(surfaceParams(calls, "convo")).toEqual([
+				{ conversationId: 1 },
+				{ conversationId: 2 },
+			]);
+			expect(textContent(renderer.toJSON())).toContain("conversation 2");
+			await act(async () => {
+				holdFirst.resolve?.();
+			});
+			expect(textContent(renderer.toJSON())).toContain("conversation 2");
+			expect(textContent(renderer.toJSON())).not.toContain("conversation 1");
+		} finally {
+			restoreFetch();
 			resetLocationHashForTest();
 		}
 	});
@@ -2238,17 +2299,9 @@ describe("App per-conversation panel params (todo Task 3)", () => {
 			});
 			const before = surfaceParams(calls, "plain").length;
 			await clickConversation(renderer, "Moor line inspection");
-			// A switch changes nothing for a plain panel. Give any refetch a
-			// bounded window to appear: poll for ~300 ms, failing fast if the
-			// count ever moves; the whole async chain (state, the eventKeyWeb
-			// hash, the remount) resolves in far less.
-			const deadline = Date.now() + 300;
-			while (Date.now() < deadline) {
-				await act(async () => {
-					await new Promise((resolve) => setTimeout(resolve, 25));
-				});
-				expect(surfaceParams(calls, "plain")).toHaveLength(before);
-			}
+			// A switch changes nothing for a plain panel: after the click's
+			// render/effects flush, the params and request count are unchanged.
+			expect(surfaceParams(calls, "plain")).toHaveLength(before);
 			for (const params of surfaceParams(calls, "plain")) {
 				expect(params).toEqual({});
 			}

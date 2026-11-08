@@ -30,7 +30,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } from "react";
 import { displayName } from "@sigrun/shared/conversations";
 import type { CoreTarget, JsonObject } from "@sigrun/shared/blocks";
-import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
+import { canonicalJson } from "@sigrun/shared/blocks";
 import { groupTurns } from "@sigrun/shared/turns";
 import {
 	createClient,
@@ -750,11 +750,10 @@ function AppShell(options: AppOptions = {}) {
 	// The panel's instance params (todo Task 3): an opted-in
 	// (perConversation) panel attaches with the OPEN conversation's id,
 	// a plain panel always {}. `panelParamsKey` (the canonical STRING) is
-	// the single dependency of the hash effect, the transport memo, and
-	// the visible-surface registration below — never `activeId` and never
-	// a freshly-built object — so a plain panel does NOT refetch when the
-	// active conversation switches (the string is unchanged, the memos
-	// and effects don't re-run).
+	// the single dependency of the transport memo and the visible-surface
+	// registration below — never `activeId` and never a freshly-built
+	// object — so a plain panel does NOT refetch when the active
+	// conversation switches.
 	const panelParams: JsonObject = useMemo((): JsonObject => {
 		if (activeExtKey === null || boot.status !== "ready") return {};
 		const entry = extPanelEntries(boot.meta.extensions).find(
@@ -766,39 +765,11 @@ function AppShell(options: AppOptions = {}) {
 		return {};
 	}, [activeExtKey, boot, activeId]);
 	const panelParamsKey = useMemo(() => canonicalJson(panelParams), [panelParams]);
-	const [extPanelKeyHash, setExtPanelKeyHash] = useState<{
-		readonly forKey: string;
-		readonly hash: string;
-	} | null>(null);
-	// The hash gate keys on selection AND params: while the new
-	// instance's hash is pending (a conversation switch on an opted-in
-	// panel) the transport stays undefined — the host unmounts instead
-	// of loading the OLD conversation's instance.
-	const extPanelInstanceKey = `${activeExtKey ?? ""}:${panelParamsKey}`;
-	useEffect(() => {
-		if (extPanelParts === null) {
-			setExtPanelKeyHash(null);
-			return;
-		}
-		let alive = true;
-		const forKey = extPanelInstanceKey;
-		void eventKeyWeb(extPanelParts.slug, extPanelParts.id, panelParamsKey).then(
-			(hash) => {
-				if (alive) setExtPanelKeyHash({ forKey, hash });
-			},
-		);
-		return () => {
-			alive = false;
-		};
-	}, [extPanelParts, extPanelInstanceKey, panelParamsKey]);
+	// Built synchronously like the surface page's transport. The host key
+	// below remounts on selection or params changes, so no hash gate is
+	// needed to keep an old conversation's response from landing.
 	const extPanelTransport = useMemo(() => {
-		if (
-			extPanelParts === null ||
-			extPanelKeyHash === null ||
-			extPanelKeyHash.forKey !== extPanelInstanceKey
-		) {
-			return undefined;
-		}
+		if (extPanelParts === null) return undefined;
 		return extHub.attach(
 			{
 				slug: extPanelParts.slug,
@@ -810,9 +781,9 @@ function AppShell(options: AppOptions = {}) {
 				params: JSON.parse(panelParamsKey) as JsonObject,
 				...(list.streamId === undefined ? {} : { streamId: list.streamId }),
 			},
-			extPanelKeyHash.hash,
+			"",
 		);
-	}, [extPanelParts, extPanelInstanceKey, panelParamsKey, extPanelKeyHash, extHub, list.streamId]);
+	}, [extPanelParts, panelParamsKey, extHub, list.streamId]);
 
 	// Visible-surface registration (spec §7.3's re-registration rule):
 	// the open ext page remounts on a stream change (its key joins
