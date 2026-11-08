@@ -806,13 +806,23 @@ describe("core/skills deleted selections anchor on the deletion commit", () => {
 		const curation = opened.curationOf("alice");
 		expect(curation).toBeDefined();
 		const feed = await curation!.store.feed(50);
-		const firstArchive = feed.find(
-			(entry) => entry.action === "archive" && entry.skill === "acme-anchored-learned",
-		);
+		// The feed is newest-first: take the OLDEST archive so the scripted
+		// restore actually writes a restore commit touching the archive path.
+		const firstArchive = feed
+			.filter(
+				(entry) => entry.action === "archive" && entry.skill === "acme-anchored-learned",
+			)
+			.at(-1);
 		expect(firstArchive?.after).toBeDefined();
 		await curation!.store.restoreVersion("acme-anchored-learned", firstArchive!.after!, {
 			actor: "user",
 		});
+		// The scripted restore is a real archive-path commit (not a no-op).
+		const archiveLog = await curation!.history.log({
+			path: "curation/archive/acme-anchored-learned",
+			limit: 1,
+		});
+		expect(archiveLog[0]?.action).toBe("restore");
 		const restored = await act(app, alice, "restoreDeleted", {}, params);
 		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
 		const back = await view(app, alice, params);

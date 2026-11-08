@@ -199,7 +199,7 @@ type OverlayRootKind = Exclude<SkillRootKind, "learned">;
  * The newest `delete <name>` commit's sha for one WORKSPACE skill, or
  * undefined when the name was never deleted (whole-branch review I2's
  * reused-name refusal needs the anchor independent of the newest-touch
- * rule {@link deletionShaOf} applies).
+ * rule the Deleted-group listing applies).
  */
 async function newestDeletionSha(
 	history: GitHistory,
@@ -839,7 +839,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					historyAvailable: selection?.historyAvailable ?? false,
 					selectedExists: selection !== undefined,
 					...(selection?.deleted === true ? { deleted: true } : {}),
-				...(selection?.deletionSha === undefined ? {} : { deletionSha: selection.deletionSha }),
+					...(selection?.deletionSha === undefined ? {} : { deletionSha: selection.deletionSha }),
 				}),
 				data,
 				access: "write",

@@ -17,6 +17,7 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { validateTree } from "../src/blocks/index.js";
 import type { HistoryCommit } from "../src/history/git.js";
 import type { RootSkill } from "../src/skills/roots.js";
 import {
@@ -336,6 +337,27 @@ describe("the 3000-commit guard (view limits: < 2000 blocks, < 4 MiB data)", () 
 		);
 		expect(blockCount(tree)).toBeLessThan(2000);
 		expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThan(4 * 1024 * 1024);
+	});
+});
+
+describe("a deleted selection without a deletion commit", () => {
+	test("the actions callout explains the missing anchor and renders no invalid button", () => {
+		const tree = buildSkillsTree(
+			{ skill: "acme-gone", root: "learned" },
+			mainData({ name: "acme-gone", root: "learned" }),
+			EMPTY_FORM,
+			{
+				writable: true,
+				historyAvailable: true,
+				selectedExists: true,
+				deleted: true,
+				deletionSha: undefined,
+			},
+		);
+		const actions = blocksOfType(tree, "callout").find((block) => block.id === "skill-actions");
+		expect(actions?.body).toBe("No deletion commit was found for this skill.");
+		expect(actions?.actions).toEqual([]);
+		expect(validateTree(tree, { placement: "view" }).ok).toBe(true);
 	});
 });
 

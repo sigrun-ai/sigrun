@@ -343,16 +343,7 @@ function skillActions(params: SkillsViewParams, historyAvailable: boolean, delet
 	// deletion commit (never a caller-selected history commit).
 	if (deleted) {
 		if (!historyAvailable) return [];
-		if (deletionSha === undefined) {
-			return [
-				{
-					id: "skill-no-deletion-commit",
-					label: "No deletion commit was found for this skill.",
-					icon: "info",
-					disabled: true,
-				},
-			];
-		}
+		if (deletionSha === undefined) return [];
 		return [
 			{
 				id: "skill-restore-deleted",
@@ -588,6 +579,9 @@ export function buildSkillsTree(
 							id: "skill-actions",
 							tone: "neutral",
 							title: "Actions",
+							...(opts.deleted === true && opts.deletionSha === undefined
+								? { body: "No deletion commit was found for this skill." }
+								: {}),
 							actions: skillActions(params, opts.historyAvailable, opts.deleted === true, opts.deletionSha),
 						},
 					]
