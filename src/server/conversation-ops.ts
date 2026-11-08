@@ -775,6 +775,7 @@ export async function listConversationsOp(
 				...(meta?.sharing === undefined ? {} : { sharing: meta.sharing }),
 				...(meta?.owner === undefined ? {} : { owner: meta.owner }),
 				...(name === undefined ? {} : { name }),
+				...(meta?.autoName === undefined ? {} : { autoName: meta.autoName }),
 				...(meta?.source === undefined ? {} : { source: meta.source }),
 				...(meta?.jobOutcome === undefined
 					? {}

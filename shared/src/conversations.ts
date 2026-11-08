@@ -10,6 +10,9 @@
 export interface ListRow {
 	readonly id: number;
 	readonly name?: string;
+	/** The stored auto-generated name, when present. `name` remains the
+	 * collapsed display name (`meta.name ?? meta.autoName`). */
+	readonly autoName?: string;
 	readonly lastActivityAt?: string;
 	readonly parent?: { readonly id: number };
 	readonly archived: boolean;

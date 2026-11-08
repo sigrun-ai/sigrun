@@ -215,16 +215,21 @@ describe("GET /v1/conversations list metadata", () => {
 		expect(
 			(await listRows(app)).find((row) => row.id === root.id)?.name,
 		).toBe("Auto");
+		// The stored auto name rides alongside the collapsed display name so
+		// the webui rename flow can distinguish it from a user name.
+		expect(
+			(await listRows(app)).find((row) => row.id === root.id),
+		).toMatchObject({ name: "Auto", autoName: "Auto" });
 		// A user name PATCH wins while set…
 		await patchMeta(app, root.id, { name: "Mine" });
 		expect(
-			(await listRows(app)).find((row) => row.id === root.id)?.name,
-		).toBe("Mine");
+			(await listRows(app)).find((row) => row.id === root.id),
+		).toMatchObject({ name: "Mine", autoName: "Auto" });
 		// …and clearing it falls back to the auto name.
 		await patchMeta(app, root.id, { name: null });
 		expect(
-			(await listRows(app)).find((row) => row.id === root.id)?.name,
-		).toBe("Auto");
+			(await listRows(app)).find((row) => row.id === root.id),
+		).toMatchObject({ name: "Auto", autoName: "Auto" });
 	});
 
 	test("fork carries parent {id, at}", async () => {

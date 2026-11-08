@@ -21,7 +21,13 @@
  *   reveals it, then Tab). Outside-click + Esc close the open row's menu
  *   (useDismiss).
  * - Children indent one level per depth with the ↳ lineage mark.
- * - The bottom "Archived" toggle switches `includeArchived`.
+ * - The bottom "Job runs" toggle reveals quiet scheduled runs
+ *   (`includeJobRuns`, default false); "Archived" switches
+ *   `includeArchived`. Search narrows the same filtered tree, so it never
+ *   reveals quiet runs while their toggle is off.
+ * - Rename edits the STORED user name, not `displayName`: a failed run's
+ *   "Failed · " label never enters the draft, and an auto-named row starts
+ *   with an empty draft so typing its generated name saves a user name.
  *
  * The draft badge the pre-A1 sidebar carried is deliberately GONE: the
  * list endpoint carries no draft state (only the per-conversation view
@@ -51,6 +57,14 @@ const GROUP_ORDER: readonly AgeGroup[] = [
 	"Yesterday",
 	"Earlier",
 ];
+
+/** The stored USER name a rename edits; auto names are suggestions, not
+ * user text, so an auto-only row starts with an empty draft. */
+function storedUserName(row: ConversationSummary): string {
+	return row.autoName !== undefined && row.name === row.autoName
+		? ""
+		: (row.name ?? "");
+}
 
 /** The rendered flat list: a group heading or a row at a nesting depth. */
 type Entry =
@@ -159,6 +173,7 @@ export function SessionList(props: {
 	const { rows, activeId, onSelect, onNew, onRename, onArchive, onFork, currentUser, onShare } = props;
 	const [query, setQuery] = useState("");
 	const [includeArchived, setIncludeArchived] = useState(false);
+	const [includeJobRuns, setIncludeJobRuns] = useState(false);
 	const [menuFor, setMenuFor] = useState<number | null>(null);
 	const menuSlot = useRef<HTMLSpanElement | null>(null);
 	useDismiss(menuFor !== null, () => setMenuFor(null), menuSlot);
@@ -188,17 +203,20 @@ export function SessionList(props: {
 		const keep = searchKeep(rows, trimmed);
 		const visible =
 			trimmed === "" ? rows : rows.filter((row) => keep.has(row.id));
-		const tree = buildConversationTree(visible, { includeArchived });
+		const tree = buildConversationTree(visible, {
+			includeArchived,
+			includeJobRuns,
+		});
 		return layoutEntries(tree, now);
 		// `now` is read per render; a memo keyed on it stays consistent.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [rows, query, includeArchived, now.getTime()]);
+	}, [rows, query, includeArchived, includeJobRuns, now.getTime()]);
 
 	const commitRename = (id: number) => {
 		if (renaming === null || renaming.id !== id) return;
 		const row = rows.find((one) => one.id === id);
 		const name = renaming.draft.trim();
-		if (row === undefined || name === "" || name === displayName(row)) {
+		if (row === undefined || name === "" || name === storedUserName(row)) {
 			setRenaming(null);
 			return;
 		}
@@ -338,8 +356,11 @@ export function SessionList(props: {
 													role="menuitem"
 													data-menu-action="rename"
 													onClick={() => {
-														setMenuFor(null);
-														setRenaming({ id: row.id, draft: name });
+													setMenuFor(null);
+													setRenaming({
+														id: row.id,
+														draft: storedUserName(row),
+													});
 													}}
 												>
 													Rename
@@ -376,6 +397,15 @@ export function SessionList(props: {
 					<li className="session-empty">No matching conversations</li>
 				)}
 			</ul>
+			<button
+				type="button"
+				className="session-job-runs-toggle"
+				aria-pressed={includeJobRuns}
+				title="Show job runs"
+				onClick={() => setIncludeJobRuns((shown) => !shown)}
+			>
+				Job runs
+			</button>
 			<button
 				type="button"
 				className="session-archived-toggle"

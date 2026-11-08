@@ -5,8 +5,9 @@
  * `displayName` + pi-tui's `truncateToWidth`, ages right-align via B1's
  * `formatAge`, and the active row highlights accent-fg + bold. Archived
  * conversations stay hidden (the tree's `includeArchived: false`; the
- * server has no delete, archive is the hide). `+ New conversation` is
- * always the last row.
+ * server has no delete, archive is the hide), and quiet job runs stay
+ * hidden (`includeJobRuns: false`; failed runs remain visible with their
+ * `displayName` prefix). `+ New conversation` is always the last row.
  *
  * The listing itself carries every field the rows need (`name`,
  * `archived`, `pinned`, `parent`, `lastActivityAt` ride
@@ -131,6 +132,7 @@ export class Sidebar implements Component {
 		const previousId = this.#display[this.#cursor]?.id;
 		const tree = buildConversationTree(list.conversations, {
 			includeArchived: false,
+			includeJobRuns: false,
 		});
 		const rows: SidebarRow[] = [];
 		const walk = (nodes: readonly TreeNode<ConversationSummary>[], depth: number): void => {

@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   being quiet and the run's turn cap lifts), a `job:` fire never adopts,
   and a fork of a job run is an ordinary conversation (source reset to
   `user`, the job stamps and turn cap dropped).
+- Quiet job runs stay out of both sidebars and sidebar search until the
+  webui's **Job runs** toggle reveals them; failed runs stay visible
+  with a `Failed · ` label and archive to resolve.
 
 ### Fixed
 

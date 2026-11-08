@@ -482,7 +482,8 @@ body {
 	text-align: center;
 }
 
-.session-archived-toggle {
+.session-archived-toggle,
+.session-job-runs-toggle {
 	flex: none;
 	margin: 6px 8px 2px;
 	padding: 5px 10px;
@@ -497,12 +498,15 @@ body {
 }
 
 .session-archived-toggle:hover,
-.session-archived-toggle:focus-visible {
+.session-archived-toggle:focus-visible,
+.session-job-runs-toggle:hover,
+.session-job-runs-toggle:focus-visible {
 	background: var(--surface-2);
 	color: var(--muted);
 }
 
-.session-archived-toggle[aria-pressed="true"] {
+.session-archived-toggle[aria-pressed="true"],
+.session-job-runs-toggle[aria-pressed="true"] {
 	color: var(--text);
 }
 

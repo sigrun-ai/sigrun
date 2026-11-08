@@ -25,6 +25,9 @@ function summary(
 		archived?: boolean;
 		parent?: number;
 		lastActivityAt?: string;
+		source?: string;
+		jobOutcome?: "succeeded" | "failed";
+		adopted?: boolean;
 	},
 ): ConversationSummary {
 	return {
@@ -33,6 +36,9 @@ function summary(
 		archived: init?.archived ?? false,
 		pinned: false,
 		access: "write",
+		...(init?.source === undefined ? {} : { source: init.source }),
+		...(init?.jobOutcome === undefined ? {} : { jobOutcome: init.jobOutcome }),
+		...(init?.adopted === undefined ? {} : { adopted: init.adopted }),
 		...(init?.name === undefined ? {} : { name: init.name }),
 		...(init?.parent === undefined
 			? {}
@@ -145,6 +151,27 @@ describe("Sidebar (C2 tree rows)", () => {
 		// active row is the one flagged in the public rows.
 		expect(sidebar.rows.find((r) => r.id === 2)?.active).toBe(true);
 		expect(row).toBeDefined();
+	});
+
+	test("the sidebar hides quiet job runs and shows failed ones prefixed", async () => {
+		const sidebar = new Sidebar(
+			stubClient([
+				summary(1, { name: "ordinary chat" }),
+				summary(2, {
+					name: "acme quiet run",
+					source: "cron",
+					jobOutcome: "succeeded",
+				}),
+				summary(3, {
+					name: "acme failed run",
+					source: "cron",
+					jobOutcome: "failed",
+				}),
+			]),
+		);
+		await sidebar.refresh();
+		expect(sidebar.rows.map((row) => row.id)).toEqual([3, 1]);
+		expect(sidebar.rows[0]?.name).toBe("Failed · acme failed run");
 	});
 
 	test("archived rows stay hidden; refresh preserves the cursor's conversation", async () => {

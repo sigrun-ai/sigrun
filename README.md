@@ -1355,7 +1355,7 @@ is read-only for them (`PATCH`/`DELETE` return `409 job_declared`).
   "name": "morning-brief",
   "schedule": { "cron": "0 7 * * *", "timezone": "America/Toronto" }, // or { "every": "15m" } or { "at": "<ISO 8601>" }
   "action": { "kind": "prompt", "prompt": "Summarize …", "model": "bifrost/glm-5.3-flash",
-              "conversation": "new" },  // or a fixed conversation id
+              "conversation": "new", "maxTurns": 150 },  // or a fixed conversation id
   "overlap": "skip",     // default; "queue" admits anyway (the conversation's inbox queues it)
   "catchUp": "once",     // default; "none" skips fires missed while the server was down
   "enabled": true
@@ -1372,10 +1372,16 @@ by the loaded gateway engine. The targets are stamped onto the run
 conversation's meta alongside the owning `jobId` (both server-owned,
 never PATCHable); with no engine loaded each fire logs one
 `deliver targets ignored: no gateway` warning, and editing the targets
-is a job revision like any other spec change. A `task` action creates
-a pi-durable task owned by the schedule task (deleting the job
-cascades): `{"kind": "task",
-"task": "<registered task name>", "input": …}`.
+is a job revision like any other spec change.
+
+For a prompt run in a NEW conversation, `action.maxTurns` bounds the
+unattended agent's turns (an integer ≥ 1). When omitted, the live
+`jobDefaults.maxTurns` setting supplies the fallback; when neither is
+set the default is **150**. Reaching the limit fails the run with
+`turn_limit`. The cap does not apply to fires into a fixed conversation
+or to ordinary interactive conversations. A `task` action creates a
+pi-durable task owned by the schedule task (deleting the job cascades):
+`{"kind": "task", "task": "<registered task name>", "input": …}`.
 
 **Runs:** a cron run is an ORDINARY CONTINUABLE CONVERSATION — open the
 run conversation in either UI and keep talking; it is never a
@@ -1384,7 +1390,18 @@ disposable side effect. `overlap: "skip"` (the default) records a
 (the default) fires once after downtime, `"none"` skips missed fires
 entirely. Runs carry the job `version` that fired them, so an outcome
 always maps to the exact definition it ran; a crash-orphaned fire is
-reported failed (`orphaned`), not retried.
+reported failed with the error `orphaned`, not retried.
+
+Unadopted job-run conversations that have not failed are **quiet** by
+default: they stay out of both clients' conversation sidebars and out of
+sidebar search. The webui's **Job runs** toggle beside **Archived**
+reveals them. Failed runs remain visible (unless archived) and their
+display names carry a `Failed · ` prefix; archiving a failed run is how
+you resolve it. Writing in a run conversation **adopts** it: it stays in
+the conversation list and its unattended turn cap is removed. A
+scheduled `job:` fire never adopts the conversation. Forking a job run
+creates an ordinary conversation with no job outcome, quiet-run state,
+or turn cap.
 
 **Run now:** `POST /v1/jobs/{id}/run` (write access) fires immediately
 — the same hook external triggers (CI, Alertmanager) use with a token.

@@ -238,6 +238,140 @@ describe("SessionList", () => {
 		expect(rowIds(renderer)).toEqual([1, 2, 3]);
 	});
 
+	test("a search does not reveal quiet job runs while the toggle is off", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Harbor dredging log",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({
+				id: 2,
+				name: "acme-daily harbor check",
+				source: "cron",
+				jobOutcome: "succeeded",
+				lastActivityAt: ago(20 * MINUTE),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		await typeSearch(renderer, "harbor");
+		// Search narrows the visible tree; it does not bypass the quiet-run
+		// filter. The Job runs toggle is the only way to reveal that row.
+		expect(rowIds(renderer)).toEqual([1]);
+	});
+
+	test("job runs are hidden until the Job runs toggle", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "Harbor dredging log",
+				lastActivityAt: ago(30 * MINUTE),
+			}),
+			summary({
+				id: 2,
+				name: "acme-daily",
+				source: "cron",
+				jobOutcome: "succeeded",
+				lastActivityAt: ago(20 * MINUTE),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		expect(rowIds(renderer)).toEqual([1]);
+		const toggle = renderer.root.findByProps({
+			className: "session-job-runs-toggle",
+		});
+		expect(toggle.props["aria-pressed"]).toBe(false);
+		expect(toggle.props.title).toBe("Show job runs");
+		await click(toggle);
+		expect(toggle.props["aria-pressed"]).toBe(true);
+		expect(rowIds(renderer)).toEqual([2, 1]);
+	});
+
+	test("a failed job run shows with the Failed prefix", () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "acme-daily",
+				source: "cron",
+				jobOutcome: "failed",
+				lastActivityAt: ago(20 * MINUTE),
+			}),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		expect(
+			rowById(renderer, 1)
+				.findByProps({ className: "session-name" })
+				.children.join(""),
+		).toBe("Failed · acme-daily");
+	});
+
+	test("rename of a failed run edits the stored name", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "acme-daily",
+				source: "cron",
+				jobOutcome: "failed",
+			}),
+		];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "rename" }),
+		);
+		const input = rowById(renderer, 1).findByProps({
+			className: "session-rename-input",
+		});
+		expect(input.props.value).toBe("acme-daily");
+		act(() => {
+			(input.props as {
+				onChange: (event: { target: { value: string } }) => void;
+			}).onChange({ target: { value: "acme renamed" } });
+		});
+		await keyDown(input, "Enter");
+		await flush();
+		expect(props.onRename).toHaveBeenCalledWith(1, "acme renamed");
+	});
+
+	test("an auto-named row's rename draft starts empty", async () => {
+		const rows = [
+			summary({
+				id: 1,
+				name: "acme generated title",
+				autoName: "acme generated title",
+			}),
+		];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "rename" }),
+		);
+		const input = rowById(renderer, 1).findByProps({
+			className: "session-rename-input",
+		});
+		expect(input.props.value).toBe("");
+		// Typing the generated name deliberately promotes it to a user name;
+		// the display-name comparison must not turn this into a no-op.
+		act(() => {
+			(input.props as {
+				onChange: (event: { target: { value: string } }) => void;
+			}).onChange({ target: { value: "acme generated title" } });
+		});
+		await keyDown(input, "Enter");
+		await flush();
+		expect(props.onRename).toHaveBeenCalledWith(1, "acme generated title");
+	});
+
 	test("a 200-char name renders in ONE ellipsis element; the row's height class is unchanged", () => {
 		const long = "n".repeat(200);
 		const rows = [
