@@ -24,6 +24,7 @@ import {
 	type JsonValue,
 	type Tone,
 } from "@sigrun/shared/blocks";
+import { lineDiff } from "@sigrun/shared/diff";
 import { Markdown, safeUrlTransform } from "../entries/Markdown";
 import { copyText } from "../entries/MessageActions";
 import {
@@ -255,8 +256,7 @@ export function ImageBlockView(props: {
 
 // ─── diff ─────────────────────────────────────────────────────────────────
 
-/** A diff block: before/after panes with the path (the interaction
- *  primitive, spec §5.3). */
+/** A diff block: one column of line operations with the path. */
 export function DiffBlockView(props: {
 	block: {
 		readonly before: string;
@@ -273,13 +273,21 @@ export function DiffBlockView(props: {
 					{path}
 				</div>
 			)}
-			<div className="blk-diff-panes">
-				<pre className="blk-diff-before" dir="auto">
-					{props.block.before}
-				</pre>
-				<pre className="blk-diff-after" dir="auto">
-					{props.block.after}
-				</pre>
+			<div className="blk-diff-lines" dir="auto">
+				{lineDiff(props.block.before, props.block.after).map((line, index) =>
+					line.op === "skip" ? (
+						<div className="blk-diff-skip" data-diff-op="skip" key={index}>
+							… {line.count} unchanged lines
+						</div>
+					) : (
+						<div className="blk-diff-line" data-diff-op={line.op} key={index}>
+							<span className="blk-diff-gutter" aria-hidden="true">
+								{line.op === "del" ? "-" : line.op === "add" ? "+" : " "}
+							</span>
+							<span>{line.text}</span>
+						</div>
+					),
+				)}
 			</div>
 		</div>
 	);

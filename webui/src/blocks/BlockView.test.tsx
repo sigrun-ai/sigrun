@@ -468,6 +468,36 @@ describe("BlockView: diff", () => {
 		expect(text).toContain("const a = 1;");
 		expect(text).toContain("const a = 2;");
 		expect(text).toContain("src/acme.ts");
+		expect(
+			renderer.root.findByProps({ "data-diff-op": "del" }).children.map((child) =>
+				typeof child === "string" ? child : child.props.children,
+			),
+		).toEqual(["-", "const a = 1;"]);
+		expect(
+			renderer.root.findByProps({ "data-diff-op": "add" }).children.map((child) =>
+				typeof child === "string" ? child : child.props.children,
+			),
+		).toEqual(["+", "const a = 2;"]);
+		renderer.unmount();
+	});
+
+	test("renders one column with gutters and collapses unchanged runs", () => {
+		const unchanged = Array.from({ length: 100 }, (_, index) => `line-${index + 1}`);
+		const { renderer } = renderBlock({
+			type: "diff",
+			before: unchanged.join("\n"),
+			after: [...unchanged, "added"].join("\n"),
+		});
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("… 94 unchanged lines");
+		expect(text).toContain("+added");
+		const same = renderer.root.findAllByProps({ "data-diff-op": "same" })[0]!;
+		expect(same.children[0]).toEqual(
+			expect.objectContaining({ props: expect.objectContaining({ children: " " }) }),
+		);
+		expect(renderer.root.findAllByProps({ className: "blk-diff-panes" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-diff-op": "del" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-diff-op": "add" })).toHaveLength(1);
 		renderer.unmount();
 	});
 });

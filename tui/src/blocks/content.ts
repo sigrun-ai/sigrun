@@ -160,9 +160,9 @@ export function renderDetails(block: DetailsBlock): Component {
 	return new Lines(() => [JSON.stringify(block.value)]);
 }
 
-/** `diff`: the interaction diff renderer (blocks/diff.ts). */
-export function renderDiff(block: DiffBlock): Component {
-	return new Lines(() => diffLines(blockDiff(block)));
+/** `diff`: shared line operations, coloured through the block theme. */
+export function renderDiff(block: DiffBlock, ctx: BlockCtx): Component {
+	return new Lines(() => diffLines(blockDiff(block), ctx.theme));
 }
 
 /** The actions a block offers: read access keeps the view-only kinds
@@ -337,7 +337,7 @@ export function renderContent(block: Block, ctx: BlockCtx): Component | undefine
 		case "details":
 			return renderDetails(block);
 		case "diff":
-			return renderDiff(block);
+			return renderDiff(block, ctx);
 		case "callout":
 			return new CalloutComponent(block, ctx);
 		default:

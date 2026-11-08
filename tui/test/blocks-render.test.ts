@@ -24,7 +24,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Action, Block, JsonObject } from "@sigrun/shared/blocks";
 import { fixture } from "../../test/fixtures/blocks/samples.js";
-import { plainTuiTheme } from "../src/theme.js";
+import { createTuiTheme, plainTuiTheme } from "../src/theme.js";
 import { renderBlock, widthClassOf } from "../src/blocks/render.js";
 import { iconGlyph } from "../src/blocks/icons.js";
 import type { BlockCtx } from "../src/blocks/render.js";
@@ -118,6 +118,36 @@ for (const name of LAYOUT_AND_CONTENT) {
 		}
 	});
 }
+
+describe("diff", () => {
+	test("a one-line change renders one removed and one added line", () => {
+		const { ctx } = makeCtx();
+		const lines = renderBlock(
+			{ type: "diff", before: "alpha\nold\nomega", after: "alpha\nnew\nomega" },
+			ctx,
+		).render(80);
+		expect(lines).toEqual(["[diff]", "  alpha", "- old", "+ new", "  omega"]);
+	});
+
+	test("removed and added lines use the theme's bad and good colours", () => {
+		const { ctx } = makeCtx();
+		ctx.theme = createTuiTheme({
+			palette: "fjord",
+			accent: "baltic-amber",
+			mode: "dark",
+			colorMode: "truecolor",
+		});
+		const lines = renderBlock(
+			{ type: "diff", before: "old", after: "new" },
+			ctx,
+		).render(80);
+		expect(lines).toEqual([
+			"[diff]",
+			ctx.theme.fg("bad")("- old"),
+			ctx.theme.fg("ok")("+ new"),
+		]);
+	});
+});
 
 // ─── visibleAt (spec §12.2) ───────────────────────────────────────────────
 

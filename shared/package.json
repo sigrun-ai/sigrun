@@ -8,6 +8,10 @@
 			"types": "./dist/themes.d.ts",
 			"default": "./dist/themes.js"
 		},
+		"./diff": {
+			"types": "./dist/diff.d.ts",
+			"default": "./dist/diff.js"
+		},
 		"./usernames": {
 			"types": "./dist/usernames.d.ts",
 			"default": "./dist/usernames.js"
