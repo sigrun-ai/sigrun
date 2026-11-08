@@ -57,15 +57,14 @@
 import { readFileSync, writeFileSync, existsSync, rmSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-
-const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-const MANIFEST = join(ROOT, "package.json");
-const MARKER = join(ROOT, ".publish-deps-applied.json");
-
 // The BUILTINS map lives in builtins-map.mjs so read-only consumers
 // (the CI core-ref resolver) can import it without this script's
 // top-level argv parsing.
 import { BUILTINS } from "./builtins-map.mjs";
+
+const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
+const MANIFEST = join(ROOT, "package.json");
+const MARKER = join(ROOT, ".publish-deps-applied.json");
 
 /**
  * The loader SLUG each built-in reports under (its declared extension

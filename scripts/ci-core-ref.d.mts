@@ -1,5 +1,5 @@
 /**
- * Type declarations for ci-core-ref.mjs.
+ * Type declarations only; ci-core-ref.mjs is the source of truth.
  *
  * The resolver reads npm packuments to determine which versions of the
  * core and each built-in extension are currently released, returning

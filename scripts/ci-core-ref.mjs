@@ -25,6 +25,8 @@
  * canned data.
  */
 import { execFileSync } from "node:child_process";
+import { resolve as pathResolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import semver from "semver";
 import { BUILTINS } from "./builtins-map.mjs";
 
@@ -41,13 +43,15 @@ const PACKAGE_TO_REPO = {
 
 /**
  * The real npmView: shells `npm view <spec> <field> --json` and parses
- * the stdout. Used by the CLI entry point.
+ * the stdout. Used by the CLI entry point. An absent optional field
+ * (notably peerDependencies) prints nothing and exits 0.
  */
 function realNpmView(spec, field) {
 	const stdout = execFileSync("npm", ["view", spec, field, "--json"], {
 		encoding: "utf8",
 		timeout: 30_000,
 	});
+	if (!stdout.trim()) return undefined;
 	return JSON.parse(stdout);
 }
 
@@ -60,6 +64,9 @@ function realNpmView(spec, field) {
  */
 export async function resolveRefs(mode, npmView) {
 	if (mode === "main") return {};
+	if (mode !== "release") {
+		throw new Error(`ci-core-ref: unknown mode '${mode}' (expected release or main)`);
+	}
 
 	// 1. Core's latest released version.
 	const coreVersion = await npmView("@sigrun/sigrun", "dist-tags.latest");
@@ -69,11 +76,12 @@ export async function resolveRefs(mode, npmView) {
 		);
 	}
 
-	// 2. Core's dependencies at that version (carries the built-in pins).
-	const deps = await npmView("@sigrun/sigrun", "dependencies");
+	// 2. Pin the dependencies query to the version just resolved, so a
+	// concurrent release cannot mix two core manifests.
+	const deps = await npmView(`@sigrun/sigrun@${coreVersion}`, "dependencies");
 	if (typeof deps !== "object" || deps === null) {
 		throw new Error(
-			"ci-core-ref: expected an object for @sigrun/sigrun dependencies",
+			`ci-core-ref: expected an object for @sigrun/sigrun@${coreVersion} dependencies`,
 		);
 	}
 
@@ -84,6 +92,11 @@ export async function resolveRefs(mode, npmView) {
 		if (typeof version !== "string") {
 			throw new Error(
 				`ci-core-ref: built-in ${pkg} is missing from @sigrun/sigrun@${coreVersion} dependencies`,
+			);
+		}
+		if (semver.valid(version) === null) {
+			throw new Error(
+				`ci-core-ref: built-in ${pkg} pin '${version}' is not an exact version`,
 			);
 		}
 		const repo = PACKAGE_TO_REPO[pkg];
@@ -108,10 +121,13 @@ export async function resolveRefs(mode, npmView) {
 		);
 	}
 
-	// Iterate newest-first to find the first compatible version.
+	// npm's versions array is not an ordering contract. Consider only
+	// stable versions, newest first, so a prerelease never becomes a CI ref.
+	const candidates = mmVersions
+		.filter((v) => semver.valid(v) !== null && semver.prerelease(v) === null)
+		.sort(semver.rcompare);
 	let mmResolved = false;
-	for (let i = mmVersions.length - 1; i >= 0; i -= 1) {
-		const v = mmVersions[i];
+	for (const v of candidates) {
 		const peers = await npmView(
 			`@sigrun/memory-markdown@${v}`,
 			"peerDependencies",
@@ -141,9 +157,6 @@ export async function resolveRefs(mode, npmView) {
 
 // CLI entry point — only when executed directly, not when imported
 // (tests import resolveRefs without triggering process.exit).
-import { fileURLToPath } from "node:url";
-import { resolve as pathResolve } from "node:path";
-
 const isMain =
 	process.argv[1] &&
 	pathResolve(process.argv[1]) === pathResolve(fileURLToPath(import.meta.url));
