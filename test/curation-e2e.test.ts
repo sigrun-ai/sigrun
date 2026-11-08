@@ -552,12 +552,22 @@ describe("the end-to-end curator path (curator built-in + memory-markdown)", () 
 			(review) => review.entries.length >= 1,
 		);
 		expect(group).toBeDefined();
-		// ...and the view's undo action reverts BOTH: the learned skill and
-		// the memory entry.
+		// ...and clicking the feed review only opens it. The review page's
+		// confirmed undo then reverts BOTH the learned skill and memory entry.
+		const opened = await app.inject({
+			method: "POST",
+			url: "/v1/ext/curator/surfaces/curator/actions",
+			payload: { action: "openReview", payload: { itemId: group!.id }, params: {} },
+			headers: authJson(server.tokens, "alice"),
+		});
+		expect(opened.statusCode).toBe(200);
+		expect(opened.json().ok).toBe(true);
+		const review = opened.json().navigate.params.review;
+		expect(typeof review).toBe("string");
 		const undo = await app.inject({
 			method: "POST",
 			url: "/v1/ext/curator/surfaces/curator/actions",
-			payload: { action: "undoReview", payload: { itemId: group!.id } },
+			payload: { action: "undoReview", payload: {}, params: { review } },
 			headers: authJson(server.tokens, "alice"),
 		});
 		expect(undo.statusCode).toBe(200);
