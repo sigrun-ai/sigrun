@@ -37,6 +37,7 @@ import type {
 	AmbientList,
 	CompactResponse,
 	ConfigureResponse,
+	ContinueResponse,
 	ConversationCreateResponse,
 	ConversationForkResponse,
 	ConversationList,
@@ -61,6 +62,7 @@ export type {
 	AmbientWire,
 	CompactResponse,
 	ConfigureResponse,
+	ContinueResponse,
 	ConversationCreateResponse,
 	ConversationForkResponse,
 	ConversationList,
@@ -325,6 +327,11 @@ export class SigrunClient {
 				? {}
 				: { instructions }),
 		});
+	}
+
+	/** `POST /v1/conversations/:id/continue` — resume the last failed run. */
+	continueConversation(id: number): Promise<ContinueResponse> {
+		return this.#send("POST", `/v1/conversations/${id}/continue`, {});
 	}
 
 	/** `GET /v1/conversations/:id/meta`. */

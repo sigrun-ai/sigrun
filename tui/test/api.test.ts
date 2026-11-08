@@ -207,6 +207,18 @@ describe("SigrunClient request shaping", () => {
 		});
 	});
 
+	test("continueConversation POSTs to .../continue", async () => {
+		const { calls, fetchImpl } = stubFetch({ submissionId: 11 });
+		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
+		const result = await client.continueConversation(2);
+		expect(result).toEqual({ submissionId: 11 });
+		expect(calls[0]).toMatchObject({
+			input: `${BASE}/v1/conversations/2/continue`,
+			method: "POST",
+			body: JSON.stringify({}),
+		});
+	});
+
 	test("getMeta GETs and patchMeta PATCHes .../meta", async () => {
 		const meta = {
 			pinned: false,

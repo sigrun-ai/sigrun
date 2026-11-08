@@ -143,7 +143,9 @@ describe("ConversationPane (C2 turn rendering)", () => {
 			}),
 		);
 		const lines = pane.render(80).join("\n");
-		expect(lines).toContain("run ended: model_error: upstream 502");
+		expect(lines).toContain(
+			"run ended: model_error: upstream 502 · /continue to resume",
+		);
 		// The user-caused reasons render nothing.
 		pane.showView(
 			withDocs({ "pi.live": { runFailure: { reason: "aborted" } } }),

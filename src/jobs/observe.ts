@@ -1,5 +1,7 @@
 /**
- * Jobs Task 3 (spec §8.1 "Run status"): the two run-settle observers.
+ * Jobs Task 3 (spec §8.1 "Run status"): the run-record settle observers,
+ * plus the Continue rescue (`sigrun:job-rescue`, registered beside
+ * `sigrun:jobs`) that clears a rescued run conversation's Failed label.
  *
  * - **The `runSettled` handler** (registered on the event bus as
  *   `sigrun:jobs`): every settled run input carrying `job:<fireKey>` settles
@@ -171,6 +173,37 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 		runSettled,
 	});
 
+	// The Continue rescue (continue lane Task 3): a failed cron run resumed
+	// ONLY by a Continue (the continued run's inputs are exactly the
+	// continue itself) that answers clears the conversation's Failed label.
+	// The `sigrun:jobs` observer above early-returns here — the failed run
+	// record is no longer `running`, and a continue carries no `job:`
+	// requestId — so this separate handler is the only reachable home for
+	// the write. It never touches job or run records: the Jobs view keeps
+	// the original failure.
+	const rescue = async (event: RunSettledEvent): Promise<void> => {
+		try {
+			if (
+				event.outcome.status !== "answered" ||
+				event.continued !== true ||
+				event.inputs.length !== 1
+			) {
+				return;
+			}
+			await deps.harness.commit(async (tx) => {
+				const meta = await tx.doc(SessionMetaDoc, event.conversationId);
+				if (meta.source === "cron" && meta.jobOutcome === "failed") {
+					meta.jobOutcome = "succeeded";
+				}
+			}, ctx);
+		} catch (error) {
+			console.error("jobs: job-rescue runSettled observer failed:", error);
+		}
+	};
+	const unregisterRescue = deps.eventBus.registerExtension("sigrun:job-rescue", {
+		runSettled: rescue,
+	});
+
 	// The taskSettled listener (task runs): the host-event reduction the
 	// bus emits synchronously from terminal task-table writes. The settle
 	// work runs on a microtask side lane (the listener contract is
@@ -250,6 +283,7 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 
 	return () => {
 		unregister();
+		unregisterRescue();
 		offTaskSettled();
 		offJobWrites();
 	};

@@ -72,6 +72,14 @@ export const SLASH_COMMANDS: ReadonlyMap<string, SlashCommand> = new Map(
 				},
 			},
 			{
+				name: "continue",
+				description: "Resume the last failed run",
+				endpoint: {
+					method: "POST",
+					path: "/v1/conversations/:id/continue",
+				},
+			},
+			{
 				name: "export",
 				description: "Download this conversation as JSONL",
 				endpoint: { method: "GET", path: "/v1/conversations/:id/export" },

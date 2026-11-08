@@ -70,7 +70,7 @@ export function liveCompactionFailure(
  * The newest run's failure (`pi.live.runFailure`), as the alert renders
  * it: `{reason, detail?}`, or undefined when no failure is recorded, a
  * newer run is in flight, or the ending was user-caused
- * (`aborted`/`reset`).
+ * (`aborted`/`reset`) or `nothing_to_answer`.
  */
 export function liveRunFailure(
 	view: ConversationViewWire,
