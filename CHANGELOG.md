@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Two jobs firing into one conversation settle their own runs, and a
+  new-conversation run records its terminal outcome on the conversation.
+
 ### Changed
 
 - The conversation list summary carries the server-owned `jobOutcome` and

@@ -93,6 +93,15 @@ export const JobRunDoc = defineDocFamily<JobRunWire, JobRunWire>({
 	initial: (seed) => seed,
 });
 
+/**
+ * The job id portion of a scheduled or run-now fire key. Job ids may
+ * themselves contain colons, so only the pinned numeric tail is stripped.
+ */
+export function jobIdOfFireKey(fireKey: string): string | undefined {
+	const match = /^(.*):manual:\d+$/.exec(fireKey) ?? /^(.*):\d+$/.exec(fireKey);
+	return match?.[1];
+}
+
 // ---------------------------------------------------------------------------
 // Reads (storage scans — the harness exposes no family listing)
 // ---------------------------------------------------------------------------

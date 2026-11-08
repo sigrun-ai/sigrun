@@ -2,12 +2,12 @@
  * Jobs Task 3 (spec §8.1 "Run status"): the two run-settle observers.
  *
  * - **The `runSettled` handler** (registered on the event bus as
- *   `sigrun:jobs`): a settled run whose conversation's `SessionMeta`
- *   carries a `jobId` settles the job's RUNNING run record matching that
- *   `conversationId` — `succeeded` (answered) or `failed` (unanswered,
- *   `error: reason`) + `settledAt` — refreshes the job record's
- *   `lastRun` copy, then prunes history. It sees ONLY prompt runs (the
- *   bus derives settled runs from `submission` writes).
+ *   `sigrun:jobs`): every settled run input carrying `job:<fireKey>` settles
+ *   that exact RUNNING run record — `succeeded` (answered) or `failed`
+ *   (unanswered, `error: reason`) + `settledAt` — refreshes the job
+ *   record's `lastRun` copy, then prunes history. A pre-fire-key record
+ *   falls back to the conversation's `SessionMeta.jobId`. It sees ONLY
+ *   prompt runs (the bus derives settled runs from `submission` writes).
  * - **The `taskSettled` listener** (the host-event reduction the bus
  *   emits from terminal `task` table writes): settles `task`-action run
  *   records whose `taskId` matches — `completed` → `succeeded`, any
@@ -22,12 +22,12 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Context } from "@earendil-works/chord";
-import type { Harness, Storage } from "@earendil-works/pi-durable";
+import type { ConversationId, Harness, Storage } from "@earendil-works/pi-durable";
 import type { JobRunWire } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "../harness/settings.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { EventBus, type RunSettledEvent } from "../harness/event-bus.js";
-import { JobDoc, JobRunDoc, listRuns, patchJob, pruneHistory, scanJobs } from "./docs.js";
+import { JobDoc, JobRunDoc, jobIdOfFireKey, listRuns, patchJob, pruneHistory, scanJobs } from "./docs.js";
 import type { JobRuntimeDeps } from "./fire.js";
 
 /** The `sigrun.job.run` key a run record was written under. */
@@ -58,13 +58,24 @@ export interface JobObserversDeps {
 	readonly eventBus: EventBus;
 }
 
-/** Settle one run record + the job's lastRun copy + prune. */
-async function settleRun(
-	deps: JobObserversDeps,
+/**
+ * Settle one run record + the job's lastRun copy + prune. A job-owned run
+ * conversation records the same terminal outcome in the SAME commit.
+ */
+export async function settleJobRun(
+	deps: { harness: Harness; storage: Storage; settings: () => SettingsFile },
 	run: JobRunWire,
 	settled: JobRunWire,
 	ctx: Context,
 ): Promise<void> {
+	// SAFETY: the run record stores the branded ConversationId as a number.
+	const meta = run.conversationId === undefined
+		? undefined
+		: await deps.harness.snapshot(
+			SessionMetaDoc,
+			run.conversationId as unknown as ConversationId,
+			ctx,
+		);
 	await deps.harness.commit(async (tx) => {
 		// The seed only applies when the doc is absent (it never is — the
 		// fire created it); mutate the LIVE draft instead. Carried field by
@@ -74,6 +85,15 @@ async function settleRun(
 		// Object.assign lands in the tracked doc, not a copy.
 		const draft = await tx.doc(JobRunDoc, runKeyOf(run), settled);
 		Object.assign(draft as unknown as Record<string, unknown>, settled);
+		if (run.conversationId !== undefined && meta?.jobId === run.jobId) {
+			const metaDraft = await tx.doc(
+				SessionMetaDoc,
+				run.conversationId as unknown as ConversationId,
+			);
+			if (settled.outcome === "succeeded" || settled.outcome === "failed") {
+				metaDraft.jobOutcome = settled.outcome;
+			}
+		}
 	}, ctx);
 	await patchJob(deps.harness, run.jobId, (draft) => {
 		draft.lastRun = settled;
@@ -94,60 +114,79 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 	// auto-namer — a job observation never delays an extension's).
 	const runSettled = async (event: RunSettledEvent): Promise<void> => {
 		try {
-			// The job to settle from, in resolution order:
-			//  1. the session meta's `jobId` (a `conversation: "new"` fire —
-			//     the stamp persists for the conversation's life);
-			//  2. a `job:<fireKey>` requestId on one of the run's inputs (the
-			//     FIXED-conversation fire shape — `jobs/fire.ts` stamps the
-			//     prefix on BOTH shapes; a fire INTO an existing conversation
-			//     deliberately leaves the meta unstamped so later ordinary
-			//     runs there are not job runs, per isJobRun's contract).
-			let jobId: string | undefined;
-			const meta = await deps.harness.snapshot(
-				SessionMetaDoc,
-				event.conversationId,
-				ctx,
-			);
-			const metaJobId = (meta as { jobId?: unknown } | undefined)?.jobId;
-			if (typeof metaJobId === "string") {
-				jobId = metaJobId;
-			} else {
-				for (const id of event.inputs) {
-					const submission = await deps.harness.submission(id, ctx);
-					if (submission === undefined) continue;
-					const record = await submission.status(ctx);
-					const requestId = record.requestId;
-					if (requestId !== undefined && requestId.startsWith("job:")) {
-						jobId = requestId.slice("job:".length).split(":")[0];
-						break;
-					}
+			// Every `job:<fireKey>` input settles its OWN exact run record.
+			// One settle group may carry several jobs' queued inputs.
+			const runsToSettle = new Map<string, JobRunWire>();
+			for (const id of event.inputs) {
+				const submission = await deps.harness.submission(id, ctx);
+				if (submission === undefined) continue;
+				const record = await submission.status(ctx);
+				const requestId = record.requestId;
+				if (requestId === undefined || !requestId.startsWith("job:")) continue;
+				const fireKey = requestId.slice("job:".length);
+				const run = await deps.harness.snapshot(JobRunDoc, fireKey, ctx);
+				if (run?.outcome === "running") {
+					runsToSettle.set(fireKey, run);
+					continue;
+				}
+				// Compatibility only: a record predating exact-key storage is
+				// resolved by the colon-safe fire-key tail parser below.
+				const jobId = jobIdOfFireKey(fireKey);
+				if (jobId === undefined) continue;
+				const runs = await listRuns(
+					deps.storage,
+					jobId,
+					Number.MAX_SAFE_INTEGER,
+					ctx,
+				);
+				// SAFETY: ConversationId is the branded number the run record stores.
+				const legacyRun = runs.find(
+					(one) =>
+						one.outcome === "running" &&
+						one.conversationId === (event.conversationId as unknown as number),
+				);
+				if (legacyRun !== undefined) runsToSettle.set(runKeyOf(legacyRun), legacyRun);
+			}
+
+			// Compatibility fallback for pre-fire-key records: the conversation's
+			// persistent job stamp identifies the newest running run as before.
+			if (runsToSettle.size === 0) {
+				const meta = await deps.harness.snapshot(
+					SessionMetaDoc,
+					event.conversationId,
+					ctx,
+				);
+				const metaJobId = (meta as { jobId?: unknown } | undefined)?.jobId;
+				if (typeof metaJobId === "string") {
+					const runs = await listRuns(
+						deps.storage,
+						metaJobId,
+						Number.MAX_SAFE_INTEGER,
+						ctx,
+					);
+					const run = runs.find(
+						(one) =>
+							one.outcome === "running" &&
+							// SAFETY: ConversationId is the branded number the run record's
+							// plain `conversationId` field carries; compared across both forms.
+							one.conversationId === (event.conversationId as unknown as number),
+					);
+					if (run !== undefined) runsToSettle.set(runKeyOf(run), run);
 				}
 			}
-			if (jobId === undefined) return;
-			const runs = await listRuns(
-				deps.storage,
-				jobId,
-				Number.MAX_SAFE_INTEGER,
-				ctx,
-			);
-			const run = runs.find(
-				(one) =>
-					one.outcome === "running" &&
-					// SAFETY: ConversationId is the branded number the run record's
-					// plain `conversationId` field carries; compared across both forms.
-					one.conversationId === (event.conversationId as unknown as number),
-			);
-			if (run === undefined) return;
+
 			const answered = event.outcome.status === "answered";
-			const settled: JobRunWire = {
-				...run,
-				outcome: answered ? "succeeded" : "failed",
-				settledAt: nowIso(),
-				...(answered || event.outcome.status !== "unanswered"
-					? {}
-					: { error: event.outcome.reason }),
-			};
-			await settleRun(deps, run, settled, ctx);
+			for (const run of runsToSettle.values()) {
+				const settled: JobRunWire = {
+					...run,
+					outcome: answered ? "succeeded" : "failed",
+					settledAt: nowIso(),
+					...(answered || event.outcome.status !== "unanswered"
+						? {}
+						: { error: event.outcome.reason }),
+				};
+				await settleJobRun(deps, run, settled, ctx);
+			}
 		} catch (error) {
 			console.error("jobs: runSettled observer failed:", error);
 		}
@@ -224,7 +263,7 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 							settledAt: nowIso(),
 						...(succeeded || error === undefined ? {} : { error }),
 					};
-					await settleRun(deps, run, settled, ctx);
+					await settleJobRun(deps, run, settled, ctx);
 					return;
 				}
 			} catch (error) {

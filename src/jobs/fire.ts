@@ -315,9 +315,11 @@ async function firePrompt(
 				await tx.doc(JobRunDoc, fireKey, run);
 				// NO meta.jobId stamp here (the 2026-11-05 reconciliation with
 				// ask-user's isJobRun): a fire INTO an existing conversation must
-			// not mark every later run of that conversation job-driven. The
+				// not mark every later run of that conversation job-driven. The
 				// runSettled observer settles this run from the submission's
-				// `job:<fireKey>` requestId instead (observe.ts).
+				// `job:<fireKey>` requestId instead (observe.ts). Several jobs may
+				// share a conversation; each run settles from its own
+				// `job:<fireKey>` requestId.
 			}, context);
 			await patchJob(deps.harness, id, (draft) => {
 				draft.lastRun = run;
