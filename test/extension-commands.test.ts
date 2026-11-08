@@ -187,6 +187,7 @@ describe("extension slash commands: the catalog merge", () => {
 			"new",
 			"fork",
 			"compact",
+			"continue",
 			"export",
 			"import",
 			"name",

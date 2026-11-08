@@ -15,6 +15,7 @@ import {
 	abortOp,
 	compactOp,
 	configureOp,
+	continueOp,
 	ConversationOpError,
 	submitOp,
 } from "../conversation-ops.js";
@@ -25,6 +26,7 @@ import type {
 	AbortResponse,
 	CompactResponse,
 	ConfigureResponse,
+	ContinueResponse,
 	SubmissionResponse,
 } from "../views.js";
 
@@ -229,6 +231,47 @@ export function registerSubmissionRoutes(
 			try {
 				const { taskId } = await compactOp(ctx, conversation, instructions);
 				return await reply.code(202).send({ taskId });
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
+			}
+		},
+	);
+
+	// Resume the current context without adding a user message. Continue
+	// never queues: a busy conversation is a 409, with no admission or
+	// adoption/decline side effects.
+	app.post(
+		"/v1/conversations/:id/continue",
+		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },
+		async (request, reply): Promise<ContinueResponse> => {
+			const body: unknown = request.body;
+			let requestId: unknown;
+			if (body !== undefined && body !== null) {
+				if (typeof body !== "object" || Array.isArray(body)) {
+					return await reply.code(400).send({ error: "invalid_body" });
+				}
+				const record = body as Record<string, unknown>;
+				const unknownKey = Object.keys(record).find(
+					(key) => key !== "requestId",
+				);
+				if (unknownKey !== undefined) {
+					return await reply
+						.code(400)
+						.send({ error: "invalid_field", field: unknownKey });
+				}
+				requestId = record.requestId;
+			}
+			try {
+				const admitted = await continueOp(ctx, request.conversation, {
+					...(requestId === undefined ? {} : { requestId }),
+					...(request.principal.user === undefined
+						? {}
+						: { user: request.principal.user }),
+				});
+				return await reply.code(202).send(admitted);
 			} catch (error) {
 				if (error instanceof ConversationOpError) {
 					return await reply.code(error.status).send(error.body);
