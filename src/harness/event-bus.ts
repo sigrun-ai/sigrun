@@ -79,7 +79,9 @@ import {
 	type Harness,
 	type JsonObject,
 	type Page,
+	type Storage,
 	type SubmissionId,
+	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
@@ -392,7 +394,7 @@ export interface ExtensionEventHandlers {
 
 /** Internal queue item: which handler list an event dispatches through. */
 type BusEvent =
-	| { readonly kind: "settled"; readonly event: SettleGroup }
+	| { readonly kind: "settled"; readonly event: SettleGroup; readonly replayed?: true }
 	| { readonly kind: "lifecycle"; readonly event: LifecycleEvent };
 
 /** Options of `EventBus.open` (Task 6 lifts the idle pair into `SIGRUN_*` config). */
@@ -401,6 +403,8 @@ export interface EventBusOptions {
 	readonly queueMax: number;
 	/** Bounds each handler call (Task 6: `SIGRUN_HOOK_DEADLINE`). */
 	readonly hookDeadlineMs: number;
+	/** Settled groups enqueued per startup-replay page (default 100). */
+	readonly replayPage?: number;
 	/** Total wait for placed runs to settle during shutdown. */
 	readonly shutdownSettleWaitMs?: number;
 	/**
@@ -434,6 +438,10 @@ export const WORKER_SHUTDOWN_AWAIT_MS = 30_000;
 export const SHUTDOWN_SETTLE_WAIT_MS = 10_000;
 /** Short pause between live-run checks while the commit side lane works. */
 const SHUTDOWN_SETTLE_POLL_MS = 10;
+/** One replay page; live events wait behind at most this many groups. */
+const REPLAY_PAGE = 100;
+/** One terminal-submission storage page while reconstructing replay groups. */
+const REPLAY_SCAN_PAGE = 100;
 
 /** Per-worker runtime state (the bus-owned half of the curator contract). */
 interface WorkerState {
@@ -485,6 +493,7 @@ export class EventBus {
 	}
 	#queueMax: number;
 	#hookDeadlineMs: number;
+	#replayPage: number;
 	/**
 	 * The `${label}:${member}` pairs whose HostBridgeUnavailableError
 	 * already logged (polish A1, spec §5.2): a serverless process fails
@@ -533,12 +542,18 @@ export class EventBus {
 	#droppedLowest: number | undefined;
 	/** True after a settle group dispatch until the next marker save. */
 	#settledSinceSave = false;
+	/** The settle group currently being dispatched, if any (pins the marker). */
+	#inDispatch: SettleGroup | undefined;
 	/** The last `through` value read or saved (0 = never). */
 	#storedThrough = 0;
 	/** Task 3 sets this on replay failure; while true the pump never saves. */
 	#replayFailed = false;
-	/** Task 2's replay backlog (empty until then; declared for #computeThrough). */
+	/** Undelivered groups, ascending; the first id holds the marker back. */
 	#replayBacklog: SettleGroup[] = [];
+	/** Submission ids already enqueued for replay; a live duplicate is dropped. */
+	#replayedIds = new Set<SubmissionId>();
+	/** Startup replay is a one-shot boot transition. */
+	#replayStarted = false;
 
 	#closed = false;
 
@@ -546,6 +561,7 @@ export class EventBus {
 		this.#harness = harness;
 		this.#queueMax = options.queueMax;
 		this.#hookDeadlineMs = options.hookDeadlineMs;
+		this.#replayPage = options.replayPage ?? REPLAY_PAGE;
 		this.#idleThresholdMs = options.idleThresholdMs;
 		this.#workerDeadlineMs = options.workerDeadlineMs;
 		this.#shutdownSettleWaitMs = options.shutdownSettleWaitMs ?? SHUTDOWN_SETTLE_WAIT_MS;
@@ -824,10 +840,192 @@ export class EventBus {
 	}
 
 	/**
+	 * Rebuild and enqueue every terminal deliverable run at or above the
+	 * durable marker. Boot calls this after handler registration and before
+	 * resume. The first page is queued immediately; the pump moves later
+	 * pages in as the queue empties. Returns the WHOLE backlog size.
+	 */
+	public async replayUndelivered(storage: Storage, context: Context): Promise<number> {
+		if (this.#closed || this.#replayStarted) return 0;
+		this.#replayStarted = true;
+		const durable = toDurableContext(context);
+		const marker = await this.#harness.snapshot(RunDeliveryDoc, context);
+		let through = marker?.through ?? 0;
+		const inspection = await this.#harness.inspect(durable);
+		const live = inspection.submissions.filter(
+			(one) => one.type === "input" || one.type === "continue",
+		);
+		if (through === 0) {
+			const pending: SubmissionRecord[] = [];
+			for (const submission of live) {
+				if (await this.#snapshotInternal(submission.conversationId, durable)) {
+					continue;
+				}
+				pending.push(submission);
+			}
+			if (pending.length > 0) {
+				through = Math.min(...pending.map((one) => one.id));
+			} else {
+				const newest = await storage.scanSubmissions(
+					{ order: "descending" },
+					1,
+					undefined,
+					durable,
+				);
+				through = (newest.items[0]?.id ?? 0) + 1;
+			}
+			await this.#harness.commit(async (tx) => {
+				const draft = await tx.doc(RunDeliveryDoc);
+				(draft as { through: number }).through = through;
+			}, durable);
+			this.#storedThrough = through;
+			this.#highestTerminalObserved = through - 1;
+			return 0;
+		}
+		this.#storedThrough = through;
+
+		// Close the Harness.open → EventBus.open admission window: queued and
+		// placed deliverables remain live until their terminal observation.
+		for (const submission of live) {
+			if (await this.#snapshotInternal(submission.conversationId, durable)) {
+				continue;
+			}
+			this.#undeliveredLive.add(submission.id);
+		}
+
+		const terminal: SubmissionRecord[] = [];
+		for (const status of ["done", "unanswered"] as const) {
+			let cursor: Cursor | undefined;
+			for (;;) {
+				const page = await storage.scanSubmissions(
+					{ status, order: "descending" },
+					REPLAY_SCAN_PAGE,
+					cursor,
+					durable,
+				);
+				let belowMarker = false;
+				for (const submission of page.items) {
+					if (submission.id < through) {
+						belowMarker = true;
+						break;
+					}
+					if (submission.type !== "input" && submission.type !== "continue") {
+						continue;
+					}
+					terminal.push(submission);
+				}
+				if (belowMarker || page.next === undefined) break;
+				cursor = page.next;
+			}
+		}
+		terminal.sort((a, b) => a.id - b.id);
+		const byConversation = new Map<ConversationId, SubmissionRecord[]>();
+		for (const submission of terminal) {
+			if (await this.#snapshotInternal(submission.conversationId, durable)) {
+				continue;
+			}
+			const records = byConversation.get(submission.conversationId) ?? [];
+			records.push(submission);
+			byConversation.set(submission.conversationId, records);
+		}
+		const groups: SettleGroup[] = [];
+		for (const [conversationId, records] of byConversation) {
+			groups.push(...this.#regroupReplay(conversationId, records));
+		}
+		groups.sort((a, b) => a.settled[0]!.id - b.settled[0]!.id);
+		this.#replayBacklog = groups;
+		const highest = terminal.reduce((highest, one) => Math.max(highest, one.id), 0);
+		this.#highestTerminalObserved = Math.max(through - 1, highest);
+		const total = groups.length;
+		this.#enqueueReplayPage();
+		return total;
+	}
+
+	/** Snapshot and cache one conversation's immutable internal flag. */
+	async #snapshotInternal(conversationId: ConversationId, context: Context): Promise<boolean> {
+		const cached = this.#internal.get(conversationId);
+		if (cached !== undefined) return cached;
+		const meta = await this.#harness.snapshot(SessionMetaDoc, conversationId, context);
+		const internal = meta?.internal === true;
+		this.#internal.set(conversationId, internal);
+		return internal;
+	}
+
+	/**
+	 * Recreate one conversation's run groups. Answered submissions share an
+	 * answer; a queued withdrawal is always alone; adjacent failures sharing
+	 * a reason merge (including the continue that placed their inputs).
+	 */
+	#regroupReplay(
+		conversationId: ConversationId,
+		records: readonly SubmissionRecord[],
+	): SettleGroup[] {
+		const groups: SettleGroup[] = [];
+		let current: SubmissionRecord[] = [];
+		const flush = () => {
+			if (current.length === 0) return;
+			groups.push({
+				conversationId,
+				settled: current.map((one) => ({
+					id: one.id,
+					kind: one.type as "input" | "continue",
+					status: one.status as "done" | "unanswered",
+					entryId: one.entry,
+					answerEntryId: one.answer,
+					reason: one.reason,
+				})),
+			});
+			current = [];
+		};
+		for (const record of records) {
+			if (record.status === "done") {
+				const previous = current[0];
+				if (
+					previous !== undefined &&
+					(previous.status !== "done" || previous.answer !== record.answer)
+				) {
+					flush();
+				}
+				current.push(record);
+				continue;
+			}
+			if (record.type === "input" && record.entry === undefined && record.reason === "aborted") {
+				flush();
+				current.push(record);
+				flush();
+				continue;
+			}
+			const previous = current[0];
+			if (previous !== undefined && (previous.status !== "unanswered" || previous.reason !== record.reason)) {
+				flush();
+			}
+			current.push(record);
+		}
+		flush();
+		return groups;
+	}
+
+	/** Move the next replay page ahead of live events, preserving id order. */
+	#enqueueReplayPage(): void {
+		const page = this.#replayBacklog.splice(0, this.#replayPage);
+		for (let index = page.length - 1; index >= 0; index -= 1) {
+			const event = page[index]!;
+			for (const one of event.settled) this.#replayedIds.add(one.id);
+			// Replays outrank live events, but must not evict one. Dropping a
+			// replayed group pins the marker for the next boot instead.
+			if (this.#queue.length >= this.#queueMax) {
+				this.#droppedLowest = Math.min(this.#droppedLowest ?? event.settled[0]!.id, event.settled[0]!.id);
+				continue;
+			}
+			this.#queue.unshift({ kind: "settled", event, replayed: true });
+		}
+	}
+
+	/**
 	 * Compute the highest safe `through`: the minimum of every id that
 	 * could still need delivery. Empty/undefined terms are skipped.
-	 * The in-dispatch term is dropped (the save runs only when the queue
-	 * is empty and no group is being dispatched).
+	 * The in-dispatch term also guards a second drain observing the queue
+	 * empty while this pump awaits a handler.
 	 */
 	#computeThrough(): number {
 		const terms: number[] = [this.#highestTerminalObserved + 1];
@@ -844,6 +1042,9 @@ export class EventBus {
 		}
 		if (this.#droppedLowest !== undefined) {
 			terms.push(this.#droppedLowest);
+		}
+		if (this.#inDispatch !== undefined && this.#inDispatch.settled.length > 0) {
+			terms.push(this.#inDispatch.settled[0]!.id);
 		}
 		// Task 2's replay backlog (empty until then).
 		if (this.#replayBacklog.length > 0) {
@@ -1608,6 +1809,9 @@ export class EventBus {
 				}
 				if (value.status !== "done" && value.status !== "unanswered")
 					continue;
+				// Startup replay already queued this id. A resumed run's later
+				// terminal observation must not deliver it a second time.
+				if (this.#replayedIds.has(value.id)) continue;
 				const list = groups.get(value.conversationId) ?? [];
 				list.push({
 					id: value.id,
@@ -1663,6 +1867,13 @@ export class EventBus {
 			if (this.#closed) return;
 			const next = this.#queue.shift();
 			if (next === undefined) {
+				// Move one replay page in BEFORE this pass's marker save: its
+				// lowest queued id (and the ascending backlog's first id) hold
+				// the marker at or below every still-undelivered replay group.
+				if (this.#replayBacklog.length > 0) {
+					this.#enqueueReplayPage();
+					continue;
+				}
 				// The queue is empty and no group is being dispatched. Save
 				// the delivered-through marker if a settle group was delivered
 				// since the last save (durable run-settled Task 1).
@@ -1684,9 +1895,17 @@ export class EventBus {
 				}
 				return;
 			}
-			await this.#dispatch(next, context);
 			if (next.kind === "settled") {
+				// Mark before awaiting: another commit may start a drain while
+				// this group's handler is blocked, and that pump must not save
+				// past the in-flight group.
+				this.#inDispatch = next.event;
 				this.#settledSinceSave = true;
+			}
+			try {
+				await this.#dispatch(next, context);
+			} finally {
+				this.#inDispatch = undefined;
 			}
 		}
 	}
@@ -1694,11 +1913,13 @@ export class EventBus {
 	/** Run one event's handlers sequentially in install order. */
 	async #dispatch(item: BusEvent, context: Context): Promise<void> {
 		if (item.kind === "settled") {
-			for (const handler of this.#settleHandlers) {
+			// Replays are runSettled-only: raw subscribers (the activity
+			// stamper) must not restamp old conversations at restart time.
+			for (const handler of item.replayed === true ? [] : this.#settleHandlers) {
 				const handlerRef = handler;
 				await this.#bounded("settled", () => handlerRef(item.event));
 			}
-			await this.#dispatchRunSettled(item.event, context);
+			await this.#dispatchRunSettled(item.event, context, item.replayed === true);
 		} else {
 			for (const handler of this.#lifecycleHandlers) {
 				const handlerRef = handler;
@@ -1786,14 +2007,14 @@ export class EventBus {
 	 * handlers above have already run; entry reads happen HERE, on the
 	 * drain loop — never in the commit listener (the upstream contract).
 	 */
-	async #dispatchRunSettled(group: SettleGroup, context: Context): Promise<void> {
+	async #dispatchRunSettled(group: SettleGroup, context: Context, replayed: boolean): Promise<void> {
 		const registered = [...this.#extensions.entries()].filter(
 			([, handlers]) => handlers.runSettled !== undefined,
 		);
 		if (registered.length === 0) return;
 		let event: RunSettledEvent;
 		try {
-			event = await this.#resolveRunSettled(group, context);
+			event = await this.#resolveRunSettled(group, context, replayed);
 		} catch (error) {
 			console.error("event-bus: runSettled resolution failed:", error);
 			return;
@@ -1819,6 +2040,7 @@ export class EventBus {
 	async #resolveRunSettled(
 		group: SettleGroup,
 		context: Context,
+		replayed: boolean,
 	): Promise<RunSettledEvent> {
 		const owner = await this.#ownerOf(group.conversationId, context);
 		const ownerField = owner === undefined ? {} : { owner };
@@ -1854,6 +2076,7 @@ export class EventBus {
 					inputs,
 					inputTexts,
 					continued: group.settled.some((one) => one.kind === "continue"),
+					...(replayed ? { replayed: true as const } : {}),
 					outcome: { status: "answered", answerEntryId, answer: message },
 				};
 			}
@@ -1869,6 +2092,7 @@ export class EventBus {
 			inputs,
 			inputTexts,
 			continued: group.settled.some((one) => one.kind === "continue"),
+			...(replayed ? { replayed: true as const } : {}),
 			outcome: {
 				status: "unanswered",
 				reason: firstUnanswered?.reason ?? "unanswered",

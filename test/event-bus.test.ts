@@ -30,6 +30,7 @@ import type {
 	Conversation,
 	ConversationId,
 	HarnessSettings,
+	CommitPublication,
 } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../src/config.js";
@@ -42,6 +43,7 @@ import {
 	type LifecycleEvent,
 	type SettleGroup,
 	type HostEvent,
+	type RunSettledEvent,
 } from "../src/harness/event-bus.js";
 import { resolveExtension } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -58,6 +60,7 @@ interface TestBus {
 	faux: FauxProviderHandle;
 	bus: EventBus;
 	root: Conversation;
+	dir: string;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -82,9 +85,11 @@ async function bootBus(
 		hookDeadlineMs?: number;
 		shutdownSettleWaitMs?: number;
 		idleThresholdMs?: number;
+		replayPage?: number;
+		dir?: string;
 	} = {},
 ): Promise<TestBus> {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
+	const dir = options.dir ?? await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
 	dirs.push(dir);
 	const faux = fauxProvider({
 		provider: "faux",
@@ -130,6 +135,9 @@ async function bootBus(
 		...(options.idleThresholdMs === undefined
 			? {}
 			: { idleThresholdMs: options.idleThresholdMs }),
+		...(options.replayPage === undefined
+			? {}
+			: { replayPage: options.replayPage }),
 		// Required since the post-ship follow-ups (no bus-side default —
 		// config.ts owns the 600_000 production value; tests pick their own).
 		workerDeadlineMs: 10_000,
@@ -138,7 +146,7 @@ async function bootBus(
 		bus.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
 	});
-	return { opened, faux, bus, root };
+	return { opened, faux, bus, root, dir };
 }
 
 /** Submit one input and return the settled record (the run's own result). */
@@ -1555,7 +1563,7 @@ describe("delivered-through marker", () => {
 			bus.close();
 			await opened.harness.close(BACKGROUND_CONTEXT);
 		});
-		return { opened, faux, bus, root };
+		return { opened, faux, bus, root, dir };
 	}
 
 	test("the marker advances past a delivered run", async () => {
@@ -1827,5 +1835,467 @@ describe("delivered-through marker", () => {
 		const through = await storedThrough(opened);
 		// The run was never delivered (close dropped the queue).
 		expect(through ?? 0).toBeLessThanOrEqual(submission.id);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Startup replay (durable run-settled, Task 2): terminal submissions at or
+// above the marker regroup and reach runSettled after a crash/restart.
+// ---------------------------------------------------------------------------
+
+describe("startup replay", () => {
+	type ReplayRecord = {
+		event: RunSettledEvent;
+		label: string;
+	};
+
+	/** Close without delivering a blocked settle group, then reopen its database. */
+	async function restartAfterCrash(
+		first: TestBus,
+		release: () => void,
+		options: { replayPage?: number } = {},
+	): Promise<{ restarted: TestBus; events: ReplayRecord[] }> {
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		const restarted = await bootBus({
+			dir: first.dir,
+			...options,
+		});
+		void release;
+		const events: ReplayRecord[] = [];
+		restarted.bus.registerExtension("fixture-replay-recorder", {
+			runSettled: (event) => {
+				events.push({
+					event,
+					label: `${event.replayed === true ? "replay" : "live"}:${event.inputs.join(",")}`,
+				});
+			},
+		});
+		return { restarted, events };
+	}
+
+	/** One blocking delivery, with the abandoned call resolved on cleanup. */
+	async function crashWithBlockedDelivery(bus: EventBus): Promise<{
+		release: () => void;
+		draining: Promise<void>;
+	}> {
+		let release!: () => void;
+		let started!: () => void;
+		const startedGate = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		bus.registerExtension("fixture-crash-block", {
+			runSettled: async () => {
+				started();
+				await gate;
+			},
+		});
+		const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+		await startedGate;
+		return { release, draining };
+	}
+
+	/** A first delivered run establishes the marker without a first-boot replay. */
+	async function seedMarker(root: Conversation, bus: EventBus) {
+		const seeded = await runTurn(root, "seed the delivered-through marker");
+		expect(seeded.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		return seeded;
+	}
+
+	test("an undelivered run replays after a crash", async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				fauxAssistantMessage("undelivered answer"),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		const settled = await runTurn(first.root, "undelivered input");
+		expect(settled.record.status).toBe("done");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+
+			expect(events).toHaveLength(1);
+			expect(events[0]!.event).toMatchObject({
+				conversationId: first.root.id,
+				inputs: [settled.submission.id],
+				inputTexts: ["undelivered input"],
+				replayed: true,
+				outcome: { status: "answered", answerEntryId: settled.record.answer },
+			});
+			expect(restarted.bus.deliveredThrough()).toBeGreaterThan(settled.submission.id);
+		} finally {
+			release();
+		}
+	});
+
+	test("a clean restart replays nothing", async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("delivered before restart")],
+		});
+		const settled = await seedMarker(first.root, first.bus);
+		const before = first.bus.deliveredThrough();
+		expect(before).toBeGreaterThan(settled.submission.id);
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		const restarted = await bootBus({ dir: first.dir });
+
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		expect(restarted.bus.deliveredThrough()).toBe(before);
+		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(await restarted.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({ through: before });
+	});
+
+	test("an internal live run seeded at boot never pins the marker", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("marker answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		const internal = await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: first.opened.defaultModel },
+			init: async (tx, id) => await markInternal(tx, id, "alice"),
+		}, BACKGROUND_CONTEXT);
+		const provider = withCancel(BACKGROUND_CONTEXT);
+		first.faux.setResponses([
+			async () => {
+				return await new Promise<AssistantMessage>((_resolve, reject) => {
+					provider.context.abortSignal?.addEventListener("abort", () => {
+						reject(new Error("aborted after the replay seed assertion"));
+					}, { once: true });
+				});
+			},
+		]);
+		const held = await internal.submit({ type: "input", content: "internal held" }, BACKGROUND_CONTEXT);
+		await vi.waitFor(async () => {
+			expect((await held.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		});
+		await first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		try {
+			const restarted = await bootBus({
+				dir: first.dir,
+				responses: [
+					fauxAssistantMessage("resumed internal answer"),
+					fauxAssistantMessage("ordinary answer"),
+				],
+			});
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+			const ordinary = await runTurn(restarted.root, "ordinary after restart");
+			expect(ordinary.record.status).toBe("done");
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(restarted.bus.deliveredThrough()).toBeGreaterThan(ordinary.submission.id);
+			expect(held.id).toBeLessThan(ordinary.submission.id);
+		} finally {
+			provider.cancel();
+		}
+	});
+
+	test("first boot sets the marker and replays nothing", async () => {
+		const first = await bootBus({ responses: [fauxAssistantMessage("history answer")] });
+		const history = await runTurn(first.root, "history before the marker existed");
+		expect(history.record.status).toBe("done");
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		const restarted = await bootBus({ dir: first.dir });
+
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		expect(restarted.bus.deliveredThrough()).toBeGreaterThan(history.submission.id);
+	});
+
+	test("done inputs regroup by answer", async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("merged answer"),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		const one = await first.root.submit({ type: "input", content: "first merged input" }, BACKGROUND_CONTEXT);
+		const two = await first.root.submit({ type: "input", content: "second merged input", whenBusy: "steer" }, BACKGROUND_CONTEXT);
+		expect((await one.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		expect((await two.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.event.inputs)).toEqual([[one.id, two.id]]);
+			expect(events[0]!.event.inputTexts).toEqual(["first merged input", "second merged input"]);
+		} finally {
+			release();
+		}
+	});
+
+	test("a withdrawn queued input replays alone", async () => {
+		const first = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+			responses: [fauxAssistantMessage("marker answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		let fail!: () => void;
+		const failedResponse = new Promise<AssistantMessage>((resolve) => {
+			fail = () => resolve(fauxAssistantMessage("failed held run", { stopReason: "error", errorMessage: "faux provider failure" }));
+		});
+		first.faux.setResponses([async () => await failedResponse]);
+		const held = await first.root.submit({ type: "input", content: "held failed input" }, BACKGROUND_CONTEXT);
+		const withdrawn = await first.root.submit({ type: "input", content: "withdraw while queued" }, BACKGROUND_CONTEXT);
+		expect(await withdrawn.abort(BACKGROUND_CONTEXT)).toBe("aborted");
+		expect((await withdrawn.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		fail();
+		expect((await held.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(2);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.event.inputs)).toEqual([[held.id], [withdrawn.id]]);
+			expect(events.map((one) => one.event.outcome)).toEqual([
+				{ status: "unanswered", reason: "model_error" },
+				{ status: "unanswered", reason: "aborted" },
+			]);
+		} finally {
+			release();
+		}
+	});
+
+	test("internal conversations are not replayed", async () => {
+		const first = await bootBus({ responses: [fauxAssistantMessage("marker answer")] });
+		await seedMarker(first.root, first.bus);
+		const internal = await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: first.opened.defaultModel },
+			init: async (tx, id) => await markInternal(tx, id, "alice"),
+		}, BACKGROUND_CONTEXT);
+		first.faux.setResponses([fauxAssistantMessage("internal settled answer")]);
+		const settled = await runTurn(internal, "internal undelivered input");
+		expect(settled.record.status).toBe("done");
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		const restarted = await bootBus({ dir: first.dir });
+		const events: RunSettledEvent[] = [];
+		restarted.bus.registerExtension("fixture-replay-recorder", {
+			runSettled: (event) => {
+				events.push(event);
+			},
+		});
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events).toEqual([]);
+	});
+
+	test("replays skip raw onSettled subscribers", async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("marker answer"), fauxAssistantMessage("replay answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		await runTurn(first.root, "undelivered replay input");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			const raw = vi.fn();
+			restarted.bus.onSettled(raw);
+			await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(raw).not.toHaveBeenCalled();
+			expect(events).toHaveLength(1);
+			expect(events[0]!.event.replayed).toBe(true);
+		} finally {
+			release();
+		}
+	});
+
+	test("dropped groups replay after restart", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			queueMax: 1,
+			responses: [fauxAssistantMessage("marker answer"), fauxAssistantMessage("dropped answer"), fauxAssistantMessage("queued answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		let releaseFirst!: () => void;
+		let dispatching!: () => void;
+		const dispatchStarted = new Promise<void>((resolve) => {
+			dispatching = resolve;
+		});
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		first.bus.registerExtension("fixture-overflow-block", {
+			runSettled: async () => {
+				dispatching();
+				await firstGate;
+			},
+		});
+		const dropped = await runTurn(first.root, "overflow-dropped input");
+		const draining = first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		await dispatchStarted;
+		const other = await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: first.opened.defaultModel },
+		}, BACKGROUND_CONTEXT);
+		const queued = await runTurn(other, "queued behind overflow");
+		expect(dropped.record.status).toBe("done");
+		expect(queued.record.status).toBe("done");
+		// Deterministic overflow: evict the queued settle group with one
+		// lifecycle event while the first group is still in dispatch.
+		await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+		}, BACKGROUND_CONTEXT);
+		first.bus.close();
+		releaseFirst();
+		await draining;
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		const restarted = await bootBus({ dir: first.dir });
+		const events: RunSettledEvent[] = [];
+		restarted.bus.registerExtension("fixture-replay-recorder", {
+			runSettled: (event) => {
+				events.push(event);
+			},
+		});
+		try {
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(2);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((event) => event.inputs)).toEqual([[dropped.submission.id], [queued.submission.id]]);
+		} finally {
+			releaseFirst();
+		}
+	});
+
+	test("replay pages interleave with live events", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				...Array.from({ length: 5 }, (_, index) => fauxAssistantMessage(`replay answer ${index + 1}`)),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		let release!: () => void;
+		let started!: () => void;
+		const startedGate = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		first.bus.registerExtension("fixture-page-block", {
+			runSettled: async () => {
+				started();
+				await gate;
+			},
+		});
+		const undelivered: Awaited<ReturnType<typeof runTurn>>[] = [];
+		for (let index = 0; index < 5; index += 1) {
+			undelivered.push(await runTurn(first.root, `replay page input ${index + 1}`));
+		}
+		const draining = first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		await startedGate;
+		first.bus.close();
+		release();
+		await draining;
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		try {
+			const restarted = await bootBus({
+				dir: first.dir,
+				replayPage: 2,
+				responses: [fauxAssistantMessage("live answer")],
+			});
+			const events: ReplayRecord[] = [];
+			restarted.bus.registerExtension("fixture-replay-recorder", {
+				runSettled: (event) => {
+					events.push({
+						event,
+						label: `${event.replayed === true ? "replay" : "live"}:${event.inputs.join(",")}`,
+					});
+				},
+			});
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(5);
+			const live = await runTurn(restarted.root, "live input behind replay pages");
+			expect(live.record.status).toBe("done");
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.label)).toEqual([
+				`replay:${undelivered[0]!.submission.id}`,
+				`replay:${undelivered[1]!.submission.id}`,
+				`live:${live.submission.id}`,
+				...undelivered.slice(2).map((one) => `replay:${one.submission.id}`),
+			]);
+			expect(restarted.bus.deliveredThrough()).toBeGreaterThan(live.submission.id);
+		} finally {
+			release();
+		}
+	});
+
+	test("a failed continue merges with the input it placed", async () => {
+		const first = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+			responses: [fauxAssistantMessage("marker answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		let failFirst!: () => void;
+		const firstFailure = new Promise<AssistantMessage>((resolve) => {
+			failFirst = () => resolve(fauxAssistantMessage("failed original run", { stopReason: "error", errorMessage: "faux original failure" }));
+		});
+		first.faux.setResponses([async () => await firstFailure]);
+		const original = await first.root.submit({ type: "input", content: "original failure" }, BACKGROUND_CONTEXT);
+		const queued = await first.root.submit({ type: "input", content: "queued for continue", whenBusy: "steer" }, BACKGROUND_CONTEXT);
+		failFirst();
+		expect((await original.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		first.faux.setResponses([
+			fauxAssistantMessage("failed continue", { stopReason: "error", errorMessage: "faux continue failure" }),
+		]);
+		const continued = await first.root.submit({ type: "continue" }, BACKGROUND_CONTEXT);
+		expect((await queued.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.event.inputs)).toEqual([
+				[original.id, queued.id, continued.id],
+			]);
+			expect(events[0]!.event).toMatchObject({
+				continued: true,
+				inputTexts: ["original failure", "queued for continue", ""],
+				replayed: true,
+				outcome: { status: "unanswered", reason: "model_error" },
+			});
+		} finally {
+			release();
+		}
+	});
+
+	test("a live settle of a replayed id is dropped", async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("marker answer"), fauxAssistantMessage("replay answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		const settled = await runTurn(first.root, "one replayed id");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT);
+			const publication: CommitPublication = {
+				seq: 999_999 as CommitPublication["seq"],
+				changes: [{
+					type: "submission",
+					value: settled.record,
+				}],
+			};
+			(restarted.bus as unknown as { observe(publication: CommitPublication): void }).observe(publication);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events).toHaveLength(1);
+			expect(events[0]!.event.inputs).toEqual([settled.submission.id]);
+			expect(events[0]!.event.replayed).toBe(true);
+		} finally {
+			release();
+		}
 	});
 });
