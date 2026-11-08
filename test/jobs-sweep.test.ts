@@ -1,7 +1,7 @@
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -295,16 +295,139 @@ describe("the orphaned job run sweep", () => {
 			const live = await tx.doc(LiveDoc, rig.conversation.id);
 			live.run = { taskId: 999_999 as TaskId, inputs: [], turns: 0 };
 		}, BACKGROUND_CONTEXT);
-		await rig.conversation.submit({
+		const submission = await rig.conversation.submit({
 			type: "input",
 			content: "acme queued for a later run",
 			requestId: `job:${key}`,
+		}, BACKGROUND_CONTEXT);
+		expect((await submission.status(BACKGROUND_CONTEXT)).status).toBe("queued");
+
+		expect(await settleOnce(rig)).toBe(0);
+		expect(await rig.opened.harness.snapshot(JobRunDoc, key, BACKGROUND_CONTEXT)).toMatchObject({
+			outcome: "running",
+		});
+	});
+
+	test("a terminal submission still listed in the live run is left alone", async () => {
+		const rig = await bootRig();
+		const id = "api:acme-terminal-live-input";
+		await seedJob(rig, id);
+		const key = `${id}:${Date.parse(OLD_FIRE_AT)}`;
+		const submission = await rig.conversation.submit({
+			type: "input",
+			content: "acme terminal input with live-run after work",
+			requestId: `job:${key}`,
+		}, BACKGROUND_CONTEXT);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await rig.opened.harness.commit(async (tx) => {
+			const live = await tx.doc(LiveDoc, rig.conversation.id);
+			live.run = { taskId: 999_999 as TaskId, inputs: [submission.id], turns: 0 };
+		}, BACKGROUND_CONTEXT);
+		await seedRun(rig, id, { conversationId: rig.conversation.id as number });
+
+		expect(await settleOnce(rig)).toBe(0);
+		expect(await rig.opened.harness.snapshot(JobRunDoc, key, BACKGROUND_CONTEXT)).toMatchObject({
+			outcome: "running",
+		});
+	});
+
+	test("a malformed fireAt is left alone", async () => {
+		const rig = await bootRig();
+		const id = "api:acme-malformed-fire-at";
+		await seedJob(rig, id);
+		const key = `${id}:malformed`;
+		await rig.opened.harness.commit(async (tx) => {
+			await tx.doc(JobRunDoc, key, {
+				jobId: id,
+				version: 1,
+				fireAt: "not-a-date",
+				manual: false,
+				outcome: "running",
+				startedAt: OLD_FIRE_AT,
+				conversationId: 987_654,
+			});
 		}, BACKGROUND_CONTEXT);
 
 		expect(await settleOnce(rig)).toBe(0);
 		expect(await rig.opened.harness.snapshot(JobRunDoc, key, BACKGROUND_CONTEXT)).toMatchObject({
 			outcome: "running",
 		});
+	});
+
+	test("one failing settle does not abort the remaining sweep", async () => {
+		const rig = await bootRig();
+		const badId = "api:acme-bad-settle";
+		const goodId = "api:acme-good-settle";
+		await seedJob(rig, badId);
+		await seedJob(rig, goodId);
+		const badKey = await seedRun(rig, badId, { conversationId: 987_654 });
+		const goodKey = await seedRun(rig, goodId, { conversationId: 987_654 });
+		const commit = rig.opened.harness.commit.bind(rig.opened.harness);
+		let failNextSettle = true;
+		const commitWithFailure: typeof commit = async (change, context, options) => {
+			if (failNextSettle) {
+				failNextSettle = false;
+				throw new Error("acme rejected settle");
+			}
+			return await commit(change, context, options);
+		};
+		const failingHarness = new Proxy(rig.opened.harness, {
+			get: (target, property) => {
+				if (property === "commit") return commitWithFailure;
+				const value = Reflect.get(target, property, target);
+				// Private pi-durable fields require the original receiver.
+				return typeof value === "function" ? value.bind(target) : value;
+			},
+		});
+		const error = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			expect(await sweepOrphanedRuns({
+				harness: failingHarness,
+				storage: rig.opened.storage,
+				settings: () => ({}),
+				now: () => NOW,
+			}, BACKGROUND_CONTEXT)).toBe(1);
+		} finally {
+			error.mockRestore();
+		}
+		expect(await rig.opened.harness.snapshot(JobRunDoc, badKey, BACKGROUND_CONTEXT)).toMatchObject({
+			outcome: "running",
+		});
+		expect(await rig.opened.harness.snapshot(JobRunDoc, goodKey, BACKGROUND_CONTEXT)).toMatchObject({
+			outcome: "failed",
+			error: "orphaned",
+		});
+	});
+
+	test("older orphans settle before the newest lastRun", async () => {
+		const rig = await bootRig();
+		const id = "api:acme-ordered-orphans";
+		await seedJob(rig, id);
+		const olderFireAt = new Date(NOW - 20 * 60_000).toISOString();
+		const newerFireAt = OLD_FIRE_AT;
+		const olderKey = await seedRun(rig, id, { conversationId: 987_654, fireAt: olderFireAt });
+		const newerKey = await seedRun(rig, id, { conversationId: 987_654, fireAt: newerFireAt });
+		// Reverse the storage-backed scan so the assertion proves the sweep's
+		// ordering rather than relying on the store's incidental order.
+		const scanDocuments = rig.opened.storage.scanDocuments.bind(rig.opened.storage);
+		const reversedStorage = new Proxy(rig.opened.storage, {
+			get: (target, property, receiver) => property === "scanDocuments"
+				? async (...args: Parameters<typeof scanDocuments>) => {
+					const page = await scanDocuments(...args);
+					return { ...page, items: [...page.items].reverse() };
+				}
+				: Reflect.get(target, property, receiver),
+		});
+
+		expect(await sweepOrphanedRuns({
+			harness: rig.opened.harness,
+			storage: reversedStorage,
+			settings: () => ({}),
+			now: () => NOW,
+		}, BACKGROUND_CONTEXT)).toBe(2);
+		expect(await rig.opened.harness.snapshot(JobRunDoc, olderKey, BACKGROUND_CONTEXT)).toMatchObject({ outcome: "failed" });
+		expect(await rig.opened.harness.snapshot(JobRunDoc, newerKey, BACKGROUND_CONTEXT)).toMatchObject({ outcome: "failed" });
+		expect((await readJob(rig.opened.harness, id, BACKGROUND_CONTEXT))?.lastRun?.fireAt).toBe(newerFireAt);
 	});
 
 	test("a task run whose task is terminal settles orphaned", async () => {

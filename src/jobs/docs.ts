@@ -407,7 +407,7 @@ export async function pruneHistory(
  * differs by 1ms from the key the fire stored, and the run stays
  * `running` forever.)
  */
-function runKeyOf(run: JobRunWire): string {
+export function runKeyOf(run: JobRunWire): string {
 	if (run.manual) {
 		return `${run.jobId}:manual:${Date.parse(run.fireAt)}`;
 	}

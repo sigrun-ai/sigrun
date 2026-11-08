@@ -2492,8 +2492,11 @@ export async function openHarness(
 		BACKGROUND_CONTEXT,
 	);
 	// Settle crash-orphaned fires while scheduling is still suspended.
-	// settleJobRun supplies the run/lastRun/jobOutcome writes and the
-	// commit-driven job.failed notifications; a settled slot is never retried.
+	// settleJobRun supplies the run/lastRun/jobOutcome writes; a settled
+	// slot is never retried. Known ordering limitation: startNotifications
+	// subscribes only after openHarness returns, so boot-time job.failed
+	// notifications are not delivered. The conversation's jobOutcome and
+	// the Jobs view's Failed-prefixed row remain the user-visible surfaces.
 	await sweepOrphanedRuns({
 		harness,
 		storage,

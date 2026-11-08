@@ -8,7 +8,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { JobRunWire } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "../harness/settings.js";
-import { scanRunningRuns } from "./docs.js";
+import { runKeyOf, scanRunningRuns } from "./docs.js";
 import { settleJobRun } from "./observe.js";
 
 /** A crash leaves a run unobserved; only old fires are safe to repair. */
@@ -26,13 +26,20 @@ export async function sweepOrphanedRuns(
 ): Promise<number> {
 	const now = deps.now();
 	const runs = await scanRunningRuns(deps.storage, ctx);
+	// Oldest first: a job's lastRun must finish as its newest settled run.
+	runs.sort((a, b) => Date.parse(a.fireAt) - Date.parse(b.fireAt));
 	let settledCount = 0;
 	for (const run of runs) {
-		if (Date.parse(run.fireAt) >= now - ORPHAN_AGE_MS) continue;
-		const settled = await orphanedSettlement(deps, run, now, ctx);
-		if (settled === undefined) continue;
-		await settleJobRun(deps, run, settled, ctx);
-		settledCount += 1;
+		const fireAt = Date.parse(run.fireAt);
+		if (Number.isNaN(fireAt) || fireAt >= now - ORPHAN_AGE_MS) continue;
+		try {
+			const settled = await orphanedSettlement(deps, run, now, ctx);
+			if (settled === undefined) continue;
+			await settleJobRun(deps, run, settled, ctx);
+			settledCount += 1;
+		} catch (error) {
+			console.error("jobs: orphan sweep failed:", error);
+		}
 	}
 	return settledCount;
 }
@@ -56,12 +63,9 @@ async function orphanedSettlement(
 	if (await deps.harness.conversation(conversationId, ctx) === undefined) {
 		return orphaned(run, now);
 	}
-	const fireKey = run.manual
-		? `${run.jobId}:manual:${Date.parse(run.fireAt)}`
-		: `${run.jobId}:${Date.parse(run.fireAt)}`;
 	const submission = await deps.storage.submissionByRequest(
 		conversationId,
-		`job:${fireKey}`,
+		`job:${runKeyOf(run)}`,
 		ctx,
 	);
 	if (submission === undefined) return orphaned(run, now);
