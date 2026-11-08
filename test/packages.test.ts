@@ -313,7 +313,11 @@ describe("resolveExtensionEntry", () => {
 		mkdirSync(join(dir, "dist"));
 		writeFileSync(
 			join(dir, "package.json"),
-			JSON.stringify({ name: "acme-ext", type: "module" }),
+			JSON.stringify({
+				name: "acme-ext",
+				type: "module",
+				exports: "./dist/index.js",
+			}),
 		);
 		writeFileSync(join(dir, "dist", "index.js"), "export default () => {};\n");
 		const entry = pathToFileURL(join(dir, "dist", "index.js")).href;

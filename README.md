@@ -1009,8 +1009,9 @@ Entry grammar:
 | entry | what happens |
 |---|---|
 | `"name"` / `"name@range"` / `"@scope/name@range"` | npm install into the packages dir, then load |
-| `"file:/abs/path"` | npm `file:` install (symlinked source — the dev-checkout shape), then load |
-| `"./rel/path"` / `"/abs/path"` | load in place (nothing installed); an existing directory resolves like a package |
+| `"file:/abs/path"` | npm `file:` install (symlinked source — the dev-checkout shape), then load; an existing directory resolves like a package |
+| `"./rel/path"` | load in place (nothing installed) |
+| `"/abs/path"` | load in place (nothing installed); an existing directory resolves like a package |
 | `"git:host/path"` / `"https://…git"`, optional `@ref` | clone into `<config-dir>/git/<…>`, reconcile to the ref, then load |
 | `{ "source": …, "entry"?: "./x.js", "ref"?: "v1.2", "enabled"?: false }` | the explicit form: entry-point override, ref override, or install-but-don't-load |
 
@@ -1053,7 +1054,7 @@ Entry grammar:
 - **Resolution** — npm/file names resolve against the packages dir
   first (the deployment's declared version wins over anything the image
   bundles); an absolute path or `file://` URL naming an existing
-  directory resolves like a package: its own `exports`/`main`, a
+  directory resolves like a package: its own `exports` map, a
   `sigrun` manifest entry, then `index.js`, `dist/index.js`, and
   `index.ts` (TypeScript remains unimportable under plain node). A
   directory declaring skills and a loadable JavaScript entry loads the
