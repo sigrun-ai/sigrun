@@ -12,9 +12,18 @@
  * (e.g. `{"sigrun": "v0.11.3", "sigrun-ext-gateway": "v0.1.26", ...}`).
  *
  * memory-markdown is a core devDependency (`file:../sigrun-memory-markdown`),
- * so npm records no pin for it. The rule: pick the newest version whose
- * `peerDependencies["@sigrun/shared"]` accepts the released core's
- * `@sigrun/shared` version (from the same packument's `dependencies`).
+ * so npm records no pin for it. The rule is TWO-AXIS, checked per candidate
+ * (stable, newest-first):
+ *   1. `peerDependencies["@sigrun/shared"]`, when present, must accept the
+ *      released core's `@sigrun/shared` version (the plan's original rule;
+ *      no published memory-markdown release declares this peer yet).
+ *   2. Otherwise `peerDependencies["@earendil-works/pi-durable"]` must
+ *      accept the released core's pi-durable pin — the real compat axis:
+ *      every published memory-markdown release moved exactly with core's
+ *      pi-durable bump (0.1.0/0.1.1 peer 1.3.0; 0.1.2/0.2.2/0.2.3 peer
+ *      1.3.0 || 1.4.0; 0.2.4 peer ~1.5.0).
+ * Both core versions come from the SAME packument's `dependencies`. If
+ * neither axis accepts for any candidate, the resolver throws — never guess.
  *
  * `@sigrun/shared` and `@sigrun/tui` are in core's `dependencies` but
  * are NOT siblings — the resolver ignores them.
@@ -106,11 +115,18 @@ export async function resolveRefs(mode, npmView) {
 		refs[repo] = `v${version}`;
 	}
 
-	// 4. memory-markdown: newest version whose shared peer accepts core's shared.
+	// 4. memory-markdown: newest version whose shared OR pi-durable peer
+	// accepts core's corresponding pin (both from the same packument).
 	const coreShared = deps["@sigrun/shared"];
 	if (typeof coreShared !== "string") {
 		throw new Error(
 			`ci-core-ref: @sigrun/shared is missing from @sigrun/sigrun@${coreVersion} dependencies`,
+		);
+	}
+	const corePiDurable = deps["@earendil-works/pi-durable"];
+	if (typeof corePiDurable !== "string") {
+		throw new Error(
+			`ci-core-ref: @earendil-works/pi-durable is missing from @sigrun/sigrun@${coreVersion} dependencies`,
 		);
 	}
 
@@ -136,9 +152,15 @@ export async function resolveRefs(mode, npmView) {
 			typeof peers === "object" && peers !== null
 				? peers["@sigrun/shared"]
 				: undefined;
+		const piDurableRange =
+			typeof peers === "object" && peers !== null
+				? peers["@earendil-works/pi-durable"]
+				: undefined;
 		if (
-			typeof sharedRange === "string" &&
-			semver.satisfies(coreShared, sharedRange)
+			(typeof sharedRange === "string" &&
+				semver.satisfies(coreShared, sharedRange)) ||
+			(typeof piDurableRange === "string" &&
+				semver.satisfies(corePiDurable, piDurableRange))
 		) {
 			refs["sigrun-memory-markdown"] = `v${v}`;
 			mmResolved = true;
@@ -148,7 +170,7 @@ export async function resolveRefs(mode, npmView) {
 
 	if (!mmResolved) {
 		throw new Error(
-			`ci-core-ref: no @sigrun/memory-markdown version accepts @sigrun/shared@${coreShared}`,
+			`ci-core-ref: no @sigrun/memory-markdown version accepts @sigrun/shared@${coreShared} or @earendil-works/pi-durable@${corePiDurable}`,
 		);
 	}
 

@@ -37,6 +37,7 @@ function coreDependencies(overrides: Record<string, string> = {}) {
 		"@sigrun/oauth": "0.1.0",
 		"@sigrun/shared": "0.11.3",
 		"@sigrun/tui": "0.11.3",
+		"@earendil-works/pi-durable": "1.5.0",
 		...overrides,
 	};
 }
@@ -55,7 +56,13 @@ function releaseFixture(overrides: Record<string, unknown> = {}) {
 
 describe("ci-core-ref", () => {
 	test("release mode resolves npm latest and its built-in pins", async () => {
-		const refs = await resolveRefs("release", fakeNpmView(releaseFixture()));
+		const fixture = releaseFixture();
+		const deps = fixture["@sigrun/sigrun@0.11.3 dependencies"];
+		// The pi-durable compat pin rides the SAME core packument
+		// dependencies object the built-in pins come from (one npmView call).
+		expect(deps["@earendil-works/pi-durable"]).toBe("1.5.0");
+
+		const refs = await resolveRefs("release", fakeNpmView(fixture));
 
 		expect(refs).toEqual({
 			sigrun: "v0.11.3",
@@ -95,7 +102,7 @@ describe("ci-core-ref", () => {
 	});
 
 	test("an unknown mode fails loud", async () => {
-		await expect(resolveRefs("latest" as "main", fakeNpmView({}))).rejects.toThrow(
+		await expect(resolveRefs("latest" as never, fakeNpmView({}))).rejects.toThrow(
 			/unknown mode.*latest/,
 		);
 	});
@@ -177,5 +184,51 @@ describe("ci-core-ref", () => {
 
 		const refs = await resolveRefs("release", npmView);
 		expect(refs["sigrun-memory-markdown"]).toBe("v0.10.0");
+	});
+
+	test("memory-markdown falls back to the pi-durable peer when no shared peer exists", async () => {
+		// Real-registry peers: mm 0.2.4 declares pi-durable ~1.5.0 (accepts
+		// core's 1.5.0); 0.2.3 declares 1.3.0 || 1.4.0 (does not). Neither
+		// declares an @sigrun/shared peer.
+		const npmView = fakeNpmView(
+			releaseFixture({
+				"@sigrun/sigrun@0.11.3 dependencies": coreDependencies({
+					"@sigrun/shared": "0.11.4",
+					"@earendil-works/pi-durable": "1.5.0",
+				}),
+				"@sigrun/memory-markdown versions": ["0.2.4", "0.2.3"],
+				"@sigrun/memory-markdown@0.2.4 peerDependencies": {
+					"@earendil-works/chord": "1.5.0",
+					"@earendil-works/pi-ai": "1.5.0",
+					"@earendil-works/pi-durable": "~1.5.0",
+					typebox: "1.3.27",
+				},
+				"@sigrun/memory-markdown@0.2.3 peerDependencies": {
+					"@earendil-works/chord": "1.3.0 || 1.4.0",
+					"@earendil-works/pi-ai": "1.3.0 || 1.4.0",
+					"@earendil-works/pi-durable": "1.3.0 || 1.4.0",
+					typebox: "1.3.27",
+				},
+			}),
+		);
+
+		const refs = await resolveRefs("release", npmView);
+		expect(refs["sigrun-memory-markdown"]).toBe("v0.2.4");
+	});
+
+	test("memory-markdown fails loud when neither peer axis accepts", async () => {
+		const npmView = fakeNpmView(
+			releaseFixture({
+				"@sigrun/memory-markdown versions": ["0.2.4"],
+				"@sigrun/memory-markdown@0.2.4 peerDependencies": {
+					"@sigrun/shared": "^0.12.0",
+					"@earendil-works/pi-durable": "1.3.0 || 1.4.0",
+				},
+			}),
+		);
+
+		await expect(resolveRefs("release", npmView)).rejects.toThrow(
+			/no @sigrun\/memory-markdown version accepts @sigrun\/shared@0\.11\.3 or @earendil-works\/pi-durable@1\.5\.0/,
+		);
 	});
 });
