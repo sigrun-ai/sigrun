@@ -577,18 +577,10 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 	test(
 		"a tarball-installed blocks extension imports @sigrun/sigrun/blocks through the host link",
 		async () => {
-			// Needs `exports["./blocks"]` to resolve — the map points at
-			// dist/, so this test requires a build. Skipped (with a message)
-			// when dist/blocks/index.js is absent, so `npx vitest run` on a
-			// fresh checkout without a build never fails spuriously; the
-			// worktree gate (`npm run build` before the suite) runs it for real.
+			// The suite's global setup builds dist/ before workers start. A
+			// missing artifact is a hard failure, never a pass without testing.
 			const built = join(import.meta.dirname, "..", "dist", "blocks", "index.js");
-			if (!existsSync(built)) {
-				console.warn(
-					"skipping the blocks host-link import: dist/blocks/index.js absent (run npm run build)",
-				);
-				return;
-			}
+			expect(existsSync(built), "dist/blocks/index.js must be built before tests run").toBe(true);
 			// npm pack the fixture (the registry shape: no devDeps, no solved
 			// peers — --legacy-peer-deps holds the peerDependency "*" symbolic).
 			const packDir = freshDir("sigrun-pkg-blocks-pack-");
