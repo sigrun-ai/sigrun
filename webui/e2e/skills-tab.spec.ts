@@ -88,6 +88,40 @@ test("Skills tab: create a workspace skill, see it + its one-commit history, edi
 	}
 });
 
+test("fill follows the viewport across its height breakpoint", async ({ browser }) => {
+	const context = await browser.newContext({
+		viewport: { width: 1280, height: 800 },
+		extraHTTPHeaders: { "x-sigrun-user": "tester" },
+	});
+	const page = await context.newPage();
+	try {
+		await page.goto(`${server.url}/#/ext/core/skills`);
+		await page.getByRole("button", { name: "New skill" }).click();
+		await page.getByRole("textbox", { name: "Name" }).fill("acme-fill-resize");
+		await page.getByRole("textbox", { name: "Description" }).fill("Resize fixture");
+		await page.getByRole("textbox", { name: "Body" }).fill("Resize the editor.");
+		await page.getByRole("button", { name: "Create" }).click();
+		const row = page.locator('[data-page-region="sidebar"] .blk-list-card', {
+			hasText: "acme-fill-resize",
+		}).first();
+		await expect(row).toBeVisible();
+		await row.click();
+		await page.getByRole("button", { name: "Edit", exact: true }).click();
+		const body = page.getByRole("textbox", { name: "Body" });
+		await expect(body).toBeVisible();
+		expect(await body.evaluate((el) => el.style.height)).not.toBe("");
+
+		await page.setViewportSize({ width: 1280, height: 1000 });
+		await expect.poll(() => body.evaluate((el) => el.style.height)).toBe("");
+		expect(await body.evaluate((el) => el.getBoundingClientRect().height)).toBeGreaterThanOrEqual(600);
+
+		await page.setViewportSize({ width: 1280, height: 800 });
+		await expect.poll(() => body.evaluate((el) => el.style.height)).not.toBe("");
+	} finally {
+		await context.close();
+	}
+});
+
 test("Skills tab on Pixel 7: the list shows first and the back arrow returns", async ({
 	browser,
 }) => {

@@ -14,6 +14,7 @@ import type { FormBlock, JsonObject } from "@sigrun/shared/blocks";
 import { findButton, render, textContent } from "../../test-utils";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
 import { FormBlockView } from "./Form";
+import { syncLongtextHeight } from "./longtextHeight";
 
 function harness(
 	children: FormBlock["children"],
@@ -115,6 +116,18 @@ describe("field chrome", () => {
 			{ f: { body: "text" } },
 		);
 		expect(inputByLabel(renderer, "Body").props.className).toBe("blk-longtext-fill");
+	});
+});
+
+describe("longtext height", () => {
+	test("fill outside a page main keeps growing with its content", () => {
+		const element = {
+			style: { height: "" },
+			scrollHeight: 480,
+			closest: () => null,
+		} as unknown as HTMLTextAreaElement;
+		syncLongtextHeight(element, true, true);
+		expect(element.style.height).toBe("480px");
 	});
 });
 

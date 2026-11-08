@@ -3468,7 +3468,6 @@ body {
 	border: 1px solid var(--border);
 	border-radius: 4px;
 	padding: 0.4rem;
-	resize: vertical;
 	width: 100%;
 	box-sizing: border-box;
 	max-width: 100%;

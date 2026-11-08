@@ -10,7 +10,7 @@
  * field is disabled regardless.
  */
 
-import { useLayoutEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import type {
 	DateField,
 	DatetimeField,
@@ -28,6 +28,7 @@ import { SecretFieldView } from "./SecretField";
 import { FileFieldView } from "./FileField";
 import { ListFieldView } from "./ListField";
 import { DaterangeFieldView } from "./DaterangeField";
+import { watchLongtextHeight } from "./longtextHeight";
 
 /** What the owning form hands every field renderer. */
 export interface FieldProps<F extends Field = Field> {
@@ -115,16 +116,10 @@ function LongtextFieldView(props: FieldProps<LongtextField>): ReactNode {
 	const data = useSurfaceData();
 	const textarea = useRef<HTMLTextAreaElement>(null);
 	const value = typeof props.value === "string" ? props.value : "";
-	useLayoutEffect(() => {
+	useEffect(() => {
 		const element = textarea.current;
-		if (
-			element === null ||
-			(field.fill === true && window.matchMedia("(min-height: 900px)").matches)
-		) return;
-		// Keep the schema's row count as the minimum, then let content
-		// grow the box. The stylesheet's 70vh cap owns scrolling.
-		element.style.height = "auto";
-		element.style.height = `${element.scrollHeight}px`;
+		if (element === null) return;
+		return watchLongtextHeight(element, field.fill === true);
 	}, [field.fill, value]);
 	return (
 		<FieldRow field={field} error={props.error}>
