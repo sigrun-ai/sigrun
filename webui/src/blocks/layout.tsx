@@ -8,7 +8,8 @@
 
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { bound, boundString, useSurfaceData } from "./context";
-import type { Block, Field, Size, Tone } from "@sigrun/shared/blocks";
+import { ActionButtonRow } from "./content";
+import type { ActionButton, Block, Field, Size, Tone } from "@sigrun/shared/blocks";
 import { toneColor } from "./tones";
 import { useWidthClass, useWidthRem } from "./width";
 
@@ -145,6 +146,7 @@ export function SectionBlockView(props: {
 		readonly tone?: Tone | { readonly $: string };
 		readonly collapsible?: boolean;
 		readonly collapsed?: boolean;
+		readonly actions?: readonly ActionButton[];
 	};
 	children: ReactNode;
 }): ReactNode {
@@ -154,6 +156,8 @@ export function SectionBlockView(props: {
 	const boundTone = bound(ctx, props.block.tone);
 	const tone = typeof boundTone === "string" ? boundTone : "neutral";
 	const collapsible = props.block.collapsible ?? false;
+	const actions = props.block.actions ?? [];
+	const hasActions = actions.length > 0;
 	const [open, setOpen] = useState(!(props.block.collapsed ?? false));
 	const expanded = collapsible ? open : true;
 	return (
@@ -162,7 +166,7 @@ export function SectionBlockView(props: {
 			data-block="section"
 			data-tone={tone}
 		>
-			{(title !== "" || subtitle !== "" || collapsible) && (
+			{(title !== "" || subtitle !== "" || collapsible || hasActions) && (
 				<div className="blk-section-head">
 					{collapsible ? (
 						<button
@@ -192,6 +196,11 @@ export function SectionBlockView(props: {
 					{subtitle !== "" && (
 						<div className="blk-section-subtitle" dir="auto">
 							{subtitle}
+						</div>
+					)}
+					{hasActions && (
+						<div className="blk-section-actions">
+							<ActionButtonRow buttons={actions} />
 						</div>
 					)}
 				</div>

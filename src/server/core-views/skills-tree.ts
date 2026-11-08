@@ -131,7 +131,10 @@ export interface SkillMainData {
 	readonly history: {
 		readonly available: boolean;
 		readonly reason: string | null;
-		readonly items: readonly SkillHistoryRow[];
+		/** Rows up to and including the selected on-page commit. */
+		readonly before: readonly SkillHistoryRow[];
+		/** Rows after the selected commit; empty without an on-page selection. */
+		readonly after: readonly SkillHistoryRow[];
 		readonly hasMore: boolean;
 		readonly nextCursor: string | null;
 	};
@@ -314,25 +317,25 @@ export function canWrite(
 	return selection.root === "learned";
 }
 
-/** One history card's action buttons (per-row literals — navigate params cannot bind). */
-function historyRowButtons(rows: readonly SkillHistoryRow[]): JsonObject[] {
-	const out: JsonObject[] = [];
-	for (const row of rows) {
-		if (row.curator && row.reviewId !== undefined) {
-			out.push({
-				id: `curator-${row.sha}`,
-				label: "Review",
-				icon: "link",
-				action: {
-					type: "navigate",
-					target: {
-						view: { extension: "curator", id: "curator", params: { review: row.reviewId } },
+/** One bound history card action; rows without a review id hide it. */
+function historyRowActions(): JsonObject[] {
+	return [
+		{
+			id: "review",
+			label: "Review",
+			icon: "link",
+			action: {
+				type: "navigate",
+				target: {
+					view: {
+						extension: "curator",
+						id: "curator",
+						params: { review: { $: "./reviewId" } },
 					},
 				},
-			});
-		}
-	}
-	return out;
+			},
+		},
+	];
 }
 
 /** One selected-skill callout's action buttons (per-page literals; handlers resolve params). */
@@ -466,6 +469,7 @@ function formFields(editingExisting: boolean): JsonObject[] {
 			label: "Body",
 			syntax: "markdown",
 			rows: 16,
+			fill: true,
 		},
 	];
 }
@@ -561,6 +565,9 @@ export function buildSkillsTree(
 				type: "section",
 				id: "skill-summary",
 				title: { $: "/main/name" },
+				actions: opts.writable
+					? skillActions(params, opts.historyAvailable, opts.deleted === true, opts.deletionSha)
+					: [],
 				children: [
 					{
 						type: "fields",
@@ -572,17 +579,14 @@ export function buildSkillsTree(
 					},
 				],
 			},
-			...(opts.writable
+			...(opts.writable && opts.deleted === true && opts.deletionSha === undefined
 				? [
 						{
 							type: "callout",
 							id: "skill-actions",
 							tone: "neutral",
 							title: "Actions",
-							...(opts.deleted === true && opts.deletionSha === undefined
-								? { body: "No deletion commit was found for this skill." }
-								: {}),
-							actions: skillActions(params, opts.historyAvailable, opts.deleted === true, opts.deletionSha),
+							body: "No deletion commit was found for this skill.",
 						},
 					]
 				: []),
@@ -618,31 +622,51 @@ export function buildSkillsTree(
 			},
 		);
 		if (main.history.available) {
-			const rows = main.history.items;
-			const curatorButtons = historyRowButtons(rows);
-			mainBlocks.push({
-				type: "section",
-				id: "skill-history",
-				title: "History",
-				children: [
-					{
-						type: "collection",
-						id: "history",
-						display: "list",
-						items: { $: "/main/history/items" },
-						onActivate: { type: "edit", name: "openCommit" },
-						item: {
-							title: { $: "./summary" },
-							subtitle: { $: "./author" },
-							meta: [{ time: { $: "./at" }, format: "relative" }],
-							badges: [{ text: { $: "./curator" }, tone: "neutral" }],
-							...(curatorButtons.length === 0 ? {} : { actions: curatorButtons }),
-						},
-					},
-				],
+			const historyCard: JsonObject = {
+				title: { $: "./summary" },
+				subtitle: { $: "./author" },
+				meta: [{ time: { $: "./at" }, format: "relative" }],
+				badges: [{ text: { $: "./curator" }, tone: "neutral" }],
+				actions: historyRowActions(),
+			};
+			const historyCollection = (id: string, pointer: string): JsonObject => ({
+				type: "collection",
+				id,
+				display: "list",
+				items: { $: pointer },
+				onActivate: { type: "edit", name: "openCommit" },
+				item: historyCard,
 			});
+			const before = historyCollection("history-before", "/main/history/before");
+			const after = historyCollection("history-after", "/main/history/after");
+			// An on-page split puts the selected commit's diffs directly
+			// below its row; an off-page selection puts them at the end.
+			const inline = main.commit !== null && main.history.after.length > 0;
+			const commitChildren: JsonObject[] = [];
+			if (main.commit !== null) {
+				const files: JsonObject[] = main.commit.files.map((file, index): JsonObject =>
+					file.elided === true
+						? { type: "markdown", id: `commit-elided-${index}`, text: `_${file.path}_` }
+						: {
+								type: "diff",
+								id: `commit-diff-${index}`,
+								before: file.before,
+								after: file.after,
+								lang: "markdown",
+							},
+				);
+				commitChildren.push(
+					...(files.length === 0
+						? [{ type: "markdown", id: "commit-empty", text: "No changes to this skill in this commit." }]
+						: files),
+				);
+			}
+			const afterBlocks = main.history.after.length > 0 ? [after] : [];
+			const historyChildren: JsonObject[] = inline
+				? [before, ...commitChildren, ...afterBlocks]
+				: [before, ...afterBlocks, ...commitChildren];
 			if (main.history.hasMore && main.history.nextCursor !== null) {
-				mainBlocks.push({
+				historyChildren.push({
 					type: "callout",
 					id: "history-more",
 					tone: "neutral",
@@ -660,6 +684,12 @@ export function buildSkillsTree(
 					],
 				});
 			}
+			mainBlocks.push({
+				type: "section",
+				id: "skill-history",
+				title: "History",
+				children: historyChildren,
+			});
 		} else {
 			mainBlocks.push({
 				type: "callout",
@@ -667,31 +697,6 @@ export function buildSkillsTree(
 				tone: "neutral",
 				title: "History unavailable",
 				body: { $: "/main/history/reason" },
-			});
-		}
-		// The selected commit: one `diff` block per changed file. The
-		// elision marker row (review I6's total-bytes cap) renders as a
-		// markdown note, not a diff.
-		if (main.commit !== null) {
-			const files: JsonObject[] = main.commit.files.map((file, index): JsonObject =>
-				file.elided === true
-					? { type: "markdown", id: `commit-elided-${index}`, text: `_${file.path}_` }
-					: {
-							type: "diff",
-							id: `commit-diff-${index}`,
-							before: file.before,
-							after: file.after,
-							lang: "markdown",
-						},
-			);
-			mainBlocks.push({
-				type: "section",
-				id: "commit-section",
-				title: `Commit ${main.commit.sha.slice(0, 8)}`,
-				children:
-					files.length === 0
-						? [{ type: "markdown", text: "No changes to this skill in this commit." }]
-						: files,
 			});
 		}
 	} else {

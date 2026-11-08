@@ -276,6 +276,41 @@ describe("BlockView: section", () => {
 		expect(textContent(renderer.toJSON())).not.toContain("inside");
 		renderer.unmount();
 	});
+
+	test("section actions render in the header", () => {
+		const { renderer, dispatch } = renderBlock({
+			type: "section",
+			id: "summary",
+			title: "Group",
+			actions: [
+				{ id: "open", label: "Open run", action: { type: "navigate", target: { conversation: 7 } } },
+			],
+			children: [{ type: "markdown", text: "inside" }],
+		});
+		const head = renderer.root.findByProps({ className: "blk-section-head" });
+		expect(head.findAll((node) => node.type === "button")).toHaveLength(1);
+		act(() => {
+			findByLabel(renderer, "Open run").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "navigate", target: { conversation: 7 } },
+			null,
+		);
+		renderer.unmount();
+	});
+
+	test("an empty section action list renders no actions container", () => {
+		const { renderer } = renderBlock({
+			type: "section",
+			id: "summary",
+			title: "Group",
+			actions: [],
+			children: [{ type: "markdown", text: "inside" }],
+		});
+		expect(renderer.root.findByProps({ className: "blk-section-head" })).toBeTruthy();
+		expect(renderer.root.findAllByProps({ className: "blk-section-actions" })).toHaveLength(0);
+		renderer.unmount();
+	});
 });
 
 // ─── content blocks ───────────────────────────────────────────────────────
@@ -330,6 +365,40 @@ describe("BlockView: fields", () => {
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("Bound");
 		expect(text).toContain("yes");
+		renderer.unmount();
+	});
+
+	test("hideEmpty omits undefined, null and empty-string resolved values only", () => {
+		const { renderer } = renderBlock(
+			{
+				type: "fields",
+				hideEmpty: true,
+				rows: [
+					{ label: "Missing", value: { $: "/missing" } },
+					{ label: "Null", value: null },
+					{ label: "Empty", value: "" },
+					{ label: "Zero", value: 0 },
+					{ label: "False", value: false },
+					{ label: "Present", value: "acme" },
+				],
+			},
+			{ data: {} },
+		);
+		expect(renderer.root.findAllByProps({ className: "blk-field-row" })).toHaveLength(3);
+		const text = textContent(renderer.toJSON());
+		expect(text).not.toContain("Missing");
+		expect(text).not.toContain("Null");
+		expect(text).not.toContain("Empty");
+		expect(text).toContain("Zero");
+		expect(text).toContain("False");
+		expect(text).toContain("Present");
+		renderer.unmount();
+	});
+
+	test("without hideEmpty an empty resolved row still renders", () => {
+		const { renderer } = renderBlock({ type: "fields", rows: [{ label: "Empty", value: "" }] });
+		expect(renderer.root.findAllByProps({ className: "blk-field-row" })).toHaveLength(1);
+		expect(textContent(renderer.toJSON())).toContain("Empty");
 		renderer.unmount();
 	});
 });
@@ -412,6 +481,36 @@ describe("BlockView: diff", () => {
 		expect(text).toContain("const a = 1;");
 		expect(text).toContain("const a = 2;");
 		expect(text).toContain("src/acme.ts");
+		expect(
+			renderer.root.findByProps({ "data-diff-op": "del" }).children.map((child) =>
+				typeof child === "string" ? child : child.props.children,
+			),
+		).toEqual(["-", "const a = 1;"]);
+		expect(
+			renderer.root.findByProps({ "data-diff-op": "add" }).children.map((child) =>
+				typeof child === "string" ? child : child.props.children,
+			),
+		).toEqual(["+", "const a = 2;"]);
+		renderer.unmount();
+	});
+
+	test("renders one column with gutters and collapses unchanged runs", () => {
+		const unchanged = Array.from({ length: 100 }, (_, index) => `line-${index + 1}`);
+		const { renderer } = renderBlock({
+			type: "diff",
+			before: unchanged.join("\n"),
+			after: [...unchanged, "added"].join("\n"),
+		});
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("… 94 unchanged lines");
+		expect(text).toContain("+added");
+		const same = renderer.root.findAllByProps({ "data-diff-op": "same" })[0]!;
+		expect(same.children[0]).toEqual(
+			expect.objectContaining({ props: expect.objectContaining({ children: " " }) }),
+		);
+		expect(renderer.root.findAllByProps({ className: "blk-diff-panes" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-diff-op": "del" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-diff-op": "add" })).toHaveLength(1);
 		renderer.unmount();
 	});
 });
@@ -433,6 +532,23 @@ describe("BlockView: details", () => {
 // ─── actions (spec §6.1/§6.2) ─────────────────────────────────────────────
 
 describe("BlockView: actions", () => {
+	test("a callout button submit still sends null", () => {
+		const { renderer, dispatch } = renderBlock({
+			type: "callout",
+			id: "board",
+			tone: "info",
+			title: "Board",
+			actions: [
+				{ id: "add", label: "Add card", action: { type: "submit", name: "addCard" } },
+			],
+		});
+		act(() => {
+			findByLabel(renderer, "Add card").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith({ type: "submit", name: "addCard" }, null);
+		renderer.unmount();
+	});
+
 	test("a callout action button dispatches its action", () => {
 		const { renderer, dispatch } = renderBlock({ type: "callout", id: "callout", tone: "info", title: "T", actions: [
 			{ id: "a1", label: "Do it", action: { type: "edit", name: "doIt" } },

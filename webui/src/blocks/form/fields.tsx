@@ -10,7 +10,7 @@
  * field is disabled regardless.
  */
 
-import type { ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type {
 	DateField,
 	DatetimeField,
@@ -28,6 +28,7 @@ import { SecretFieldView } from "./SecretField";
 import { FileFieldView } from "./FileField";
 import { ListFieldView } from "./ListField";
 import { DaterangeFieldView } from "./DaterangeField";
+import { watchLongtextHeight } from "./longtextHeight";
 
 /** What the owning form hands every field renderer. */
 export interface FieldProps<F extends Field = Field> {
@@ -48,23 +49,38 @@ export function FieldRow(props: {
 	readonly field: FieldBase;
 	readonly error?: string;
 	readonly children: ReactNode;
+	/** A toggle carries its label beside its checkbox instead. */
+	readonly labelInline?: boolean;
 }): ReactNode {
 	const data = useSurfaceData();
 	const label = boundString(data, props.field.label);
 	const help = boundString(data, props.field.help);
 	return (
 		<div className="blk-field" data-field={(props.field as { readonly type?: string }).type} data-name={props.field.name}>
-			{label !== "" && (
-				<label className="blk-field-label" dir="auto">
-					{label}
-					{props.field.required === true && <span aria-hidden> *</span>}
-				</label>
-			)}
-			{props.children}
-			{help !== "" && (
-				<div className="blk-field-help" dir="auto">
-					{help}
-				</div>
+			{props.labelInline === true ? (
+				<>
+					{props.children}
+					{help !== "" && (
+						<div className="blk-field-help" dir="auto">
+							{help}
+						</div>
+					)}
+				</>
+			) : (
+				<>
+					{label !== "" && (
+						<label className="blk-field-label" dir="auto">
+							{label}
+							{props.field.required === true && <span aria-hidden> *</span>}
+						</label>
+					)}
+					{help !== "" && (
+						<div className="blk-field-help" dir="auto">
+							{help}
+						</div>
+					)}
+					{props.children}
+				</>
 			)}
 			{props.error !== undefined && (
 				<div className="blk-field-error" role="alert" dir="auto">
@@ -98,14 +114,23 @@ function TextFieldView(props: FieldProps<TextField>): ReactNode {
 function LongtextFieldView(props: FieldProps<LongtextField>): ReactNode {
 	const { field } = props;
 	const data = useSurfaceData();
+	const textarea = useRef<HTMLTextAreaElement>(null);
+	const value = typeof props.value === "string" ? props.value : "";
+	useLayoutEffect(() => {
+		const element = textarea.current;
+		if (element === null) return;
+		return watchLongtextHeight(element, field.fill === true);
+	}, [field.fill, value]);
 	return (
 		<FieldRow field={field} error={props.error}>
 			<textarea
+				ref={textarea}
 				dir="auto"
 				aria-label={boundString(data, field.label)}
+				className={field.fill === true ? "blk-longtext-fill" : undefined}
 				placeholder={boundString(data, field.placeholder)}
 				rows={field.rows ?? 3}
-				value={typeof props.value === "string" ? props.value : ""}
+				value={value}
 				disabled={props.disabled}
 				onChange={(event) => props.onChange(field.name, event.target.value)}
 			/>
@@ -139,15 +164,22 @@ function NumberFieldView(props: FieldProps<NumberField>): ReactNode {
 function ToggleFieldView(props: FieldProps<ToggleField>): ReactNode {
 	const { field } = props;
 	const data = useSurfaceData();
+	const label = boundString(data, field.label);
 	return (
-		<FieldRow field={field} error={props.error}>
-			<input
-				type="checkbox"
-				aria-label={boundString(data, field.label)}
-				checked={props.value === true}
-				disabled={props.disabled}
-				onChange={(event) => props.onChange(field.name, event.target.checked)}
-			/>
+		<FieldRow field={field} error={props.error} labelInline>
+			<label className="blk-toggle">
+				<input
+					type="checkbox"
+					aria-label={label}
+					checked={props.value === true}
+					disabled={props.disabled}
+					onChange={(event) => props.onChange(field.name, event.target.checked)}
+				/>
+				<span className="blk-field-label" dir="auto">
+					{label}
+					{field.required === true && <span aria-hidden> *</span>}
+				</span>
+			</label>
 		</FieldRow>
 	);
 }

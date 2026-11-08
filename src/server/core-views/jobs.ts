@@ -85,7 +85,7 @@ interface RunRow {
 	readonly manual: boolean;
 	readonly outcome: string;
 	readonly error: string | null;
-	readonly conversationId: number | null;
+	readonly conversationId?: number;
 }
 
 /** One revision card row (JobsPanel parity: version/changedAt/changedBy).
@@ -286,7 +286,9 @@ function runRow(run: JobRunWire): RunRow {
 		manual: run.manual,
 		outcome: run.outcome,
 		error: run.error ?? null,
-		conversationId: run.conversationId ?? null,
+		...(run.conversationId === null || run.conversationId === undefined
+			? {}
+			: { conversationId: run.conversationId }),
 	};
 }
 
@@ -580,24 +582,19 @@ export function createJobsView(deps: {
 			});
 		} else if (data.main.found && data.main.job !== null) {
 			const job = data.main.job;
-			// IMPORTANT 3 (review fix): per-run conversation buttons ride
-			// the card's `actions` as per-row LITERALS. The block contract's
-			// id-uniqueness walk (validate.ts:507-517) does NOT descend into
-			// card templates (checkCard only validates the card schema + its
-			// actions array), so a per-row literal id never collides. The
-			// pattern is the only way to carry per-row conversation ids into
-			// navigate targets (bindings cannot reach navigate params).
-			const runButtons: Record<string, unknown>[] = data.main.runs.items
-				.filter((run) => run.conversationId !== null)
-				.map((run) => ({
-					id: `run-open-${run.id}`,
+			// One bound card action serves every run; rows without a
+			// conversation resolve it away and show no button.
+			const runButtons: Record<string, unknown>[] = [
+				{
+					id: "conversation",
 					label: "Conversation",
 					icon: "link",
 					action: {
 						type: "navigate",
-						target: { conversation: run.conversationId as number },
+						target: { conversation: { $: "./conversationId" } },
 					},
-				}));
+				},
+			];
 			const writeActions: Record<string, unknown>[] =
 				job.access === "write"
 					? [
@@ -660,9 +657,11 @@ export function createJobsView(deps: {
 					type: "section",
 					id: "job-summary",
 					title: { $: "/main/job/name" },
+					actions: writeActions,
 					children: [
 						{
 							type: "fields",
+							hideEmpty: true,
 							rows: [
 								{ label: "Description", value: { $: "/main/job/description" } },
 								{ label: "Defined in", value: { $: "/main/job/definedIn" } },
@@ -680,6 +679,13 @@ export function createJobsView(deps: {
 								{ label: "Task", value: { $: "/main/job/task" } },
 							],
 						},
+					],
+				},
+				{
+					type: "section",
+					id: "job-prompt",
+					title: "Prompt",
+					children: [
 						// The action body blocks: BOTH are emitted UNCONDITIONALLY.
 						// The earlier kind-conditional form rested on a false invariant —
 						// `bumpRev` advances `rev` only (treeRev is never written), so a
@@ -694,17 +700,6 @@ export function createJobsView(deps: {
 						{ type: "markdown", text: { $: "/main/job/taskInputMarkdown" } },
 					],
 				},
-				...(writeActions.length === 0
-					? []
-					: [
-							{
-								type: "callout",
-								id: "job-actions",
-								tone: "neutral",
-								title: "Actions",
-								actions: writeActions,
-							},
-						]),
 				// Declared jobs (file:/ext:) are READ-ONLY declarations: no edit
 				// affordances here (the editor, Tasks 3-4, is api-only) — a
 				// callout points the user at the declaring source instead.
@@ -736,7 +731,7 @@ export function createJobsView(deps: {
 								subtitle: { $: "./outcome" },
 								body: { $: "./error" },
 								badges: [{ text: { $: "./manual" }, tone: "neutral" }],
-								...(runButtons.length === 0 ? {} : { actions: runButtons }),
+								actions: runButtons,
 							},
 						},
 					],

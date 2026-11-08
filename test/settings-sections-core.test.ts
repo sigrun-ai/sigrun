@@ -135,6 +135,18 @@ describe("core settings sections (U4 Task 4)", () => {
 		}
 	});
 
+	test("Default Tools explains the allow-list", () => {
+		const tools = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tools");
+		const root = tools?.form.root as unknown as { children?: { children?: unknown[] }[] };
+		const section = root?.children?.[0];
+		const field = section?.children?.[0];
+		expect(field).toMatchObject({
+			name: "defaultTools",
+			label: "Tools offered to the model",
+			help: "Only the selected tools are offered to the model in new conversations; the others stay callable by other tools. Leave empty to offer every installed tool. Applies to conversations created after the change.",
+		});
+	});
+
 	test("the section ids are the plan's list, in nav order", () => {
 		expect([...CORE_SECTION_IDS]).toEqual([
 			"general",

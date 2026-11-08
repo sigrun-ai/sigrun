@@ -39,6 +39,8 @@ import type {
 	Tree,
 } from "@sigrun/shared/blocks";
 import { DataOpError, applyOps, resolvePointer } from "@sigrun/shared/blocks";
+import { resolveActionBindings } from "./context.js";
+import { plainTuiTheme } from "../theme.js";
 
 /** An action has 10 s to answer before it counts as a reject (§6.3). */
 export const ACT_TIMEOUT_MS = 10_000;
@@ -488,7 +490,18 @@ export class SurfaceState {
 	 *  and never reaches the transport (spec §6.1). */
 	dispatch(action: Action, payload: JsonValue): void {
 		if (action.type === "navigate") {
-			this.onNavigate?.(action);
+			const resolved = resolveActionBindings(action, {
+				data: this.view.data,
+				theme: plainTuiTheme(),
+				locale: "en",
+				access: this.#access === "write" ? "write" : "read",
+				unicode: true,
+				dispatch: () => {},
+				view: { values: this.#viewBranch },
+			});
+			if (resolved?.type === "navigate") {
+				this.onNavigate?.(resolved);
+			}
 			return;
 		}
 		const payloadObject: JsonObject =
@@ -549,7 +562,16 @@ export class SurfaceState {
 				const finishAccept = (): void => {
 					if (result.toast !== undefined) this.#notice(result.toast);
 					if (result.navigate?.type === "navigate") {
-						this.onNavigate?.(result.navigate);
+						const resolved = resolveActionBindings(result.navigate, {
+							data: this.view.data,
+							theme: plainTuiTheme(),
+							locale: "en",
+							access: this.#access === "write" ? "write" : "read",
+							unicode: true,
+							dispatch: () => {},
+							view: { values: this.#viewBranch },
+						});
+						if (resolved?.type === "navigate") this.onNavigate?.(resolved);
 					}
 				};
 				if (!isMove) {

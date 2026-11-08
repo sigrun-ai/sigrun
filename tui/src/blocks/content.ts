@@ -33,7 +33,13 @@ import type {
 	Tone,
 } from "@sigrun/shared/blocks";
 import type { TuiTheme } from "../theme.js";
-import { bindRaw, bindText, bindTone, type BlockCtx } from "./context.js";
+import {
+	bindRaw,
+	bindText,
+	bindTone,
+	resolveActionBindings,
+	type BlockCtx,
+} from "./context.js";
 import { truncate } from "./width.js";
 import { iconGlyph } from "./icons.js";
 import { toneFg, toneMarker } from "./tones.js";
@@ -42,7 +48,7 @@ import { Lines } from "./layout.js";
 import { copyToTerminal } from "../clipboard.js";
 
 /** The markdown theme rides the TuiTheme's token colours. */
-function markdownTheme(theme: TuiTheme): MarkdownTheme {
+export function markdownTheme(theme: TuiTheme): MarkdownTheme {
 	return {
 		heading: (text) => theme.bold(theme.fg("accent")(text)),
 		link: theme.fg("accent"),
@@ -83,8 +89,15 @@ function fieldRows(block: FieldsBlock, ctx: BlockCtx): FieldRow[] {
 		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
 		const record: Record<string, unknown> = entry;
 		const label = bindText(record.label, ctx);
+		const resolved = bindRaw(record.value, ctx);
+		if (
+			block.hideEmpty === true &&
+			(resolved === undefined || resolved === null || resolved === "")
+		) {
+			continue;
+		}
 		const value = formatValue(
-			(bindRaw(record.value, ctx) ?? null) as Parameters<typeof formatValue>[0],
+			(resolved ?? null) as Parameters<typeof formatValue>[0],
 			undefined,
 			ctx.locale,
 		);
@@ -147,9 +160,9 @@ export function renderDetails(block: DetailsBlock): Component {
 	return new Lines(() => [JSON.stringify(block.value)]);
 }
 
-/** `diff`: the interaction diff renderer (blocks/diff.ts). */
-export function renderDiff(block: DiffBlock): Component {
-	return new Lines(() => diffLines(blockDiff(block)));
+/** `diff`: shared line operations, coloured through the block theme. */
+export function renderDiff(block: DiffBlock, ctx: BlockCtx): Component {
+	return new Lines(() => diffLines(blockDiff(block), ctx.theme));
 }
 
 /** The actions a block offers: read access keeps the view-only kinds
@@ -159,15 +172,14 @@ export function visibleActions(
 	actions: readonly ActionButton[] | undefined,
 	ctx: BlockCtx,
 ): ActionButton[] {
-	if (ctx.access === "read") {
-		return (actions ?? []).filter(
-			(button) =>
+	return (actions ?? []).filter(
+		(button) =>
+			(ctx.access === "write" ||
 				button.action.type === "copy" ||
 				button.action.type === "open" ||
-				button.action.type === "navigate",
-		);
-	}
-	return [...(actions ?? [])];
+				button.action.type === "navigate") &&
+			resolveActionBindings(button.action, ctx) !== undefined,
+	);
 }
 
 /** The URL schemes an `open` action may carry (§15: https/http/mailto). */
@@ -325,7 +337,7 @@ export function renderContent(block: Block, ctx: BlockCtx): Component | undefine
 		case "details":
 			return renderDetails(block);
 		case "diff":
-			return renderDiff(block);
+			return renderDiff(block, ctx);
 		case "callout":
 			return new CalloutComponent(block, ctx);
 		default:

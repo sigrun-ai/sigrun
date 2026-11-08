@@ -103,6 +103,25 @@ describe("page shell (spec §5.1)", () => {
 		expect(textContent(r.toJSON())).toContain("live");
 	});
 
+	test("a header navigate with an unresolved binding is hidden", async () => {
+		const r = await renderPage(
+			pageBlock({
+				actions: [
+					{
+						id: "open",
+						label: "Open run",
+						action: {
+							type: "navigate",
+							target: { conversation: { $: "/missing" } },
+						},
+					},
+				],
+			}),
+		);
+		expect(find(r, "data-page-action", "open")).toHaveLength(0);
+		expect(textContent(r.toJSON())).not.toContain("Open run");
+	});
+
 	test("action button dispatches its Action", async () => {
 		let dispatched: string | null = null;
 		const r = await renderAsync(

@@ -828,6 +828,7 @@ function ExtensionCove(props: {
 	const { client, slug, status, version } = props;
 	const [draft, setDraft] = useState<ExtensionDraft | null>(null);
 	const [error, setError] = useState<string | null>(null);
+	const settingsTextarea = useRef<HTMLTextAreaElement>(null);
 	useEffect(() => {
 		let cancelled = false;
 		setDraft(null);
@@ -855,6 +856,13 @@ function ExtensionCove(props: {
 			cancelled = true;
 		};
 	}, [client, slug]);
+
+	useEffect(() => {
+		const element = settingsTextarea.current;
+		if (element === null) return;
+		element.style.height = "auto";
+		element.style.height = `${element.scrollHeight}px`;
+	}, [draft?.settingsText]);
 
 	const patchDraft = (patch: Partial<ExtensionDraft>): void => {
 		setDraft((prev) => (prev === null ? prev : { ...prev, ...patch }));
@@ -944,8 +952,9 @@ function ExtensionCove(props: {
 				<label className="settings-field">
 					<span className="settings-label">Settings (raw JSON)</span>
 					<textarea
+						ref={settingsTextarea}
 						className="settings-ext-settings"
-						rows={4}
+						rows={12}
 						spellCheck={false}
 						placeholder="{}"
 						value={draft.settingsText}

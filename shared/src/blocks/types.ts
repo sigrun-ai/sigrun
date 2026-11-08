@@ -58,7 +58,7 @@ export type Format =
 
 export type Action =
 	| { type: "submit"; name: string; turn?: boolean; confirm?: Confirm }
-	| { type: "navigate"; params?: JsonObject; target?: CoreTarget }
+	| { type: "navigate"; params?: JsonObject; target?: BoundCoreTarget }
 	| { type: "move"; name: string; turn?: boolean }
 	| { type: "edit"; name: string; turn?: boolean } // checkbox toggles, inline field edits
 	| { type: "open"; url: string } // https, http or mailto; new tab / OSC 8 link
@@ -77,6 +77,14 @@ export type CoreTarget =
 	| { job: string }
 	| { settings: string }
 	| { view: { extension: string; id: string; params?: JsonObject } };
+
+/** A block navigate target, whose scalar leaves may read the surface data. */
+export type BoundCoreTarget =
+	| { conversation: Bindable<number> }
+	| { job: Bindable<string> }
+	| { settings: Bindable<string> }
+	| { view: { extension: Bindable<string>; id: Bindable<string>; params?: JsonObject } };
+
 
 /** A block-offered button (spec §6.1): where `Action` objects appear. */
 export interface ActionButton {
@@ -177,6 +185,8 @@ export interface SectionBlock extends BlockBase {
 	readonly tone?: Bindable<Tone>;
 	readonly collapsible?: boolean;
 	readonly collapsed?: boolean;
+	/** Buttons shown right-aligned in the section header. */
+	readonly actions?: readonly ActionButton[];
 	/** Blocks; inside a `form`, fields and nested `section`s. */
 	readonly children: readonly (Block | Field)[];
 }
@@ -198,6 +208,8 @@ export interface FieldsRow {
 export interface FieldsBlock extends BlockBase {
 	readonly type: "fields";
 	readonly rows: Bindable<readonly FieldsRow[]>;
+	/** Omit rows whose resolved value is undefined, null or an empty string. */
+	readonly hideEmpty?: boolean;
 }
 
 export interface StatBlock extends BlockBase {
@@ -511,6 +523,8 @@ export interface LongtextField extends FieldBase {
 	readonly syntax?: "plain" | "markdown" | "code";
 	readonly lang?: string;
 	readonly rows?: number;
+	/** Take the editor's available height on large viewports. */
+	readonly fill?: boolean;
 }
 
 export interface NumberField extends FieldBase {

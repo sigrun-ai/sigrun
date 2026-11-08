@@ -28,22 +28,26 @@
  *   for).
  */
 
-import type { Component } from "@earendil-works/pi-tui";
+import { Markdown, type Component } from "@earendil-works/pi-tui";
 import type {
+	Action,
 	ActionButton,
 	Bindable,
 	Block,
 	ChoiceField,
 	CollectionBlock,
+	Confirm,
 	Field,
 	JsonObject,
 	PageBlock,
 } from "@sigrun/shared/blocks";
 import { resolvePointer } from "@sigrun/shared/blocks";
-import { bindText, type BlockCtx } from "./context.js";
+import { bindText, resolveActionBindings, type BlockCtx } from "./context.js";
+import { markdownTheme } from "./content.js";
 import { iconGlyph } from "./icons.js";
 import { renderBlock, type RenderOptions } from "./render.js";
 import { pad, truncate, wrapPlain } from "./width.js";
+import { toneFg, toneMarker } from "./tones.js";
 
 /** The sidebar-pane minimum (spec §5.1/brief: ≥ 100 columns). */
 export const SIDEBAR_PANE_MIN = 100;
@@ -100,6 +104,38 @@ export function isMainEmpty(block: PageBlock, data: JsonObject): boolean {
 	return !Array.isArray(items) || items.length === 0;
 }
 
+/** Section actions in depth-first main-block order (sidebar/detail excluded). */
+function sectionActions(blocks: readonly Block[]): readonly ActionButton[] {
+	const found: ActionButton[] = [];
+	for (const block of blocks) {
+		if (block.type === "section") {
+			found.push(...(block.actions ?? []));
+			found.push(
+				...sectionActions(
+					block.children.filter(
+						(child: Block | Field): child is Block =>
+							child.type === "stack" ||
+							child.type === "columns" ||
+							child.type === "grid" ||
+							child.type === "section",
+					),
+				),
+			);
+		} else if (block.type === "stack") {
+			found.push(...sectionActions(block.children));
+		} else if (block.type === "columns" || block.type === "grid") {
+			found.push(...sectionActions(block.children.map((child) => child.block)));
+		}
+	}
+	return found;
+}
+
+/** A confirm gate standing in front of an actions-menu dispatch. */
+interface ConfirmState {
+	readonly confirm: Confirm;
+	readonly action: Action;
+}
+
 /** Which region has keyboard focus (Tab cycles sidebar → main). */
 type Region = "sidebar" | "main";
 
@@ -108,6 +144,8 @@ export class PageComponent implements Component {
 	readonly #ctx: BlockCtx;
 	/** The open overlay: the switcher or the actions menu. */
 	#menu: { kind: "switcher" | "actions"; cursor: number } | null = null;
+	/** An actions-menu action waiting for explicit confirmation. */
+	#confirm: ConfirmState | undefined;
 	/** The pushed detail view (spec §12.3: detail → pushed page, Esc back). */
 	#detailPushed = false;
 	/** The sidebar overlay (compact) / focused pane (side-by-side). */
@@ -136,7 +174,12 @@ export class PageComponent implements Component {
 
 	/** True while an overlay (menu, sidebar drawer, pushed detail) owns Esc. */
 	get hasOverlay(): boolean {
-		return this.#menu !== null || this.#detailPushed || this.#sidebarOpen;
+		return (
+			this.#menu !== null ||
+			this.#confirm !== undefined ||
+			this.#detailPushed ||
+			this.#sidebarOpen
+		);
 	}
 
 	/** The header line: title (+ subtitle), switcher/actions hints. */
@@ -145,7 +188,7 @@ export class PageComponent implements Component {
 		const subtitle = bindText(this.#block.subtitle, this.#ctx);
 		const hints: string[] = [];
 		if (this.#block.switcher !== undefined) hints.push("ctrl+s switch");
-		if ((this.#block.actions ?? []).length > 0) hints.push(". actions");
+		if (this.#visibleActions().length > 0) hints.push(". actions");
 		const hint = hints.length > 0 ? this.#ctx.theme.dim(`  (${hints.join(" · ")})`) : "";
 		const lines = [truncate(`${this.#ctx.theme.bold(title)}${hint}`, width)];
 		if (subtitle !== "") lines.push(truncate(this.#ctx.theme.dim(subtitle), width));
@@ -192,6 +235,28 @@ export class PageComponent implements Component {
 		];
 	}
 
+	#confirmLines(width: number): string[] {
+		const pending = this.#confirm;
+		if (pending === undefined) return [];
+		const { confirm, action } = pending;
+		const label = confirm.confirmLabel ?? (action.type === "restart" ? "Restart" : "Confirm");
+		const tone = confirm.tone ?? "warn";
+		const lines = [
+			"",
+			truncate(
+				`${toneFg(this.#ctx.theme, tone)(toneMarker(tone, !this.#ctx.unicode))} ${confirm.title}`,
+				width,
+			),
+		];
+		if (confirm.body !== undefined && confirm.body !== "") {
+			lines.push(
+				...new Markdown(confirm.body, 0, 0, markdownTheme(this.#ctx.theme)).render(width),
+			);
+		}
+		lines.push(truncate(`${label}? y/N`, width));
+		return lines;
+	}
+
 	#switcherOptions(field: ChoiceField): readonly { id: string; label: Bindable<string> }[] {
 		const raw: unknown = field.options;
 		if (Array.isArray(raw)) return raw;
@@ -204,18 +269,26 @@ export class PageComponent implements Component {
 
 	/** The header actions the principal may run (access read hides
 	 *  edit/answer actions; navigate/open/copy stay — §6.5's read rule). */
+	#allActions(): readonly ActionButton[] {
+		return [...(this.#block.actions ?? []), ...sectionActions(this.#block.main)];
+	}
+
 	#visibleActions(): readonly ActionButton[] {
-		if (this.#ctx.access === "write") return this.#block.actions ?? [];
-		return (this.#block.actions ?? []).filter(
+		return this.#allActions().filter(
 			(button) =>
-				button.action.type === "navigate" ||
-				button.action.type === "open" ||
-				button.action.type === "copy",
+				(this.#ctx.access === "write" ||
+					button.action.type === "navigate" ||
+					button.action.type === "open" ||
+					button.action.type === "copy") &&
+				resolveActionBindings(button.action, this.#ctx) !== undefined,
 		);
 	}
 
 	render(width: number): string[] {
 		const lines = this.#headerLines(width);
+		if (this.#confirm !== undefined) {
+			return [...lines, ...this.#confirmLines(width)];
+		}
 		if (this.#menu !== null) {
 			return [...lines, ...this.#menuLines(width)];
 		}
@@ -280,6 +353,14 @@ export class PageComponent implements Component {
 	}
 
 	handleInput(data: string): void {
+		// A confirmation owns every key; only y dispatches (the callout gate).
+		if (this.#confirm !== undefined) {
+			const { action } = this.#confirm;
+			this.#confirm = undefined;
+			this.#menu = null;
+			if (data === "y" || data === "Y") this.#ctx.dispatch(action, {});
+			return;
+		}
 		// An open menu owns the keys.
 		if (this.#menu !== null) {
 			if (data === "\x1b") {
@@ -323,7 +404,18 @@ export class PageComponent implements Component {
 			}
 			if (data === "\r") {
 				const button = actions[this.#menu.cursor];
-				if (button !== undefined) this.#ctx.dispatch(button.action, {});
+				if (button !== undefined) {
+					const action = resolveActionBindings(button.action, this.#ctx);
+					if (
+						action !== undefined &&
+						(action.type === "submit" || action.type === "restart") &&
+						action.confirm !== undefined
+					) {
+						this.#confirm = { confirm: action.confirm, action };
+						return;
+					}
+					if (action !== undefined) this.#ctx.dispatch(action, {});
+				}
 				this.#menu = null;
 				return;
 			}

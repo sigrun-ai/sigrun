@@ -95,6 +95,7 @@ test("Jobs tab: create a job via POST /v1/jobs, select it, Run now, see the run 
 	await runNow.click();
 	const runs = main.locator(".blk-list-card").filter({ hasText: "succeeded" });
 	await expect(runs.first()).toBeVisible({ timeout: 30_000 });
+	await expect(runs.first().getByRole("button", { name: "Conversation", exact: true })).toHaveCount(1);
 	} finally {
 		await context.close();
 	}

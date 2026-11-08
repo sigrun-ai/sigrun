@@ -24,9 +24,16 @@ import {
 	type JsonValue,
 	type Tone,
 } from "@sigrun/shared/blocks";
+import { lineDiff } from "@sigrun/shared/diff";
 import { Markdown, safeUrlTransform } from "../entries/Markdown";
 import { copyText } from "../entries/MessageActions";
-import { bound, boundString, useSurfaceActions, useSurfaceData } from "./context";
+import {
+	bound,
+	boundString,
+	resolveActionBindings,
+	useSurfaceActions,
+	useSurfaceData,
+} from "./context";
 import { Icon } from "./icons";
 import { toneColor } from "./tones";
 
@@ -74,10 +81,15 @@ export function FieldsBlockView(props: {
 			readonly tone?: Bindable<Tone>;
 			readonly icon?: Bindable<IconName>;
 		}[]>;
+		readonly hideEmpty?: boolean;
 	};
 }): ReactNode {
 	const ctx = useSurfaceData();
-	const rows = bound(ctx, props.block.rows) ?? [];
+	const rows = (bound(ctx, props.block.rows) ?? []).filter((row) => {
+		if (props.block.hideEmpty !== true) return true;
+		const value = bound(ctx, row.value);
+		return value !== undefined && value !== null && value !== "";
+	});
 	return (
 		<div className="blk blk-fields">
 			<dl>
@@ -244,8 +256,7 @@ export function ImageBlockView(props: {
 
 // ─── diff ─────────────────────────────────────────────────────────────────
 
-/** A diff block: before/after panes with the path (the interaction
- *  primitive, spec §5.3). */
+/** A diff block: one column of line operations with the path. */
 export function DiffBlockView(props: {
 	block: {
 		readonly before: string;
@@ -262,13 +273,21 @@ export function DiffBlockView(props: {
 					{path}
 				</div>
 			)}
-			<div className="blk-diff-panes">
-				<pre className="blk-diff-before" dir="auto">
-					{props.block.before}
-				</pre>
-				<pre className="blk-diff-after" dir="auto">
-					{props.block.after}
-				</pre>
+			<div className="blk-diff-lines" dir="auto">
+				{lineDiff(props.block.before, props.block.after).map((line, index) =>
+					line.op === "skip" ? (
+						<div className="blk-diff-skip" data-diff-op="skip" key={index}>
+							… {line.count} unchanged lines
+						</div>
+					) : (
+						<div className="blk-diff-line" data-diff-op={line.op} key={index}>
+							<span className="blk-diff-gutter" aria-hidden="true">
+								{line.op === "del" ? "-" : line.op === "add" ? "+" : " "}
+							</span>
+							<span>{line.text}</span>
+						</div>
+					),
+				)}
 			</div>
 		</div>
 	);
@@ -346,13 +365,23 @@ export function ActionButtonRow(props: {
 	const data = useSurfaceData();
 	const [confirming, setConfirming] = useState<PendingConfirm | null>(null);
 
-	const visible =
-		actions.access === "write"
-			? props.buttons
-			: props.buttons.filter((button) => isViewOnly(button.action));
+	const visible = props.buttons.filter(
+		(button) =>
+			(actions.access === "write" || isViewOnly(button.action)) &&
+			resolveActionBindings(button.action, data) !== undefined,
+	);
+	const item = data.item;
+	const payload =
+		typeof item === "object" &&
+		item !== null &&
+		!Array.isArray(item) &&
+		typeof item.id === "string"
+			? { itemId: item.id }
+			: null;
 
 	function activate(button: ActionButton): void {
-		const action = button.action;
+		const action = resolveActionBindings(button.action, data);
+		if (action === undefined) return;
 		if (action.type === "copy") {
 			copyText(
 				typeof action.text === "string"
@@ -378,7 +407,7 @@ export function ActionButtonRow(props: {
 				return;
 			}
 		}
-		actions.dispatch(action, null);
+		actions.dispatch(action, action.type === "submit" ? payload : null);
 	}
 
 	if (confirming !== null) {
@@ -406,7 +435,8 @@ export function ActionButtonRow(props: {
 						className="blk-confirm-ok"
 						onClick={() => {
 							setConfirming(null);
-							actions.dispatch(button.action, null);
+							const action = resolveActionBindings(button.action, data);
+							if (action !== undefined) actions.dispatch(action, payload);
 						}}
 					>
 						{confirm.confirmLabel ?? "Confirm"}

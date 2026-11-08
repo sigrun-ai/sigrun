@@ -2555,6 +2555,9 @@ The rest of the field set: `longtext` (with `syntax`/`lang`), `date`,
 channel shows `set (stored)` / `set (env)` / `not set` from a bound
 status), `file` (uploads through the surface's upload route; see
 "Uploads and assets"), and `list` (a repeatable group of fields).
+`longtext.fill` takes the available height in a page's main column on
+viewports at least 900px tall (a minimum of about 60vh), and grows with
+content elsewhere.
 
 **Stat, meter, log** — the dashboard and ambient trio:
 
@@ -2629,7 +2632,9 @@ collapsed and pretty-printed.)
 Also available: the layout blocks `stack`, `columns`, `grid`,
 `section`; `image` (see "Images"); `fields` (key/value rows); and
 `treeBlock` (a lazy `tree` block — the `tree` name belongs to the root
-wrapper).
+wrapper). A `fields` block may set `hideEmpty: true` to omit rows whose
+resolved value is `undefined`, `null` or `""`; other falsy values such
+as `false` and `0` remain visible.
 
 ### Actions and the turn rule
 
@@ -2659,6 +2664,20 @@ validation rejects it anywhere else.
 Activating a list item (`onActivate`) opens it. Put destructive actions
 on `callout` or card buttons with a `confirm`; page-header actions
 (`page.actions`) dispatch without confirming.
+
+A navigate button's `target` leaves and `params` values accept bindings.
+Inside a card template, `bind("./conversationId")` resolves against that
+row, so every row can open its own conversation; outside a card, use an
+absolute data pointer such as `bind("/selectedConversation")`. A button
+whose bound target or params resolve to `undefined` is hidden. A submit
+button inside a card dispatches `{itemId: <row id>}` when the row has a
+string `id`; page and callout buttons keep their existing null/empty
+payload behavior.
+
+A `section` accepts the same `actions` button list as a `page`. The webui
+renders those buttons right-aligned in the section header; the TUI lists
+them after the page's own actions in the `.` actions menu. A section with
+actions needs an `id`, like other action-carrying blocks.
 
 An action handler may also return **`navigate`** on its accepted
 `ActionResult` — the channel routes it through the normal navigation

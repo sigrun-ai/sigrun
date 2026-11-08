@@ -81,6 +81,18 @@
 	margin-bottom: 0.6rem;
 }
 
+/* Page and section content share one vertical rhythm. Page slots render
+   their blocks directly, so this is the gap between rounded sections,
+   callouts and collections as well as their neighbours. */
+.blk-page-main,
+.blk-page-sidebar,
+.blk-page-detail,
+.blk-section-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3, 0.75rem);
+}
+
 .blk-section-title {
 	color: var(--text);
 	font-size: 0.95em;
@@ -90,6 +102,15 @@
 .blk-section-subtitle {
 	color: var(--faint);
 	font-size: 0.85em;
+}
+
+.blk-section-actions {
+	margin-left: auto;
+}
+
+.blk-section-actions .blk-actions {
+	justify-content: flex-end;
+	margin-top: 0;
 }
 
 .blk-section-toggle {
@@ -118,13 +139,12 @@
 .blk-fields dl {
 	display: grid;
 	gap: 0.35rem;
+	grid-template-columns: max-content minmax(0, 1fr);
 	margin: 0;
 }
 
 .blk-field-row {
-	display: flex;
-	gap: 1rem;
-	justify-content: space-between;
+	display: contents;
 }
 
 .blk-field-row dt {
@@ -135,6 +155,7 @@
 .blk-field-row dd {
 	display: flex;
 	gap: 0.4rem;
+	justify-content: flex-end;
 	margin: 0;
 	overflow-wrap: anywhere;
 	text-align: end;
@@ -259,36 +280,42 @@
 	margin-bottom: 0.35rem;
 }
 
-.blk-diff-panes {
-	border-radius: 8px;
-	display: grid;
-	gap: 0.5rem;
-	grid-template-columns: 1fr 1fr;
-	overflow-x: auto;
-}
-
-.blk-diff-panes pre {
+.blk-diff-lines {
 	background: var(--code);
-	border-radius: 6px;
+	border-radius: 8px;
 	font-family: var(--mono);
 	font-size: 0.82em;
-	margin: 0;
-	padding: 0.6rem 0.75rem;
+	line-height: 1.45;
+	overflow-x: auto;
+	padding: 0.35rem 0;
+}
+
+.blk-diff-line {
+	display: grid;
+	grid-template-columns: 1.5rem minmax(0, 1fr);
+	padding: 0 0.6rem 0 0;
 	white-space: pre-wrap;
 }
 
-.blk-diff-after {
-	border: 1px solid color-mix(in srgb, var(--ok) 35%, transparent);
+.blk-diff-line[data-diff-op="del"] {
+	background: color-mix(in srgb, var(--danger) 10%, transparent);
+	color: var(--danger);
 }
 
-.blk-diff-before {
-	border: 1px solid color-mix(in srgb, var(--danger) 35%, transparent);
+.blk-diff-line[data-diff-op="add"] {
+	background: color-mix(in srgb, var(--ok) 10%, transparent);
+	color: var(--ok);
 }
 
-@container (max-width: 40rem) {
-	.blk-diff-panes {
-		grid-template-columns: 1fr;
-	}
+.blk-diff-gutter {
+	padding-left: 0.6rem;
+	text-align: center;
+	user-select: none;
+}
+
+.blk-diff-skip {
+	color: var(--faint);
+	padding: 0.15rem 0.75rem;
 }
 
 .blk-details summary {
@@ -1306,6 +1333,7 @@
 .blk-form[data-mode="inline"] { flex-direction: row; align-items: flex-end; }
 .blk-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .blk-field-label { font-weight: 500; }
+.blk-toggle { align-items: center; display: flex; gap: 0.5rem; }
 .blk-field-help { color: var(--fg-dim, #888); font-size: 0.875em; }
 .blk-field-error { color: var(--bad, #d33); font-size: 0.875em; }
 .blk-choice { display: flex; gap: 1rem; }
@@ -1341,6 +1369,21 @@
 	width: 100%;
 }
 .blk-field textarea { max-width: 48rem; }
+.blk-field[data-field="longtext"] textarea {
+	max-height: 70vh;
+	overflow-y: auto;
+	resize: none;
+}
+/* Keep in sync with LONGTEXT_FILL_MIN_HEIGHT in form/longtextHeight.ts. */
+@media (min-height: 900px) {
+	.blk-page-main > .blk-form:has(.blk-longtext-fill) { flex: 1 1 auto; min-height: 0; }
+	.blk-page-main .blk-field:has(.blk-longtext-fill) { flex: 1 1 auto; min-height: 0; }
+	.blk-page-main .blk-longtext-fill {
+		flex: 1 1 auto;
+		height: 100%;
+		min-height: 60vh;
+	}
+}
 .blk-field :is(input, textarea, select):focus-visible { border-color: var(--accent); outline: none; }
 /* Row-laid controls keep their own widths (same specificity as the rule
    above, later in the sheet — so it wins). */

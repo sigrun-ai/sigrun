@@ -290,7 +290,7 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		// The linked checkout tracks the RELEASED gateway line: 0.1.3
 		// (Part A, exact 0.2.1 peer), 0.1.4 (the peer-widening patch that
 		// adds 0.3.0), and 0.1.5-0.1.24 (the peer-widening line that adds
-        // 0.4.x/0.5.0/0.6.x/0.7.0/0.8.0/0.9.0/0.10.0/0.10.1/0.10.2/0.11.x
+		// 0.4.x/0.5.0/0.6.x/0.7.0/0.8.0/0.9.0/0.10.0/0.10.1/0.10.2/0.11.x
 		// while keeping 0.3.0). Each legitimately declares its line's
 		// acceptance; anything older — or a declaration from the WRONG
 		// line — is skew.

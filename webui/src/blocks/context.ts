@@ -11,6 +11,7 @@ import { createContext, useContext } from "react";
 import type {
 	Action,
 	Bindable,
+	CoreTarget,
 	Binding,
 	JsonObject,
 	JsonValue,
@@ -127,6 +128,43 @@ export function bound<T>(
 	// above (no `{$: string}` shape reaches here); it exists because TS
 	// cannot narrow a generic `T | Binding` union.
 	return value as T;
+}
+
+/** Resolve a navigate action against the surface or row data. An
+ *  unresolved bound target or param hides the button (`undefined`). */
+export function resolveActionBindings(
+	action: Action,
+	ctx: SurfaceDataCtx,
+):
+	| Exclude<Action, { type: "navigate" }>
+	| (Omit<Extract<Action, { type: "navigate" }>, "target"> & { target?: CoreTarget })
+	| undefined {
+	if (action.type !== "navigate") return action;
+	let missing = false;
+	const resolve = (value: JsonValue | undefined): JsonValue | undefined => {
+		if (isBinding(value)) {
+			const resolved = bound(ctx, value);
+			if (resolved === undefined) missing = true;
+			return resolved;
+		}
+		if (typeof value === "object" && value !== null && !Array.isArray(value)) {
+			const resolved: JsonObject = {};
+			for (const [key, child] of Object.entries(value)) {
+				if (child !== undefined) resolved[key] = resolve(child) ?? null;
+			}
+			return resolved;
+		}
+		return value;
+	};
+	const target = action.target === undefined ? undefined : resolve(action.target);
+	const params = action.params === undefined ? undefined : resolve(action.params);
+	if (missing) return undefined;
+	const { target: _boundTarget, ...rest } = action;
+	return {
+		...rest,
+		...(target === undefined ? {} : { target: target as CoreTarget }),
+		...(params === undefined ? {} : { params: params as JsonObject }),
+	};
 }
 
 /** A binding-aware string (labels, titles, text): missing → "". */

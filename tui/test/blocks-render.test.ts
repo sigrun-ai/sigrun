@@ -24,7 +24,7 @@ import { afterEach, describe, expect, test, vi } from "vitest";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { Action, Block, JsonObject } from "@sigrun/shared/blocks";
 import { fixture } from "../../test/fixtures/blocks/samples.js";
-import { plainTuiTheme } from "../src/theme.js";
+import { createTuiTheme, plainTuiTheme } from "../src/theme.js";
 import { renderBlock, widthClassOf } from "../src/blocks/render.js";
 import { iconGlyph } from "../src/blocks/icons.js";
 import type { BlockCtx } from "../src/blocks/render.js";
@@ -118,6 +118,36 @@ for (const name of LAYOUT_AND_CONTENT) {
 		}
 	});
 }
+
+describe("diff", () => {
+	test("a one-line change renders one removed and one added line", () => {
+		const { ctx } = makeCtx();
+		const lines = renderBlock(
+			{ type: "diff", before: "alpha\nold\nomega", after: "alpha\nnew\nomega" },
+			ctx,
+		).render(80);
+		expect(lines).toEqual(["[diff]", "  alpha", "- old", "+ new", "  omega"]);
+	});
+
+	test("removed and added lines use the theme's bad and good colours", () => {
+		const { ctx } = makeCtx();
+		ctx.theme = createTuiTheme({
+			palette: "fjord",
+			accent: "baltic-amber",
+			mode: "dark",
+			colorMode: "truecolor",
+		});
+		const lines = renderBlock(
+			{ type: "diff", before: "old", after: "new" },
+			ctx,
+		).render(80);
+		expect(lines).toEqual([
+			"[diff]",
+			ctx.theme.fg("bad")("- old"),
+			ctx.theme.fg("ok")("+ new"),
+		]);
+	});
+});
 
 // ─── visibleAt (spec §12.2) ───────────────────────────────────────────────
 
@@ -221,6 +251,28 @@ describe("40-cell pane", () => {
 		for (const line of lines) {
 			expect(visibleWidth(line), `"${line}"`).toBeLessThanOrEqual(40);
 		}
+	});
+});
+
+describe("bound navigate buttons", () => {
+	test("a callout navigate with an unresolved binding is hidden", () => {
+		const block: Block = {
+			type: "callout",
+			tone: "info",
+			title: "Run",
+			actions: [
+				{
+					id: "open",
+					label: "Open run",
+					action: {
+						type: "navigate",
+						target: { conversation: { $: "/missing" } },
+					},
+				},
+			],
+		};
+		const { ctx } = makeCtx();
+		expect(renderBlock(block, ctx).render(72).join("\n")).not.toContain("Open run");
 	});
 });
 
@@ -329,6 +381,35 @@ describe("copy action", () => {
 });
 
 // ─── No-Unicode terminals (§10.2: ASCII glyph + marker fallbacks) ──────
+
+describe("fields hideEmpty", () => {
+	test("omits undefined, null and empty-string values, preserving false and zero", () => {
+		const block: Block = {
+			type: "fields",
+			hideEmpty: true,
+			rows: [
+				{ label: "Missing", value: { $: "/missing" } },
+				{ label: "Null", value: null },
+				{ label: "Empty", value: "" },
+				{ label: "Zero", value: 0 },
+				{ label: "False", value: false },
+			],
+		};
+		const { ctx } = makeCtx();
+		const lines = renderBlock(block, ctx).render(72).join("\n");
+		expect(lines).not.toContain("Missing");
+		expect(lines).not.toContain("Null");
+		expect(lines).not.toContain("Empty");
+		expect(lines).toContain("Zero");
+		expect(lines).toContain("False");
+	});
+
+	test("without hideEmpty an empty value keeps its row", () => {
+		const block: Block = { type: "fields", rows: [{ label: "Empty", value: "" }] };
+		const { ctx } = makeCtx();
+		expect(renderBlock(block, ctx).render(72).join("\n")).toContain("Empty");
+	});
+});
 
 describe("no-Unicode capability", () => {
 	test("iconGlyph answers the ASCII fallback exactly when asked", () => {

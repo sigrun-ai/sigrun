@@ -1253,7 +1253,11 @@ export type ActionResult =
 				/** Data ops the server applies to the instance's data (sharedData only keeps them; §7.3). */
 				readonly update?: DataOps;
 				/** A `navigate` action (spec §6.1): the channel routes it through the normal navigation paths. */
-				readonly navigate?: Extract<Action, { type: "navigate" }>;
+				readonly navigate?: {
+					readonly type: "navigate";
+					readonly params?: JsonObject;
+					readonly target?: CoreTarget;
+				};
 				readonly toast?: string;
 		  }
 	| {
