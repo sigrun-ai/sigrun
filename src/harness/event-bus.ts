@@ -68,6 +68,7 @@ import type { WorkerStatus } from "@sigrun/shared/views";
 import {
 	AssistantEntry,
 	UserEntry,
+	defineDoc,
 	type CommitPublication,
 	type ConversationDocToken,
 	type ConversationId,
@@ -231,6 +232,8 @@ export type RunSettledEvent = {
 	readonly inputTexts: readonly string[];
 	/** True when a Continue submission belongs to the run. */
 	readonly continued?: boolean;
+	/** Present only on a startup-replayed event (durable run-settled Task 2). */
+	readonly replayed?: true;
 	readonly outcome:
 		| {
 				readonly status: "answered";
@@ -239,6 +242,21 @@ export type RunSettledEvent = {
 		  }
 		| { readonly status: "unanswered"; readonly reason: string };
 };
+
+/**
+ * The durable delivered-through marker (durable run-settled Task 1):
+ * every deliverable submission with `id < through` is terminal and has
+ * been delivered to the `runSettled` handlers. `through === 0` means
+ * "never saved". Session-scoped, one record; saved by the drain pump
+ * after delivered settle groups (never from a `drain()` caller).
+ */
+export const RunDeliveryDoc = defineDoc<{ readonly through: number }>({
+	kind: "sigrun.run-delivery",
+	version: 1,
+	scope: "session",
+	initial: () => ({ through: 0 }),
+	checkpointWhen: () => false,
+});
 
 /**
  * The narrowed read surface a `runSettled` handler receives: exactly
@@ -505,6 +523,23 @@ export class EventBus {
 	#workers: WorkerState[] = [];
 	#workerDeadlineMs: number;
 	#shutdownSettleWaitMs: number;
+
+	// --- Delivered-through marker (durable run-settled Task 1) ---
+	/** Deliverable submission ids observed queued/placed, not yet terminal. */
+	#undeliveredLive = new Set<SubmissionId>();
+	/** Highest deliverable submission id observed terminal. */
+	#highestTerminalObserved = 0;
+	/** Lowest first-input id of a group dropped by queue overflow (pins the marker). */
+	#droppedLowest: number | undefined;
+	/** True after a settle group dispatch until the next marker save. */
+	#settledSinceSave = false;
+	/** The last `through` value read or saved (0 = never). */
+	#storedThrough = 0;
+	/** Task 3 sets this on replay failure; while true the pump never saves. */
+	#replayFailed = false;
+	/** Task 2's replay backlog (empty until then; declared for #computeThrough). */
+	#replayBacklog: SettleGroup[] = [];
+
 	#closed = false;
 
 	private constructor(harness: Harness, options: EventBusOptions) {
@@ -776,6 +811,47 @@ export class EventBus {
 			if (oldest === undefined || admittedAt < oldest) oldest = admittedAt;
 		}
 		return oldest === undefined ? undefined : Math.max(0, now - oldest);
+	}
+
+	/**
+	 * The last saved delivered-through marker (durable run-settled Task 1).
+	 * Every deliverable submission with `id < deliveredThrough()` is
+	 * terminal and has been delivered to the `runSettled` handlers.
+	 * 0 means "never saved".
+	 */
+	public deliveredThrough(): number {
+		return this.#storedThrough;
+	}
+
+	/**
+	 * Compute the highest safe `through`: the minimum of every id that
+	 * could still need delivery. Empty/undefined terms are skipped.
+	 * The in-dispatch term is dropped (the save runs only when the queue
+	 * is empty and no group is being dispatched).
+	 */
+	#computeThrough(): number {
+		const terms: number[] = [this.#highestTerminalObserved + 1];
+		if (this.#undeliveredLive.size > 0) {
+			terms.push(Math.min(...this.#undeliveredLive));
+		}
+		// Lowest first-input id over queued settle groups.
+		for (const item of this.#queue) {
+			if (item.kind === "settled" && item.event.settled.length > 0) {
+				terms.push(item.event.settled[0]!.id);
+				break; // queue is ordered; the first settle group is the lowest
+			}
+		}
+		if (this.#droppedLowest !== undefined) {
+			terms.push(this.#droppedLowest);
+		}
+		// Task 2's replay backlog (empty until then).
+		if (this.#replayBacklog.length > 0) {
+			const first = this.#replayBacklog[0]!;
+			if (first.settled.length > 0) {
+				terms.push(first.settled[0]!.id);
+			}
+		}
+		return Math.min(...terms);
 	}
 
 	/**
@@ -1449,6 +1525,21 @@ export class EventBus {
 				// The flag was warmed by the pre-pass; `markInternal` runs in the
 				// creating commit, which always precedes any submission.
 				if (this.#isInternal(value.conversationId)) continue;
+				// Delivered-through marker (durable run-settled Task 1): track
+				// deliverable submissions (input/continue in a non-internal
+				// conversation) through their lifecycle. Queued or placed →
+				// undelivered; terminal → remove and advance the high-water mark.
+				if (value.status === "queued" || value.status === "placed") {
+					this.#undeliveredLive.add(value.id);
+				} else if (
+					value.status === "done" ||
+					value.status === "unanswered"
+				) {
+					this.#undeliveredLive.delete(value.id);
+					if (value.id > this.#highestTerminalObserved) {
+						this.#highestTerminalObserved = value.id;
+					}
+				}
 				// Idle bookkeeping (Task 4): a PLACED run input both stamps the
 				// admission clock and marks the run live; a terminal one marks
 				// the run end. Write-type submissions never touch either — a
@@ -1552,6 +1643,14 @@ export class EventBus {
 					this.#queueMax,
 					dropped.kind,
 				);
+				// Durable run-settled Task 1: a dropped settle group pins the
+				// marker until the next restart replays it.
+				if (dropped.kind === "settled" && dropped.event.settled.length > 0) {
+					const firstId = dropped.event.settled[0]!.id;
+					if (this.#droppedLowest === undefined || firstId < this.#droppedLowest) {
+						this.#droppedLowest = firstId;
+					}
+				}
 			}
 		}
 		this.#queue.push(event);
@@ -1562,8 +1661,32 @@ export class EventBus {
 		for (;;) {
 			if (this.#closed) return;
 			const next = this.#queue.shift();
-			if (next === undefined) return;
+			if (next === undefined) {
+				// The queue is empty and no group is being dispatched. Save
+				// the delivered-through marker if a settle group was delivered
+				// since the last save (durable run-settled Task 1).
+				if (this.#settledSinceSave && !this.#closed && !this.#replayFailed) {
+					const through = this.#computeThrough();
+					if (through > this.#storedThrough) {
+						try {
+							await this.#harness.commit(async (tx) => {
+								const draft = await tx.doc(RunDeliveryDoc);
+								(draft as { through: number }).through = through;
+							}, context);
+							this.#storedThrough = through;
+							this.#settledSinceSave = false;
+						} catch (error) {
+							console.error("event-bus: delivered-through save failed:", error);
+							// Keep #settledSinceSave true — retried on the next pump pass.
+						}
+					}
+				}
+				return;
+			}
 			await this.#dispatch(next, context);
+			if (next.kind === "settled") {
+				this.#settledSinceSave = true;
+			}
 		}
 	}
 

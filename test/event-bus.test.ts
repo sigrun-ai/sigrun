@@ -38,6 +38,7 @@ import { JobDoc } from "../src/jobs/docs.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import {
 	EventBus,
+	RunDeliveryDoc,
 	type LifecycleEvent,
 	type SettleGroup,
 	type HostEvent,
@@ -49,6 +50,7 @@ import { createServer } from "../src/server/index.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { askTree } from "./helpers/trees.js";
+import { markInternal } from "../src/curation/internal.js";
 
 /** One booted harness + bus, its root conversation, and its faux provider. */
 interface TestBus {
@@ -108,6 +110,11 @@ async function bootBus(
 		env: {},
 		settings: options.settings,
 		settingsDir: dir,
+		eventBus: {
+			shutdownSettleWaitMs: options.shutdownSettleWaitMs,
+			idleThresholdMs: options.idleThresholdMs,
+			workerDeadlineMs: 10_000,
+		},
 	});
 	// The root (and its creation commit) exists BEFORE the bus subscribes:
 	// lifecycle tests observe only what happens after open.
@@ -1481,5 +1488,344 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 		expect(message).toBe(
 			"extension factory returned a interactionSettled field that is not a function",
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Delivered-through marker (durable run-settled, Task 1): the live-path
+// bookkeeping + save. Replay (Task 2) and boot wiring (Task 3) are separate.
+// ---------------------------------------------------------------------------
+
+describe("delivered-through marker", () => {
+	/** Read the stored marker doc (undefined when never written). */
+	async function storedThrough(opened: OpenedHarness): Promise<number | undefined> {
+		const doc = await opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT);
+		return doc?.through;
+	}
+
+	/**
+	 * Boot a harness and use its OWN bus (not a second one). The marker is
+	 * a session-scoped doc — a second bus would double-save. The opened bus
+	 * has the built-in extensions registered; tests that need a blocking
+	 * handler register an additional extension on it.
+	 */
+	async function bootOpenedBus(
+		options: {
+			responses?: readonly AssistantMessage[];
+			settings?: HarnessSettings;
+			queueMax?: number;
+			hookDeadlineMs?: number;
+			shutdownSettleWaitMs?: number;
+		} = {},
+	): Promise<TestBus> {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
+		dirs.push(dir);
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		faux.setResponses([...(options.responses ?? [])]);
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+		});
+		await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settings: options.settings,
+			settingsDir: dir,
+			eventBus: {
+				queueMax: options.queueMax,
+				hookDeadlineMs: options.hookDeadlineMs,
+				shutdownSettleWaitMs: options.shutdownSettleWaitMs,
+				workerDeadlineMs: 10_000,
+			},
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const bus = opened.eventBus;
+		cleanups.push(async () => {
+			bus.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		});
+		return { opened, faux, bus, root };
+	}
+
+	test("the marker advances past a delivered run", async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const { submission, record } = await runTurn(root, "hello");
+		expect(record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const through = await storedThrough(opened);
+		expect(through).toBeDefined();
+		expect(through!).toBeGreaterThan(submission.id);
+		expect(bus.deliveredThrough()).toBe(through);
+	});
+
+	test("a live run holds the marker below it", { timeout: 20_000 }, async () => {
+		const { bus, root, opened, faux } = await bootOpenedBus();
+		// The held run's tool round sleeps 2s. The other conversation's run
+		// settles during that window. The held run's second response is gated
+		// (never resolves until release()).
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("held answer"));
+		});
+		faux.setResponses([
+			// Response 1: the held run's tool round.
+			fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 2" })], {
+				stopReason: "toolUse",
+			}),
+			// Response 2: the other conversation's answer (consumed first —
+			// the other run starts while the held run's tool sleeps).
+			fauxAssistantMessage("other answer"),
+			// Response 3: the held run's gated answer (consumed after release).
+			async () => await gate,
+		]);
+		const held = await root.submit(
+			{ type: "input", content: "held run" },
+			BACKGROUND_CONTEXT,
+		);
+		await vi.waitFor(() => expect(bus.oldestLiveAdmissionMs()).toBeDefined());
+
+		// A second conversation settles while the first is held.
+		const other = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const otherTurn = await runTurn(other, "other");
+		expect(otherTurn.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const through = await storedThrough(opened);
+		expect(through).toBeDefined();
+		expect(through!).toBeLessThanOrEqual(held.id);
+
+		release();
+		expect((await held.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect((await storedThrough(opened))!).toBeGreaterThan(held.id);
+	});
+
+	test("a queued group holds the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			responses: [
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("second answer"),
+			],
+		});
+		let releaseFirst!: () => void;
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		bus.registerExtension("fixture-block-first", {
+			runSettled: async () => {
+				await firstGate;
+			},
+		});
+
+		const first = await runTurn(root, "first");
+		expect(first.record.status).toBe("done");
+		// Start draining: the pump reaches the blocking handler.
+		const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// A second conversation's run settles while the first group is in dispatch.
+		const other = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const second = await runTurn(other, "second");
+		expect(second.record.status).toBe("done");
+
+		// The marker must not advance past the queued (in-dispatch) group.
+		expect(bus.deliveredThrough()).toBeLessThanOrEqual(first.submission.id);
+
+		releaseFirst();
+		await draining;
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect((await storedThrough(opened))!).toBeGreaterThan(second.submission.id);
+	});
+
+	test("an internal run never pins the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened, faux } = await bootOpenedBus();
+		// Create an internal conversation and hold a run in it.
+		const internal = await opened.harness.createConversation(
+			{
+				ownership: { kind: "ownerless" },
+				agent: { model: opened.defaultModel },
+				init: async (tx, id) => {
+					await markInternal(tx, id, "alice");
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("internal answer"));
+		});
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], {
+				stopReason: "toolUse",
+			}),
+			async () => await gate,
+		]);
+		const held = await internal.submit(
+			{ type: "input", content: "internal held run" },
+			BACKGROUND_CONTEXT,
+		);
+		// Wait for the internal run to be placed.
+		await new Promise((resolve) => setTimeout(resolve, 200));
+
+		// An ordinary conversation's run settles and drains.
+		faux.setResponses([fauxAssistantMessage("ordinary answer")]);
+		const ordinary = await runTurn(root, "ordinary");
+		expect(ordinary.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// The marker advances past the ordinary run even though the internal
+		// run's submission id is lower.
+		expect(held.id).toBeLessThan(ordinary.submission.id);
+		const through = await storedThrough(opened);
+		expect(through!).toBeGreaterThan(ordinary.submission.id);
+
+		release();
+		await held.wait(BACKGROUND_CONTEXT);
+	});
+
+	test("a write submission never pins the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened, faux } = await bootOpenedBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		// Settle a run first so the marker has a starting point.
+		const first = await runTurn(root, "first");
+		expect(first.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// A write submission (passive entry write, no run).
+		const write = await root.submit(
+			{ type: "write", entry: { kind: "fixture.heartbeat", data: { n: 1 } } },
+			BACKGROUND_CONTEXT,
+		);
+		const writeRecord = await write.wait(BACKGROUND_CONTEXT);
+		expect(writeRecord.status).toBe("done");
+
+		// Another run settles after the write.
+		faux.setResponses([fauxAssistantMessage("second answer")]);
+		const second = await runTurn(root, "second");
+		expect(second.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// The marker passes both runs — the write never held it back.
+		const through = await storedThrough(opened);
+		expect(through!).toBeGreaterThan(second.submission.id);
+	});
+
+	test("an overflow drop pins the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			queueMax: 1,
+			responses: [
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("second answer"),
+				fauxAssistantMessage("third answer"),
+			],
+		});
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			let releaseFirst!: () => void;
+			const firstGate = new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+			bus.registerExtension("fixture-block", {
+				runSettled: async () => {
+					await firstGate;
+				},
+			});
+
+			const first = await runTurn(root, "first");
+			expect(first.record.status).toBe("done");
+			const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+
+			// Two more runs settle while the first is in dispatch → overflow.
+			const other = await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+				BACKGROUND_CONTEXT,
+			);
+			const second = await runTurn(other, "second");
+			expect(second.record.status).toBe("done");
+			const third = await runTurn(root, "third");
+			expect(third.record.status).toBe("done");
+
+			releaseFirst();
+			await draining;
+			await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+			// The dropped group's id stays >= through.
+			const through = await storedThrough(opened);
+			expect(through).toBeDefined();
+			// The dropped group (second or third) must not be passed.
+			const droppedId = Math.min(second.submission.id, third.submission.id);
+			expect(through!).toBeLessThanOrEqual(droppedId);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("no save without a delivered settle group", async () => {
+		const { bus, opened } = await bootOpenedBus();
+		// Create a conversation (lifecycle events only, no settle groups).
+		await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// The marker doc is never written (no settle group was delivered).
+		const through = await storedThrough(opened);
+		expect(through).toBeUndefined();
+	});
+
+	test("the shutdown drains save the marker", async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const { submission, record } = await runTurn(root, "hello");
+		expect(record.status).toBe("done");
+
+		// Shutdown without an explicit drain — the shutdown drains save.
+		await bus.shutdownSequence(BACKGROUND_CONTEXT);
+		const through = await storedThrough(opened);
+		expect(through).toBeDefined();
+		expect(through!).toBeGreaterThan(submission.id);
+	});
+
+	test("close drops the queue without advancing", { timeout: 20_000 }, async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			hookDeadlineMs: 50_000,
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		bus.registerExtension("fixture-block", {
+			runSettled: () => new Promise<void>(() => {}),
+		});
+		const { submission, record } = await runTurn(root, "hello");
+		expect(record.status).toBe("done");
+
+		// Start draining (the pump reaches the blocking handler), then close.
+		const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+		bus.close();
+		await draining;
+
+		const through = await storedThrough(opened);
+		// The run was never delivered (close dropped the queue).
+		expect(through ?? 0).toBeLessThanOrEqual(submission.id);
 	});
 });

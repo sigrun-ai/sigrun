@@ -813,6 +813,16 @@ export interface OpenHarnessOptions {
 		readonly idleThresholdMs?: number;
 		readonly idleSweepMs?: number;
 		/**
+		 * The queue bound (durable run-settled tests override to exercise
+		 * overflow). Default `config.memorySeam.queueMax`.
+		 */
+		readonly queueMax?: number;
+		/**
+		 * The hook deadline (durable run-settled tests override to exercise
+		 * blocking handlers). Default `config.memorySeam.hookDeadlineMs`.
+		 */
+		readonly hookDeadlineMs?: number;
+		/**
 		 * The worker deadline (memory-seam Task 5), default
 		 * `config.memorySeam.workerDeadlineMs`. Tests pass a small value to
 		 * exercise the abandon path.
@@ -2172,8 +2182,8 @@ export async function openHarness(
 	const memorySeam = config.memorySeam;
 	const hookDeadlineMs = memorySeam.hookDeadlineMs;
 	const eventBus = EventBus.open(harness, {
-		queueMax: memorySeam.queueMax,
-		hookDeadlineMs,
+		queueMax: options.eventBus?.queueMax ?? memorySeam.queueMax,
+		hookDeadlineMs: options.eventBus?.hookDeadlineMs ?? hookDeadlineMs,
 		idleThresholdMs: options.eventBus?.idleThresholdMs ?? memorySeam.idleThresholdMs,
 		idleSweepMs: options.eventBus?.idleSweepMs ?? IDLE_SWEEP_MS,
 		workerDeadlineMs: options.eventBus?.workerDeadlineMs ?? memorySeam.workerDeadlineMs,
