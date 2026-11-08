@@ -1438,6 +1438,22 @@ body {
 	margin: 0.25rem 0;
 }
 
+.chat-run-failure button {
+	font: inherit;
+	font-size: 0.8rem;
+	color: var(--danger);
+	background: var(--surface-2);
+	border: 1px solid var(--border);
+	border-radius: 4px;
+	padding: 0 6px;
+	cursor: pointer;
+}
+
+.chat-run-failure button:disabled {
+	opacity: 0.5;
+	cursor: default;
+}
+
 /* Tool rows (B4): one tool call INSIDE the expanded activity line —
    never a first-class card. Glyph ✓ settled / ✗ error / · no result,
    tool name, preview in mono; expansion opens the JSON arguments and

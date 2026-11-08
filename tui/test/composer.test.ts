@@ -54,7 +54,7 @@ const STUB_COMMANDS = [
 	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
 	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
 	{ name: "compact", description: "Compact this conversation", argsHint: "[instructions]", endpoint: { method: "POST", path: "/v1/conversations/:id/compact" } },
-	{ name: "continue", description: "Resume the last failed run", argsHint: "(no arguments)", endpoint: { method: "POST", path: "/v1/conversations/:id/continue" } },
+	{ name: "continue", description: "Resume the last failed run", endpoint: { method: "POST", path: "/v1/conversations/:id/continue" } },
 	// In the catalog but with no client method the composer can drive.
 	{ name: "export", description: "Download this conversation as JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
 	// An extension-contributed command (the invoke endpoint drives it).

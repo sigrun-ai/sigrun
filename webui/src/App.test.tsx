@@ -9,6 +9,7 @@ import { act } from "react";
 import { describe, expect, test, vi } from "vitest";
 import { App, locationHash, parseHash, resetLocationHashForTest, routeHash } from "./App";
 import {
+	ApiError,
 	createClient,
 	type ConversationMeta,
 	type FetchLike,
@@ -752,6 +753,62 @@ describe("App shell", () => {
 		expect(
 			instanceText(renderer.root.findByProps({ className: "chat-continue-error" })),
 		).toBe("The conversation is busy.");
+	});
+
+	test("a late busy continue does not leak into the next conversation", async () => {
+		let rejectContinue!: (reason: unknown) => void;
+		const { client, createEventSource, sources } = makeHarness({
+			continueResult: () =>
+				new Promise((_, reject) => {
+					rejectContinue = reject;
+				}),
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		try {
+			act(() => {
+				sources[1]?.source.emit(
+					"snapshot",
+					JSON.stringify(
+						makeView({
+							id: 1,
+							docs: { "pi.live": { runFailure: { reason: "model_error" } } },
+						}),
+					),
+				);
+			});
+			const button = renderer.root
+				.findAllByType("button")
+				.find((one) => instanceText(one) === "Continue");
+			let pending!: Promise<void>;
+			act(() => {
+				pending = (button!.props as { onClick: () => Promise<void> }).onClick();
+			});
+			await clickConversation(renderer, "Moor line inspection");
+			act(() => {
+				sources[2]?.source.emit(
+					"snapshot",
+					JSON.stringify(makeView({ id: 2 })),
+				);
+			});
+			await act(async () => {
+				rejectContinue(
+					new ApiError({
+						method: "POST",
+						path: "/v1/conversations/1/continue",
+						status: 409,
+					}),
+				);
+				await pending;
+			});
+			expect(
+				renderer.root.findAllByProps({ className: "chat-continue-error" }),
+			).toHaveLength(0);
+			expect(textContent(renderer.toJSON())).not.toContain("The conversation is busy.");
+		} finally {
+			resetLocationHashForTest();
+		}
 	});
 
 	test("switching the active id re-drives the view hook (new stream, old closed)", async () => {

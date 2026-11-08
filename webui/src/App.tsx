@@ -224,17 +224,21 @@ function ChatCenter(props: {
 	const { activeId, view, status, error, showThinking, timeline } = props;
 	const [continuing, setContinuing] = useState(false);
 	const [continueError, setContinueError] = useState<string | undefined>();
+	const activeIdRef = useRef(activeId);
 	useEffect(() => {
+		activeIdRef.current = activeId;
 		setContinuing(false);
 		setContinueError(undefined);
 	}, [activeId]);
 	async function continueRun(): Promise<void> {
 		if (activeId === null || continuing) return;
+		const conversationId = activeId;
 		setContinuing(true);
 		setContinueError(undefined);
 		try {
-			await props.client.continueConversation(activeId);
+			await props.client.continueConversation(conversationId);
 		} catch (cause) {
+			if (activeIdRef.current !== conversationId) return;
 			setContinueError(
 				cause instanceof ApiError && cause.status === 409
 					? "The conversation is busy."
@@ -243,7 +247,7 @@ function ChatCenter(props: {
 						: String(cause),
 			);
 		} finally {
-			setContinuing(false);
+			if (activeIdRef.current === conversationId) setContinuing(false);
 		}
 	}
 	if (activeId === null) {
@@ -262,8 +266,8 @@ function ChatCenter(props: {
 	const compactionError =
 		view === null || compacting ? undefined : liveCompactionFailure(view);
 	// A run that ended without an answer surfaces why (pi-durable 1.5.0
-	// `pi.live.runFailure`); the shared reader hides the user-caused
-	// endings (aborted/reset) and any failure a newer run superseded.
+	// `pi.live.runFailure`); the shared reader hides user-caused endings,
+	// `nothing_to_answer`, and any failure a newer run superseded.
 	const runFailure = view === null ? undefined : liveRunFailure(view);
 	return (
 		<section

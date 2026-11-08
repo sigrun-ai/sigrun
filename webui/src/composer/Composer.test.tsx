@@ -64,7 +64,7 @@ const COMMANDS = [
 	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
 	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
 	{ name: "compact", description: "Compact", argsHint: "[instructions]", endpoint: { method: "POST", path: "/v1/conversations/:id/compact" } },
-	{ name: "continue", description: "Resume the last failed run", argsHint: "(no arguments)", endpoint: { method: "POST", path: "/v1/conversations/:id/continue" } },
+	{ name: "continue", description: "Resume the last failed run", endpoint: { method: "POST", path: "/v1/conversations/:id/continue" } },
 	{ name: "export", description: "Download JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
 	{ name: "import", description: "Import JSONL", argsHint: "<jsonl>", endpoint: { method: "POST", path: "/v1/conversations/import" } },
 	{ name: "name", description: "Name", argsHint: "<name>", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
