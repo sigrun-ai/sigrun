@@ -173,9 +173,12 @@ export interface ConversationSummary {
 	 */
 	readonly name?: string;
 	/**
-	 * The server-owned auto-generated name (A2), when written and no user
-	 * `name` overrides it. Surfaced so `conversation.changed` events can
-	 * report an auto-name landing without a user edit.
+	 * The server-owned auto-generated name (A2), always served when
+	 * written — even alongside a user name, so the webui rename flow can
+	 * distinguish the stored user text from the suggestion. `name` stays
+	 * the collapsed display value (`name ?? autoName`). Surfaced so
+	 * `conversation.changed` events can report an auto-name landing
+	 * without a user edit.
 	 */
 	readonly autoName?: string;
 	/**
