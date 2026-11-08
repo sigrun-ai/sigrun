@@ -1927,6 +1927,16 @@ describe("startup replay", () => {
 		return seeded;
 	}
 
+	/**
+	 * Close boot's own bus after seeding so its debounced commit-driven
+	 * auto-drain cannot deliver later runs (and advance the durable marker)
+	 * while the test scripts its own crash window. Without this, replay
+	 * tests race boot's timer for the marker position at the crash.
+	 */
+	async function freezeMarker(first: TestBus) {
+		first.opened.eventBus.close();
+	}
+
 	test("an undelivered run replays after a crash", async () => {
 		const first = await bootBus({
 			responses: [
@@ -2364,6 +2374,7 @@ describe("startup replay", () => {
 			responses: [fauxAssistantMessage("marker answer")],
 		});
 		await seedMarker(first.root, first.bus);
+		await freezeMarker(first);
 		let failFirst!: () => void;
 		const firstFailure = new Promise<AssistantMessage>((resolve) => {
 			failFirst = () => resolve(fauxAssistantMessage("failed original run", { stopReason: "error", errorMessage: "faux original failure" }));
