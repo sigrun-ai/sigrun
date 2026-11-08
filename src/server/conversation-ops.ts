@@ -17,6 +17,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import type { Context } from "@earendil-works/chord";
 import { AgentDoc, configure } from "@earendil-works/pi-durable";
 import type {
 	Conversation,
@@ -41,6 +42,7 @@ import {
 } from "@sigrun/shared/access";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
+import type { OpenedHarness } from "../harness/boot.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import {
 	ensureRequestId,
@@ -420,6 +422,46 @@ export interface SubmitOpOptions {
 }
 
 /**
+ * Jobs quiet runs Task 5: a human turn landing in a job-run conversation
+ * ADOPTS it — ONE commit sets `meta.adopted = true` and clears the run's
+ * creation-time `maxTurns` cap (a human is driving now; the unattended
+ * turn limit no longer applies). No-op unless the conversation's meta
+ * says `source === "cron"` and it is not already adopted, and the
+ * input's requestId does NOT carry the `job:` prefix (a scheduled fire
+ * into the conversation never adopts it). `submitOp` calls this after
+ * the by-submission attribution; both the HTTP route and the host
+ * bridge funnel through there, so channel users adopt too.
+ *
+ * Accepted non-atomic window: adoption is a SEPARATE commit from the
+ * admission (one admission per commit), so a crash between the two only
+ * delays visibility — the input is admitted, and the next human turn
+ * retries the idempotent adoption commit.
+ *
+ * Known limitation (documented, not fixed): the run conversation's
+ * creation-time `excludeInteractiveTools` filter stays after adoption —
+ * interactive tools the run never offered stay unoffered.
+ */
+async function adoptIfJobRun(
+	opened: OpenedHarness,
+	conversation: Conversation,
+	requestId: string,
+	ctx: Context,
+): Promise<void> {
+	if (requestId.startsWith("job:")) return;
+	const meta = await opened.harness.snapshot(
+		SessionMetaDoc,
+		conversation.id,
+		ctx,
+	);
+	if (meta?.source !== "cron" || meta.adopted === true) return;
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		draft.adopted = true;
+		await configure(tx, conversation.id, { maxTurns: null });
+	}, ctx);
+}
+
+/**
  * Submit one input the route way: content-part resolution against the
  * conversation's live workspace env, the §2/§3 served-model check
  * (refresh-on-miss, `UnservedModelError` propagates to the caller),
@@ -621,6 +663,9 @@ export async function submitOp(
 		opts.user,
 		BACKGROUND_CONTEXT,
 	);
+	// Jobs quiet runs Task 5: a human writing in a job-run conversation
+	// adopts it (the row stops being quiet, the run's maxTurns cap lifts).
+	await adoptIfJobRun(opened, conversation, requestId, BACKGROUND_CONTEXT);
 	// The implied clear (notices spec §3.2 rule 2): the user's next prompt
 	// in a conversation is them dealing with that conversation's notices,
 	// so every one of THEIR notices naming it goes. Attribution is the
@@ -1106,6 +1151,19 @@ export async function forkOp(
 		else draft.owner = opts.owner;
 		if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
 		draft.lastActivityAt = opened.now().toISOString();
+		// Jobs quiet runs Task 5 (spec §1): a fork of a job RUN is an
+		// ordinary conversation — the user is continuing the work by hand.
+		// Reset the source, drop every job stamp, and clear the run's
+		// creation-time maxTurns cap. `archived`/`pinned` keep today's
+		// behavior (inherited from the copied doc).
+		if (sourceMeta?.source === "cron") {
+			draft.source = "user";
+			delete draft.jobId;
+			delete draft.deliver;
+			delete draft.jobOutcome;
+			delete draft.adopted;
+			await configure(tx, fork.id, { maxTurns: null });
+		}
 		await opened.rewriteUserSelection(
 			tx,
 			fork.id,

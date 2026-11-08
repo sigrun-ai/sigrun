@@ -472,3 +472,86 @@ describe("host.conversations.create({job, agent}) filters interactive tools", ()
 		).toBe(false);
 	});
 });
+
+// ─── isJobRunConversation and adoption ───────────────────────────────────
+
+describe("isJobRunConversation with adoption", () => {
+	async function stampCronMeta(
+		opened: OpenedHarness,
+		id: ConversationId,
+		adopted: boolean,
+	): Promise<void> {
+		await opened.harness.commit(async (tx) => {
+			const { SessionMetaDoc } = await import("../src/server/session-meta.js");
+			const draft = await tx.doc(SessionMetaDoc, id);
+			draft.source = "cron";
+			draft.jobId = "api:acme-adopt-probe";
+			if (adopted) draft.adopted = true;
+		}, BACKGROUND_CONTEXT);
+	}
+
+	test("an unadopted cron conversation is a job run via the meta.jobId shortcut", async () => {
+		const { opened } = await bootAskWait();
+		const { isJobRunConversation } = await import(
+			"../src/harness/interactive-tools.js"
+		);
+		const conversation = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		await stampCronMeta(opened, conversation.id, false);
+		// No live run: the jobId stamp alone answers true.
+		expect(
+			await isJobRunConversation(opened.harness, conversation.id, BACKGROUND_CONTEXT),
+		).toBe(true);
+	});
+
+	test("an adopted conversation's user runs are not job runs; a run whose inputs carry job: still is", async () => {
+		const { opened } = await bootAskWait();
+		const { isJobRunConversation } = await import(
+			"../src/harness/interactive-tools.js"
+		);
+		const conversation = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		await stampCronMeta(opened, conversation.id, true);
+		// Idle, adopted: the jobId shortcut is SKIPPED, so no live run means
+		// not a job run.
+		expect(
+			await isJobRunConversation(opened.harness, conversation.id, BACKGROUND_CONTEXT),
+		).toBe(false);
+
+		// A live user run (no job: requestId) in the adopted conversation:
+		// still not a job run even while busy.
+		const userSubmission = await conversation.submit(
+			{
+				type: "input",
+				content: [{ type: "text", text: "a human follow-up" }],
+				requestId: "acme-user-turn",
+			},
+			BACKGROUND_CONTEXT,
+		);
+		expect(userSubmission).toBeDefined();
+		expect(
+			await isJobRunConversation(opened.harness, conversation.id, BACKGROUND_CONTEXT),
+		).toBe(false);
+		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+
+		// A live run whose input carries a job: requestId: true even in the
+		// adopted conversation (a fixed-conversation fire lands here).
+		const jobSubmission = await conversation.submit(
+			{
+				type: "input",
+				content: [{ type: "text", text: "a fixed fire's prompt" }],
+				requestId: "job:api:acme-adopt-probe:1000",
+			},
+			BACKGROUND_CONTEXT,
+		);
+		expect(jobSubmission).toBeDefined();
+		expect(
+			await isJobRunConversation(opened.harness, conversation.id, BACKGROUND_CONTEXT),
+		).toBe(true);
+		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+	});
+});

@@ -71,6 +71,12 @@ export async function excludeInteractiveTools(
  * BOTH fire shapes — that branch covers a job firing into an EXISTING
  * conversation, which carries no `jobId`). Interactive tools call this in
  * execute and refuse instead of waiting on a human.
+ *
+ * Adoption (jobs quiet runs Task 5): once a user has adopted the run
+ * conversation (`meta.adopted === true`), the `jobId` shortcut no longer
+ * applies — only a live run whose inputs carry a `job:` requestId is a
+ * job run there. The job-state prompt section still reads `meta.jobId`,
+ * which stays truthful in an adopted conversation.
  */
 export async function isJobRunConversation(
 	harness: Harness,
@@ -78,7 +84,13 @@ export async function isJobRunConversation(
 	context: Context,
 ): Promise<boolean> {
 	const meta = await harness.snapshot(SessionMetaDoc, conversationId, context);
-	if (meta?.jobId !== undefined) return true;
+	// Jobs quiet runs Task 5: an ADOPTED job-run conversation's user runs
+	// are not job runs — skip the `meta.jobId` shortcut (the stamp is a
+	// creation-time fact about the conversation, not the live run) and
+	// answer from the live run's inputs alone. A `job:`-carrying input
+	// still answers true (a fixed-conversation fire into the adopted
+	// conversation IS a job run).
+	if (meta?.adopted !== true && meta?.jobId !== undefined) return true;
 	const live = await harness.snapshot(LiveDoc, conversationId, context);
 	for (const id of live?.run?.inputs ?? []) {
 		const submission = await harness.submission(id, context);

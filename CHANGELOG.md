@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (integer ≥ 1) on new-conversation prompt jobs, the live
   `jobDefaults.maxTurns` settings fallback, default 150; a run that
   reaches it settles `failed` with `turn_limit`.
+- Jobs: writing in a job-run conversation adopts it (the list row stops
+  being quiet and the run's turn cap lifts), a `job:` fire never adopts,
+  and a fork of a job run is an ordinary conversation (source reset to
+  `user`, the job stamps and turn cap dropped).
 
 ### Fixed
 
