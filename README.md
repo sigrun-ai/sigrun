@@ -976,7 +976,7 @@ backup — are omitted rather than zeroed):
 |---|---|
 | `sigrun_up` | 1 when `harness.inspect()` answers; 0 on a closed or storage-unreachable session (the scrape itself still answers 200). |
 | `sigrun_ready` | 1 when the readiness storage check (the root-conversation read `/readyz` gates on) succeeds; 0 when it fails — fires even while the process and the scrape stay up. |
-| `sigrun_live_runs` | Conversations with a placed-but-unsettled input submission. |
+| `sigrun_live_runs` | Conversations with a live run. |
 | `sigrun_inflight_submission_oldest_seconds` | Age of the oldest in-flight submission's admission (0 when none; in-process clock — a pre-restart run is invisible until it settles). |
 | `sigrun_tasks_live{status}` | Live tasks by scheduler state (running/pending/waiting/completing/blocked, 0s included). |
 | `sigrun_jobs_blocked{reason}` | Jobs whose record is blocked, by reason (`restart_limit` — the schedule hit pi-durable's restart limit; resume via `POST /v1/jobs/:id/resume`). |

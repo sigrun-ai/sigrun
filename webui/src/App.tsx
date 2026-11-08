@@ -217,6 +217,7 @@ function ChatCenter(props: {
 	/** The dock height as bottom padding, so the last message clears the
 	 *  composer dock that overlays the scroll area (the scroll fade, B5). */
 	readonly dockPadding: number;
+	readonly readOnly?: boolean;
 	/** U5 Task 4: the chat-block transport attach seam (App's hub) — the
 	 *  inline BlocksEntry surfaces subscribe through it. */
 	readonly attachChatTransport: AttachChatTransport;
@@ -315,13 +316,15 @@ function ChatCenter(props: {
 						<p className="chat-run-failure" role="alert">
 							run ended: {runFailure.reason}
 							{runFailure.detail ? `: ${runFailure.detail}` : ""}{" "}
-							<button
-								type="button"
-								disabled={continuing}
-								onClick={() => void continueRun()}
-							>
-								Continue
-							</button>
+							{props.readOnly !== true && (
+								<button
+									type="button"
+									disabled={continuing}
+									onClick={() => void continueRun()}
+								>
+									Continue
+								</button>
+							)}
 							{runFailure.reason === "no_model" ? " Switch model, then continue." : ""}
 						</p>
 					)}
@@ -1688,6 +1691,10 @@ function AppShell(options: AppOptions = {}) {
 							parent={parent}
 							onScrollRoot={setScrollRoot}
 							dockPadding={dockPadding}
+							readOnly={
+								list.rows.find((row) => row.id === activeId)?.access ===
+								"read"
+							}
 							attachChatTransport={attachChatTransport}
 						/>
 					{/* The scroll fade (B5): the pointer-events-none gradient +

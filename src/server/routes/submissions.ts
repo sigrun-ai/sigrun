@@ -241,8 +241,9 @@ export function registerSubmissionRoutes(
 	);
 
 	// Resume the current context without adding a user message. Continue
-	// never queues: a busy conversation is a 409, with no admission or
-	// adoption/decline side effects.
+	// never queues: a busy conversation is a 409, with no continue admission
+	// or adoption/decline side effects. A pending block-note write may still
+	// have been admitted: §8.3 places that note before the admission commit.
 	app.post(
 		"/v1/conversations/:id/continue",
 		{ schema: { params: ID_PARAMS_SCHEMA }, preHandler: loadConversation(ctx, "write") },

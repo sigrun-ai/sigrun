@@ -269,7 +269,9 @@ what core does with each, and where its rules are documented:
 input has no entry and contributes `""` at its position in `inputTexts`.
 The event's `continued` field is true whenever the run holds one; a run
 started by only a Continue is `event.continued === true &&
-event.inputs.length === 1`.
+event.inputs.length === 1`. A Continue admission also places any pending
+block-surface note (the §8.3 note precedes every turn admission), so the
+resumed run sees those edits.
 
 **The host rule.** The factory's first parameter is the host — `SigrunHost`
 above — **never a defaulted options object**. Sigrun passes the host only

@@ -13,9 +13,8 @@
  *   1`), so `/readyz` 503'd but the scrape stayed green and nothing
  *   paged; sharing one derivation means the gauge and the probe
  *   cannot disagree.
- * - `sigrun_live_runs` — conversations with a placed-but-unsettled input
- *   submission (one run per conversation at a time), durable-derived
- *   from the same inspection;
+ * - `sigrun_live_runs` — conversations with a live run (one per
+ *   conversation at a time), durable-derived from the same inspection;
  * - `sigrun_inflight_submission_oldest_seconds` — the event bus's
  *   admission clock (`oldestLiveAdmissionMs`; 0 when no run is live).
  *   In-process: a run admitted before a restart is invisible until it

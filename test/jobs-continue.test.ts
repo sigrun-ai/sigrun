@@ -306,6 +306,46 @@ describe("a Continue-rescued job run", () => {
 		expect((await opened.jobs.get(job.id))?.lastRun).toEqual(failedRun);
 	});
 
+	test("an ordinary typed answer adopts but keeps the failed label", { timeout: 30_000 }, async () => {
+		const { app, opened, faux, aliceToken } = await bootServer();
+		const host = channelHost(opened);
+		const job = await opened.jobs.createApi(jobSpec(), "alice");
+		faux.setResponses([failedMessage()]);
+		const fire = await opened.jobs.runNow(job.id);
+		if (fire.conversationId === undefined) throw new Error("new-conversation fire has no id");
+		const conversationId = fire.conversationId as ConversationId;
+		await waitSettled(opened, job.id);
+		await expect(host.conversations.meta(conversationId)).resolves.toMatchObject({
+			jobOutcome: "failed",
+		});
+
+		faux.setResponses([fauxAssistantMessage("ordinary answer")]);
+		const response = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${conversationId as unknown as number}/submissions`,
+			payload: { input: "answer the failed job normally" },
+			headers: {
+				"content-type": "application/json",
+				authorization: `Bearer ${aliceToken}`,
+			},
+		});
+		expect(response.statusCode).toBe(202);
+		const submissionId = response.json().submission.id as number;
+		const submission = await opened.harness.submission(
+			submissionId as never,
+			BACKGROUND_CONTEXT,
+		);
+		if (submission === undefined) throw new Error("submission missing");
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
+		await opened.eventBus.drain(10_000, BACKGROUND_CONTEXT);
+
+		await expect(host.conversations.meta(conversationId)).resolves.toMatchObject({
+			jobOutcome: "failed",
+			adopted: true,
+		});
+	});
+
 	test("continue resumes past a turn limit", { timeout: 30_000 }, async () => {
 		const { app, opened, faux, aliceToken } = await bootServer();
 		const host = channelHost(opened);

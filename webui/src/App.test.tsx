@@ -75,6 +75,7 @@ function makeHarness(init?: {
 	readonly readyzLingerMs?: number;
 	/** Task 4: the Continue POST's scripted rejection (the busy test's 409). */
 	readonly continueResult?: () => ReturnType<FetchLike>;
+	readonly rootAccess?: "read" | "write";
 }) {
 	let metaPatchFails = init?.failFirstMetaPatch === true;
 	const restartCalls: number[] = [];
@@ -101,6 +102,7 @@ function makeHarness(init?: {
 			archived: false,
 			pinned: false,
 			name: "Tide table rewrite",
+			access: init?.rootAccess ?? ("write" as const),
 			lastActivityAt: new Date().toISOString(),
 		},
 		{
@@ -109,6 +111,7 @@ function makeHarness(init?: {
 			archived: false,
 			pinned: false,
 			name: "Moor line inspection",
+			access: "write" as const,
 			lastActivityAt: new Date().toISOString(),
 		},
 	];
@@ -685,6 +688,31 @@ describe("App shell", () => {
 				.findAllByType("button")
 				.find((one) => instanceText(one) === "Continue")?.props.disabled,
 		).toBe(false);
+	});
+
+	test("read-only shares hide Continue", async () => {
+		const { client, createEventSource, sources } = makeHarness({
+			rootAccess: "read",
+		});
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(
+					makeView({
+						id: 1,
+						docs: { "pi.live": { runFailure: { reason: "model_error" } } },
+					}),
+				),
+			);
+		});
+		expect(
+			renderer.root
+				.findAllByType("button")
+				.find((one) => instanceText(one) === "Continue"),
+		).toBeUndefined();
 	});
 
 	test("no_model adds the switch-model hint", async () => {

@@ -252,6 +252,7 @@ describe("POST /v1/conversations/:id/continue", () => {
 				.status,
 		).toBe("unanswered");
 		const activityBefore = await lastActivityOf(app, root.id);
+		expect(activityBefore).toBeDefined();
 		faux.setResponses([fauxAssistantMessage("resumed")]);
 
 		const response = await postContinue(app, root.id, {});
@@ -388,28 +389,109 @@ describe("POST /v1/conversations/:id/continue", () => {
 	});
 
 	test("a requestId of an earlier input is request_conflict; a continue requestId is idempotent", async () => {
-		const { app, opened, faux } = await bootServer();
-		const root = await rootOf(opened);
+		const { app, opened, faux, aliceToken } = await bootServer({
+			auth: "token",
+			declinable: true,
+		});
+		if (aliceToken === undefined) throw new Error("alice token missing");
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const conversationId = created.json().id as number;
 		faux.setResponses([failedMessage()]);
-		const failed = await submitInput(app, root.id, "hello", "r1");
+		const failed = await submitInput(
+			app,
+			conversationId,
+			"hello",
+			"r1",
+			aliceToken,
+		);
 		await (await submissionOf(opened, failed.id)).wait(BACKGROUND_CONTEXT);
-		const conflict = await postContinue(app, root.id, { requestId: "r1" });
+		const conflict = await postContinue(
+			app,
+			conversationId,
+			{ requestId: "r1" },
+			aliceToken,
+		);
 		expect(conflict.statusCode).toBe(409);
 		expect(conflict.json()).toEqual({ error: "request_conflict" });
 
 		faux.setResponses([fauxAssistantMessage("resumed")]);
-		const first = await postContinue(app, root.id, { requestId: "continue-r1" });
+		const first = await postContinue(
+			app,
+			conversationId,
+			{ requestId: "continue-r1" },
+			aliceToken,
+		);
 		expect(first.statusCode).toBe(202);
 		const firstId = first.json().submissionId as number;
 		await (await submissionOf(opened, firstId)).wait(BACKGROUND_CONTEXT);
-		const second = await postContinue(app, root.id, { requestId: "continue-r1" });
-		expect(second.statusCode).toBe(202);
-		expect(second.json()).toEqual({ submissionId: firstId });
-		expect(
-			(await submissionsOf(opened, root.id)).filter(
-				(record) => record.type === "continue",
-			),
-		).toHaveLength(1);
+
+		const gate = holdRun(faux);
+		try {
+			await submitInput(
+				app,
+				conversationId,
+				"held live run",
+				undefined,
+				aliceToken,
+			);
+			// Seed AFTER the typed input's own question decline: this pending
+			// record belongs to the different run that is live now, and the
+			// replay alone must leave it untouched.
+			const host = (globalThis as Record<string, unknown>).__declinableHost as
+				| SeamHost
+				| undefined;
+			if (host === undefined) throw new Error("declinable host not captured");
+			await host.seedInteraction(
+				conversationId as ConversationId,
+				{
+					kind: "decl.ask",
+					callId: "replay-question",
+					status: "pending",
+					createdAt: 1,
+					declinable: true,
+					body: {
+						v: 1,
+						root: {
+							type: "form",
+							id: "replay-question",
+							bind: "/values",
+							mode: "submit",
+							children: [],
+						},
+					},
+				},
+				BACKGROUND_CONTEXT,
+			);
+			const second = await postContinue(
+				app,
+				conversationId,
+				{ requestId: "continue-r1" },
+				aliceToken,
+			);
+			expect(second.statusCode).toBe(202);
+			expect(second.json()).toEqual({ submissionId: firstId });
+			await expect(
+				opened.harness.snapshot(
+					InteractionDoc,
+					conversationId as ConversationId,
+					"replay-question",
+					BACKGROUND_CONTEXT,
+				),
+			).resolves.toMatchObject({ status: "pending" });
+			expect(
+				(await submissionsOf(opened, conversationId)).filter(
+					(record) => record.type === "continue",
+				),
+			).toHaveLength(1);
+		} finally {
+			gate.release();
+		}
+		await opened.harness.waitForIdle(BACKGROUND_CONTEXT);
 	});
 
 	test("read access cannot continue", async () => {

@@ -19,12 +19,13 @@
  * marks creation, the tagged `kind === "retire"` marks retirement):
  *
  * - **Settle**: a `submission` table write with `value.type === "input"`
- *   and a terminal status (`done`/`unanswered`). Write-type submissions
- *   never run and never settle-emit. Input submissions settle exactly once
- *   per run — the retry path keeps the task running (only exhaustion or a
- *   final answer settles) — and all of a run's inputs settle in ONE commit
- *   (`endRun`), so one publication coalesces per conversation into one
- *   `SettleGroup` sorted by submission id (ids ascend in admission order).
+ *   or `"continue"` and a terminal status (`done`/`unanswered`). Write-type
+ *   submissions never run and never settle-emit. Input/continue submissions
+ *   settle exactly once per run — the retry path keeps the task running
+ *   (only exhaustion or a final answer settles) — and all of a run's inputs
+ *   settle in ONE commit (`endRun`), so one publication coalesces per
+ *   conversation into one `SettleGroup` sorted by submission id (ids ascend
+ *   in admission order).
  * - **Created/Forked**: a `conversation` table write. Every creation fires
  *   `conversationCreated` — a fork child is a new conversation too — and a
  *   record carrying `parent` additionally fires `conversationForked` with
@@ -39,12 +40,13 @@
  *   predates this process) compares against the materialization default
  *   `false` — archive detection stays commit-driven, nothing to re-arm.
  *
- * Idle detection (Task 4, spec §2's corrected ruling): idle = NO input
- * admission AND no live run. The listener records admissions (`submission`
- * writes with `type === "input"` + `status === "placed"` — a placement
- * both stamps the admission clock and marks the run live; write-type
- * submissions never touch either) and run ends (the settle statuses
- * decrement the live-run count). A host-owned sweep interval (`idleSweepMs`,
+ * Idle detection (Task 4, spec §2's corrected ruling): idle = NO input or
+ * continue admission AND no live run. The listener records admissions
+ * (`submission` writes with `type === "input"` or `"continue"` +
+ * `status === "placed"` — a placement both stamps the admission clock and
+ * marks the run live; write-type submissions never touch either) and run
+ * ends (the settle statuses decrement the live-run count). A host-owned
+ * sweep interval (`idleSweepMs`,
  * default 1s) then fires `conversationIdle` for every conversation whose
  * last admission is at least `idleThresholdMs` old, has no live run, and
  * has not already fired for its current quiet period (one fire per quiet

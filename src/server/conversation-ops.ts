@@ -507,22 +507,31 @@ export async function continueOp(
 		BACKGROUND_CONTEXT,
 	);
 	try {
+		let replay = false;
 		const submissionId = await opened.harness.commit(async (tx) => {
+			// pi-durable returns an existing requestId before its busy check.
+			// That replay admits nothing, so it must not decide a live run's
+			// pending question or clear its notices/activity.
+			replay =
+				(await tx.submissionByRequest(conversation.id, requestId)) !==
+				undefined;
 			const id = await conversation.submit(tx, {
 				type: "continue",
 				requestId,
 			});
 			await writeAdoption(tx, conversation.id);
-			await declinePendingInTx(
-				tx,
-				conversation.id,
-				opts.user,
-				Date.now(),
-			);
+			if (!replay) {
+				await declinePendingInTx(
+					tx,
+					conversation.id,
+					opts.user,
+					Date.now(),
+				);
+			}
 			return id;
 		}, BACKGROUND_CONTEXT);
 		// A continue places no input entry, so there is no author to record.
-		if (opts.user !== undefined) {
+		if (!replay && opts.user !== undefined) {
 			try {
 				await ctx.notices.clearConversationFor(
 					opts.user,
@@ -534,12 +543,14 @@ export async function continueOp(
 				);
 			}
 		}
-		await touchActivity(
-			opened.harness,
-			conversation.id,
-			opened.now,
-			BACKGROUND_CONTEXT,
-		);
+		if (!replay) {
+			await touchActivity(
+				opened.harness,
+				conversation.id,
+				opened.now,
+				BACKGROUND_CONTEXT,
+			);
+		}
 		return { submissionId };
 	} catch (error) {
 		if (error instanceof ConversationBusy) {
