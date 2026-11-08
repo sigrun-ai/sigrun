@@ -54,6 +54,7 @@ const STUB_COMMANDS = [
 	{ name: "new", description: "Start a new conversation", endpoint: { method: "POST", path: "/v1/conversations" } },
 	{ name: "fork", description: "Fork this conversation", argsHint: "[at]", endpoint: { method: "POST", path: "/v1/conversations/:id/fork" } },
 	{ name: "compact", description: "Compact this conversation", argsHint: "[instructions]", endpoint: { method: "POST", path: "/v1/conversations/:id/compact" } },
+	{ name: "continue", description: "Resume the last failed run", argsHint: "(no arguments)", endpoint: { method: "POST", path: "/v1/conversations/:id/continue" } },
 	// In the catalog but with no client method the composer can drive.
 	{ name: "export", description: "Download this conversation as JSONL", endpoint: { method: "GET", path: "/v1/conversations/:id/export" } },
 	// An extension-contributed command (the invoke endpoint drives it).
@@ -78,6 +79,7 @@ function stubClient(init?: {
 	const submitCalls: { id: number; text: string; whenBusy: WhenBusyMode | undefined }[] = [];
 	const abortCalls: number[] = [];
 	const compactCalls: { id: number; instructions: string | undefined }[] = [];
+	const continueCalls: number[] = [];
 	const forkCalls: number[] = [];
 	const invokeCalls: { id: number; name: string; args: string | undefined }[] = [];
 	let getCommandsCalls = 0;
@@ -125,6 +127,10 @@ function stubClient(init?: {
 			compactCalls.push({ id, instructions });
 			return Promise.resolve({ taskId: 7 });
 		},
+		continueConversation(id: number) {
+			continueCalls.push(id);
+			return Promise.resolve({ submissionId: 11 });
+		},
 		runCommand(id: number, name: string, args?: string) {
 			invokeCalls.push({ id, name, args });
 			return Promise.resolve({ notice: `hi ${args ?? ""}` });
@@ -149,6 +155,7 @@ function stubClient(init?: {
 		submitCalls,
 		abortCalls,
 		compactCalls,
+		continueCalls,
 		forkCalls,
 		invokeCalls,
 		watchCalls,
@@ -423,6 +430,32 @@ describe("composer slash commands", () => {
 		app.editor.onSubmit?.("/compact");
 		await flush();
 		expect(compactCalls).toEqual([{ id: 1, instructions: undefined }]);
+	});
+
+	test("/continue calls continueConversation", async () => {
+		const { app, continueCalls } = await boot();
+		app.editor.onSubmit?.("/continue");
+		await flush();
+		expect(continueCalls).toEqual([1]);
+		expect(app.pane.render(80).join("\n")).toContain("continuing");
+	});
+
+	test("/continue without an active conversation shows a clear error", async () => {
+		const { app, continueCalls } = await boot({ empty: true });
+		app.editor.onSubmit?.("/continue");
+		await flush();
+		expect(continueCalls).toEqual([]);
+		expect(app.pane.render(80).join("\n")).toContain(
+			"/continue needs an active conversation",
+		);
+	});
+
+	test("/continue with arguments shows a clear error", async () => {
+		const { app, continueCalls } = await boot();
+		app.editor.onSubmit?.("/continue now");
+		await flush();
+		expect(continueCalls).toEqual([]);
+		expect(app.pane.render(80).join("\n")).toContain("/continue takes no arguments");
 	});
 
 	test("the catalog is fetched once and cached across commands", async () => {

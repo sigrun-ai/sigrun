@@ -33,6 +33,7 @@ import type { CoreTarget, JsonObject } from "@sigrun/shared/blocks";
 import { canonicalJson, eventKeyWeb } from "@sigrun/shared/blocks";
 import { groupTurns } from "@sigrun/shared/turns";
 import {
+	ApiError,
 	createClient,
 	type ConversationSummary,
 	type ConversationViewWire,
@@ -221,6 +222,30 @@ function ChatCenter(props: {
 	readonly attachChatTransport: AttachChatTransport;
 }) {
 	const { activeId, view, status, error, showThinking, timeline } = props;
+	const [continuing, setContinuing] = useState(false);
+	const [continueError, setContinueError] = useState<string | undefined>();
+	useEffect(() => {
+		setContinuing(false);
+		setContinueError(undefined);
+	}, [activeId]);
+	async function continueRun(): Promise<void> {
+		if (activeId === null || continuing) return;
+		setContinuing(true);
+		setContinueError(undefined);
+		try {
+			await props.client.continueConversation(activeId);
+		} catch (cause) {
+			setContinueError(
+				cause instanceof ApiError && cause.status === 409
+					? "The conversation is busy."
+					: cause instanceof Error
+						? cause.message
+						: String(cause),
+			);
+		} finally {
+			setContinuing(false);
+		}
+	}
 	if (activeId === null) {
 		// The empty state (Task 6): the composer below is LIVE — the first
 		// send creates the conversation, submits into it, and navigates here.
@@ -285,8 +310,19 @@ function ChatCenter(props: {
 					{runFailure !== undefined && (
 						<p className="chat-run-failure" role="alert">
 							run ended: {runFailure.reason}
-							{runFailure.detail ? `: ${runFailure.detail}` : ""}
+							{runFailure.detail ? `: ${runFailure.detail}` : ""}{" "}
+							<button
+								type="button"
+								disabled={continuing}
+								onClick={() => void continueRun()}
+							>
+								Continue
+							</button>
+							{runFailure.reason === "no_model" ? " Switch model, then continue." : ""}
 						</p>
+					)}
+					{continueError !== undefined && (
+						<p role="alert" className="chat-continue-error">{continueError}</p>
 					)}
 				</>
 			)}

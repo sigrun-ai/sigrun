@@ -391,7 +391,7 @@ export class ConversationPane implements Component {
 		this.#runFailureLine =
 			runFailure === undefined
 				? undefined
-				: `run ended: ${runFailure.reason}${runFailure.detail ? `: ${runFailure.detail}` : ""}`;
+				: `run ended: ${runFailure.reason}${runFailure.detail ? `: ${runFailure.detail}` : ""} · /continue to resume`;
 		if (this.#focus !== undefined && this.#focus >= this.#turns.length) {
 			this.#focus = undefined;
 		}

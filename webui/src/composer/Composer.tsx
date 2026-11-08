@@ -44,6 +44,7 @@
 
 import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import {
+	ApiError,
 	type CommandWire,
 	type ConversationViewWire,
 	type ModelEntry,
@@ -597,6 +598,9 @@ export function Composer(props: {
 						return usage("[at] — an entry id number");
 					}
 				break;
+			case "continue":
+				if (args !== "") return usage("(no arguments)");
+				break;
 			default:
 				break;
 		}
@@ -626,6 +630,19 @@ export function Composer(props: {
 						args === "" ? undefined : args,
 					);
 					setNotice("compaction admitted");
+					break;
+				}
+				case "continue": {
+					try {
+						await client.continueConversation(conversationId);
+						setNotice("continuing");
+					} catch (cause) {
+						if (cause instanceof ApiError && cause.status === 409) {
+							setNotice("The conversation is busy.");
+						} else {
+							throw cause;
+						}
+					}
 					break;
 				}
 				case "export": {
