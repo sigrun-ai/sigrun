@@ -164,7 +164,9 @@ jobs:
           for pin in ${pins}; do
             if published="$(npm view "${pin}" version 2>&1)"; then
               if [ -z "${published}" ]; then
-                missing+=("${pin}")
+                echo "::error::npm view returned no version for ${pin}"
+                echo "${published}"
+                exit 1
               fi
             else
               case "${published}" in

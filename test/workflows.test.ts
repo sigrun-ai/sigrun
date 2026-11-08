@@ -640,6 +640,9 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const { jobs } = workflow();
 		for (const name of ["test", "sandbox-it", "image-build"]) {
 			const steps = jobs[name]?.steps ?? [];
+			const checkout = steps.find(
+				(step) => step.uses?.startsWith("actions/checkout@"),
+			);
 			const settle = steps.find((step) => runOf(step).trim() === "sleep 180");
 			expect(settle, `${name} waits for the push batch`).toBeDefined();
 			expect(settle?.if).toBe("github.event_name == 'push'");
@@ -647,6 +650,7 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 				(step) => step.uses === "./sigrun/.github/actions/family-checkout",
 			);
 			expect(family, `${name} checks out the family`).toBeDefined();
+			expect(steps.indexOf(settle as Step)).toBe(steps.indexOf(checkout as Step) + 1);
 			expect(steps.indexOf(family as Step)).toBe(steps.indexOf(settle as Step) + 1);
 		}
 		const chart = jobs["chart-lint"]?.steps ?? [];
@@ -665,8 +669,14 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(body).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
 		expect(body).toContain('npm view "${pin}" version 2>&1');
 		expect(body).toContain('*E404*|*"not found"*) missing+=("${pin}")');
-		expect(body).toContain('echo "::error::npm view failed for ${pin}"');
-		expect(body).toContain("exit 1");
+		expect(body).toContain('echo "::error::npm view returned no version for ${pin}"');
+		expect(body).toMatch(
+			/\*\)\n\s+echo "::error::npm view failed for \$\{pin\}"\n\s+echo "\$\{published\}"\n\s+exit 1\n\s+;;/,
+		);
+		expect(body).toMatch(
+			/if \[ -z "\$\{published\}" \]; then\n\s+echo "::error::npm view returned no version for \$\{pin\}"\n\s+echo "\$\{published\}"\n\s+exit 1/,
+		);
+		expect(body).not.toContain('[ -z "${published}" ]; then\n              missing+=');
 		expect(body).toContain("live=false");
 		expect(body).toContain(
 			"::notice::image build skipped: ${missing[*]} not on npm yet (the release checks this)",
