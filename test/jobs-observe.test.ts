@@ -47,7 +47,9 @@ function observerRig(options: {
 	readonly listedRuns?: readonly JobRunWire[];
 	readonly failFirstCommit?: boolean;
 }) {
-	let runSettled: ((event: RunSettledEvent) => Promise<void>) | undefined;
+	// Every registered handler (sigrun:jobs AND sigrun:job-rescue) is
+	// dispatched in registration order, like the real bus.
+	const runSettledHandlers: Array<(event: RunSettledEvent) => Promise<void>> = [];
 	const submissions = new Map<SubmissionId, string>();
 	for (const [index, fireKey] of Object.keys(options.records).entries()) {
 		submissions.set((index + 1) as SubmissionId, `job:${fireKey}`);
@@ -92,7 +94,7 @@ function observerRig(options: {
 	} as unknown as Storage;
 	const eventBus = {
 		registerExtension: (_name: string, handlers: { runSettled?: (event: RunSettledEvent) => Promise<void> }) => {
-			runSettled = handlers.runSettled;
+			if (handlers.runSettled !== undefined) runSettledHandlers.push(handlers.runSettled);
 			return () => {};
 		},
 		onHostEvent: () => () => {},
@@ -106,7 +108,10 @@ function observerRig(options: {
 		// SAFETY: the prompt observer reads only the injected clock.
 		runtime: { now: () => 1 } as JobRuntimeDeps,
 	});
-	if (runSettled === undefined) throw new Error("runSettled was not registered");
+	if (runSettledHandlers.length === 0) throw new Error("runSettled was not registered");
+	const runSettled = async (event: RunSettledEvent): Promise<void> => {
+		for (const handler of runSettledHandlers) await handler(event);
+	};
 	return { runSettled, commit };
 }
 

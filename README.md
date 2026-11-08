@@ -1397,8 +1397,12 @@ default: they stay out of both clients' conversation sidebars and out of
 sidebar search. The webui's **Job runs** toggle beside **Archived**
 reveals them. Failed runs remain visible (unless archived) and their
 display names carry a `Failed · ` prefix; archiving a failed run is how
-you resolve it. Writing in a run conversation **adopts** it: it stays in
-the conversation list and its unattended turn cap is removed. A
+you resolve it. A failed run can also be resumed with **Continue** (or
+`/continue`): continuing makes the conversation yours (it stays in the
+list and has no turn limit), and if the continued run succeeds with
+nothing else typed, the `Failed · ` label clears — the Jobs view keeps
+the original failure. Writing in a run conversation **adopts** it: it
+stays in the conversation list and its unattended turn cap is removed. A
 scheduled `job:` fire never adopts the conversation. Forking a job run
 creates an ordinary conversation with no job outcome, quiet-run state,
 or turn cap.
