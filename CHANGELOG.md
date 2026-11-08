@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Deleted conversations: the owner-gated `SessionMeta.deleted` meta flag
+  marks a conversation read-only — submissions, compact, configure,
+  uploads and extension commands refuse with 409
+  `{error: "conversation_deleted"}` while reads, fork, meta PATCH, abort
+  and interaction answers keep working; restoring re-opens it. A
+  fixed-conversation job fire into a deleted conversation writes an
+  immediately-settled failed run without submitting, consecutive
+  `conversation_deleted` failures notify once, the curator's fork review
+  refuses deleted conversations, and `/archive`, `/unarchive`, `/delete`
+  and `/restore` join the slash-command catalog.
+
+### Changed
+
+- The submit route returns each error's own status (409 for
+  `conversation_deleted`); existing errors keep their 400.
+
 ## [0.11.3] - 2026-11-08
 
 ### Added

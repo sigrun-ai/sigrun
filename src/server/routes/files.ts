@@ -95,8 +95,18 @@ export function registerFileRoutes(
 				request.body === undefined
 					? new Uint8Array(0)
 					: new Uint8Array(request.body as Buffer);
-			const { path } = await uploadOp(ctx, conversation, { name, bytes });
-			return await reply.code(201).send({ path });
+			try {
+				const { path } = await uploadOp(ctx, conversation, { name, bytes });
+				return await reply.code(201).send({ path });
+			} catch (error) {
+				// The deleted-conversation guard (Task 3) maps like every
+				// other op route; the op's own validation stays unreachable
+				// here (the route pre-validates the name).
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
+			}
 		},
 	);
 
@@ -137,11 +147,18 @@ export function registerFileRoutes(
 			// The shared op owns the pathing + write (same namespace as the
 			// raw route: `uploads/<conversationId>/<name>`, exactly what a
 			// content part takes).
-			const { path } = await uploadOp(ctx, conversation, {
-				name,
-				bytes: new Uint8Array(bytes),
-			});
-			return await reply.code(201).send({ path });
+			try {
+				const { path } = await uploadOp(ctx, conversation, {
+					name,
+					bytes: new Uint8Array(bytes),
+				});
+				return await reply.code(201).send({ path });
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
+			}
 		},
 	);
 

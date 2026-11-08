@@ -299,11 +299,23 @@ export function startNotifications(ctx: ServerContext): () => void {
 	 * `lastRun` never re-notifies, and the next run's settle does.
 	 */
 	const lastNotifiedFailedRun = new Map<string, string>();
+	// Deleted conversations Task 3: whether the last NOTIFIED failure of a
+	// job was `conversation_deleted`. A deleted fixed-conversation target
+	// fails every fire with the same error; consecutive deleted failures
+	// deliver ONE notice. Any other notified failure clears the flag
+	// (in-process: one extra notice after a restart is accepted).
+	const lastNotifiedWasDeleted = new Set<string>();
 	const handleJobChanged = (job: Omit<JobWire, "access">): void => {
 		const run: JobRunWire | undefined = job.lastRun;
 		if (run?.outcome !== "failed") return;
 		const identity = `${run.jobId}:${run.fireAt}:${run.manual}:${run.startedAt}`;
 		if (lastNotifiedFailedRun.get(job.id) === identity) return;
+		if (run.error === "conversation_deleted") {
+			if (lastNotifiedWasDeleted.has(job.id)) return;
+			lastNotifiedWasDeleted.add(job.id);
+		} else {
+			lastNotifiedWasDeleted.delete(job.id);
+		}
 		lastNotifiedFailedRun.set(job.id, identity);
 		deliver(
 			{

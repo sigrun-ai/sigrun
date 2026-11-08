@@ -548,4 +548,40 @@ describe("change notes in the submit path (spec §8.3)", () => {
 		expect(notes).toHaveLength(1);
 		expect(modelText(notes[0]!)).toContain(NOTE_HEADER);
 	});
+
+	test("no note lands in a deleted conversation", async () => {
+		// Deleted conversations Task 3: the guard is submitOp's FIRST
+		// statement — it precedes writePendingNote, so a pending surface
+		// change cannot leave a note entry in a deleted conversation.
+		const server = await bootServer();
+		const { conversationId, entryIds } = await conversationWithBlocks(
+			server,
+			{ tree: RANKING_TREE, data: RANKING_DATA, title: "Ranking" },
+		);
+		// A pending surface change (the unnoted edit).
+		await move(server, conversationId, entryIds[0]!, "reorderCards", "c4", 0);
+		// Delete the conversation (owner-gated meta patch).
+		const deleted = await server.app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${conversationId}/meta`,
+			headers: { authorization: `Bearer ${server.aliceToken}` },
+			payload: { deleted: true },
+		});
+		expect(deleted.statusCode).toBe(200);
+		// The composer message refuses with 409…
+		const response = await server.app.inject({
+			method: "POST",
+			url: `/v1/conversations/${conversationId}/submissions`,
+			headers: { authorization: `Bearer ${server.aliceToken}` },
+			payload: { input: "does this flow well?" },
+		});
+		expect(response.statusCode).toBe(409);
+		expect(response.json()).toEqual({ error: "conversation_deleted" });
+		// …and NO note entry (and no user entry) landed.
+		const entries = await entriesOf(server.opened, conversationId);
+		expect(
+			entries.filter((entry) => entry.kind === BlocksNoteEntry.kind),
+		).toHaveLength(0);
+		expect(entries.filter((entry) => entry.kind === "pi.user")).toHaveLength(1);
+	});
 });

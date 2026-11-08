@@ -115,6 +115,30 @@ export class ConversationOpError extends Error {
 const WAIT_MS_MAX = 60_000;
 
 /**
+ * Deleted conversations Task 3: the read-only guard. A deleted
+ * conversation (`SessionMeta.deleted === true`) stays OPENABLE — reads,
+ * SSE, fork, meta PATCH, abort and interaction answers are never gated —
+ * but every op that would start NEW work in it throws
+ * `ConversationOpError({error: "conversation_deleted"}, 409)`. The guarded
+ * ops are submitOp, compactOp, configureOp, uploadOp and the
+ * extension-command invoke route (routes/submissions.ts); jobs check the
+ * same flag in fire.ts.
+ */
+export async function assertNotDeleted(
+	ctx: ServerContext,
+	conversation: Conversation,
+): Promise<void> {
+	const meta = await ctx.opened.harness.snapshot(
+		SessionMetaDoc,
+		conversation.id,
+		BACKGROUND_CONTEXT,
+	);
+	if (meta?.deleted === true) {
+		throw new ConversationOpError({ error: "conversation_deleted" }, 409);
+	}
+}
+
+/**
  * Race `submission.wait` against a `waitMs` timer (§7.1): the wait winning
  * returns the settled record; the timer winning returns whichever record is
  * CURRENT (mid-run). The losing wait's eventual rejection is never left
@@ -476,6 +500,11 @@ export async function submitOp(
 	opts: SubmitOpOptions = {},
 ): Promise<SubmissionRecord> {
 	const { opened } = ctx;
+	// The deleted guard is the FIRST statement: it precedes
+	// parseSubmissionInput AND writePendingNote, so a refused submission
+	// neither admits an input nor appends a `sigrun.blocks.note` entry to
+	// the deleted conversation.
+	await assertNotDeleted(ctx, conversation);
 	const parsed = parseSubmissionInput(input);
 	if (!parsed.ok) {
 		throw new ConversationOpError({ error: "invalid_input" });
@@ -843,6 +872,7 @@ export async function configureOp(
 	},
 ): Promise<ConfigureResponse> {
 	const { opened } = ctx;
+	await assertNotDeleted(ctx, conversation);
 	if (
 		body === undefined ||
 		body === null ||
@@ -1003,6 +1033,7 @@ export async function compactOp(
 	conversation: Conversation,
 	instructions?: unknown,
 ): Promise<CompactResponse> {
+	await assertNotDeleted(ctx, conversation);
 	// The route's instructions validation, moved in: the HTTP caller's
 	// raw value and the host's typed value take the SAME check (host
 	// inputs are typed, but the op still validates).
@@ -1310,6 +1341,7 @@ export async function uploadOp(
 	conversation: Conversation,
 	file: { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array },
 ): Promise<{ readonly path: string }> {
+	await assertNotDeleted(ctx, conversation);
 	if (!validUploadName(file.name)) {
 		throw new ConversationOpError({ error: "invalid_field", field: "name" });
 	}

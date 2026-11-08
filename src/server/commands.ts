@@ -113,6 +113,38 @@ export const SLASH_COMMANDS: ReadonlyMap<string, SlashCommand> = new Map(
 				},
 			},
 			{
+				name: "archive",
+				description: "Archive this conversation",
+				endpoint: {
+					method: "PATCH",
+					path: "/v1/conversations/:id/meta",
+				},
+			},
+			{
+				name: "unarchive",
+				description: "Unarchive this conversation",
+				endpoint: {
+					method: "PATCH",
+					path: "/v1/conversations/:id/meta",
+				},
+			},
+			{
+				name: "delete",
+				description: "Delete this conversation",
+				endpoint: {
+					method: "PATCH",
+					path: "/v1/conversations/:id/meta",
+				},
+			},
+			{
+				name: "restore",
+				description: "Restore this deleted conversation",
+				endpoint: {
+					method: "PATCH",
+					path: "/v1/conversations/:id/meta",
+				},
+			},
+			{
 				name: "jobs",
 				description: "List jobs (name, next run, last outcome)",
 				endpoint: { method: "GET", path: "/v1/jobs" },
