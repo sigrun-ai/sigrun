@@ -10,7 +10,7 @@
  * field is disabled regardless.
  */
 
-import { useEffect, useRef, type ReactNode } from "react";
+import { useLayoutEffect, useRef, type ReactNode } from "react";
 import type {
 	DateField,
 	DatetimeField,
@@ -116,7 +116,7 @@ function LongtextFieldView(props: FieldProps<LongtextField>): ReactNode {
 	const data = useSurfaceData();
 	const textarea = useRef<HTMLTextAreaElement>(null);
 	const value = typeof props.value === "string" ? props.value : "";
-	useEffect(() => {
+	useLayoutEffect(() => {
 		const element = textarea.current;
 		if (element === null) return;
 		return watchLongtextHeight(element, field.fill === true);

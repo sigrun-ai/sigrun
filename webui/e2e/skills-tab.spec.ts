@@ -109,7 +109,7 @@ test("fill follows the viewport across its height breakpoint", async ({ browser 
 		await page.getByRole("button", { name: "Edit", exact: true }).click();
 		const body = page.getByRole("textbox", { name: "Body" });
 		await expect(body).toBeVisible();
-		expect(await body.evaluate((el) => el.style.height)).not.toBe("");
+		await expect.poll(() => body.evaluate((el) => el.style.height)).not.toBe("");
 
 		await page.setViewportSize({ width: 1280, height: 1000 });
 		await expect.poll(() => body.evaluate((el) => el.style.height)).toBe("");
