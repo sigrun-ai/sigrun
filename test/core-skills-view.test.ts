@@ -35,6 +35,7 @@ import {
 	fauxAssistantMessage,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
+import { validateTree } from "../src/blocks/index.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -658,6 +659,174 @@ describe("core/skills delete + restoreDeleted", () => {
 		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
 		const rendered = await view(app, alice, { skill: "acme-archivable", root: "learned" });
 		expect((atPointer(rendered.json.data, "/main") as any).body).toBe("Archivable body.\n");
+	});
+});
+
+// ─── deleted selections anchor on the deletion commit ──────────────────
+
+describe("core/skills deleted selections anchor on the deletion commit", () => {
+	/** The rendered Deleted selection's skill-actions callout buttons. */
+	function actionButtons(rendered: { json: any }): Record<string, any> | undefined {
+		return findBlocks(rendered.json.tree.root.main, "callout").find(
+			(block) => block.id === "skill-actions",
+		);
+	}
+
+	/** Every rendering test validates the served tree against the view's own def. */
+	function checkTree(app: FastifyInstance, rendered: { json: any }): void {
+		const viewDef = app.surfaces.coreViewDefs.find((d) => d.id === "skills");
+		expect(viewDef).toBeDefined();
+		expect(
+			validateTree(rendered.json.tree, {
+				placement: "view",
+				handlers: new Set(Object.keys(viewDef!.actions ?? {})),
+			}).ok,
+		).toBe(true);
+	}
+
+	test("a Deleted workspace row opened from the sidebar renders Restore deleted", async () => {
+		const { app, alice } = await bootServer();
+		await act(app, alice, "create", {
+			where: "workspace",
+			name: "acme-gone",
+			description: "to be deleted",
+			body: "Gone body.",
+		}, {});
+		await act(app, alice, "delete", null, { skill: "acme-gone", root: "workspace" });
+		// The sidebar drill-in: openSkill's navigate params carry NO commit.
+		const opened = await act(app, alice, "openSkill", { itemId: "workspace:acme-gone" }, {});
+		expect(opened.json.ok).toBe(true);
+		expect(opened.json.navigate.params.commit).toBeUndefined();
+		const rendered = await view(app, alice, opened.json.navigate.params);
+		expect(rendered.status).toBe(200);
+		checkTree(app, rendered);
+		const actions = actionButtons(rendered);
+		expect((actions?.actions ?? []).map((button: any) => button.id)).toEqual([
+			"skill-restore-deleted",
+		]);
+		// And the button restores the skill with an EMPTY payload.
+		const restored = await act(app, alice, "restoreDeleted", {}, opened.json.navigate.params);
+		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
+		const back = await view(app, alice, { skill: "acme-gone", root: "workspace" });
+		expect((atPointer(back.json.data, "/main") as any).body).toBe("Gone body.\n");
+	});
+
+	test("a learned skill archived by undoing a curator create restores from the sidebar", async () => {
+		const { app, opened, alice } = await bootServer();
+		await seedLearned(opened, "alice", "acme-undone", "undone create", "Undone body.");
+		const curation = opened.curationOf("alice");
+		expect(curation).toBeDefined();
+		const [create] = await curation!.store.feed(1);
+		expect(create).toBeDefined();
+		await curation!.store.undo([create!.id]);
+		// The undo-of-create archived it: the row sits in the Deleted group.
+		const rows = atPointer((await view(app, alice)).json.data, "/skills") as any[];
+		expect(rows.find((row) => row.id === "learned:acme-undone")?.group).toBe("deleted");
+		const openedSkill = await act(app, alice, "openSkill", { itemId: "learned:acme-undone" }, {});
+		expect(openedSkill.json.navigate.params.commit).toBeUndefined();
+		const rendered = await view(app, alice, openedSkill.json.navigate.params);
+		checkTree(app, rendered);
+		expect((actionButtons(rendered)?.actions ?? []).map((button: any) => button.id)).toEqual([
+			"skill-restore-deleted",
+		]);
+		const restored = await act(app, alice, "restoreDeleted", {}, openedSkill.json.navigate.params);
+		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
+		const back = await view(app, alice, { skill: "acme-undone", root: "learned" });
+		expect((atPointer(back.json.data, "/main") as any).body).toBe("Undone body.\n");
+	});
+
+	test("a plainly archived learned skill restores from the sidebar", async () => {
+		const { app, opened, alice } = await bootServer();
+		await seedLearned(opened, "alice", "acme-plain-archived", "plain archive", "Plain archived body.");
+		const deleted = await act(app, alice, "delete", null, {
+			skill: "acme-plain-archived",
+			root: "learned",
+		});
+		expect(deleted.json.ok).toBe(true);
+		const openedSkill = await act(app, alice, "openSkill", { itemId: "learned:acme-plain-archived" }, {});
+		const rendered = await view(app, alice, openedSkill.json.navigate.params);
+		checkTree(app, rendered);
+		expect((actionButtons(rendered)?.actions ?? []).map((button: any) => button.id)).toEqual([
+			"skill-restore-deleted",
+		]);
+		const restored = await act(app, alice, "restoreDeleted", {}, openedSkill.json.navigate.params);
+		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
+		const back = await view(app, alice, { skill: "acme-plain-archived", root: "learned" });
+		expect((atPointer(back.json.data, "/main") as any).body).toBe("Plain archived body.\n");
+	});
+
+	test("restoreDeleted ignores a history commit the user selected", async () => {
+		const { app, opened, alice } = await bootServer();
+		await act(app, alice, "create", {
+			where: "workspace",
+			name: "acme-anchored",
+			description: "first version",
+			body: "First body.",
+		}, {});
+		await act(app, alice, "save", {
+			description: "second version",
+			body: "Second body.",
+		}, { skill: "acme-anchored", root: "workspace" });
+		await act(app, alice, "delete", null, { skill: "acme-anchored", root: "workspace" });
+		// The user selected the CREATE commit in the history pane; restore
+		// must still bring back the SAVED body (the deletion commit's parent).
+		const log = await workspaceLog(opened, "alice", "acme-anchored/");
+		const createSha = log[log.length - 1]?.sha;
+		expect(typeof createSha).toBe("string");
+		const restored = await act(app, alice, "restoreDeleted", { sha: createSha }, {
+			skill: "acme-anchored",
+			root: "workspace",
+			commit: createSha,
+		});
+		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
+		const back = await view(app, alice, { skill: "acme-anchored", root: "workspace" });
+		expect((atPointer(back.json.data, "/main") as any).body).toBe("Second body.\n");
+	});
+
+	test("the learned anchor skips restore commits", async () => {
+		const { app, opened, alice } = await bootServer();
+		const params = { skill: "acme-anchored-learned", root: "learned" };
+		await seedLearned(opened, "alice", "acme-anchored-learned", "first version", "First learned body.");
+		await act(app, alice, "delete", null, params);
+		const firstRestore = await act(app, alice, "restoreDeleted", {}, params);
+		expect(firstRestore.json.ok, JSON.stringify(firstRestore.json)).toBe(true);
+		// Re-seed with a DIFFERENT body via the view's save (a learned
+		// patch — the store's create refuses an existing name), then
+		// archive again.
+		const saved = await act(app, alice, "save", {
+			description: "second version",
+			body: "Second learned body.",
+		}, params);
+		expect(saved.json.ok, JSON.stringify(saved.json)).toBe(true);
+		await act(app, alice, "delete", null, params);
+		// A scripted restoreVersion on the ARCHIVED skill to the FIRST
+		// archive commit (a restore-action commit that also touches the
+		// archive path, and leaves the skill archived). The deletion
+		// anchor must skip it.
+		const curation = opened.curationOf("alice");
+		expect(curation).toBeDefined();
+		const feed = await curation!.store.feed(50);
+		const firstArchive = feed.find(
+			(entry) => entry.action === "archive" && entry.skill === "acme-anchored-learned",
+		);
+		expect(firstArchive?.after).toBeDefined();
+		await curation!.store.restoreVersion("acme-anchored-learned", firstArchive!.after!, {
+			actor: "user",
+		});
+		const restored = await act(app, alice, "restoreDeleted", {}, params);
+		expect(restored.json.ok, JSON.stringify(restored.json)).toBe(true);
+		const back = await view(app, alice, params);
+		expect((atPointer(back.json.data, "/main") as any).body).toBe("Second learned body.\n");
+	});
+
+	test("restoreDeleted on a read-only root refuses", async () => {
+		const { app, alice } = await bootServer();
+		const refused = await act(app, alice, "restoreDeleted", {}, {
+			skill: "acme-anything",
+			root: "user dir",
+		});
+		expect(refused.json.ok).toBe(false);
+		expect(refused.json.error.message).toBe("user dir skills are read-only here");
 	});
 });
 

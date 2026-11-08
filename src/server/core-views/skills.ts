@@ -167,16 +167,6 @@ function presentRootOf(
 /** The root kind one RootSkill's name belongs to in an overlay key. */
 type OverlayRootKind = Exclude<SkillRootKind, "learned">;
 
-/** `git log --format=%H -- <pathspec>` rows, oldest-order irrelevant. */
-async function logShas(
-	history: GitHistory,
-	path: string,
-	limit: number,
-): Promise<readonly { sha: string; summary: string }[]> {
-	const commits = await history.log({ path, limit });
-	return commits.map((commit) => ({ sha: commit.sha, summary: commit.summary }));
-}
-
 	/**
 	 * Names the workspace repo's log touches that have NO live row AND
 	 * whose newest commit REMOVED the dir (a deleted skill). A name the
@@ -204,17 +194,6 @@ async function logShas(
 		}
 		return names.sort();
 	}
-
-/** The newest deletion commit's sha for one workspace skill (`{deletionSha}` row field). */
-async function deletionShaOf(
-	history: GitHistory,
-	name: string,
-): Promise<{ deletionSha?: string }> {
-	const newest = (await history.log({ path: `${name}/`, limit: 1 }))[0];
-	return newest !== undefined && newest.summary === `delete ${name}`
-? { deletionSha: newest.sha }
-: {};
-}
 
 /**
  * The newest `delete <name>` commit's sha for one WORKSPACE skill, or
@@ -249,12 +228,6 @@ function pathLogIndex(
 	return log.findIndex((one) => one.sha === sha);
 }
 
-/** The newest commit's sha on one path (the learned archive's restore anchor). */
-async function lastActionSha(history: GitHistory, path: string): Promise<string | undefined> {
-	const commits = await logShas(history, path, 1);
-	return commits[0]?.sha;
-}
-
 /** The selection the params point at: the row + how to read/write it. */
 interface Selection {
 	readonly params: SkillsViewParams;
@@ -268,6 +241,9 @@ interface Selection {
 	/** Deleted-group selection (the dir is gone; the pane is the
 	 *  history + restore affordance, never a file read). */
 	readonly deleted: boolean;
+	/** The server-resolved deletion commit a Deleted selection anchors on
+	 *  (the restore button renders only when it exists). */
+	readonly deletionSha?: string;
 }
 
 /** The view surface (`SurfaceDef<"view">`), built over the Task 9/10/11 deps. */
@@ -298,6 +274,35 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 		});
 	};
 
+	/** The deletion commit a restore anchors on, resolved SERVER-side:
+	 *  the caller never supplies it (a user-selected history commit could
+	 *  restore the wrong version). LEARNED: the newest commit touching
+	 *  `curation/archive/<name>` whose action is `archive` or `undo` — a
+	 *  `restore` commit also touches that path and must be skipped.
+	 *  WORKSPACE: the newest `delete <name>` commit. Undefined when no
+	 *  such commit exists. */
+	const deletionShaFor = async (
+		user: string,
+		root: "learned" | "workspace",
+		name: string,
+	): Promise<string | undefined> => {
+		if (root === "learned") {
+			const curation = deps.curationOf(user);
+			if (curation === undefined) return undefined;
+			const commits = await curation.history.log({
+				path: `curation/archive/${name}`,
+				limit: 1000,
+			});
+			for (const commit of commits) {
+				if (commit.action === "archive" || commit.action === "undo") return commit.sha;
+			}
+			return undefined;
+		}
+		const history = deps.workspaceHistoryFor(user);
+		if (history === undefined) return undefined;
+		return newestDeletionSha(history, name);
+	};
+
 	/** One caller's FULL sidebar: the live rows plus a Deleted-group row
 	 *  for every skill gone from disk whose history still holds it. */
 	const rowsFor = async (user: string): Promise<JsonObject[]> => {
@@ -321,12 +326,13 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 		const workspaceHistory = deps.workspaceHistoryFor(user);
 		if (workspaceHistory !== undefined) {
 			for (const name of await deletedWorkspaceSkills(workspaceHistory, liveNames)) {
+				const deletionSha = await deletionShaFor(user, "workspace", name);
 				rows.push({
 					id: rowIdOf("workspace", name),
 					name,
 					description: "",
 					group: "deleted",
-					...(await deletionShaOf(workspaceHistory, name)),
+					...(deletionSha === undefined ? {} : { deletionSha }),
 				});
 			}
 		}
@@ -337,7 +343,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 				const existing = rows.find(
 					(one) => typeof one.id === "string" && one.id === rowIdOf("learned", info.name),
 				);
-				const sha = await lastActionSha(curation.history, `curation/archive/${info.name}`);
+				const sha = await deletionShaFor(user, "learned", info.name);
 				if (existing === undefined) {
 					rows.push({
 						id: rowIdOf("learned", info.name),
@@ -630,6 +636,12 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					dir: "",
 					hidden: false,
 				};
+				// The restore anchor is resolved SERVER-side (a caller-selected
+				// history commit must never pick the restore version).
+				const deletionSha =
+					root === "learned" || root === "workspace"
+						? await deletionShaFor(user, root, params.skill)
+						: undefined;
 				selection = {
 					params,
 					skill: synthetic,
@@ -641,6 +653,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 							? [`skills/${params.skill}`, `curation/archive/${params.skill}`, "curation/state.json"]
 							: [`${params.skill}/`],
 					deleted: true,
+					...(deletionSha === undefined ? {} : { deletionSha }),
 				};
 			}
 		}
@@ -826,6 +839,7 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					historyAvailable: selection?.historyAvailable ?? false,
 					selectedExists: selection !== undefined,
 					...(selection?.deleted === true ? { deleted: true } : {}),
+				...(selection?.deletionSha === undefined ? {} : { deletionSha: selection.deletionSha }),
 				}),
 				data,
 				access: "write",
@@ -1072,9 +1086,14 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 				const user = userOf(ctx);
 				if (user === undefined) return { ok: false, error: { message: "forbidden" } };
 				const name = fieldOf(payload, "name") ?? selectedParams(ctx).skill;
-				const sha = fieldOf(payload, "sha") ?? selectedParams(ctx).commit;
-				if (name === undefined || sha === undefined) {
-					return { ok: false, error: { message: "restoreDeleted needs a name and a commit sha" } };
+				if (name === undefined) {
+					return { ok: false, error: { message: "restoreDeleted needs a name" } };
+				}
+				const root = (fieldOf(payload, "root") ?? selectedParams(ctx).root ?? "workspace") as SkillRootKind;
+				// Read-only roots refuse BEFORE any history work (a deleted
+				// selection on a read-only root has no restore at all).
+				if (root !== "learned" && root !== "workspace") {
+					return { ok: false, error: { message: `${root} skills are read-only here` } };
 				}
 				const skills = await listFor(user);
 				// Review Focus 5: a reused name refuses, naming the root that has it.
@@ -1085,15 +1104,22 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 						error: { message: reusedNameError(name, present) },
 					};
 				}
-				const root = (fieldOf(payload, "root") ?? selectedParams(ctx).root ?? "workspace") as SkillRootKind;
+				// The deletion commit is resolved SERVER-side (the caller's
+				// payload sha / params.commit are IGNORED — a user-selected
+				// history commit must never pick the restore version).
+				await catchUpBoth(user);
 				if (root === "learned") {
 					const curation = deps.curationOf(user);
-					if (curation === undefined) return { ok: false, error: { message: "learned skills are unavailable" } };
+					if (curation === undefined) return { ok: false, error: { message: "learned history is unavailable" } };
+					const sha = await deletionShaFor(user, root, name);
+					if (sha === undefined) {
+						return { ok: false, error: { message: `no deletion commit found for ${name}` } };
+					}
 					try {
-						// The anchor: the row's sha is the newest commit touching
-						// the ARCHIVE path — the archive-move commit itself. The
-						// live state (files in skills/ + the state.json row) is
-						// its PARENT's tree; restoring it un-archives the name.
+						// The anchor: the newest archive/undo commit touching
+						// the ARCHIVE path. The live state (files in skills/ +
+						// the state.json row) is its PARENT's tree; restoring
+						// it un-archives the name.
 						const parent = await curation.history.parentOf(sha);
 						if (parent === undefined) {
 							return { ok: false, error: { message: "the deletion commit has no parent to restore from" } };
@@ -1108,6 +1134,10 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 				const history = deps.workspaceHistoryFor(user);
 				if (history === undefined) {
 					return { ok: false, error: { message: "workspace history is unavailable" } };
+				}
+				const sha = await deletionShaFor(user, root, name);
+				if (sha === undefined) {
+					return { ok: false, error: { message: `no deletion commit found for ${name}` } };
 				}
 				try {
 					const parent = await history.parentOf(sha);

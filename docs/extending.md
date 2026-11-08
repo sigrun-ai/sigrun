@@ -2623,11 +2623,13 @@ drag is not. Set `turn: true` on a `move` or `edit` only when each one
 needs an immediate reply. `turn` is valid only in the `chat` placement;
 validation rejects it anywhere else.
 
+Activating a list item (`onActivate`) opens it. Put destructive actions
+on `callout` or card buttons with a `confirm`; page-header actions
+(`page.actions`) dispatch without confirming.
+
 An action handler may also return **`navigate`** on its accepted
 `ActionResult` — the channel routes it through the normal navigation
-paths. Channel gap (2026-11): the webui applies an action-result
-`navigate`; the TUI does not yet — do not make an action's effect
-depend on it.
+paths. Both channels apply it.
 
 ### Access and sharedData
 

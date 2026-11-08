@@ -336,12 +336,23 @@ function historyRowButtons(rows: readonly SkillHistoryRow[]): JsonObject[] {
 }
 
 /** One selected-skill callout's action buttons (per-page literals; handlers resolve params). */
-function skillActions(params: SkillsViewParams, historyAvailable: boolean, deleted: boolean): JsonObject[] {
-	// A deleted selection (whole-branch review I2): NO edit/delete/restore
-	// — the dir is gone (Edit's save would error "skill not found") — only
-	// the restore-deleted affordance, anchored on the selection's commit.
+function skillActions(params: SkillsViewParams, historyAvailable: boolean, deleted: boolean, deletionSha?: string): JsonObject[] {
+	// A deleted selection: NO edit/delete/restore — the dir is gone
+	// (Edit's save would error "skill not found") — only the
+	// restore-deleted affordance, anchored on the SERVER-resolved
+	// deletion commit (never a caller-selected history commit).
 	if (deleted) {
-		if (params.commit === undefined || !historyAvailable) return [];
+		if (!historyAvailable) return [];
+		if (deletionSha === undefined) {
+			return [
+				{
+					id: "skill-no-deletion-commit",
+					label: "No deletion commit was found for this skill.",
+					icon: "info",
+					disabled: true,
+				},
+			];
+		}
 		return [
 			{
 				id: "skill-restore-deleted",
@@ -505,6 +516,8 @@ export function buildSkillsTree(
 		/** A Deleted-group selection (review I2): the action set is the
 		 *  restore-deleted affordance only — never Edit/Delete. */
 		readonly deleted?: boolean;
+		/** The server-resolved deletion commit the restore anchors on. */
+		readonly deletionSha?: string;
 	},
 ): Tree {
 	const editing = params.edit === true && (params.skill === undefined || opts.selectedExists);
@@ -575,7 +588,7 @@ export function buildSkillsTree(
 							id: "skill-actions",
 							tone: "neutral",
 							title: "Actions",
-							actions: skillActions(params, opts.historyAvailable, opts.deleted === true),
+							actions: skillActions(params, opts.historyAvailable, opts.deleted === true, opts.deletionSha),
 						},
 					]
 				: []),
