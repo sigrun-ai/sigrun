@@ -51,6 +51,20 @@ export interface JobHistorySettings {
 }
 
 /**
+ * The job-run defaults (jobs quiet runs Task 3). LIVE — read per fire,
+ * so a PATCH reaches the next fire without a restart.
+ */
+export interface JobDefaultsSettings {
+	/**
+	 * The turn limit applied to `conversation: "new"` job-run
+	 * conversations when the job's action declares no `maxTurns`
+	 * (a positive integer; default 150). Never applied to fixed-
+	 * conversation fires.
+	 */
+	readonly maxTurns?: number;
+}
+
+/**
  * The `server` section: static boot configuration mirrored from the
  * `SIGRUN_*` env knobs. Every field is optional; a present field is the
  * deployment default applied when the corresponding env var is ABSENT
@@ -413,6 +427,13 @@ export interface SettingsFile {
 	 * default 50 each.
 	 */
 	readonly jobHistory?: JobHistorySettings;
+	/**
+	 * Sigrun: job-run defaults (jobs quiet runs Task 3) — LIVE (read
+	 * per fire). `maxTurns` is the fallback turn limit for
+	 * `conversation: "new"` runs when the job declares none (default
+	 * 150).
+	 */
+	readonly jobDefaults?: JobDefaultsSettings;
 	/**
 	 * Sigrun: the boot default model (ruling 3), a non-empty
 	 * `provider/model-id` spec parsed exactly like `SIGRUN_DEFAULT_MODEL`

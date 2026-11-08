@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Jobs: per-job turn limit for unattended runs — `action.maxTurns`
+  (integer ≥ 1) on new-conversation prompt jobs, the live
+  `jobDefaults.maxTurns` settings fallback, default 150; a run that
+  reaches it settles `failed` with `turn_limit`.
+
 ### Fixed
 
 - Two jobs firing into one conversation settle their own runs, and a

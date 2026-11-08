@@ -30,6 +30,15 @@ export const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 /** The longest a job description may be (spec §8.2). */
 export const DESCRIPTION_MAX = 500;
 
+/** `action.maxTurns`: an integer ≥ 1 (the agent change's own rule). */
+function isPositiveInt(value: unknown): value is number {
+	return (
+		typeof value === "number" &&
+		Number.isInteger(value) &&
+		value > 0
+	);
+}
+
 /** A validation rejection: the offending field path plus why. */
 export interface InvalidJobSpec {
 	ok: false;
@@ -264,6 +273,9 @@ function validateAction(
 				);
 			}
 		}
+		if (record.maxTurns !== undefined && !isPositiveInt(record.maxTurns)) {
+			return invalid("action.maxTurns", "maxTurns must be an integer 1 or more");
+		}
 		const action: Extract<JobAction, { kind: "prompt" }> = {
 			kind: "prompt",
 			prompt: record.prompt,
@@ -274,6 +286,7 @@ function validateAction(
 		if (record.thinking !== undefined) action.thinking = record.thinking;
 		if (record.runSharing !== undefined) action.runSharing = record.runSharing;
 		if (record.deliver !== undefined) action.deliver = [...record.deliver];
+		if (record.maxTurns !== undefined) action.maxTurns = record.maxTurns;
 		return { ok: true, action };
 	}
 

@@ -811,6 +811,64 @@ describe("fireJob", () => {
 	});
 });
 
+// ─── Turn limit: maxTurns on new-conversation fires ──────────────────────
+
+describe("maxTurns on the fire path", () => {
+	async function agentMaxTurns(rig: TestRig, conversationId: number | undefined): Promise<number | undefined> {
+		if (conversationId === undefined) throw new Error("fire returned no conversation id");
+		const conversation = await rig.opened.harness.conversation(
+			conversationId as never,
+			BACKGROUND_CONTEXT,
+		);
+		if (conversation === undefined) throw new Error("run conversation not found");
+		return (await conversation.agent(BACKGROUND_CONTEXT)).maxTurns;
+	}
+
+	test("a new-conversation fire applies the job's maxTurns", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const id = "api:job-maxturns";
+		await seedJob(rig, id, everyMinuteSpec({
+			action: { kind: "prompt", prompt: "say tick", conversation: "new", maxTurns: 25 },
+		}));
+		const fire = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
+		expect(fire.outcome).toBe("running");
+		expect(await agentMaxTurns(rig, fire.conversationId)).toBe(25);
+	});
+
+	test("a new-conversation fire falls back to jobDefaults.maxTurns", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		rig.deps.jobDefaults = () => ({ maxTurns: 40 });
+		const id = "api:job-maxturns-defaults";
+		await seedJob(rig, id, everyMinuteSpec());
+		const fire = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
+		expect(await agentMaxTurns(rig, fire.conversationId)).toBe(40);
+	});
+
+	test("a new-conversation fire defaults to 150", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const id = "api:job-maxturns-default";
+		await seedJob(rig, id, everyMinuteSpec());
+		const fire = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
+		expect(await agentMaxTurns(rig, fire.conversationId)).toBe(150);
+	});
+
+	test("a fixed-conversation fire leaves the conversation's maxTurns unset", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("ok")] });
+		const fixed = await rig.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: rig.opened.defaultModel },
+		}, BACKGROUND_CONTEXT);
+		rig.deps.jobDefaults = () => ({ maxTurns: 40 });
+		const id = "api:job-maxturns-fixed";
+		await seedJob(rig, id, everyMinuteSpec({
+			action: { kind: "prompt", prompt: "say tick", conversation: fixed.id as number, maxTurns: 25 },
+		}));
+		const fire = await fireJob(rig.deps, id, `${id}:1000`, 1000, BACKGROUND_CONTEXT);
+		expect(fire.outcome).toBe("running");
+		expect(await agentMaxTurns(rig, fixed.id as number)).toBeUndefined();
+	});
+});
+
 // ─── Gateway C7: deliver targets on the fire path ─────────────────────────
 
 describe("deliver targets (gateway C7)", () => {

@@ -389,6 +389,12 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								label: "Revisions kept per job",
 								apply: applyOf("jobHistory.revisions"),
 							},
+							{
+								type: "number",
+								name: "jobDefaults.maxTurns",
+								label: "Default max turns per job run",
+								apply: applyOf("jobDefaults.maxTurns"),
+							},
 						],
 					},
 				],

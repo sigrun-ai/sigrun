@@ -12,6 +12,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
+	fauxToolCall,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
@@ -39,7 +40,11 @@ afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
 }, 120_000);
 
-async function bootServer(options?: { readonly retryOff?: boolean }): Promise<TestServer> {
+async function bootServer(options?: {
+	readonly retryOff?: boolean;
+	/** Extra settings-file keys (merged over the rig's defaults). */
+	readonly settings?: Record<string, unknown>;
+}): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-jobs-settle-"));
 	const configDir = join(dir, "config");
 	const faux = fauxProvider({
@@ -54,7 +59,10 @@ async function bootServer(options?: { readonly retryOff?: boolean }): Promise<Te
 		SIGRUN_WORKSPACE_PATH: dir,
 		SIGRUN_CONFIG_DIR: configDir,
 	}, { server: {} } as Parameters<typeof loadConfig>[1]);
-	await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
+	await writeFile(
+		join(dir, "settings.json"),
+		JSON.stringify({ namingModel: false, ...options?.settings }),
+	);
 	const identity = await seededIdentity(dir, "root-admin");
 	await identity.users.add({ user: "alice", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
@@ -177,6 +185,32 @@ describe("job run settlement", () => {
 		expect((await opened.jobs.get(job.id))?.lastRun).toMatchObject({
 			outcome: "failed",
 			error: "model_error",
+		});
+		await expect(host.conversations.meta(fire.conversationId as ConversationId)).resolves.toMatchObject({
+			jobId: job.id,
+			jobOutcome: "failed",
+		});
+	});
+
+	test("turn limit surfaces the run", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer({ retryOff: true });
+		const host = channelHost(opened);
+		const job = await opened.jobs.createApi(jobSpec({
+			action: { kind: "prompt", prompt: "loop forever", conversation: "new", maxTurns: 1 },
+		}), "alice");
+		// Every round answers with a tool call, so the run never ends on
+		// its own: the agent's maxTurns (1) must end it `turn_limit`.
+		faux.setResponses([fauxAssistantMessage(
+			[fauxToolCall("bash", { command: "echo acme" })],
+			{ stopReason: "toolUse" },
+		)]);
+		const fire = await opened.jobs.runNow(job.id);
+		if (fire.conversationId === undefined) throw new Error("new-conversation fire has no id");
+
+		await waitSettled(opened, job.id);
+		expect((await opened.jobs.get(job.id))?.lastRun).toMatchObject({
+			outcome: "failed",
+			error: "turn_limit",
 		});
 		await expect(host.conversations.meta(fire.conversationId as ConversationId)).resolves.toMatchObject({
 			jobId: job.id,

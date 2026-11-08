@@ -188,3 +188,45 @@ test("a task job's patch carries no action", () => {
 	expect(result.ok && "action" in result.patch).toBe(false);
 	expect(result.ok && result.patch.name).toBe("acme-renamed");
 });
+
+test("maxTurns null omits the key; a number sets it", () => {
+	const omitted = createSpecOf({ ...emptyForm(), name: "acme-x", scheduleType: "every", schedule: "15m", prompt: "x" });
+	expect(omitted.ok && "maxTurns" in omitted.spec.action).toBe(false);
+	const set = createSpecOf({
+		...emptyForm(),
+		name: "acme-x",
+		scheduleType: "every",
+		schedule: "15m",
+		prompt: "x",
+		maxTurns: 30,
+	});
+	expect(set.ok && set.spec.action).toMatchObject({ maxTurns: 30 });
+});
+
+test("formValuesOf reads maxTurns as a JSON number, never a string", () => {
+	expect(formValuesOf({ values: { maxTurns: 30 } }).maxTurns).toBe(30);
+	expect(formValuesOf({ values: { maxTurns: "30" } }).maxTurns).toBeNull();
+	expect(formValuesOf({ values: {} }).maxTurns).toBeNull();
+});
+
+test("editing a job with maxTurns shows it; formFieldOf maps the validation path", () => {
+	const prior = wireOf({
+		action: { kind: "prompt", prompt: "old", conversation: "new", maxTurns: 30 },
+	});
+	expect(formFromJob(prior).maxTurns).toBe(30);
+	expect(formFieldOf("action.maxTurns")).toBe("maxTurns");
+});
+
+test("saving with null deletes maxTurns from the stored action", () => {
+	const prior = wireOf({
+		action: { kind: "prompt", prompt: "old", conversation: "new", maxTurns: 30 },
+	});
+	const result = savePatchOf({ ...formFromJob(prior), maxTurns: null }, prior);
+	expect(result.ok && result.patch.action).toEqual({
+		kind: "prompt",
+		prompt: "old",
+		conversation: "new",
+	});
+	const kept = savePatchOf({ ...formFromJob(prior), maxTurns: 12 }, prior);
+	expect(kept.ok && kept.patch.action).toMatchObject({ maxTurns: 12 });
+});

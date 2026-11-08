@@ -30,6 +30,8 @@ export interface JobFormData {
 	prompt: string;
 	model: string;
 	thinking: string;
+	/** The turn limit; `null` = the default (settings, else 150). */
+	maxTurns: number | null;
 	enabled: boolean;
 }
 
@@ -56,6 +58,7 @@ export function emptyForm(): JobFormData {
 		prompt: "",
 		model: "default",
 		thinking: "default",
+		maxTurns: null,
 		enabled: true,
 	};
 }
@@ -88,6 +91,10 @@ export function formFromJob(job: Omit<JobWire, "access">): JobFormData {
 			action.kind === "prompt" && action.thinking !== undefined
 				? action.thinking
 				: "default",
+		maxTurns:
+			action.kind === "prompt" && action.maxTurns !== undefined
+				? action.maxTurns
+				: null,
 		enabled: job.enabled,
 	};
 }
@@ -122,6 +129,9 @@ export function formValuesOf(payload: unknown): JobFormData {
 		prompt: stringOf(record.prompt),
 		model: stringOf(record.model) || "default",
 		thinking: stringOf(record.thinking) || "default",
+		// The blocks `number` field submits a JSON number (or nothing) —
+		// never a string to coerce; anything else reads as the default.
+		maxTurns: typeof record.maxTurns === "number" ? record.maxTurns : null,
 		enabled: typeof record.enabled === "boolean" ? record.enabled : true,
 	};
 }
@@ -149,6 +159,8 @@ export function formFieldOf(path: string): string | undefined {
 			return "model";
 		case "action.thinking":
 			return "thinking";
+		case "action.maxTurns":
+			return "maxTurns";
 		default:
 			return undefined;
 	}
@@ -192,6 +204,7 @@ export function createSpecOf(
 			prompt: values.prompt,
 			...(values.model === "default" ? {} : { model: values.model }),
 			...(values.thinking === "default" ? {} : { thinking: values.thinking }),
+			...(values.maxTurns === null ? {} : { maxTurns: values.maxTurns }),
 			conversation: "new",
 		},
 		enabled: values.enabled,
@@ -217,9 +230,9 @@ export function createSpecOf(
  *   + `schedule` + `timezone`; switching type leaves no second
  *   discriminant — cron→every drops the timezone);
  * - a PROMPT job's action is `{...prior.action, prompt}` with
- *   `model`/`thinking` set from the form or DELETED for `"default"`
- *   (never a fresh literal — `conversation`, `runSharing`, `deliver`
- *   carry over untouched);
+ *   `model`/`thinking` set from the form or DELETED for `"default"`,
+ *   and `maxTurns` set or DELETED for `null` (never a fresh literal —
+ *   `conversation`, `runSharing`, `deliver` carry over untouched);
  * - a TASK job's patch carries NO `action` key at all (the editor
  *   hides prompt/model/thinking; task + input carry over);
  * - an emptied description becomes an OWN KEY `description: undefined`
@@ -252,6 +265,11 @@ export function savePatchOf(
 			delete action.thinking;
 		} else {
 			action.thinking = values.thinking;
+		}
+		if (values.maxTurns === null) {
+			delete action.maxTurns;
+		} else {
+			action.maxTurns = values.maxTurns;
 		}
 		patch.action = action;
 	}
@@ -361,6 +379,13 @@ export function jobFormFields(kind: "prompt" | "task"): JsonObject[] {
 					id: level,
 					label: level === "default" ? "Default" : level,
 				})),
+			},
+			{
+				type: "number",
+				name: "maxTurns",
+				label: "Max turns",
+				min: 1,
+				hint: "Blank uses the default (150). Applies to runs in new conversations.",
 			},
 		);
 	}

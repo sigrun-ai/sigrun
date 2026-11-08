@@ -294,6 +294,36 @@ describe("POST/GET/PATCH/DELETE /v1/jobs — the CRUD round trip as alice", () =
 		expect(noBody).toMatchObject({ status: 400, json: { error: "invalid_field", field: "spec" } });
 	});
 
+	test("maxTurns validation", async () => {
+		const { app, alice } = await bootServer();
+		for (const maxTurns of [0, 1.5, "10"] as const) {
+			const rejected = await call(app, "POST", "/v1/jobs", alice, promptSpec({
+				action: { kind: "prompt", prompt: "say ok", conversation: "new", maxTurns: maxTurns as never },
+			}));
+			expect(rejected).toMatchObject({
+				status: 400,
+				json: { error: "invalid_field", field: "action.maxTurns" },
+			});
+		}
+		const accepted = await call(app, "POST", "/v1/jobs", alice, promptSpec({
+			action: { kind: "prompt", prompt: "say ok", conversation: "new", maxTurns: 25 },
+		}));
+		expect(accepted.status).toBe(201);
+		expect(accepted.json.job.action.maxTurns).toBe(25);
+	});
+
+	test("maxTurns survives validation", async () => {
+		const { app, alice } = await bootServer();
+		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec({
+			action: { kind: "prompt", prompt: "say ok", conversation: "new", maxTurns: 25 },
+		}));
+		expect(created.status).toBe(201);
+		const got = await call(app, "GET", `/v1/jobs/${created.json.job.id}`, alice);
+		expect(got.json.job.action.maxTurns).toBe(25);
+		const revisions = await call(app, "GET", `/v1/jobs/${created.json.job.id}/revisions`, alice);
+		expect(revisions.json.revisions[0].spec.action.maxTurns).toBe(25);
+	});
+
 	test("PATCH validates the MERGED spec (400 on an invalid partial)", async () => {
 		const { app, alice } = await bootServer();
 		const created = await call(app, "POST", "/v1/jobs", alice, promptSpec());

@@ -1059,6 +1059,7 @@ describe("core/jobs New job (the form + createJob)", () => {
 			prompt: "",
 			model: "default",
 			thinking: "default",
+			maxTurns: null,
 			enabled: true,
 		});
 		// Model options: Default first, the faux provider's model present.

@@ -62,6 +62,13 @@ import { recordAuthor } from "../curation/attribution.js";
 import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
 import type { ScheduleInput, ScheduleState } from "./task.js";
 
+/**
+ * The turn limit applied to `conversation: "new"` run conversations
+ * when neither the job's action nor the live `jobDefaults.maxTurns`
+ * setting declares one (jobs quiet runs Task 3).
+ */
+export const DEFAULT_JOB_MAX_TURNS = 150;
+
 /** What `fireJob` needs beyond the record it reads itself. */
 export interface JobRuntimeDeps {
 	harness: Harness;
@@ -117,6 +124,13 @@ export interface JobRuntimeDeps {
 	 * (no hiding — the pre-feature behavior).
 	 */
 	interactiveTools?: ReadonlySet<string>;
+	/**
+	 * The live `jobDefaults` settings read (jobs quiet runs Task 3) —
+	 * called PER FIRE, never captured, so a settings PATCH reaches the
+	 * next fire without a restart. Optional on hand-built test rigs
+	 * (like `interactiveTools?`); absent = the code default.
+	 */
+	jobDefaults?(): { maxTurns?: number } | undefined;
 }
 
 export interface FireResult {
@@ -387,6 +401,13 @@ async function firePrompt(
 					...(action.thinking === undefined
 						? {}
 						: { thinkingLevel: action.thinking as never }),
+					// Turn limit (jobs quiet runs Task 3): only NEW run
+					// conversations carry it — a fixed-conversation fire
+					// leaves the conversation's own agent untouched.
+					maxTurns:
+						action.maxTurns ??
+						deps.jobDefaults?.()?.maxTurns ??
+						DEFAULT_JOB_MAX_TURNS,
 				},
 				init: async (tx, newId) => {
 					const owner = deps.effectiveOwner(record.owner);

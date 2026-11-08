@@ -428,6 +428,24 @@ describe("SettingsStore", () => {
 		expect(() => store.read()).toThrow(/extensions/);
 	});
 
+	test("jobDefaults.maxTurns validation", () => {
+		const { store } = freshStore();
+		store.update({ jobDefaults: { maxTurns: 40 } });
+		expect(store.read().jobDefaults?.maxTurns).toBe(40);
+		store.update({ jobDefaults: { maxTurns: null } });
+		expect(store.read().jobDefaults).toBeUndefined();
+		for (const [patch, pattern] of [
+			[{ jobDefaults: { maxTurns: 0 } }, /jobDefaults\.maxTurns/],
+			[{ jobDefaults: { maxTurns: "x" } }, /jobDefaults\.maxTurns/],
+			[{ jobDefaults: { maxTurns: 1.5 } }, /jobDefaults\.maxTurns/],
+			[{ jobDefaults: { other: 1 } }, /jobDefaults\.other/],
+			[{ jobDefaults: 42 }, /jobDefaults/],
+		] as const) {
+			expect(() => store.update(patch)).toThrow(SettingsValidationError);
+			expect(() => store.update(patch)).toThrow(pattern);
+		}
+	});
+
 	test("defaultProvider PATCHes sub-merge; null clears a sub-field", () => {
 		const { store } = freshStore();
 		store.update({ defaultProvider: { baseUrl: "https://gw.example/v1" } });

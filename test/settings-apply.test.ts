@@ -95,6 +95,7 @@ const EXPECTED_KEYS = [
 	"jobs",
 	"jobHistory.runs",
 	"jobHistory.revisions",
+	"jobDefaults.maxTurns",
 	"defaultModel",
 	"namingModel",
 	"decisionModel",
@@ -237,6 +238,7 @@ describe("the core settings registry (spec §13.1)", () => {
 				"server.auth.sessionDays",
 				"jobHistory.runs",
 				"jobHistory.revisions",
+				"jobDefaults.maxTurns",
 			],
 			"live",
 		);

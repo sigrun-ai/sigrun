@@ -49,6 +49,14 @@ export type JobAction =
 			 * SessionMeta so the gateway's runSettled delivery reads it.
 			 */
 			deliver?: string[];
+			/**
+			 * Turn limit for unattended runs (jobs quiet runs Task 3): an
+			 * integer ≥ 1, applied ONLY to `conversation: "new"` run
+			 * conversations via the creating commit's agent change. Absent
+			 * = the live `jobDefaults.maxTurns` setting, default 150. A run
+			 * that reaches it ends `unanswered` with `turn_limit`.
+			 */
+			maxTurns?: number;
 		}
 	| { kind: "task"; task: string; input?: JsonValue };
 

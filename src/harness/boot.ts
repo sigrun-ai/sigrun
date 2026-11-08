@@ -1878,6 +1878,9 @@ export async function openHarness(
 		// engine loaded (core ships none — `gatewayEngine` is undefined
 		// unless an extension declared one).
 		gatewayLoaded: gatewayEngine !== undefined,
+		// Jobs quiet runs Task 3: the turn-limit fallback reads the
+		// settings store LIVE per fire (a PATCH reaches the next fire).
+		jobDefaults: () => settingsStore.read().jobDefaults,
 		rewriteUserSelection: (tx, conversationId, from, to) =>
 			rewriteSelection(tx, conversationId, from, to, perUserSlugs),
 	};

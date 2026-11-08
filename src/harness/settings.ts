@@ -140,6 +140,7 @@ const SETTING_KEYS = [
 	"extensions",
 	"jobs",
 	"jobHistory",
+	"jobDefaults",
 	"defaultModel",
 	"namingModel",
 	"decisionModel",
@@ -395,6 +396,24 @@ function validate(value: Record<string, unknown>): void {
 					"must be a positive integer",
 				);
 			}
+		}
+	}
+	// The live job-run defaults (jobs quiet runs Task 3): an object
+	// with only `maxTurns`, a positive integer when present.
+	if (value.jobDefaults !== undefined) {
+		const jobDefaults = asRecord(value.jobDefaults);
+		if (jobDefaults === undefined) {
+			throw new SettingsValidationError("jobDefaults", "must be an object");
+		}
+		checkKeys("jobDefaults.", jobDefaults, ["maxTurns"]);
+		if (
+			jobDefaults.maxTurns !== undefined &&
+			!isPositiveInt(jobDefaults.maxTurns)
+		) {
+			throw new SettingsValidationError(
+				"jobDefaults.maxTurns",
+				"must be a positive integer",
+			);
 		}
 	}
 	if (value.defaultModel !== undefined) {
@@ -1358,6 +1377,26 @@ export class SettingsStore {
 			) {
 				// Same sub-merge as retry/stream: a null sub-field clears just
 				// that field of the provider section.
+				const sub: Record<string, unknown> = {
+					...((merged[key] as Record<string, unknown>) ?? {}),
+				};
+				for (const [subKey, subValue] of Object.entries(
+					value as Record<string, unknown>,
+				)) {
+					if (subValue === null) delete sub[subKey];
+					else sub[subKey] = subValue;
+				}
+				if (Object.keys(sub).length === 0) delete merged[key];
+				else merged[key] = sub;
+				continue;
+			}
+			if (
+				key === "jobDefaults" &&
+				typeof value === "object" &&
+				value !== null
+			) {
+				// Same sub-merge as defaultProvider: a null sub-field
+				// clears just that knob of the job-defaults section.
 				const sub: Record<string, unknown> = {
 					...((merged[key] as Record<string, unknown>) ?? {}),
 				};

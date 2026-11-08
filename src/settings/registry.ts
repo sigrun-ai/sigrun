@@ -150,6 +150,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "read per prune at revision-write (spec §8.1, ruling 14)",
 	},
 	{
+		key: "jobDefaults.maxTurns",
+		apply: "live",
+		section: "advanced",
+		reason: "read per fire: the new-conversation run's fallback turn limit (default 150)",
+	},
+	{
 		key: "defaultModel",
 		apply: "restart",
 		section: "general",
