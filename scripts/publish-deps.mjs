@@ -62,22 +62,10 @@ const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const MANIFEST = join(ROOT, "package.json");
 const MARKER = join(ROOT, ".publish-deps-applied.json");
 
-/**
- * The built-in extensions and the sibling checkout each one lives in.
- * ALL SIX ship in core — this map is the single list every other
- * enumeration (the workflows' checkouts, the lock regen, the image
- * smoke's resolve list) derives from via the `list`/`pins` modes, so a
- * new built-in lands here ONCE (test/builtins-wiring.test.ts asserts the
- * four enumerations agree).
- */
-const BUILTINS = {
-	"@sigrun/ext-codemode": "../sigrun-ext-codemode",
-	"@sigrun/ext-curator": "../sigrun-ext-curator",
-	"@sigrun/ext-gateway": "../sigrun-ext-gateway",
-	"@sigrun/ext-mcp": "../sigrun-ext-mcp",
-	"@sigrun/ext-tool-search": "../sigrun-ext-tool-search",
-	"@sigrun/oauth": "../sigrun-ext-oauth",
-};
+// The BUILTINS map lives in builtins-map.mjs so read-only consumers
+// (the CI core-ref resolver) can import it without this script's
+// top-level argv parsing.
+import { BUILTINS } from "./builtins-map.mjs";
 
 /**
  * The loader SLUG each built-in reports under (its declared extension
