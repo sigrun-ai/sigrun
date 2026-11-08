@@ -265,6 +265,13 @@ what core does with each, and where its rules are documented:
 | `perUserTools` | `boolean` | permits `host.tools.setUserTools`; core owns the `<slug>@<user>` entries and their execution-time owner check | ["Per-user tools"](#per-user-tools) |
 | `userServices` | `readonly UserService[]` | declares per-user service processes; core launches, supervises, and stops them | ["Per-user services"](#per-user-services) |
 
+`runSettled` delivery is **at-least-once across restarts**. A run that
+settled but was not yet delivered is replayed at the next boot with
+`replayed: true`; a repeat is possible after a crash between the run's
+handlers and the delivery-marker save, or after a crash mid-replay (the
+unchanged marker re-replays the tail). Replays never reach host events and
+skip the auto-namer.
+
 `runSettled` also covers runs started by a **Continue** press. A Continue
 input has no entry and contributes `""` at its position in `inputTexts`.
 The event's `continued` field is true whenever the run holds one; a run

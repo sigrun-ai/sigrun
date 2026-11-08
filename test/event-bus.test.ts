@@ -30,6 +30,8 @@ import type {
 	Conversation,
 	ConversationId,
 	HarnessSettings,
+	CommitPublication,
+	Storage,
 } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../src/config.js";
@@ -38,9 +40,11 @@ import { JobDoc } from "../src/jobs/docs.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import {
 	EventBus,
+	RunDeliveryDoc,
 	type LifecycleEvent,
 	type SettleGroup,
 	type HostEvent,
+	type RunSettledEvent,
 } from "../src/harness/event-bus.js";
 import { resolveExtension } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -49,6 +53,7 @@ import { createServer } from "../src/server/index.js";
 import { SessionMetaDoc } from "../src/server/session-meta.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { askTree } from "./helpers/trees.js";
+import { markInternal } from "../src/curation/internal.js";
 
 /** One booted harness + bus, its root conversation, and its faux provider. */
 interface TestBus {
@@ -56,6 +61,7 @@ interface TestBus {
 	faux: FauxProviderHandle;
 	bus: EventBus;
 	root: Conversation;
+	dir: string;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -80,9 +86,11 @@ async function bootBus(
 		hookDeadlineMs?: number;
 		shutdownSettleWaitMs?: number;
 		idleThresholdMs?: number;
+		replayPage?: number;
+		dir?: string;
 	} = {},
 ): Promise<TestBus> {
-	const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
+	const dir = options.dir ?? await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
 	dirs.push(dir);
 	const faux = fauxProvider({
 		provider: "faux",
@@ -108,6 +116,11 @@ async function bootBus(
 		env: {},
 		settings: options.settings,
 		settingsDir: dir,
+		eventBus: {
+			shutdownSettleWaitMs: options.shutdownSettleWaitMs,
+			idleThresholdMs: options.idleThresholdMs,
+			workerDeadlineMs: 10_000,
+		},
 	});
 	// The root (and its creation commit) exists BEFORE the bus subscribes:
 	// lifecycle tests observe only what happens after open.
@@ -123,6 +136,9 @@ async function bootBus(
 		...(options.idleThresholdMs === undefined
 			? {}
 			: { idleThresholdMs: options.idleThresholdMs }),
+		...(options.replayPage === undefined
+			? {}
+			: { replayPage: options.replayPage }),
 		// Required since the post-ship follow-ups (no bus-side default —
 		// config.ts owns the 600_000 production value; tests pick their own).
 		workerDeadlineMs: 10_000,
@@ -131,7 +147,7 @@ async function bootBus(
 		bus.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
 	});
-	return { opened, faux, bus, root };
+	return { opened, faux, bus, root, dir };
 }
 
 /** Submit one input and return the settled record (the run's own result). */
@@ -1554,5 +1570,942 @@ describe("interactionSettled (one delivery per terminal transition, any writer)"
 		expect(message).toBe(
 			"extension factory returned a interactionSettled field that is not a function",
 		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Delivered-through marker (durable run-settled, Task 1): the live-path
+// bookkeeping + save. Replay (Task 2) and boot wiring (Task 3) are separate.
+// ---------------------------------------------------------------------------
+
+describe("delivered-through marker", () => {
+	/** Read the stored marker doc (undefined when never written). */
+	async function storedThrough(opened: OpenedHarness): Promise<number | undefined> {
+		const doc = await opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT);
+		return doc?.through;
+	}
+
+	/**
+	 * Boot a harness and use its OWN bus (not a second one). The marker is
+	 * a session-scoped doc — a second bus would double-save. The opened bus
+	 * has the built-in extensions registered; tests that need a blocking
+	 * handler register an additional extension on it.
+	 */
+	async function bootOpenedBus(
+		options: {
+			responses?: readonly AssistantMessage[];
+			settings?: HarnessSettings;
+			queueMax?: number;
+			hookDeadlineMs?: number;
+			shutdownSettleWaitMs?: number;
+		} = {},
+	): Promise<TestBus> {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-event-bus-"));
+		dirs.push(dir);
+		const faux = fauxProvider({
+			provider: "faux",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		faux.setResponses([...(options.responses ?? [])]);
+		const contributor: ProviderContributor = {
+			name: "ext-faux",
+			providers: [{ provider: faux.provider }],
+		};
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+		});
+		await writeFile(join(dir, "settings.json"), '{"namingModel": false}');
+		const opened = await openHarness(config, {
+			extensions: [contributor],
+			env: {},
+			settings: options.settings,
+			settingsDir: dir,
+			eventBus: {
+				queueMax: options.queueMax,
+				hookDeadlineMs: options.hookDeadlineMs,
+				shutdownSettleWaitMs: options.shutdownSettleWaitMs,
+				workerDeadlineMs: 10_000,
+			},
+		});
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const bus = opened.eventBus;
+		cleanups.push(async () => {
+			bus.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+		});
+		return { opened, faux, bus, root, dir };
+	}
+
+	test("the marker advances past a delivered run", async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const { submission, record } = await runTurn(root, "hello");
+		expect(record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const through = await storedThrough(opened);
+		expect(through).toBeDefined();
+		expect(through!).toBeGreaterThan(submission.id);
+		expect(bus.deliveredThrough()).toBe(through);
+	});
+
+	test("a live run holds the marker below it", { timeout: 20_000 }, async () => {
+		const { bus, root, opened, faux } = await bootOpenedBus();
+		// The held run's tool round sleeps 2s. The other conversation's run
+		// settles during that window. The held run's second response is gated
+		// (never resolves until release()).
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("held answer"));
+		});
+		faux.setResponses([
+			// Response 1: the held run's tool round.
+			fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 2" })], {
+				stopReason: "toolUse",
+			}),
+			// Response 2: the other conversation's answer (consumed first —
+			// the other run starts while the held run's tool sleeps).
+			fauxAssistantMessage("other answer"),
+			// Response 3: the held run's gated answer (consumed after release).
+			async () => await gate,
+		]);
+		const held = await root.submit(
+			{ type: "input", content: "held run" },
+			BACKGROUND_CONTEXT,
+		);
+		await vi.waitFor(() => expect(bus.oldestLiveAdmissionMs()).toBeDefined());
+
+		// A second conversation settles while the first is held.
+		const other = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const otherTurn = await runTurn(other, "other");
+		expect(otherTurn.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		const through = await storedThrough(opened);
+		expect(through).toBeDefined();
+		expect(through!).toBeLessThanOrEqual(held.id);
+
+		release();
+		expect((await held.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect((await storedThrough(opened))!).toBeGreaterThan(held.id);
+	});
+
+	test("a queued group holds the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			responses: [
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("second answer"),
+			],
+		});
+		let releaseFirst!: () => void;
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		bus.registerExtension("fixture-block-first", {
+			runSettled: async () => {
+				await firstGate;
+			},
+		});
+
+		const first = await runTurn(root, "first");
+		expect(first.record.status).toBe("done");
+		// Start draining: the pump reaches the blocking handler.
+		const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// A second conversation's run settles while the first group is in dispatch.
+		const other = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		const second = await runTurn(other, "second");
+		expect(second.record.status).toBe("done");
+
+		// The marker must not advance past the queued (in-dispatch) group.
+		expect(bus.deliveredThrough()).toBeLessThanOrEqual(first.submission.id);
+
+		releaseFirst();
+		await draining;
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect((await storedThrough(opened))!).toBeGreaterThan(second.submission.id);
+	});
+
+	test("an internal run never pins the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened, faux } = await bootOpenedBus();
+		// Create an internal conversation and hold a run in it.
+		const internal = await opened.harness.createConversation(
+			{
+				ownership: { kind: "ownerless" },
+				agent: { model: opened.defaultModel },
+				init: async (tx, id) => {
+					await markInternal(tx, id, "alice");
+				},
+			},
+			BACKGROUND_CONTEXT,
+		);
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("internal answer"));
+		});
+		let internalStarted!: () => void;
+		const internalStartedGate = new Promise<void>((resolve) => {
+			internalStarted = resolve;
+		});
+		faux.setResponses([
+			fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], {
+				stopReason: "toolUse",
+			}),
+			async () => {
+				internalStarted();
+				return await gate;
+			},
+		]);
+		const held = await internal.submit(
+			{ type: "input", content: "internal held run" },
+			BACKGROUND_CONTEXT,
+		);
+		// Wait for the internal run to be placed.
+		await vi.waitFor(async () => {
+			expect((await held.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		});
+		await internalStartedGate;
+		// The ordinary run gets its own deterministic response while the
+		// internal run remains held.
+		faux.setResponses([fauxAssistantMessage("ordinary answer")]);
+		const ordinary = await runTurn(root, "ordinary");
+		expect(ordinary.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// The marker advances past the ordinary run even though the internal
+		// run's submission id is lower.
+		expect(held.id).toBeLessThan(ordinary.submission.id);
+		const through = await storedThrough(opened);
+		expect(through!).toBeGreaterThan(ordinary.submission.id);
+
+		release();
+		await held.wait(BACKGROUND_CONTEXT);
+	});
+
+	test("a write submission never pins the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened, faux } = await bootOpenedBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		// Settle a run first so the marker has a starting point.
+		const first = await runTurn(root, "first");
+		expect(first.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// A write submission (passive entry write, no run).
+		const write = await root.submit(
+			{ type: "write", entry: { kind: "fixture.heartbeat", data: { n: 1 } } },
+			BACKGROUND_CONTEXT,
+		);
+		const writeRecord = await write.wait(BACKGROUND_CONTEXT);
+		expect(writeRecord.status).toBe("done");
+
+		// Another run settles after the write.
+		faux.setResponses([fauxAssistantMessage("second answer")]);
+		const second = await runTurn(root, "second");
+		expect(second.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// The marker passes both runs — the write never held it back.
+		const through = await storedThrough(opened);
+		expect(through!).toBeGreaterThan(second.submission.id);
+	});
+
+	test("an overflow drop pins the marker", { timeout: 20_000 }, async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			queueMax: 1,
+			responses: [
+				fauxAssistantMessage("first answer"),
+				fauxAssistantMessage("second answer"),
+				fauxAssistantMessage("third answer"),
+			],
+		});
+		const spy = vi.spyOn(console, "error").mockImplementation(() => {});
+		try {
+			let releaseFirst!: () => void;
+			const firstGate = new Promise<void>((resolve) => {
+				releaseFirst = resolve;
+			});
+			bus.registerExtension("fixture-block", {
+				runSettled: async () => {
+					await firstGate;
+				},
+			});
+
+			const first = await runTurn(root, "first");
+			expect(first.record.status).toBe("done");
+			const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+
+			// Two more runs settle while the first is in dispatch → overflow.
+			const other = await opened.harness.createConversation(
+				{ ownership: { kind: "ownerless" }, agent: { model: opened.defaultModel } },
+				BACKGROUND_CONTEXT,
+			);
+			const second = await runTurn(other, "second");
+			expect(second.record.status).toBe("done");
+			const third = await runTurn(root, "third");
+			expect(third.record.status).toBe("done");
+
+			releaseFirst();
+			await draining;
+			await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+			// The dropped group's id stays >= through.
+			const through = await storedThrough(opened);
+			expect(through).toBeDefined();
+			// The dropped group (second or third) must not be passed.
+			const droppedId = Math.min(second.submission.id, third.submission.id);
+			expect(through!).toBeLessThanOrEqual(droppedId);
+		} finally {
+			spy.mockRestore();
+		}
+	});
+
+	test("no advance without a delivered settle group", async () => {
+		const { bus, opened } = await bootOpenedBus();
+		// Boot initializes the marker even when history is empty; lifecycle
+		// commits alone must never advance it past that baseline.
+		const baseline = await storedThrough(opened);
+		expect(baseline).toBe(1);
+		await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		expect(await storedThrough(opened)).toBe(baseline);
+	});
+
+	test("the shutdown drains save the marker", async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		const { submission, record } = await runTurn(root, "hello");
+		expect(record.status).toBe("done");
+
+		// Shutdown without an explicit drain — the shutdown drains save.
+		await bus.shutdownSequence(BACKGROUND_CONTEXT);
+		const through = await storedThrough(opened);
+		expect(through).toBeDefined();
+		expect(through!).toBeGreaterThan(submission.id);
+	});
+
+	test("close drops the queue without advancing", { timeout: 20_000 }, async () => {
+		const { bus, root, opened } = await bootOpenedBus({
+			hookDeadlineMs: 50_000,
+			responses: [fauxAssistantMessage("the answer")],
+		});
+		bus.registerExtension("fixture-block", {
+			runSettled: () => new Promise<void>(() => {}),
+		});
+		const { submission, record } = await runTurn(root, "hello");
+		expect(record.status).toBe("done");
+
+		// Start draining (the pump reaches the blocking handler), then close.
+		const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+		bus.close();
+		await draining;
+
+		const through = await storedThrough(opened);
+		// The run was never delivered (close dropped the queue).
+		expect(through ?? 0).toBeLessThanOrEqual(submission.id);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Startup replay (durable run-settled, Task 2): terminal submissions at or
+// above the marker regroup and reach runSettled after a crash/restart.
+// ---------------------------------------------------------------------------
+
+describe("startup replay", () => {
+	type ReplayRecord = {
+		event: RunSettledEvent;
+		label: string;
+	};
+
+	/** Close without delivering a blocked settle group, then reopen its database. */
+	async function restartAfterCrash(
+		first: TestBus,
+		release: () => void,
+		options: { replayPage?: number } = {},
+	): Promise<{ restarted: TestBus; events: ReplayRecord[] }> {
+		await crashClose(first);
+		void release;
+		const restarted = await bootBus({
+			dir: first.dir,
+			...options,
+		});
+		// These tests drive replay explicitly on their own bus. Stop boot's
+		// automatic replay bus so the two buses cannot race the same tail.
+		restarted.opened.eventBus.close();
+		const events: ReplayRecord[] = [];
+		restarted.bus.registerExtension("fixture-replay-recorder", {
+			runSettled: (event) => {
+				events.push({
+					event,
+					label: `${event.replayed === true ? "replay" : "live"}:${event.inputs.join(",")}`,
+				});
+			},
+		});
+		return { restarted, events };
+	}
+
+	/** A crash close: boot's replay pump must not drain at harness close. */
+	async function crashClose(first: TestBus): Promise<void> {
+		first.opened.eventBus.close();
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+	}
+
+	/** One blocking delivery, with the abandoned call resolved on cleanup. */
+	async function crashWithBlockedDelivery(bus: EventBus): Promise<{
+		release: () => void;
+		draining: Promise<void>;
+	}> {
+		let release!: () => void;
+		let started!: () => void;
+		const startedGate = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		bus.registerExtension("fixture-crash-block", {
+			runSettled: async () => {
+				started();
+				await gate;
+			},
+		});
+		const draining = bus.drain(10_000, BACKGROUND_CONTEXT);
+		await startedGate;
+		return { release, draining };
+	}
+
+	/** A first delivered run establishes the marker without a first-boot replay. */
+	async function seedMarker(root: Conversation, bus: EventBus) {
+		const seeded = await runTurn(root, "seed the delivered-through marker");
+		expect(seeded.record.status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		return seeded;
+	}
+
+	/**
+	 * Close boot's own bus after seeding so its debounced commit-driven
+	 * auto-drain cannot deliver later runs (and advance the durable marker)
+	 * while the test scripts its own crash window. Without this, replay
+	 * tests race boot's timer for the marker position at the crash.
+	 */
+	async function freezeMarker(first: TestBus) {
+		first.opened.eventBus.close();
+	}
+
+	test("an undelivered run replays after a crash", async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				fauxAssistantMessage("undelivered answer"),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		const settled = await runTurn(first.root, "undelivered input");
+		expect(settled.record.status).toBe("done");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+
+			expect(events).toHaveLength(1);
+			expect(events[0]!.event).toMatchObject({
+				conversationId: first.root.id,
+				inputs: [settled.submission.id],
+				inputTexts: ["undelivered input"],
+				replayed: true,
+				outcome: { status: "answered", answerEntryId: settled.record.answer },
+			});
+			expect(restarted.bus.deliveredThrough()).toBeGreaterThan(settled.submission.id);
+		} finally {
+			release();
+		}
+	});
+
+	test("a clean restart replays nothing", async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("delivered before restart")],
+		});
+		const settled = await seedMarker(first.root, first.bus);
+		const before = first.bus.deliveredThrough();
+		expect(before).toBeGreaterThan(settled.submission.id);
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		const restarted = await bootBus({ dir: first.dir });
+
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		expect(restarted.bus.deliveredThrough()).toBe(before);
+		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(await restarted.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({ through: before });
+	});
+
+	test("a failed replay leaves the marker unchanged after a later live settle", async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				fauxAssistantMessage("undelivered answer"),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		const undelivered = await runTurn(first.root, "undelivered before replay failure");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted } = await restartAfterCrash(first, release);
+			const failingStorage = new Proxy(restarted.opened.storage, {
+				get(target, property, receiver) {
+					if (property === "scanSubmissions") {
+						return async () => {
+							throw new Error("synthetic replay scan failure");
+						};
+					}
+					return Reflect.get(target, property, receiver);
+				},
+			}) as Storage;
+			await expect(
+				restarted.bus.replayUndelivered(failingStorage, BACKGROUND_CONTEXT),
+			).rejects.toThrow("synthetic replay scan failure");
+			restarted.faux.setResponses([fauxAssistantMessage("live after replay failure")]);
+			const live = await runTurn(restarted.root, "live after replay failure");
+			expect(live.record.status).toBe("done");
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(await restarted.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({
+				through: first.bus.deliveredThrough(),
+			});
+			expect(live.submission.id).toBeGreaterThan(undelivered.submission.id);
+		} finally {
+			release();
+		}
+	});
+
+	test("an internal live run seeded at boot never pins the marker", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("marker answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		const internal = await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: first.opened.defaultModel },
+			init: async (tx, id) => await markInternal(tx, id, "alice"),
+		}, BACKGROUND_CONTEXT);
+		const provider = withCancel(BACKGROUND_CONTEXT);
+		first.faux.setResponses([
+			async () => {
+				return await new Promise<AssistantMessage>((_resolve, reject) => {
+					provider.context.abortSignal?.addEventListener("abort", () => {
+						reject(new Error("aborted after the replay seed assertion"));
+					}, { once: true });
+				});
+			},
+		]);
+		const held = await internal.submit({ type: "input", content: "internal held" }, BACKGROUND_CONTEXT);
+		await vi.waitFor(async () => {
+			expect((await held.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		});
+		await first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		first.bus.close();
+		await first.opened.harness.close(BACKGROUND_CONTEXT);
+		try {
+			const restarted = await bootBus({
+				dir: first.dir,
+				responses: [
+					fauxAssistantMessage("resumed internal answer"),
+					fauxAssistantMessage("ordinary answer"),
+				],
+			});
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+			const ordinary = await runTurn(restarted.root, "ordinary after restart");
+			expect(ordinary.record.status).toBe("done");
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(restarted.bus.deliveredThrough()).toBeGreaterThan(ordinary.submission.id);
+			expect(held.id).toBeLessThan(ordinary.submission.id);
+		} finally {
+			provider.cancel();
+		}
+	});
+
+	test("a first-boot placed run keeps the marker pinned across restart", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+		});
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("held first-boot answer"));
+		});
+		first.faux.setResponses([async () => await gate]);
+		const placed = await first.root.submit(
+			{ type: "input", content: "held before the first marker" },
+			BACKGROUND_CONTEXT,
+		);
+		await vi.waitFor(async () => {
+			expect((await placed.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		});
+		await vi.waitFor(() => {
+			expect(first.opened.eventBus.oldestLiveAdmissionMs()).toBeDefined();
+		});
+		await crashClose(first);
+
+		const restarted = await bootBus({ dir: first.dir });
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		expect(restarted.opened.eventBus.deliveredThrough()).toBeLessThanOrEqual(placed.id);
+		let releaseDelivery!: () => void;
+		const deliveryGate = new Promise<void>((resolve) => {
+			releaseDelivery = resolve;
+		});
+		restarted.opened.eventBus.registerExtension("fixture-first-boot-block", {
+			runSettled: async () => await deliveryGate,
+		});
+		restarted.faux.setResponses([
+			fauxAssistantMessage("resumed held answer"),
+			fauxAssistantMessage("second run answer"),
+		]);
+		release();
+		const resumed = await restarted.opened.harness.submission(placed.id, BACKGROUND_CONTEXT);
+		expect((await resumed!.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		const second = await runTurn(restarted.root, "second run beside the placed run");
+		expect(second.record.status).toBe("done");
+		await vi.waitFor(() => {
+			expect(restarted.opened.eventBus.deliveredThrough()).toBeLessThanOrEqual(placed.id);
+		});
+		await crashClose(restarted);
+		releaseDelivery();
+
+		const again = await bootBus({ dir: first.dir });
+		expect(again.opened.eventBus.deliveredThrough()).toBeLessThanOrEqual(placed.id);
+		again.opened.eventBus.close();
+		expect(await again.bus.replayUndelivered(again.opened.storage, BACKGROUND_CONTEXT)).toBe(2);
+	});
+
+	test("first boot sets the marker and boot replays history once", async () => {
+		const first = await bootBus({ responses: [fauxAssistantMessage("history answer")] });
+		const history = await runTurn(first.root, "history before the marker existed");
+		expect(history.record.status).toBe("done");
+		await crashClose(first);
+		const restarted = await bootBus({ dir: first.dir });
+		const events: RunSettledEvent[] = [];
+		restarted.bus.registerExtension("fixture-first-boot-recorder", {
+			runSettled: (event) => { events.push(event); },
+		});
+
+		// bootBus's own EventBus.open instance (not opened.eventBus) has not
+		// replayed yet. This manual call queues the group; the test proves
+		// boot's bus seeded the marker. Boot's own replay delivery is covered
+		// by event-bus-restart.test.ts.
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events).toHaveLength(1);
+		expect(events[0]).toMatchObject({ inputs: [history.submission.id], replayed: true });
+		expect(restarted.bus.deliveredThrough()).toBeGreaterThan(history.submission.id);
+	});
+
+	test("done inputs regroup by answer", async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				fauxAssistantMessage([fauxToolCall("bash", { command: "sleep 1" })], { stopReason: "toolUse" }),
+				fauxAssistantMessage("merged answer"),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		const one = await first.root.submit({ type: "input", content: "first merged input" }, BACKGROUND_CONTEXT);
+		const two = await first.root.submit({ type: "input", content: "second merged input", whenBusy: "steer" }, BACKGROUND_CONTEXT);
+		expect((await one.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		expect((await two.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.event.inputs)).toEqual([[one.id, two.id]]);
+			expect(events[0]!.event.inputTexts).toEqual(["first merged input", "second merged input"]);
+		} finally {
+			release();
+		}
+	});
+
+	test("a withdrawn queued input replays alone", async () => {
+		const first = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+			responses: [fauxAssistantMessage("marker answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		let fail!: () => void;
+		const failedResponse = new Promise<AssistantMessage>((resolve) => {
+			fail = () => resolve(fauxAssistantMessage("failed held run", { stopReason: "error", errorMessage: "faux provider failure" }));
+		});
+		first.faux.setResponses([async () => await failedResponse]);
+		const held = await first.root.submit({ type: "input", content: "held failed input" }, BACKGROUND_CONTEXT);
+		const withdrawn = await first.root.submit({ type: "input", content: "withdraw while queued" }, BACKGROUND_CONTEXT);
+		expect(await withdrawn.abort(BACKGROUND_CONTEXT)).toBe("aborted");
+		expect((await withdrawn.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		fail();
+		expect((await held.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(2);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.event.inputs)).toEqual([[held.id], [withdrawn.id]]);
+			expect(events.map((one) => one.event.outcome)).toEqual([
+				{ status: "unanswered", reason: "model_error" },
+				{ status: "unanswered", reason: "aborted" },
+			]);
+		} finally {
+			release();
+		}
+	});
+
+	test("internal conversations are not replayed", async () => {
+		const first = await bootBus({ responses: [fauxAssistantMessage("marker answer")] });
+		await seedMarker(first.root, first.bus);
+		const internal = await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: first.opened.defaultModel },
+			init: async (tx, id) => await markInternal(tx, id, "alice"),
+		}, BACKGROUND_CONTEXT);
+		first.faux.setResponses([fauxAssistantMessage("internal settled answer")]);
+		const settled = await runTurn(internal, "internal undelivered input");
+		expect(settled.record.status).toBe("done");
+		await crashClose(first);
+		const restarted = await bootBus({ dir: first.dir });
+		const events: RunSettledEvent[] = [];
+		restarted.bus.registerExtension("fixture-replay-recorder", {
+			runSettled: (event) => {
+				events.push(event);
+			},
+		});
+		expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(0);
+		await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events).toEqual([]);
+	});
+
+	test("replays skip raw onSettled subscribers", async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("marker answer"), fauxAssistantMessage("replay answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		await runTurn(first.root, "undelivered replay input");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			const raw = vi.fn();
+			restarted.bus.onSettled(raw);
+			await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(raw).not.toHaveBeenCalled();
+			expect(events).toHaveLength(1);
+			expect(events[0]!.event.replayed).toBe(true);
+		} finally {
+			release();
+		}
+	});
+
+	test("dropped groups replay after restart", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			queueMax: 1,
+			responses: [fauxAssistantMessage("marker answer"), fauxAssistantMessage("dropped answer"), fauxAssistantMessage("queued answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		let releaseFirst!: () => void;
+		let dispatching!: () => void;
+		const dispatchStarted = new Promise<void>((resolve) => {
+			dispatching = resolve;
+		});
+		const firstGate = new Promise<void>((resolve) => {
+			releaseFirst = resolve;
+		});
+		first.bus.registerExtension("fixture-overflow-block", {
+			runSettled: async () => {
+				dispatching();
+				await firstGate;
+			},
+		});
+		const blocked = await runTurn(first.root, "overflow-blocked input");
+		const draining = first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		await dispatchStarted;
+		const other = await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: first.opened.defaultModel },
+		}, BACKGROUND_CONTEXT);
+		const dropped = await runTurn(other, "overflow-dropped input");
+		expect(blocked.record.status).toBe("done");
+		expect(dropped.record.status).toBe("done");
+		// Deterministic overflow: evict the queued settle group with one
+		// lifecycle event while the first group is still in dispatch.
+		await first.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+		}, BACKGROUND_CONTEXT);
+		// Drain BEFORE close: the dropped id itself must pin the marker,
+		// not merely the absence of a save during the blocked crash.
+		releaseFirst();
+		await draining;
+		await first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(await first.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({
+			through: expect.any(Number),
+		});
+		expect(first.bus.deliveredThrough()).toBeLessThanOrEqual(dropped.submission.id);
+		await crashClose(first);
+		const restarted = await bootBus({ dir: first.dir });
+		const events: RunSettledEvent[] = [];
+		restarted.bus.registerExtension("fixture-replay-recorder", {
+			runSettled: (event) => {
+				events.push(event);
+			},
+		});
+		try {
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((event) => event.inputs)).toEqual([[dropped.submission.id]]);
+		} finally {
+			releaseFirst();
+		}
+	});
+
+	test("replay pages interleave with live events", { timeout: 20_000 }, async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				...Array.from({ length: 5 }, (_, index) => fauxAssistantMessage(`replay answer ${index + 1}`)),
+			],
+		});
+		await seedMarker(first.root, first.opened.eventBus);
+		let release!: () => void;
+		let started!: () => void;
+		const startedGate = new Promise<void>((resolve) => {
+			started = resolve;
+		});
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		first.opened.eventBus.registerExtension("fixture-page-block", {
+			runSettled: async () => {
+				started();
+				await gate;
+			},
+		});
+		const undelivered: Awaited<ReturnType<typeof runTurn>>[] = [];
+		for (let index = 0; index < 5; index += 1) {
+			undelivered.push(await runTurn(first.root, `replay page input ${index + 1}`));
+		}
+		const draining = first.opened.eventBus.drain(10_000, BACKGROUND_CONTEXT);
+		await startedGate;
+		await crashClose(first);
+		release();
+		await draining;
+		try {
+			const restarted = await bootBus({
+				dir: first.dir,
+				replayPage: 2,
+				responses: [fauxAssistantMessage("live answer")],
+			});
+			restarted.opened.eventBus.close();
+			const events: ReplayRecord[] = [];
+			restarted.bus.registerExtension("fixture-replay-recorder", {
+				runSettled: (event) => {
+					events.push({
+						event,
+						label: `${event.replayed === true ? "replay" : "live"}:${event.inputs.join(",")}`,
+					});
+				},
+			});
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(5);
+			const live = await runTurn(restarted.root, "live input behind replay pages");
+			expect(live.record.status).toBe("done");
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.label)).toEqual([
+				`replay:${undelivered[0]!.submission.id}`,
+				`replay:${undelivered[1]!.submission.id}`,
+				`live:${live.submission.id}`,
+				...undelivered.slice(2).map((one) => `replay:${one.submission.id}`),
+			]);
+			expect(restarted.bus.deliveredThrough()).toBeGreaterThan(live.submission.id);
+		} finally {
+			release();
+		}
+	});
+
+	test("a failed continue merges with the input it placed", async () => {
+		const first = await bootBus({
+			settings: { retry: { enabled: false }, afterFailedRun: "keep" },
+			responses: [fauxAssistantMessage("marker answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		await freezeMarker(first);
+		let failFirst!: () => void;
+		const firstFailure = new Promise<AssistantMessage>((resolve) => {
+			failFirst = () => resolve(fauxAssistantMessage("failed original run", { stopReason: "error", errorMessage: "faux original failure" }));
+		});
+		first.faux.setResponses([async () => await firstFailure]);
+		const original = await first.root.submit({ type: "input", content: "original failure" }, BACKGROUND_CONTEXT);
+		const queued = await first.root.submit({ type: "input", content: "queued for continue", whenBusy: "steer" }, BACKGROUND_CONTEXT);
+		failFirst();
+		expect((await original.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		first.faux.setResponses([
+			fauxAssistantMessage("failed continue", { stopReason: "error", errorMessage: "faux continue failure" }),
+		]);
+		const continued = await first.root.submit({ type: "continue" }, BACKGROUND_CONTEXT);
+		expect((await queued.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events.map((one) => one.event.inputs)).toEqual([
+				[original.id, queued.id, continued.id],
+			]);
+			expect(events[0]!.event).toMatchObject({
+				continued: true,
+				inputTexts: ["original failure", "queued for continue", ""],
+				replayed: true,
+				outcome: { status: "unanswered", reason: "model_error" },
+			});
+		} finally {
+			release();
+		}
+	});
+
+	test("a live settle of a replayed id is dropped", async () => {
+		const first = await bootBus({
+			responses: [fauxAssistantMessage("marker answer"), fauxAssistantMessage("replay answer")],
+		});
+		await seedMarker(first.root, first.bus);
+		const settled = await runTurn(first.root, "one replayed id");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted, events } = await restartAfterCrash(first, release);
+			await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT);
+			const publication: CommitPublication = {
+				seq: 999_999 as CommitPublication["seq"],
+				changes: [{
+					type: "submission",
+					value: settled.record,
+				}],
+			};
+			(restarted.bus as unknown as { observe(publication: CommitPublication): void }).observe(publication);
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(events).toHaveLength(1);
+			expect(events[0]!.event.inputs).toEqual([settled.submission.id]);
+			expect(events[0]!.event.replayed).toBe(true);
+		} finally {
+			release();
+		}
 	});
 });

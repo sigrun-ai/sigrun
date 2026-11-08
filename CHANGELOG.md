@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- `runSettled` events now survive restarts: a run that settled but was not yet delivered is replayed at the next boot (`replayed: true`), before interrupted runs resume. Delivery is at-least-once.
+
 ## [0.11.5] - 2026-11-08
 
 The deleted-conversations release. Companion published first:

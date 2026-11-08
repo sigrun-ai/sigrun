@@ -154,6 +154,8 @@ export type RunSettledEvent = {
 	readonly inputTexts: readonly string[];
 	/** True when a Continue submission belongs to the run. */
 	readonly continued?: boolean;
+	/** Present only on a startup-replayed event (durable run-settled). */
+	readonly replayed?: true;
 	readonly outcome:
 		| {
 				readonly status: "answered";
