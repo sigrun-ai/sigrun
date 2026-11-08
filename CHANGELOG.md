@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- An absolute directory path or `file://` directory URL in
+  `extensions[]` resolves its entry like an installed package instead of
+  reaching `import()` as an unsupported directory import.
+
 ## [0.11.3] - 2026-11-08
 
 ### Added

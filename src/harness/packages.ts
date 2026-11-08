@@ -942,6 +942,11 @@ export function resolveExtensionEntry(
 		return specifier;
 	}
 	if (specifier.startsWith("/") || specifier.startsWith("file://")) {
+		const dir = specifier.startsWith("file://") ? fileURLToPath(specifier) : specifier;
+		if (statIsDirectory(dir)) {
+			const entry = packageEntry(dir, readPackageName(dir) ?? basename(dir));
+			return entry.endsWith(".ts") ? specifier : entry;
+		}
 		return specifier;
 	}
 	// A file:-installed package LOADS under its own manifest name, which
