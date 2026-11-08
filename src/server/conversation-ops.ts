@@ -514,6 +514,11 @@ export async function continueOp(
 	opts: { readonly requestId?: unknown; readonly user?: string } = {},
 ): Promise<ContinueResponse> {
 	const { opened } = ctx;
+	// The deleted guard precedes the pending-note write, exactly as in
+	// submitOp: a refused Continue neither declines a pending question
+	// nor appends a `sigrun.blocks.note` entry to a deleted conversation
+	// (the deleted-conversations plan's deferred obligation for this op).
+	await assertNotDeleted(ctx, conversation);
 	if (
 		opts.requestId !== undefined &&
 		(typeof opts.requestId !== "string" || opts.requestId.startsWith("job:"))

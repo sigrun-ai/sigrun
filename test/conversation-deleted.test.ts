@@ -292,6 +292,37 @@ describe("a deleted conversation refuses new work", () => {
 		expect(view.statusCode).toBe(200);
 	});
 
+	test("a deleted conversation refuses Continue", { timeout: 30_000 }, async () => {
+		// The continue lane (#4) merged after this branch was cut; the guard
+		// was this plan's deferred obligation for continueOp, discharged at
+		// the merge. The 409 precedes the pending-note write and the decline,
+		// so nothing is admitted.
+		const { app, opened } = await bootServer({
+			responses: [fauxAssistantMessage("ok")],
+		});
+		const id = await createViaRoute(app);
+		const before = await submissionsOf(opened, id);
+		await setDeleted(app, id, true);
+		const continued = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${id}/continue`,
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(continued.statusCode).toBe(409);
+		expect(continued.json()).toEqual({ error: "conversation_deleted" });
+		expect(await submissionsOf(opened, id)).toHaveLength(before.length);
+		// Restoring re-opens it: Continue answers 202.
+		await setDeleted(app, id, false);
+		const reopened = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${id}/continue`,
+			payload: {},
+			headers: { "content-type": "application/json" },
+		});
+		expect(reopened.statusCode).toBe(202);
+	});
+
 	test("host.conversations.submit rejects with a ConversationOpError", { timeout: 30_000 }, async () => {
 		const { app } = await bootServer();
 		const id = await createViaRoute(app);
