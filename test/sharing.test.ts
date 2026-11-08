@@ -89,6 +89,7 @@ async function bootServer(): Promise<TestServer> {
 		SIGRUN_CACHE_DIR: join(dir, "cache"),
 		SIGRUN_STATE_DIR: join(dir, "state"),
 		SIGRUN_AUTH: "token",
+		SIGRUN_API_TOKEN: "test-service-token",
 	};
 	const config = loadConfig(env);
 	const identity = await seededIdentity(dir);
@@ -617,6 +618,95 @@ describe("PATCH …/meta authority", () => {
 		});
 		expect(renamed.statusCode).toBe(200);
 		expect(renamed.json().name).toBe("x");
+	});
+});
+
+describe("PATCH …/meta deleted authority", () => {
+	test("only the owner deletes: shared-write recipients get 403; the superuser may", async () => {
+		const { app, opened } = await bootServer();
+		const bobToken = await mint(opened, "bob");
+		const daveToken = await mint(opened, "dave");
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: auth(bobToken),
+		});
+		const id: number = created.json().id;
+		await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: {
+				sharing: { scope: "people", users: ["dave"], level: "write" },
+			},
+			headers: authJson(bobToken),
+		});
+
+		// A shared-write recipient can neither delete nor restore.
+		const recipientDelete = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { deleted: true },
+			headers: authJson(daveToken),
+		});
+		expect(recipientDelete.statusCode).toBe(403);
+		expect(recipientDelete.json()).toEqual({ error: "forbidden" });
+		// The refused patch never touched the doc.
+		const untouched = await opened.harness.snapshot(
+			SessionMetaDoc,
+			id as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(untouched?.deleted).toBeUndefined();
+
+		// The owner deletes.
+		const ownerDelete = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { deleted: true },
+			headers: authJson(bobToken),
+		});
+		expect(ownerDelete.statusCode).toBe(200);
+		expect(ownerDelete.json().deleted).toBe(true);
+
+		// After the owner deletes, the recipient cannot restore either.
+		const recipientRestore = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { deleted: false },
+			headers: authJson(daveToken),
+		});
+		expect(recipientRestore.statusCode).toBe(403);
+		expect(recipientRestore.json()).toEqual({ error: "forbidden" });
+
+		// The same recipient's ordinary write surface (archived) still works.
+		const archived = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { archived: true },
+			headers: authJson(daveToken),
+		});
+		expect(archived.statusCode).toBe(200);
+		expect(archived.json().archived).toBe(true);
+
+		// The superuser (the env service token under the token method —
+		// the naive no-header principal is a 401 here) may delete/restore
+		// another user's conversation.
+		const superRestore = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { deleted: false },
+			headers: authJson("test-service-token"),
+		});
+		expect(superRestore.statusCode).toBe(200);
+		expect(superRestore.json().deleted).toBe(false);
+		const superDelete = await app.inject({
+			method: "PATCH",
+			url: `/v1/conversations/${id}/meta`,
+			payload: { deleted: true },
+			headers: authJson("test-service-token"),
+		});
+		expect(superDelete.statusCode).toBe(200);
+		expect(superDelete.json().deleted).toBe(true);
 	});
 });
 

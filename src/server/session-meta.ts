@@ -114,6 +114,7 @@ export function validateSessionMetaPatch(
 		pinned?: boolean | null;
 		tagged?: readonly string[] | null;
 		archived?: boolean | null;
+		deleted?: boolean | null;
 		draft?: {
 			text?: string | null;
 			attachments?: readonly string[] | null;
@@ -125,12 +126,14 @@ export function validateSessionMetaPatch(
 		const value = record[key];
 		switch (key) {
 			case "pinned":
-			case "archived": {
+			case "archived":
+			case "deleted": {
 				if (value !== null && typeof value !== "boolean") {
 					return { error: "invalid_body" };
 				}
 				if (key === "pinned") patch.pinned = value;
-				else patch.archived = value;
+				else if (key === "archived") patch.archived = value;
+				else patch.deleted = value;
 				break;
 			}
 			case "tagged": {
@@ -249,6 +252,12 @@ export function applySessionMetaPatch(
 ): void {
 	if (patch.pinned !== undefined) draft.pinned = patch.pinned ?? false;
 	if (patch.archived !== undefined) draft.archived = patch.archived ?? false;
+	// `deleted` clears like `name`/`sharing`: absent = not deleted, so a
+	// `null` clear removes the key (it is not in DEFAULT_SESSION_META).
+	if (patch.deleted !== undefined) {
+		if (patch.deleted === null) delete draft.deleted;
+		else draft.deleted = patch.deleted;
+	}
 	if (patch.tagged !== undefined) {
 		draft.tagged = patch.tagged === null ? [] : [...patch.tagged];
 	}

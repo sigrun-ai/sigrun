@@ -781,6 +781,7 @@ export async function listConversationsOp(
 					? {}
 					: { jobOutcome: meta.jobOutcome }),
 				...(meta?.adopted === undefined ? {} : { adopted: meta.adopted }),
+			...(meta?.deleted === undefined ? {} : { deleted: meta.deleted }),
 				...(meta?.lastActivityAt === undefined
 					? {}
 					: { lastActivityAt: meta.lastActivityAt }),
@@ -1148,6 +1149,9 @@ export async function forkOp(
 		delete draft.autoName;
 		delete draft.autoNameAttempts;
 		delete draft.sharing;
+		// A fork is not deleted: drop the copied deleted marker (the doc
+		// briefly inherits it via fork: "current").
+		delete draft.deleted;
 		if (opts.owner === undefined) delete draft.owner;
 		else draft.owner = opts.owner;
 		if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
@@ -1210,10 +1214,15 @@ export async function patchMetaOp(
 	if ("error" in validated) {
 		throw new ConversationOpError(validated);
 	}
-	// §5.9: `sharing` additionally requires the OWNER or a superuser —
-	// write access (granted by a share) must not let a recipient re-share
-	// the resource. Host callers pass no principal (trusted).
-	if (opts.principal !== undefined && validated.sharing !== undefined) {
+	// §5.9: `sharing` and `deleted` additionally require the OWNER or a
+	// superuser — write access (granted by a share) must not let a
+	// recipient re-share the resource nor delete/restore it (the gate
+	// covers ANY `deleted` patch value, so a recipient can neither delete
+	// nor restore). Host callers pass no principal (trusted).
+	if (
+		opts.principal !== undefined &&
+		(validated.sharing !== undefined || validated.deleted !== undefined)
+	) {
 		const meta = await opened.harness.snapshot(
 			SessionMetaDoc,
 			conversation.id,

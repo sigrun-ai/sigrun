@@ -17,6 +17,8 @@ export interface ListRow {
 	readonly parent?: { readonly id: number };
 	readonly archived: boolean;
 	readonly pinned: boolean;
+	/** The deleted marker (deleted-conversations Task 1); absent = not deleted. */
+	readonly deleted?: boolean;
 	readonly source?: string;
 	readonly jobOutcome?: "succeeded" | "failed";
 	readonly adopted?: boolean;
