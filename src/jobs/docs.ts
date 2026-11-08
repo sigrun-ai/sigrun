@@ -137,6 +137,36 @@ export async function scanJobs(
 	}
 }
 
+/** Every live run still marked running, across all jobs. */
+export async function scanRunningRuns(
+	storage: Storage,
+	ctx: Context,
+): Promise<JobRunWire[]> {
+	const runs: JobRunWire[] = [];
+	let cursor: Awaited<ReturnType<Storage["scanDocuments"]>>["next"];
+	for (;;) {
+		const page = await storage.scanDocuments(
+			{
+				scope: { kind: "session" },
+				at: "current",
+				kind: JobRunDoc.definition.kind,
+			},
+			SCAN_PAGE,
+			cursor,
+			ctx,
+		);
+		for (const item of page.items) {
+			const stored = await storage.document(item.id, "current", ctx);
+			if (stored === undefined) continue;
+			// SAFETY: the storage scan was restricted to JobRunDoc's kind.
+			const run = stored.value as unknown as JobRunWire;
+			if (run.outcome === "running") runs.push(run);
+		}
+		if (page.next === undefined) return runs;
+		cursor = page.next;
+	}
+}
+
 /** One job record by id (undefined when absent or retired). */
 export async function readJob(
 	harness: Harness,
@@ -289,6 +319,18 @@ export async function patchJob(
 	// draft — so the pre-read never shadows a concurrent change.
 	const prior = await harness.snapshot(JobDoc, id, ctx);
 	if (prior === undefined) return;
+	await harness.commit(async (tx) => {
+		await patchJobIn(tx, id, prior, change);
+	}, ctx);
+}
+
+/** Apply a status edit inside a caller's atomic commit. */
+export async function patchJobIn(
+	tx: Tx,
+	id: string,
+	prior: JobRecord,
+	change: (draft: Draft<JobRecord>) => void,
+): Promise<void> {
 	// pi-durable 1.5.0 address semantics: a `tx.doc` acquire whose address
 	// was RETIRED between the pre-read and this commit CREATES a fresh
 	// incarnation from the seed — patchJob would resurrect a deleted job
@@ -301,15 +343,13 @@ export async function patchJob(
 	// SAFETY: the seed widens JobRecord with a sentinel the live record
 	// never carries; the draft read-back checks the same untyped key.
 	type ProbeSeed = JobRecord & { [PROBE]?: true };
-	await harness.commit(async (tx) => {
-		const seed: ProbeSeed = { ...prior, [PROBE]: true };
-		const draft = (await tx.doc(JobDoc, id, seed)) as ProbeSeed;
-		if (draft[PROBE] === true) {
-			await tx.retireDoc(JobDoc, id);
-			return;
-		}
-		change(draft);
-	}, ctx);
+	const seed: ProbeSeed = { ...prior, [PROBE]: true };
+	const draft = (await tx.doc(JobDoc, id, seed)) as ProbeSeed;
+	if (draft[PROBE] === true) {
+		await tx.retireDoc(JobDoc, id);
+		return;
+	}
+	change(draft);
 }
 
 /**

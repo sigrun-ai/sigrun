@@ -10,8 +10,8 @@
  *   the run conversation (`harness.createConversation({…, init})` — the
  *   `init` callback runs in the creating commit). The conversation and
  *   its run record are atomic; a crash either lands both or neither.
- * - fixed-conversation prompt: the run record commits FIRST (its own
- *   `harness.commit`), then the task submits with
+ * - fixed-conversation prompt: the run record and the job's `lastRun`
+ *   share ONE `harness.commit`, then the task submits with
  *   `requestId = "job:" + fireKey`. On re-entry a present run record
  *   means "submitted or about to be", so the task submits again and the
  *   conversation-scoped requestId dedups.
@@ -59,7 +59,7 @@ import { SessionMetaDoc } from "../server/session-meta.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import { noteThen } from "../server/turns/submit-turn.js";
 import { recordAuthor } from "../curation/attribution.js";
-import { JobRunDoc, patchJob, readJob, type JobRecord } from "./docs.js";
+import { JobRunDoc, patchJob, patchJobIn, readJob, type JobRecord } from "./docs.js";
 import type { ScheduleInput, ScheduleState } from "./task.js";
 
 /**
@@ -309,8 +309,8 @@ async function firePrompt(
 	const action = record.spec.action;
 	if (action.kind !== "prompt") throw new Error("unreachable");
 
-	// Fixed conversation: the run record commits first, then the submit
-	// (re-entry re-submits; the requestId dedups).
+	// Fixed conversation: the run record + lastRun commit together, then
+	// the submit (re-entry re-submits; the requestId dedups).
 	if (action.conversation !== "new") {
 		const conversationId = action.conversation;
 		const conversation = await deps.harness.conversation(
@@ -325,6 +325,8 @@ async function firePrompt(
 			conversationId,
 		};
 		if (prior === undefined) {
+			const jobPrior = await readJob(deps.harness, id, context);
+			if (jobPrior === undefined) return { outcome: "blocked" };
 			await deps.harness.commit(async (tx) => {
 				await tx.doc(JobRunDoc, fireKey, run);
 				// NO meta.jobId stamp here (the 2026-11-05 reconciliation with
@@ -334,9 +336,9 @@ async function firePrompt(
 				// `job:<fireKey>` requestId instead (observe.ts). Several jobs may
 				// share a conversation; each run settles from its own
 				// `job:<fireKey>` requestId.
-			}, context);
-			await patchJob(deps.harness, id, (draft) => {
-				draft.lastRun = run;
+				await patchJobIn(tx, id, jobPrior, (draft) => {
+					draft.lastRun = run;
+				});
 			}, context);
 		}
 		const prompt = await jobPromptText(
@@ -383,6 +385,10 @@ async function firePrompt(
 	// conversation: "new" — the run record + conversation in ONE commit.
 	let conversationId: number | undefined = prior?.conversationId;
 	if (conversationId === undefined) {
+		// The creating commit also patches lastRun; read its sentinel seed
+		// before createConversation (Session reads queue inside `init`).
+		const jobPrior = await readJob(deps.harness, id, context);
+		if (jobPrior === undefined) return { outcome: "blocked" };
 		// Gateway C7: the deliver targets need a deliverer. With no engine
 		// loaded the stamped targets point at nothing — ONE warning per run
 		// (the fire itself proceeds; the stamp stays for whoever reads it).
@@ -416,6 +422,9 @@ async function firePrompt(
 						conversationId: newId as number,
 					};
 					await tx.doc(JobRunDoc, fireKey, run);
+					await patchJobIn(tx, id, jobPrior, (draft) => {
+						draft.lastRun = run;
+					});
 					const meta = await tx.doc(SessionMetaDoc, newId);
 					meta.source = "cron";
 					// Gateway C7: the job stamp — typed SessionMeta fields (the
@@ -436,10 +445,6 @@ async function firePrompt(
 			context,
 		);
 		conversationId = conversation.id as number;
-		const run: JobRunWire = { ...baseRun, conversationId };
-		await patchJob(deps.harness, id, (draft) => {
-			draft.lastRun = run;
-		}, context);
 	}
 
 	const conversation = await deps.harness.conversation(

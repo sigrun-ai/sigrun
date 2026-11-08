@@ -1383,7 +1383,8 @@ disposable side effect. `overlap: "skip"` (the default) records a
 `skipped` run when the previous fire is still live; `catchUp: "once"`
 (the default) fires once after downtime, `"none"` skips missed fires
 entirely. Runs carry the job `version` that fired them, so an outcome
-always maps to the exact definition it ran.
+always maps to the exact definition it ran; a crash-orphaned fire is
+reported failed (`orphaned`), not retried.
 
 **Run now:** `POST /v1/jobs/{id}/run` (write access) fires immediately
 — the same hook external triggers (CI, Alertmanager) use with a token.

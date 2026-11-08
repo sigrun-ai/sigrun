@@ -42,6 +42,7 @@ import {
 } from "@earendil-works/pi-ai/providers/faux";
 import {
 	defineTask,
+	type CommitPublication,
 	type ModelRef,
 	type TaskId,
 	type TaskRecord,
@@ -808,6 +809,72 @@ describe("fireJob", () => {
 		);
 		expect(meta?.autoName).toBeUndefined();
 		expect(meta?.autoNameAttempts).toBeUndefined();
+	});
+});
+
+// ─── Crash safety: a fire's run record and lastRun share one commit ────────
+
+describe("fire commit atomicity", () => {
+	function documentChanges(
+		publications: readonly CommitPublication[],
+		kind: string,
+		key: string,
+	): CommitPublication[] {
+		return publications.filter((publication) => publication.changes.some((change) =>
+			change.type === "document" &&
+			change.record.kind === kind &&
+			change.record.key === key,
+		));
+	}
+
+	test("a fixed-conversation fire writes the run record and lastRun in one commit", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("acme fixed answer")] });
+		const fixed = await rig.opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: rig.opened.defaultModel },
+		}, BACKGROUND_CONTEXT);
+		const id = "api:acme-fixed-one-commit";
+		await seedJob(rig, id, everyMinuteSpec({
+			action: { kind: "prompt", prompt: "say tick", conversation: fixed.id as number },
+		}));
+		const fireKey = `${id}:1000`;
+		const publications: CommitPublication[] = [];
+		const observation = rig.opened.harness.observeCommits({
+			advance: (publication) => publications.push(publication),
+			end: () => {},
+		});
+		try {
+			expect((await fireJob(rig.deps, id, fireKey, 1000, BACKGROUND_CONTEXT)).outcome).toBe("running");
+		} finally {
+			observation.detach();
+		}
+		const runCommits = documentChanges(publications, JobRunDoc.definition.kind, fireKey);
+		const jobCommits = documentChanges(publications, JobDoc.definition.kind, id);
+		expect(runCommits).toHaveLength(1);
+		expect(jobCommits).toHaveLength(1);
+		expect(runCommits[0]?.seq).toBe(jobCommits[0]?.seq);
+	});
+
+	test("a new-conversation fire sets lastRun in the creating commit", async () => {
+		const rig = await bootRig({ responses: [fauxAssistantMessage("acme new answer")] });
+		const id = "api:acme-new-one-commit";
+		await seedJob(rig, id, everyMinuteSpec());
+		const fireKey = `${id}:1000`;
+		const publications: CommitPublication[] = [];
+		const observation = rig.opened.harness.observeCommits({
+			advance: (publication) => publications.push(publication),
+			end: () => {},
+		});
+		try {
+			expect((await fireJob(rig.deps, id, fireKey, 1000, BACKGROUND_CONTEXT)).outcome).toBe("running");
+		} finally {
+			observation.detach();
+		}
+		const runCommits = documentChanges(publications, JobRunDoc.definition.kind, fireKey);
+		const jobCommits = documentChanges(publications, JobDoc.definition.kind, id);
+		expect(runCommits).toHaveLength(1);
+		expect(jobCommits).toHaveLength(1);
+		expect(runCommits[0]?.seq).toBe(jobCommits[0]?.seq);
 	});
 });
 

@@ -37,6 +37,7 @@ import { reconcileJobs } from "../jobs/reconcile.js";
 import { markRestartLimitedJob } from "../jobs/restart-limit.js";
 import { createDurableReports } from "./reports.js";
 import { registerJobObservers } from "../jobs/observe.js";
+import { sweepOrphanedRuns } from "../jobs/sweep.js";
 import { JobDoc, JobRunDoc, listRevisions } from "../jobs/docs.js";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { EventBus, type ExtensionEventHandlers, type WorkerStatus } from "./event-bus.js";
@@ -2490,6 +2491,15 @@ export async function openHarness(
 		},
 		BACKGROUND_CONTEXT,
 	);
+	// Settle crash-orphaned fires while scheduling is still suspended.
+	// settleJobRun supplies the run/lastRun/jobOutcome writes and the
+	// commit-driven job.failed notifications; a settled slot is never retried.
+	await sweepOrphanedRuns({
+		harness,
+		storage,
+		settings: () => settingsStore.read(),
+		now: () => clockNow().getTime(),
+	}, BACKGROUND_CONTEXT);
 	// The deleted-owner warning (§8.3): a declared job whose `owner` names
 	// a user no longer in the directory runs OWNERLESS until its source is
 	// edited (household-write by the §5.9 rule) — surfaced at boot, never

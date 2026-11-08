@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Jobs: fires commit their run record and `lastRun` atomically, and a
+  boot sweep settles crash-orphaned runs instead of leaving them running.
 - Two jobs firing into one conversation settle their own runs, and a
   new-conversation run records its terminal outcome on the conversation.
 
