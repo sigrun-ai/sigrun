@@ -98,11 +98,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          # Core's root manifest has file: sibling links that dangle here;
+          # remove it and its lockfile because this install only needs semver.
+          rm -f .sigrun-tools/package.json .sigrun-tools/package-lock.json
           npm install --prefix .sigrun-tools --no-save semver@^7
           refs="$(
             node .sigrun-tools/scripts/ci-core-ref.mjs \
               '${{ inputs['core-ref'] }}'
           )"
+          [ -n "$refs" ] || refs='{}'
           {
             echo 'refs<<EOF'
             echo "$refs"
