@@ -185,6 +185,10 @@ export interface ConversationSummary {
 	 * written (defaults are free).
 	 */
 	readonly source?: string;
+	/** Server-owned terminal outcome of a job run. */
+	readonly jobOutcome?: "succeeded" | "failed";
+	/** Server-owned marker: the user adopted this job-run conversation. */
+	readonly adopted?: boolean;
 	/**
 	 * The last activity instant, ISO 8601 (activity.ts stamps it at
 	 * submission admission and run settlement). Absent on a conversation

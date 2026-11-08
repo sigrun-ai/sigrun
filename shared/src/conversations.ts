@@ -14,6 +14,9 @@ export interface ListRow {
 	readonly parent?: { readonly id: number };
 	readonly archived: boolean;
 	readonly pinned: boolean;
+	readonly source?: string;
+	readonly jobOutcome?: "succeeded" | "failed";
+	readonly adopted?: boolean;
 }
 
 export interface TreeNode<R extends ListRow> {
@@ -28,6 +31,11 @@ export type AgeGroup = "Pinned" | "Today" | "Yesterday" | "Earlier";
 /** Sort: newest first, ties by id descending. */
 function byRecency<R extends ListRow>(a: TreeNode<R>, b: TreeNode<R>): number {
 	return b.newestActivity - a.newestActivity || b.row.id - a.row.id;
+}
+
+/** A job run stays quiet unless it failed or a user adopted it. */
+export function isQuietJobRun(row: ListRow): boolean {
+	return row.source === "cron" && row.adopted !== true && row.jobOutcome !== "failed";
 }
 
 /** Assembly-time node: children attach before the readonly tree is built. */
@@ -45,13 +53,16 @@ function epoch(iso: string | undefined): number {
 
 export function buildConversationTree<R extends ListRow>(
 	rows: readonly R[],
-	options: { includeArchived: boolean },
+	options: { includeArchived: boolean; includeJobRuns?: boolean },
 ): TreeNode<R>[] {
 	const nodes = new Map<number, BuilderNode<R>>();
 	for (const row of rows) {
 		// `parent` is fork lineage — an ancestor by construction (set once,
 		// at fork time), so the resulting forest is acyclic.
-		if (options.includeArchived || !row.archived) {
+		if (
+			(options.includeArchived || !row.archived) &&
+			(options.includeJobRuns === true || !isQuietJobRun(row))
+		) {
 			nodes.set(row.id, { row, children: [] });
 		}
 	}
@@ -118,7 +129,10 @@ export function formatAge(iso: string | undefined, now: Date): string {
 
 export function displayName(row: ListRow): string {
 	const flattened = row.name?.replace(/[\r\n]+/g, " ").trim();
-	return flattened === undefined || flattened.length === 0
+	const name = flattened === undefined || flattened.length === 0
 		? "New conversation"
 		: flattened;
+	return row.source === "cron" && row.jobOutcome === "failed"
+		? `Failed · ${name}`
+		: name;
 }

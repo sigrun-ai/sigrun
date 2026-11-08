@@ -40,6 +40,7 @@ import {
 	EventBus,
 	type LifecycleEvent,
 	type SettleGroup,
+	type HostEvent,
 } from "../src/harness/event-bus.js";
 import { resolveExtension } from "../src/harness/loader.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -146,6 +147,22 @@ async function patchMeta(
 		pinned: boolean;
 		archived: boolean;
 		tagged: string[];
+	}) => void,
+): Promise<void> {
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		mutate(draft);
+	}, BACKGROUND_CONTEXT);
+}
+
+/** Commit server-owned session-meta fields directly (the same writer path the
+ *  jobs service uses); kept separate from the small interactive patch helper. */
+async function writeServerMeta(
+	conversation: Conversation,
+	mutate: (draft: {
+		source: string;
+		jobOutcome?: "succeeded" | "failed";
+		adopted?: boolean;
 	}) => void,
 ): Promise<void> {
 	await conversation.commit(async (tx) => {
@@ -900,6 +917,49 @@ describe("pi-durable 1.5.0 commit semantics", () => {
 		} finally {
 			spy.mockRestore();
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Summary change events (quiet job runs)
+// ---------------------------------------------------------------------------
+
+describe("conversation summary change events", () => {
+	test("jobOutcome, adopted and source changes emit conversation.changed", async () => {
+		const { bus, root } = await bootBus();
+		const events: HostEvent[] = [];
+		bus.onHostEvent((event) => events.push(event));
+
+		await writeServerMeta(root, (draft) => {
+			draft.source = "cron";
+			draft.jobOutcome = "failed";
+		});
+		expect(events).toContainEqual({
+			type: "conversation.changed",
+			conversationId: root.id,
+			fields: { jobOutcome: "failed" },
+		});
+
+		// Source changes after the creation diff use the generalized path.
+		events.length = 0;
+		await writeServerMeta(root, (draft) => {
+			draft.source = "acme-scheduled";
+		});
+		expect(events).toContainEqual({
+			type: "conversation.changed",
+			conversationId: root.id,
+			fields: { source: "acme-scheduled" },
+		});
+
+		events.length = 0;
+		await writeServerMeta(root, (draft) => {
+			draft.adopted = true;
+		});
+		expect(events).toContainEqual({
+			type: "conversation.changed",
+			conversationId: root.id,
+			fields: { adopted: true },
+		});
 	});
 });
 

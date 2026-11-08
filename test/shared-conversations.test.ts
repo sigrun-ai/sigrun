@@ -117,6 +117,73 @@ describe("buildConversationTree", () => {
 		);
 		expect(tree[0]!.children.map((child) => child.row.id)).toEqual([5, 3, 2]);
 	});
+
+	it("quiet job runs are dropped by default", () => {
+		const tree = buildConversationTree(
+			[
+				row({ id: 1, source: "cron" }),
+				row({ id: 2, source: "cron", jobOutcome: "succeeded" }),
+				row({ id: 3, source: "user" }),
+			],
+			{ includeArchived: false },
+		);
+		expect(tree.map((node) => node.row.id)).toEqual([3]);
+	});
+
+	it("failed and adopted job runs stay", () => {
+		const tree = buildConversationTree(
+			[
+				row({ id: 1, source: "cron", jobOutcome: "failed" }),
+				row({ id: 2, source: "cron", adopted: true }),
+			],
+			{ includeArchived: false },
+		);
+		expect(tree.map((node) => node.row.id)).toEqual([2, 1]);
+	});
+
+	it("includeJobRuns shows quiet runs", () => {
+		const tree = buildConversationTree(
+			[row({ id: 1, source: "cron", jobOutcome: "succeeded" })],
+			{ includeArchived: false, includeJobRuns: true },
+		);
+		expect(tree.map((node) => node.row.id)).toEqual([1]);
+	});
+
+	it("archived failed run stays hidden", () => {
+		const failed = row({
+			id: 1,
+			source: "cron",
+			jobOutcome: "failed",
+			archived: true,
+		});
+		expect(
+			buildConversationTree([failed], { includeArchived: false }),
+		).toEqual([]);
+		expect(
+			buildConversationTree([failed], {
+				includeArchived: false,
+				includeJobRuns: true,
+			}),
+		).toEqual([]);
+		expect(
+			buildConversationTree([failed], {
+				includeArchived: true,
+				includeJobRuns: false,
+			}).map((node) => node.row.id),
+		).toEqual([1]);
+	});
+
+	it("a fork of a quiet row is still placed", () => {
+		const tree = buildConversationTree(
+			[
+				row({ id: 1, source: "cron" }),
+				row({ id: 2, source: "user", parent: { id: 1 } }),
+			],
+			{ includeArchived: false },
+		);
+		expect(tree.map((node) => node.row.id)).toEqual([2]);
+		expect(tree[0]!.children).toEqual([]);
+	});
 });
 
 describe("ageGroup", () => {
@@ -156,5 +223,24 @@ describe("displayName", () => {
 		expect(displayName(row({ id: 11, name: "  \n " }))).toBe(
 			"New conversation",
 		);
+	});
+
+	it("displayName prefixes failed job runs", () => {
+		expect(
+			displayName(
+				row({
+					id: 12,
+					source: "cron",
+					jobOutcome: "failed",
+					name: "acme-daily · 2026-11-07 04:00",
+				}),
+			),
+		).toBe("Failed · acme-daily · 2026-11-07 04:00");
+		expect(
+			displayName(row({ id: 13, source: "user", jobOutcome: "failed" })),
+		).toBe("New conversation");
+		expect(
+			displayName(row({ id: 14, source: "cron", jobOutcome: "failed" })),
+		).toBe("Failed · New conversation");
 	});
 });

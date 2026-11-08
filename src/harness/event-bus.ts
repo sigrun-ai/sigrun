@@ -102,6 +102,9 @@ interface MetaBasis {
 	pinned: boolean;
 	lastActivityAt?: string;
 	owner?: string;
+	source?: string;
+	jobOutcome?: "succeeded" | "failed";
+	adopted?: boolean;
 	/** The sharing snapshot — compared by JSON (small, closed shape). */
 	sharing?: string;
 }
@@ -114,6 +117,9 @@ function metaBasisOf(value: {
 	readonly pinned?: boolean;
 	readonly lastActivityAt?: string;
 	readonly owner?: string;
+	readonly source?: string;
+	readonly jobOutcome?: "succeeded" | "failed";
+	readonly adopted?: boolean;
 	readonly sharing?: unknown;
 }): MetaBasis {
 	const basis: MetaBasis = {
@@ -124,6 +130,9 @@ function metaBasisOf(value: {
 	if (value.autoName !== undefined) basis.autoName = value.autoName;
 	if (value.lastActivityAt !== undefined) basis.lastActivityAt = value.lastActivityAt;
 	if (value.owner !== undefined) basis.owner = value.owner;
+	if (value.source !== undefined) basis.source = value.source;
+	if (value.jobOutcome !== undefined) basis.jobOutcome = value.jobOutcome;
+	if (value.adopted !== undefined) basis.adopted = value.adopted;
 	if (value.sharing !== undefined) basis.sharing = JSON.stringify(value.sharing);
 	return basis;
 }
@@ -1244,6 +1253,9 @@ export class EventBus {
 					if (parentBasis?.name !== undefined) childBasis.name = parentBasis.name;
 					if (parentBasis?.autoName !== undefined) childBasis.autoName = parentBasis.autoName;
 					if (parentBasis?.lastActivityAt !== undefined) childBasis.lastActivityAt = parentBasis.lastActivityAt;
+					if (parentBasis?.source !== undefined) childBasis.source = parentBasis.source;
+					if (parentBasis?.jobOutcome !== undefined) childBasis.jobOutcome = parentBasis.jobOutcome;
+					if (parentBasis?.adopted !== undefined) childBasis.adopted = parentBasis.adopted;
 					if (parentBasis?.sharing !== undefined) childBasis.sharing = parentBasis.sharing;
 					this.#metaBasis.set(conversationId, childBasis);
 					continue;
@@ -1284,6 +1296,12 @@ export class EventBus {
 					// field from the row snapshot, not the change event.
 					if (next.owner !== basis.owner) {
 						moved.owner = next.owner === undefined ? null : next.owner;
+					}
+					if (next.jobOutcome !== basis.jobOutcome) {
+						moved.jobOutcome = next.jobOutcome === undefined ? null : next.jobOutcome;
+					}
+					if (next.adopted !== basis.adopted) {
+						moved.adopted = next.adopted === undefined ? null : next.adopted;
 					}
 					if (next.sharing !== basis.sharing) {
 						moved.sharing =
@@ -1339,6 +1357,15 @@ export class EventBus {
 				}
 				if (next.owner !== basis.owner) {
 					moved.owner = next.owner === undefined ? null : next.owner;
+				}
+				if (next.source !== basis.source) {
+					moved.source = next.source === undefined ? null : next.source;
+				}
+				if (next.jobOutcome !== basis.jobOutcome) {
+					moved.jobOutcome = next.jobOutcome === undefined ? null : next.jobOutcome;
+				}
+				if (next.adopted !== basis.adopted) {
+					moved.adopted = next.adopted === undefined ? null : next.adopted;
 				}
 				if (next.sharing !== basis.sharing) {
 					moved.sharing =

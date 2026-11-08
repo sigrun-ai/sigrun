@@ -191,6 +191,8 @@ export function validateSessionMetaPatch(
 				break;
 			}
 			case "source":
+			case "jobOutcome":
+			case "adopted":
 			case "owner":
 			case "jobId":
 			case "deliver":

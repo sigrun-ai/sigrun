@@ -731,6 +731,10 @@ export async function listConversationsOp(
 				...(meta?.owner === undefined ? {} : { owner: meta.owner }),
 				...(name === undefined ? {} : { name }),
 				...(meta?.source === undefined ? {} : { source: meta.source }),
+				...(meta?.jobOutcome === undefined
+					? {}
+					: { jobOutcome: meta.jobOutcome }),
+				...(meta?.adopted === undefined ? {} : { adopted: meta.adopted }),
 				...(meta?.lastActivityAt === undefined
 					? {}
 					: { lastActivityAt: meta.lastActivityAt }),

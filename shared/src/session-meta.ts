@@ -48,6 +48,10 @@ export type SessionMeta = {
 	 * adapter — a free-form server-owned label (spec §5.9: no longer a
 	 * closed enum; never patchable). */
 	source: string;
+	/** Server-owned terminal outcome of a job run. Never client-patchable. */
+	jobOutcome?: "succeeded" | "failed";
+	/** Server-owned marker: the user adopted this job-run conversation. */
+	adopted?: boolean;
 	/**
 	 * Multi-user seam (spec §5.9): the caller identity the auth hook
 	 * stamped at create/fork/import, read by the listing route and the

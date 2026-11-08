@@ -314,6 +314,31 @@ describe("GET /v1/conversations list metadata", () => {
 // ---------------------------------------------------------------------------
 
 describe("GET /v1/conversations lean list", () => {
+	test("the list carries jobOutcome and adopted", async () => {
+		const { app, opened } = await bootServer();
+		const jobRun = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const plain = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+		await jobRun.commit(async (tx) => {
+			const draft = await tx.doc(SessionMetaDoc, jobRun.id);
+			draft.source = "cron";
+			draft.jobOutcome = "failed";
+			draft.adopted = true;
+		}, BACKGROUND_CONTEXT);
+		const rows = await listRows(app);
+		expect(rows.find((row) => row.id === jobRun.id)).toMatchObject({
+			jobOutcome: "failed",
+			adopted: true,
+		});
+		const plainRow = rows.find((row) => row.id === plain.id)!;
+		expect("jobOutcome" in plainRow).toBe(false);
+		expect("adopted" in plainRow).toBe(false);
+	});
+
 	test("summaries carry no entryCount key", async () => {
 		const { app } = await bootServer();
 		await createViaRoute(app);
