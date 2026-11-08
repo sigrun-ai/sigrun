@@ -207,6 +207,127 @@ describe("page actions menu (§5.1)", () => {
 		expect(text).not.toContain("Add card");
 		expect(text).toContain("Open docs");
 	});
+
+	test("the actions hint hides when every action is hidden", () => {
+		const { ctx } = makeCtx({}, { access: "read" });
+		const page = pageOf(
+			{
+				type: "page",
+				title: "Board",
+				actions: [
+					{ id: "act-add", label: "Add card", action: { type: "submit", name: "addCard" } },
+				],
+				main: [textBlock("m")],
+			},
+			ctx,
+		);
+		expect(page.render(100).join("\n")).not.toContain(". actions");
+	});
+
+	test("a confirm-carrying section action dispatches only after y", () => {
+		const { ctx, captured } = makeCtx({});
+		const page = pageOf(
+			{
+				type: "page",
+				title: "Job",
+				main: [
+					{
+						type: "section",
+						id: "summary",
+						title: "Summary",
+						actions: [
+							{
+								id: "reset-state",
+								label: "Reset state",
+								action: {
+									type: "submit",
+									name: "reset-state",
+									confirm: {
+										title: "Reset this job's state?",
+										body: "Its state folder is emptied.",
+										tone: "bad",
+									},
+								},
+							},
+						],
+						children: [textBlock("body")],
+					},
+				],
+			},
+			ctx,
+		);
+		page.handleInput(".");
+		page.handleInput(ENTER);
+		expect(captured).toHaveLength(0);
+		const prompt = page.render(100).join("\n");
+		expect(prompt).toContain("Reset this job's state?");
+		expect(prompt).toContain("Its state folder is emptied.");
+		expect(prompt).toContain("Confirm? y/N");
+		page.handleInput("y");
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.action).toMatchObject({ type: "submit", name: "reset-state" });
+		expect(page.hasOverlay).toBe(false);
+	});
+
+	test("n cancels a section action confirmation without dispatching", () => {
+		const { ctx, captured } = makeCtx({});
+		const page = pageOf(
+			{
+				type: "page",
+				title: "Job",
+				main: [
+					{
+						type: "section",
+						id: "summary",
+						actions: [
+							{
+								id: "delete",
+								label: "Delete",
+								action: {
+									type: "submit",
+									name: "delete",
+									confirm: { title: "Delete this skill?" },
+								},
+							},
+						],
+						children: [textBlock("body")],
+					},
+				],
+			},
+			ctx,
+		);
+		page.handleInput(".");
+		page.handleInput(ENTER);
+		page.handleInput("n");
+		expect(captured).toHaveLength(0);
+		expect(page.hasOverlay).toBe(false);
+	});
+
+	test("Esc cancels a page-header action confirmation without dispatching", () => {
+		const { ctx, captured } = makeCtx({});
+		const page = pageOf(
+			{
+				type: "page",
+				title: "Settings",
+				actions: [
+					{
+						id: "restart",
+						label: "Restart",
+						action: { type: "restart", confirm: { title: "Restart sigrun?" } },
+					},
+				],
+				main: [textBlock("m")],
+			},
+			ctx,
+		);
+		page.handleInput(".");
+		page.handleInput(ENTER);
+		expect(captured).toHaveLength(0);
+		expect(page.render(100).join("\n")).toContain("Restart? y/N");
+		page.handleInput(ESC);
+		expect(captured).toHaveLength(0);
+		expect(page.hasOverlay).toBe(false);
+	});
 });
 
 describe("page sidebar (§5.1)", () => {

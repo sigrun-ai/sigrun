@@ -298,6 +298,19 @@ describe("BlockView: section", () => {
 		);
 		renderer.unmount();
 	});
+
+	test("an empty section action list renders no actions container", () => {
+		const { renderer } = renderBlock({
+			type: "section",
+			id: "summary",
+			title: "Group",
+			actions: [],
+			children: [{ type: "markdown", text: "inside" }],
+		});
+		expect(renderer.root.findByProps({ className: "blk-section-head" })).toBeTruthy();
+		expect(renderer.root.findAllByProps({ className: "blk-section-actions" })).toHaveLength(0);
+		renderer.unmount();
+	});
 });
 
 // ─── content blocks ───────────────────────────────────────────────────────

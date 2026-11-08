@@ -2548,6 +2548,9 @@ The rest of the field set: `longtext` (with `syntax`/`lang`), `date`,
 channel shows `set (stored)` / `set (env)` / `not set` from a bound
 status), `file` (uploads through the surface's upload route; see
 "Uploads and assets"), and `list` (a repeatable group of fields).
+`longtext.fill` takes the available height in a page's main column on
+viewports at least 900px tall (a minimum of about 60vh), and grows with
+content elsewhere.
 
 **Stat, meter, log** — the dashboard and ambient trio:
 

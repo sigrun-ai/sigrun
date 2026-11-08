@@ -661,9 +661,10 @@ export function buildSkillsTree(
 						: files),
 				);
 			}
+			const afterBlocks = main.history.after.length > 0 ? [after] : [];
 			const historyChildren: JsonObject[] = inline
-				? [before, ...commitChildren, after]
-				: [before, after, ...commitChildren];
+				? [before, ...commitChildren, ...afterBlocks]
+				: [before, ...afterBlocks, ...commitChildren];
 			if (main.history.hasMore && main.history.nextCursor !== null) {
 				historyChildren.push({
 					type: "callout",

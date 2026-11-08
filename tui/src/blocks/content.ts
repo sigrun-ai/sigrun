@@ -48,7 +48,7 @@ import { Lines } from "./layout.js";
 import { copyToTerminal } from "../clipboard.js";
 
 /** The markdown theme rides the TuiTheme's token colours. */
-function markdownTheme(theme: TuiTheme): MarkdownTheme {
+export function markdownTheme(theme: TuiTheme): MarkdownTheme {
 	return {
 		heading: (text) => theme.bold(theme.fg("accent")(text)),
 		link: theme.fg("accent"),

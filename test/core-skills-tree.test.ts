@@ -202,20 +202,15 @@ describe("history paging", () => {
 			type: "navigate",
 			params: { skill: "acme-deploy", root: "workspace", cursor: commits[24]?.sha },
 		});
-		// The two history collections bind their own page halves and share
-		// exactly the same row activation and card template.
+		// An empty after half emits no collection. Load more remains last.
 		const before = blocksOfType(tree, "collection").find((block) => block.id === "history-before");
 		const after = blocksOfType(tree, "collection").find((block) => block.id === "history-after");
 		expect(before?.items).toEqual({ $: "/main/history/before" });
-		expect(after?.items).toEqual({ $: "/main/history/after" });
+		expect(after).toBeUndefined();
 		expect(before?.onActivate).toEqual({ type: "edit", name: "openCommit" });
-		expect(after?.onActivate).toEqual(before?.onActivate);
-		expect(after?.item).toEqual(before?.item);
-		// Load more remains inside History, after the second collection.
 		const historySection = blocksOfType(tree, "section").find((block) => block.id === "skill-history");
 		expect(historySection?.children.map((block: any) => block.id)).toEqual([
 			"history-before",
-			"history-after",
 			"history-more",
 		]);
 	});
@@ -332,7 +327,6 @@ describe("a selected commit", () => {
 		const section = blocksOfType(tree, "section").find((block) => block.id === "skill-history");
 		expect(section?.children.map((block: any) => block.id)).toEqual([
 			"history-before",
-			"history-after",
 			"commit-diff-0",
 			"history-more",
 		]);

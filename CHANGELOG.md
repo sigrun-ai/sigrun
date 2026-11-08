@@ -5,6 +5,33 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Blocks: navigate targets and params can bind per-row data, unresolved
+  navigate buttons hide, card submits carry the row id, and section
+  headers accept action buttons (also in the TUI actions menu).
+- Skills and Jobs views: one per-row Review/Conversation button instead
+  of one per card, section-header actions replacing the "Actions"
+  callouts, the selected skill commit's diff rendered inline under its
+  history row, a two-column job summary that omits empty rows, and the
+  prompt in its own `Prompt` section.
+- Diffs: line-level diffs with `-`/`+` markers, theme tinting and
+  collapsed unchanged runs in both clients.
+
+### Changed
+
+- Forms and settings: help text above controls, single-row toggles,
+  growing/capped JSON fields, palette/accent outline clearance,
+  consistent section spacing, and the corrected "Tools offered to the
+  model" copy (the setting is an allow-list).
+
+### Fixed
+
+- Mobile: text controls use at least 16px on touch devices so focusing
+  the composer no longer zooms the page.
+
 ## [0.11.5] - 2026-11-08
 
 The deleted-conversations release. Companion published first:
@@ -13,9 +40,6 @@ notice).
 
 ### Added
 
-- Blocks: navigate targets and params can bind per-row data, unresolved
-  navigate buttons hide, card submits carry the row id, and section
-  headers accept action buttons (also in the TUI actions menu).
 - Deleted conversations: the owner-gated `SessionMeta.deleted` meta flag
   marks a conversation read-only — submissions, compact, configure,
   uploads and extension commands refuse with 409

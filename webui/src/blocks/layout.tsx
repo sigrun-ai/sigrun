@@ -156,6 +156,8 @@ export function SectionBlockView(props: {
 	const boundTone = bound(ctx, props.block.tone);
 	const tone = typeof boundTone === "string" ? boundTone : "neutral";
 	const collapsible = props.block.collapsible ?? false;
+	const actions = props.block.actions ?? [];
+	const hasActions = actions.length > 0;
 	const [open, setOpen] = useState(!(props.block.collapsed ?? false));
 	const expanded = collapsible ? open : true;
 	return (
@@ -164,7 +166,7 @@ export function SectionBlockView(props: {
 			data-block="section"
 			data-tone={tone}
 		>
-			{(title !== "" || subtitle !== "" || collapsible || props.block.actions !== undefined) && (
+			{(title !== "" || subtitle !== "" || collapsible || hasActions) && (
 				<div className="blk-section-head">
 					{collapsible ? (
 						<button
@@ -196,9 +198,9 @@ export function SectionBlockView(props: {
 							{subtitle}
 						</div>
 					)}
-					{props.block.actions !== undefined && (
+					{hasActions && (
 						<div className="blk-section-actions">
-							<ActionButtonRow buttons={props.block.actions} />
+							<ActionButtonRow buttons={actions} />
 						</div>
 					)}
 				</div>

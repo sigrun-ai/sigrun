@@ -1,3 +1,6 @@
+/** Keep in sync with the longtext fill media query in blocks.css. */
+export const LONGTEXT_FILL_MIN_HEIGHT = 900;
+
 /** Keep a longtext's inline height out of the CSS fill path. */
 export function syncLongtextHeight(
 	element: HTMLTextAreaElement,
@@ -17,7 +20,7 @@ export function watchLongtextHeight(
 	element: HTMLTextAreaElement,
 	fill: boolean,
 ): () => void {
-	const query = window.matchMedia("(min-height: 900px)");
+	const query = window.matchMedia(`(min-height: ${LONGTEXT_FILL_MIN_HEIGHT}px)`);
 	const sync = (): void => syncLongtextHeight(element, fill, query.matches);
 	sync();
 	query.addEventListener("change", sync);
