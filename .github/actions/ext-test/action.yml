@@ -33,7 +33,7 @@ runs:
     # Resolve only when the caller has not already done so. ext-release's
     # guard resolves once and passes the same refs to test and publish.
     - name: Check out the core-ref resolver
-      if: inputs.refs == ''
+      if: (inputs.needs-core == 'true' || inputs.refs != '') && inputs.refs == ''
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun
@@ -42,11 +42,15 @@ runs:
         sparse-checkout: scripts/
     - name: Resolve the core and family refs
       id: resolve
-      if: inputs.refs == ''
+      if: (inputs.needs-core == 'true' || inputs.refs != '') && inputs.refs == ''
       shell: bash
       run: |
         set -euo pipefail
+        # The sparse scripts checkout has no dependencies; the resolver
+        # imports semver, so install it before Node resolves the import.
+        npm install --prefix .sigrun-tools --no-save semver@^7
         refs="$(node .sigrun-tools/scripts/ci-core-ref.mjs '${{ inputs.core-ref }}')"
+        [ -n "$refs" ] || refs='{}'
         {
           echo 'refs<<EOF'
           echo "$refs"
@@ -57,7 +61,7 @@ runs:
     # Built-ins and core move together. Let a batch of main pushes settle
     # before fetching any sibling; PRs and release mode never wait.
     - name: Wait for a main push batch to settle
-      if: inputs.core-ref == 'main' && github.event_name == 'push'
+      if: (inputs.needs-core == 'true' || inputs.refs != '') && inputs.core-ref == 'main' && github.event_name == 'push'
       shell: bash
       run: sleep 180
 

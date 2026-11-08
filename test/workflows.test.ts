@@ -825,6 +825,9 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 			expect(testAction?.with?.["needs-core"]).toBe("${{ inputs.needs-core }}");
 			expect(testAction?.with?.["core-ref"]).toBe("${{ inputs['core-ref'] }}");
 			expect(testAction?.with?.repo).toBe("${{ github.event.repository.name }}");
+			if (label === "ext-ci.yml") {
+				expect(testAction?.with?.ref, "ext-ci keeps the triggering SHA").toBeUndefined();
+			}
 		}
 		expect(ci.jobs.test?.steps?.some((step) => runOf(step).includes("npm test"))).toBe(false);
 		expect(release.jobs.test?.steps?.some((step) => runOf(step).includes("npm test"))).toBe(false);
@@ -844,7 +847,11 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 		const resolve = steps.find((step) => step.id === "resolve");
 		expect(resolve, "the resolver must expose refs").toBeDefined();
 		expect(runOf(resolve as Step)).toContain("node .sigrun-tools/scripts/ci-core-ref.mjs");
-		expect(String(resolve?.if ?? "")).toContain("inputs.refs");
+		expect(resolve?.if).toBe("(inputs.needs-core == 'true' || inputs.refs != '') && inputs.refs == ''");
+		expect(runOf(resolve as Step)).toContain(
+			"npm install --prefix .sigrun-tools --no-save semver@^7",
+		);
+		expect(runOf(resolve as Step)).toContain("[ -n \"$refs\" ] || refs='{}'");
 		const tools = steps.find(
 			(step) => step.with?.repository === "sigrun-ai/sigrun" && step.with?.path === ".sigrun-tools",
 		);
@@ -878,7 +885,12 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 		expect(plain, "the plain lane keeps its root checkout").toBeDefined();
 		expect(plain?.with?.ref).toBe("${{ inputs.ref }}");
 		const needsCoreSteps = steps.filter(
-			(step) => step.if !== undefined && String(step.if).includes("needs-core"),
+			(step) =>
+				step.if !== undefined &&
+				String(step.if).includes("needs-core") &&
+				step.id !== "resolve" &&
+				step.with?.path !== ".sigrun-tools" &&
+				!runOf(step).includes("sleep 180"),
 		);
 		expect(
 			needsCoreSteps.every(
@@ -889,7 +901,9 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 			"composite inputs are strings: if: inputs.needs-core would treat 'false' as true",
 		).toBe(true);
 		const runs = steps.map(runOf).join("\n");
-		expect(runs).toContain("npm ci --prefix sigrun && (cd sigrun && npm run build)");
+		const setupCheck = steps.find((step) => step.name === "Reject sibling links without the family layout");
+		const install = steps.find((step) => step.name === "Install");
+		expect(steps.indexOf(setupCheck as Step)).toBeLessThan(steps.indexOf(install as Step));
 		for (const repo of [
 			"sigrun-ext-codemode",
 			"sigrun-ext-curator",
@@ -918,7 +932,7 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 		const settle = extTestAction().runs.steps.find((step) => runOf(step).includes("sleep 180"));
 		expect(settle, "a 180 second settle step must exist").toBeDefined();
 		expect(settle?.if).toBe(
-			"inputs.core-ref == 'main' && github.event_name == 'push'",
+			"(inputs.needs-core == 'true' || inputs.refs != '') && inputs.core-ref == 'main' && github.event_name == 'push'",
 		);
 		expect(settle?.if).not.toContain("pull_request");
 		const steps = extTestAction().runs.steps;
@@ -934,6 +948,9 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 			(step) => step.id === "resolve" && runOf(step).includes("ci-core-ref.mjs"),
 		);
 		expect(resolver, "guard resolves once for both test and publish").toBeDefined();
+		expect(runOf(resolver as Step)).toContain(
+			"npm install --prefix .sigrun-tools --no-save semver@^7",
+		);
 		const testAction = (test?.steps ?? []).find(
 			(step) => step.uses === "sigrun-ai/sigrun/.github/actions/ext-test@main",
 		);

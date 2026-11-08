@@ -85,8 +85,8 @@ jobs:
       - uses: actions/checkout@v5
         with:
           fetch-depth: 0
-      # Tooling checkout: release-guard.mjs lives in sigrun-ai/sigrun and
-      # is dependency-free (node: built-ins only), so no npm ci here.
+      # release-guard.mjs is dependency-free, but ci-core-ref.mjs imports
+      # semver. The sparse checkout has no node_modules; resolve installs it.
       - uses: actions/checkout@v5
         with:
           repository: sigrun-ai/sigrun
@@ -98,6 +98,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          npm install --prefix .sigrun-tools --no-save semver@^7
           refs="$(
             node .sigrun-tools/scripts/ci-core-ref.mjs \
               '${{ inputs['core-ref'] }}'
