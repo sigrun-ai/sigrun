@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - The submit route returns each error's own status (409 for
   `conversation_deleted`); existing errors keep their 400.
 
+### Fixed
+
+- An absolute directory path or `file://` directory URL in
+  `extensions[]` resolves its entry like an installed package instead of
+  reaching `import()` as an unsupported directory import.
+
 ## [0.11.4] - 2026-11-08
 
 ### Added

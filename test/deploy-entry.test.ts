@@ -20,6 +20,7 @@
  */
 
 import { execFile, spawn } from "node:child_process";
+import { mkdirSync, writeFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -48,6 +49,36 @@ function freePort(): Promise<number> {
 			server.close(() => resolve(port));
 		});
 	});
+}
+
+/** Retry only the reserve-close-reuse race; other boot failures stay loud. */
+async function spawnOnFreePort(
+	dir: string,
+	portEnv: (port: number, configDir: string) => NodeJS.ProcessEnv,
+): Promise<{ entry: ReturnType<typeof spawnEntry>; port: number; configDir: string; dir: string }> {
+	try {
+		for (let attempt = 0; attempt < 5; attempt += 1) {
+			const port = await freePort();
+			const configDir = join(dir, `config-${attempt}`);
+			const entry = spawnEntry(portEnv(port, configDir));
+			try {
+				expect(await entry.listening).toBe(port);
+				return { entry, port, configDir, dir };
+			} catch (error) {
+				const stderr = entry.getStderr();
+				const raced = /EADDRINUSE/.test(stderr) &&
+					(error instanceof Error && error.message.includes("exited before listening"));
+				entry.child.kill("SIGTERM");
+				await entry.exited;
+				if (!raced || attempt === 4) throw error;
+				console.warn(`port ${port} was taken before the entry bound; retrying`);
+			}
+		}
+		throw new Error("unreachable");
+	} catch (error) {
+		await rm(dir, { recursive: true, force: true });
+		throw error;
+	}
 }
 
 /**
@@ -122,14 +153,13 @@ test(
 	"deploy entry boots on a free port, serves /v1/meta, exits 0 on SIGTERM",
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-"));
-		const port = await freePort();
-		const entry = spawnEntry(
+		const { entry, port, configDir } = await spawnOnFreePort(dir, (port, configDir) =>
 			childEnv({
 				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 				OPENAI_API_KEY: "smoke-test-key-never-sent",
 				OPENAI_BASE_URL: "http://127.0.0.1:9",
 				SIGRUN_PORT: String(port),
-				SIGRUN_CONFIG_DIR: join(dir, "config"),
+				SIGRUN_CONFIG_DIR: configDir,
 				// HOME (not SIGRUN_*_PATH vars) keeps the data root hermetic:
 			// the store-root chain falls back to `$HOME/.local/share/sigrun`,
 			// so the DB, the workspace default, and the ensured roots all land
@@ -139,8 +169,6 @@ test(
 			}),
 		);
 		try {
-			const listenedOn = await entry.listening;
-			expect(listenedOn).toBe(port);
 			const response = await fetch(`http://127.0.0.1:${port}/v1/meta`, {
 				headers: SERVICE_BEARER,
 			});
@@ -165,7 +193,7 @@ test(
 			// either). HOME/SIGRUN_CONFIG_DIR/OPENAI_* are not server keys.
 			const bootstrapped = JSON.parse(
 				await readFile(
-						join(dir, "config", "settings.json"),
+						join(configDir, "settings.json"),
 					"utf8",
 					),
 			) as Record<string, unknown>;
@@ -206,27 +234,21 @@ test("deploy entry boots from a settings-file-only defaultModel (no env model)",
 	// requirement with NO env model set. Regression: serve()'s env-only
 	// `loadConfig(env)` step used to throw before the file was ever read.
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-file-model-"));
-	const port = await freePort();
-	const configDir = join(dir, "config");
-	await mkdir(configDir, { recursive: true });
-	await writeFile(
-		join(configDir, "settings.json"),
-		JSON.stringify({
-			server: { port },
-			defaultModel: "openai/gpt-4o",
-		}),
-	);
-	const entry = spawnEntry(
-		childEnv({
+	const { entry, configDir } = await spawnOnFreePort(dir, (port, configDir) => {
+		mkdirSync(configDir, { recursive: true });
+		writeFileSync(
+			join(configDir, "settings.json"),
+			JSON.stringify({ server: { port }, defaultModel: "openai/gpt-4o" }),
+		);
+		return childEnv({
 			// NOTE: deliberately NO SIGRUN_DEFAULT_MODEL / SIGRUN_MODEL.
 			OPENAI_API_KEY: "smoke-test-key-never-sent",
 			OPENAI_BASE_URL: "http://127.0.0.1:9",
 			SIGRUN_CONFIG_DIR: configDir,
 			HOME: dir,
-		}),
-	);
+		});
+	});
 	try {
-		expect(await entry.listening).toBe(port);
 		// A present settings file is never rewritten by bootstrap: the
 		// file-only defaultModel survives verbatim.
 		const file = JSON.parse(
@@ -245,8 +267,7 @@ test(
 	"deploy entry still honors the deprecated SIGRUN_MODEL alias (one release cycle)",
 	async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-alias-"));
-	const port = await freePort();
-	const entry = spawnEntry(
+	const { entry, configDir } = await spawnOnFreePort(dir, (port, configDir) =>
 		childEnv({
 			SIGRUN_MODEL: "openai/gpt-4o",
 			OPENAI_API_KEY: "smoke-test-key-never-sent",
@@ -254,7 +275,7 @@ test(
 			SIGRUN_PORT: String(port),
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: dir,
-			SIGRUN_CONFIG_DIR: join(dir, "config"),
+			SIGRUN_CONFIG_DIR: configDir,
 			// HOME keeps the durable roots hermetic (the first test's
 			// pattern): the gateway built-in's start-time state-dir mkdir
 			// would otherwise land under the operator's real
@@ -263,14 +284,13 @@ test(
 		}),
 	);
 	try {
-		expect(await entry.listening).toBe(port);
 		// The deprecation warning was printed (stderr), boot succeeded.
 		expect(entry.getStderr()).toMatch(
 			/SIGRUN_MODEL is deprecated, use SIGRUN_DEFAULT_MODEL/,
 		);
 		// The env-provided model landed in the bootstrapped file.
 		const bootstrapped = JSON.parse(
-			await readFile(join(dir, "config", "settings.json"), "utf8"),
+			await readFile(join(configDir, "settings.json"), "utf8"),
 		) as { defaultModel?: string };
 		expect(bootstrapped.defaultModel).toBe("openai/gpt-4o");
 	} finally {
@@ -285,9 +305,6 @@ test(
 	"deploy entry installs a declared packages[] extension and LOADS it (boot-time install)",
 	async () => {
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-pkg-"));
-		const port = await freePort();
-		const configDir = join(dir, "config");
-		await mkdir(configDir, { recursive: true });
 		// The operator flow, end to end: settings.json declares the package
 		// (install list + load list), the container restarts, boot installs
 		// and loads it. The specifier is a packed TARBALL (npm pack of the
@@ -313,27 +330,28 @@ test(
 			);
 		});
 		const tarball = join(dir, packOut.trim().split("\n").pop() ?? "");
-		await writeFile(
-			join(configDir, "settings.json"),
-			JSON.stringify({
-				extensions: [`file:${tarball}`],
-				// builtins off via settings (the spawn-world equivalent of
-				// openHarness's `builtins: false`): this test asserts the
-				// operator install+load flow's OWN outcome row, not the
-				// built-in surface.
-				builtinExtensions: {
-					codemode: false,
-					mcp: false,
-					toolSearch: false,
-					gateway: false,
-					oauth: false,
-					curator: false,
-				},
-			}) + "\n",
-			"utf8",
+		const { entry, port, configDir } = await spawnOnFreePort(dir, (port, configDir) => {
+			mkdirSync(configDir, { recursive: true });
+			writeFileSync(
+				join(configDir, "settings.json"),
+				JSON.stringify({
+					extensions: [`file:${tarball}`],
+					// builtins off via settings (the spawn-world equivalent of
+					// openHarness's `builtins: false`): this test asserts the
+					// operator install+load flow's OWN outcome row, not the
+					// built-in surface.
+					builtinExtensions: {
+						codemode: false,
+						mcp: false,
+						toolSearch: false,
+						gateway: false,
+						oauth: false,
+						curator: false,
+					},
+				}) + "\n",
+				"utf8",
 			);
-		const entry = spawnEntry(
-			childEnv({
+			return childEnv({
 				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 				OPENAI_API_KEY: "smoke-test-key-never-sent",
 				OPENAI_BASE_URL: "http://127.0.0.1:9",
@@ -341,10 +359,9 @@ test(
 				SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 				SIGRUN_WORKSPACE_PATH: dir,
 				SIGRUN_CONFIG_DIR: configDir,
-			}),
-		);
+			});
+		});
 		try {
-			expect(await entry.listening).toBe(port);
 			// The package was installed into the packages dir…
 			const installed = JSON.parse(
 				await readFile(
@@ -441,19 +458,17 @@ test(
 			return;
 		}
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-entry-v6-"));
-		const port = await freePort();
-		const entry = spawnEntry(
+		const { entry, port } = await spawnOnFreePort(dir, (port, configDir) =>
 			childEnv({
 				SIGRUN_DEFAULT_MODEL: "openai/gpt-4o",
 				OPENAI_API_KEY: "smoke-test-key-never-sent",
 				OPENAI_BASE_URL: "http://127.0.0.1:9",
 				SIGRUN_PORT: String(port),
-				SIGRUN_CONFIG_DIR: join(dir, "config"),
+				SIGRUN_CONFIG_DIR: configDir,
 				HOME: dir,
 			}),
 		);
 		try {
-			expect(await entry.listening).toBe(port);
 			// The bind a Service with `ipFamilies: ["IPv6"]` routes to.
 			const overV6 = await fetch(`http://[::1]:${port}/healthz`);
 			expect(overV6.status).toBe(200);

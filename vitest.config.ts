@@ -23,5 +23,9 @@ export default defineConfig({
 		// The suite-wide env pin (test/setup.ts): the unclaimed-boot setup-code
 		// write lands in a tmp cache root, never the developer's ~/.cache/sigrun.
 		setupFiles: ["./test/setup.ts"],
+		// The root build emits into the repo's one dist/. Build it before
+		// workers start; tests read that stable tree instead of rebuilding
+		// and deleting it while other workers import it.
+		globalSetup: ["./test/build-global.ts"],
 	},
 });

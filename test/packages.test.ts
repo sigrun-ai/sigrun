@@ -259,6 +259,32 @@ describe("syncPackages", () => {
 			syncPackages([], packagesDir, { log: false }),
 		).rejects.toThrow(/not valid JSON/);
 	});
+
+	test("an absolute directory entry with an explicit override loads that file", async () => {
+		const dir = freshDir("sigrun-path-entry-");
+		mkdirSync(join(dir, "dist"));
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "acme-path-ext", sigrun: { extension: "./dist/manifest.js" } }),
+		);
+		writeFileSync(join(dir, "dist", "manifest.js"), "export const entry = 'manifest';\n");
+		writeFileSync(join(dir, "dist", "custom.js"), "export const entry = 'custom';\n");
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		const resolutions = await syncPackages(
+			[{ source: dir, entry: "./dist/custom.js" }],
+			packagesDir,
+			{ log: false },
+		);
+		expect(resolutions).toEqual([
+			{
+				kind: "entry",
+				entry: pathToFileURL(join(dir, "dist", "custom.js")).href,
+				enabled: true,
+			},
+		]);
+		const loaded = await import(resolutions[0].kind === "entry" ? resolutions[0].entry : "");
+		expect(loaded.entry).toBe("custom");
+	});
 });
 
 describe("resolveExtensionEntry", () => {
@@ -305,6 +331,50 @@ describe("resolveExtensionEntry", () => {
 			join(import.meta.dirname, "fixtures", "fixture-ext", "index.js"),
 		).href;
 		expect(resolveExtensionEntry(specifier, packagesDir)).toBe(specifier);
+	});
+
+	test("a directory entry resolves like a package", () => {
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		const dir = freshDir("sigrun-directory-entry-");
+		mkdirSync(join(dir, "dist"));
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({
+				name: "acme-ext",
+				type: "module",
+				exports: "./dist/index.js",
+			}),
+		);
+		writeFileSync(join(dir, "dist", "index.js"), "export default () => {};\n");
+		const entry = pathToFileURL(join(dir, "dist", "index.js")).href;
+		expect(resolveExtensionEntry(dir, packagesDir)).toBe(entry);
+		expect(resolveExtensionEntry(pathToFileURL(dir).href, packagesDir)).toBe(entry);
+	});
+
+	test("a directory with a sigrun manifest uses it", () => {
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		const dir = freshDir("sigrun-directory-manifest-");
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ sigrun: { extension: "./main.js" } }),
+		);
+		writeFileSync(join(dir, "main.js"), "export default () => {};\n");
+		expect(resolveExtensionEntry(dir, packagesDir)).toBe(
+			pathToFileURL(join(dir, "main.js")).href,
+		);
+	});
+
+	test("a file path stays verbatim", () => {
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		const file = join(freshDir("sigrun-file-entry-"), "index.js");
+		writeFileSync(file, "export default () => {};\n");
+		expect(resolveExtensionEntry(file, packagesDir)).toBe(file);
+	});
+
+	test("a missing path stays verbatim", () => {
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		const missing = join(freshDir("sigrun-missing-entry-"), "missing.js");
+		expect(resolveExtensionEntry(missing, packagesDir)).toBe(missing);
 	});
 
 	test("an unresolvable name returns undefined (the loader quarantines)", () => {
@@ -533,18 +603,10 @@ describe("host runtime module links (provider-plugins dependency posture)", () =
 	test(
 		"a tarball-installed blocks extension imports @sigrun/sigrun/blocks through the host link",
 		async () => {
-			// Needs `exports["./blocks"]` to resolve — the map points at
-			// dist/, so this test requires a build. Skipped (with a message)
-			// when dist/blocks/index.js is absent, so `npx vitest run` on a
-			// fresh checkout without a build never fails spuriously; the
-			// worktree gate (`npm run build` before the suite) runs it for real.
+			// The suite's global setup builds dist/ before workers start. A
+			// missing artifact is a hard failure, never a pass without testing.
 			const built = join(import.meta.dirname, "..", "dist", "blocks", "index.js");
-			if (!existsSync(built)) {
-				console.warn(
-					"skipping the blocks host-link import: dist/blocks/index.js absent (run npm run build)",
-				);
-				return;
-			}
+			expect(existsSync(built), "dist/blocks/index.js must be built before tests run").toBe(true);
 			// npm pack the fixture (the registry shape: no devDeps, no solved
 			// peers — --legacy-peer-deps holds the peerDependency "*" symbolic).
 			const packDir = freshDir("sigrun-pkg-blocks-pack-");
@@ -688,10 +750,16 @@ describe("git sources in the unified extensions list", () => {
 	let fixture: ReturnType<typeof createGitFixture>;
 	let configDir: string;
 	let gitDir: string;
-	beforeAll(() => {
+	beforeAll(async () => {
 		fixture = createGitFixture();
 		configDir = freshDir("sigrun-gitcfg-");
 		gitDir = gitDirOf(configDir);
+		// Own the clone these tests inspect; shuffled order must not rely
+		// on the clone test having run first.
+		await syncPackages([fixture.url], packagesDirOf(configDir), {
+			log: false,
+			configDir,
+		});
 	});
 
 	test("an absent git source is cloned and its manifest entry discovered", async () => {
@@ -883,6 +951,45 @@ function gitRepoFrom(sourceDir: string, name: string): string {
 }
 
 describe("manifest skill dirs + the ExtensionResolution union (W5 Task 4)", () => {
+	test("a file:// directory with declared skills and no loadable entry stays skills-only", async () => {
+		const dir = freshDir("sigrun-directory-skills-");
+		mkdirSync(join(dir, "skills", "acme-skill"), { recursive: true });
+		writeFileSync(join(dir, "skills", "acme-skill", "SKILL.md"), "skill\n");
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "acme-skills", sigrun: { skills: ["./skills"] } }),
+		);
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		expect(await syncPackages([pathToFileURL(dir).href], packagesDir, { log: false })).toEqual([
+			{
+				kind: "skills-only",
+				name: "acme-skills",
+				enabled: true,
+				skills: [join(packagesDir, "node_modules", "acme-skills", "skills")],
+			},
+		]);
+	}, 60_000);
+
+	test("a directory whose only entry is index.ts stays skills-only, not a .ts quarantine", async () => {
+		const dir = freshDir("sigrun-directory-ts-skills-");
+		mkdirSync(join(dir, "skills", "acme-skill"), { recursive: true });
+		writeFileSync(join(dir, "skills", "acme-skill", "SKILL.md"), "skill\n");
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "acme-ts-skills", sigrun: { skills: ["./skills"] } }),
+		);
+		writeFileSync(join(dir, "index.ts"), "export default () => {};\n");
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		expect(await syncPackages([pathToFileURL(dir).href], packagesDir, { log: false })).toEqual([
+			{
+				kind: "skills-only",
+				name: "acme-ts-skills",
+				enabled: true,
+				skills: [join(packagesDir, "node_modules", "acme-ts-skills", "skills")],
+			},
+		]);
+	}, 60_000);
+
 	test("a git package declaring only a .ts pi extension resolves skills-only, with one skip warning", async () => {
 		const repo = gitRepoFrom(SKILLS_ONLY_DIR, "sigrun-git-skills-");
 		const configDir = freshDir("sigrun-skills-cfg-");

@@ -16,7 +16,7 @@
  * inherited but PATH/HOME — the built server never touches user state).
  */
 
-import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { writeFile, mkdir, mkdtemp, rm } from "node:fs/promises";
 import net from "node:net";
@@ -29,13 +29,6 @@ import { findExtEntry } from "../src/harness/packages.js";
 
 /** Repo root (test/ → ..): where `npm run build` emits dist/. */
 const REPO_ROOT = realpathSync(join(import.meta.dirname, ".."));
-
-/** Run the root build (the real script: the shared workspace build, then
- * the root tsc). Called per-test — a fresh tsc pass over unchanged
- * sources is cheap, and each test proves the CURRENT tree builds. */
-function build(): void {
-	execFileSync("npm", ["run", "build"], { cwd: REPO_ROOT, stdio: "pipe" });
-}
 
 /** Reserve an OS-ephemeral port (listen 0, read the port, close). */
 function freePort(): Promise<number> {
@@ -125,8 +118,6 @@ function spawnBuiltCli(args: readonly string[], env: NodeJS.ProcessEnv, cwd: str
 
 describe("npm run build", () => {
 	test("emits dist/cli.js and dist/index.js (node entrypoints, bin shebang)", () => {
-		rmSync(join(REPO_ROOT, "dist"), { recursive: true, force: true });
-		build();
 		expect(existsSync(join(REPO_ROOT, "dist", "cli.js"))).toBe(true);
 		expect(existsSync(join(REPO_ROOT, "dist", "index.js"))).toBe(true);
 		// The bin's shebang survives the compile (npm bin executables exec
@@ -136,7 +127,6 @@ describe("npm run build", () => {
 	}, 120_000);
 
 	test("node dist/cli.js serve boots with no tsx (arbitrary cwd)", async () => {
-		build();
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-build-serve-"));
 		const port = await freePort();
 		// cwd = the tmpdir: the installed-CLI shape — nothing resolves
@@ -208,7 +198,6 @@ describe("the package manifest ships the built tree", () => {
 		// the tui). Spawn through a symlink and prove main ran: the unknown
 		// flag prints usage and exits 1, which only happens if the entry
 		// detection matched.
-		build();
 		const dir = mkdtempSync(join(tmpdir(), "sigrun-bin-"));
 		try {
 			const link = join(dir, "sigrun");
@@ -291,7 +280,6 @@ describe("a .ts extension entry is a clear error (no implicit fallback)", () => 
 		// The built server runs under PLAIN node: importing a .ts entry
 		// fails (ERR_UNKNOWN_FILE_EXTENSION) and the loader QUARANTINES —
 		// boot continues, and /v1/meta surfaces the quarantine.
-		build();
 		const dir = await mkdtemp(join(tmpdir(), "sigrun-build-ts-"));
 		const configDir = join(dir, "config");
 		await mkdir(configDir, { recursive: true });

@@ -1009,8 +1009,9 @@ Entry grammar:
 | entry | what happens |
 |---|---|
 | `"name"` / `"name@range"` / `"@scope/name@range"` | npm install into the packages dir, then load |
-| `"file:/abs/path"` | npm `file:` install (symlinked source — the dev-checkout shape), then load |
-| `"./rel/path"` / `"/abs/path"` | load in place (nothing installed) |
+| `"file:/abs/path"` | npm `file:` install (symlinked source — the dev-checkout shape), then load; an existing directory resolves like a package |
+| `"./rel/path"` | load in place (nothing installed) |
+| `"/abs/path"` | load in place (nothing installed); an existing directory resolves like a package |
 | `"git:host/path"` / `"https://…git"`, optional `@ref` | clone into `<config-dir>/git/<…>`, reconcile to the ref, then load |
 | `{ "source": …, "entry"?: "./x.js", "ref"?: "v1.2", "enabled"?: false }` | the explicit form: entry-point override, ref override, or install-but-don't-load |
 
@@ -1052,8 +1053,14 @@ Entry grammar:
   (default 4096, live).
 - **Resolution** — npm/file names resolve against the packages dir
   first (the deployment's declared version wins over anything the image
-  bundles); `git` entries resolve to their discovered checkout entry;
-  then bare import resolution (dev checkouts, image-bundled packages).
+  bundles); an absolute path or `file://` URL naming an existing
+  directory resolves like a package: its own `exports` map, a
+  `sigrun` manifest entry, then `index.js`, `dist/index.js`, and
+  `index.ts` (TypeScript remains unimportable under plain node). A
+  directory declaring skills and a loadable JavaScript entry loads the
+  entry and serves its skills. `git` entries resolve to their
+  discovered checkout entry; then bare import resolution (dev
+  checkouts, image-bundled packages).
 - **Disabled entries** — `{enabled: false}` keeps the directory state
   (installed, cloned) but is never loaded. Re-enable by flipping the
   boolean and restarting.

@@ -772,7 +772,9 @@ export async function syncPackages(
 		const pathSkills = pathRoot === undefined ? [] : manifestSkills(pathRoot);
 		resolutions.push({
 			kind: "entry",
-			entry: spec.source,
+			entry: spec.entry === undefined
+				? spec.source
+				: pathToFileURL(join(spec.source, spec.entry)).href,
 			enabled: true,
 			...(pathSkills.length === 0 ? {} : { skills: pathSkills }),
 		});
@@ -942,6 +944,11 @@ export function resolveExtensionEntry(
 		return specifier;
 	}
 	if (specifier.startsWith("/") || specifier.startsWith("file://")) {
+		const dir = specifier.startsWith("file://") ? fileURLToPath(specifier) : specifier;
+		if (statIsDirectory(dir)) {
+			const entry = packageEntry(dir, readPackageName(dir) ?? basename(dir));
+			return entry.endsWith(".ts") ? specifier : entry;
+		}
 		return specifier;
 	}
 	// A file:-installed package LOADS under its own manifest name, which
@@ -1003,7 +1010,7 @@ function importableEntry(absolutePath: string): string {
  * actually load. A bare package DIRECTORY url is not importable in ESM
  * (`ERR_UNSUPPORTED_DIR_IMPORT`), so the loader needs the file.
  * Self-resolution through the package's own manifest (anchored at its
- * root — `exports` map or `main`) is the npm-blessed computation;
+ * root — `exports` map) is the npm-blessed computation;
  * conventional fallbacks (`index.js`, `dist/index.js`, `index.ts`) cover
  * manifest-less shapes, and a package with none of those resolves to its
  * dir so the loader's import fails LOUD (quarantined with the path)

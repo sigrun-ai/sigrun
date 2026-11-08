@@ -415,8 +415,10 @@ prompt, timeoutMs?, signal?}`:
   the internal abort links `signal`, so a caller abort fires the
   completion's abort too.
 - **Failure posture:** it THROWS — never resolves silently — on an
-  unserved model (naming it and the served list), a timeout, or a
-  `stopReason` of `error`/`aborted`.
+  unserved model (naming it and the served list), a timeout, a
+  `stopReason` of `error`/`aborted`, or a caller abort. A caller abort
+  rejects promptly with "the completion was aborted by the caller",
+  even when the provider ignores its signal.
 
 `host.commands` drives slash commands in-process (chat `/command`
 handling):

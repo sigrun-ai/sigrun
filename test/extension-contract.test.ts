@@ -16,7 +16,7 @@
  */
 
 import { execFileSync } from "node:child_process";
-import { existsSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, test } from "vitest";
 
@@ -25,13 +25,6 @@ const REPO_ROOT = realpathSync(join(import.meta.dirname, ".."));
 
 /** The consumer fixture dir (its own tsconfig maps `@sigrun/sigrun/extension`). */
 const CONSUMER = join(REPO_ROOT, "test", "fixtures", "contract-consumer");
-
-/** Run the root build (shared workspace build, root tsc, then the
- * contract declaration pass). Per-test like test/build.test.ts: each
- * test proves the CURRENT tree builds. */
-function build(): void {
-	execFileSync("npm", ["run", "build"], { cwd: REPO_ROOT, stdio: "pipe" });
-}
 
 /** The repo's own tsc, invoked the way an external consumer would. */
 function typecheckConsumer(): void {
@@ -49,8 +42,6 @@ function typecheckConsumer(): void {
 
 describe("@sigrun/sigrun/extension (the documented contract type)", () => {
 	test("npm run build emits dist/extension.d.ts with NO runtime extension.js", () => {
-		rmSync(join(REPO_ROOT, "dist"), { recursive: true, force: true });
-		build();
 		expect(existsSync(join(REPO_ROOT, "dist", "extension.d.ts"))).toBe(true);
 		// Types-only subpath: no runtime entry may exist beside the d.ts —
 		// importing "@sigrun/sigrun/extension" at runtime fails loud by design.
@@ -85,7 +76,6 @@ describe("@sigrun/sigrun/extension (the documented contract type)", () => {
 	});
 
 	test("a consumer fixture type-checks against the emitted d.ts", () => {
-		build();
 		expect(() => typecheckConsumer()).not.toThrow();
 	}, 240_000);
 

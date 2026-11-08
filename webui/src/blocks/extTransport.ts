@@ -80,15 +80,6 @@ function withQuery(path: string, key: string, value: string): string {
 	return `${path}${path.includes("?") ? "&" : "?"}${key}=${value}`;
 }
 
-/** The handle `createExtTransport` returns: the transport plus the
- *  instance identity the hub needs for change-event routing. */
-export interface ExtTransport {
-	readonly transport: SurfaceTransport;
-	/** The wire `k` (sha256 hex of slug\0id\0key) the attach callers once
-	 *  passed through; retained for callers that still compute it. */
-	readonly keyHash: string;
-}
-
 /**
  * Create the extension-surface transport. Same-origin `/v1` routes,
  * `X-Sigrun-Stream` on every fetch once the stream id is known.
