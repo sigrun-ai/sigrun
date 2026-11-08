@@ -162,8 +162,19 @@ jobs:
           pins="$(node scripts/publish-deps.mjs pins)"
           missing=()
           for pin in ${pins}; do
-            if ! published="$(npm view "${pin}" version)" || [ -z "${published}" ]; then
-              missing+=("${pin}")
+            if published="$(npm view "${pin}" version 2>&1)"; then
+              if [ -z "${published}" ]; then
+                missing+=("${pin}")
+              fi
+            else
+              case "${published}" in
+                *E404*|*"not found"*) missing+=("${pin}") ;;
+                *)
+                  echo "::error::npm view failed for ${pin}"
+                  echo "${published}"
+                  exit 1
+                  ;;
+              esac
             fi
           done
           if [ "${#missing[@]}" -gt 0 ]; then

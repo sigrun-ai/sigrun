@@ -153,12 +153,12 @@ function harnessBuiltinNames(): string[] {
 /** The gateway checkout must be on the released 0.1.x line and its
  * declared shared peer range must contain core's actual shared pin. */
 function gatewayAcceptsCoreShared(core: MinimalManifest, gateway: MinimalManifest): boolean {
+	const sharedPeer = gateway.peerDependencies?.["@sigrun/shared"];
 	return (
 		satisfies(gateway.version ?? "", ">=0.1.26 <0.2.0") &&
-		satisfies(
-			core.dependencies?.["@sigrun/shared"] ?? "",
-			gateway.peerDependencies?.["@sigrun/shared"] ?? "",
-		)
+		typeof sharedPeer === "string" &&
+		sharedPeer.trim() !== "" &&
+		satisfies(core.dependencies?.["@sigrun/shared"] ?? "", sharedPeer)
 	);
 }
 
@@ -377,6 +377,12 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 			},
 		};
 		expect(gatewayAcceptsCoreShared(core, incompatible)).toBe(false);
+		const withoutSharedPeer: MinimalManifest = {
+			...gateway,
+			peerDependencies: { ...gateway?.peerDependencies },
+		};
+		delete withoutSharedPeer.peerDependencies?.["@sigrun/shared"];
+		expect(gatewayAcceptsCoreShared(core, withoutSharedPeer)).toBe(false);
 	});
 
 	test("no peer skew: every built-in's host peers pin core's own version of that module", () => {

@@ -647,7 +647,7 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 				(step) => step.uses === "./sigrun/.github/actions/family-checkout",
 			);
 			expect(family, `${name} checks out the family`).toBeDefined();
-			expect(steps.indexOf(settle as Step)).toBeLessThan(steps.indexOf(family as Step));
+			expect(steps.indexOf(family as Step)).toBe(steps.indexOf(settle as Step) + 1);
 		}
 		const chart = jobs["chart-lint"]?.steps ?? [];
 		expect(chart.some((step) => runOf(step).trim() === "sleep 180")).toBe(false);
@@ -663,12 +663,14 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(steps.indexOf(gate as Step)).toBe(steps.indexOf(family as Step) + 1);
 		const body = runOf(gate as Step);
 		expect(body).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
-		expect(body).toContain('npm view "${pin}" version');
+		expect(body).toContain('npm view "${pin}" version 2>&1');
+		expect(body).toContain('*E404*|*"not found"*) missing+=("${pin}")');
+		expect(body).toContain('echo "::error::npm view failed for ${pin}"');
+		expect(body).toContain("exit 1");
 		expect(body).toContain("live=false");
 		expect(body).toContain(
 			"::notice::image build skipped: ${missing[*]} not on npm yet (the release checks this)",
 		);
-		expect(body).not.toContain("continue-on-error");
 		const regen = steps.find((step) => runOf(step).includes("publish-deps.mjs registry"));
 		expect(steps.indexOf(gate as Step)).toBeLessThan(steps.indexOf(regen as Step));
 		const guarded = [
@@ -678,6 +680,9 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		];
 		for (const step of guarded) {
 			expect(step?.if).toBe("steps.pins-live.outputs.live == 'true'");
+		}
+		for (const step of [gate, ...guarded]) {
+			expect(step).not.toHaveProperty("continue-on-error");
 		}
 		expect(workflow().jobs["image-build"]?.if).toBeUndefined();
 	});
