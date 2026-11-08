@@ -626,24 +626,28 @@ test("the 41st rapid call is 429", async () => {
 	// Freeze only Date: the burst assertion must not gain refill tokens
 	// when a loaded worker takes longer to issue the 41 calls.
 	vi.useFakeTimers({ toFake: ["Date"] });
-	const rig = await bootRig({ extensionSpecifiers: [NOTES_SPECIFIER] });
-	cleanups.push(rig.close);
-	const id = await postNotice(rig, {
-		actions: [
-			{ id: "stay", label: "Stay", kind: "extension", name: "hold" },
-		],
-	});
-	let last: Awaited<ReturnType<typeof rig.app.inject>> | undefined;
-	for (let index = 0; index < 41; index += 1) {
-		last = await rig.app.inject({
-			method: "POST",
-			url: `/v1/notices/${id}/actions/stay`,
-			headers: { ...auth(rig, "alice"), "content-type": "application/json" },
-			payload: {},
+	try {
+		const rig = await bootRig({ extensionSpecifiers: [NOTES_SPECIFIER] });
+		cleanups.push(rig.close);
+		const id = await postNotice(rig, {
+			actions: [
+				{ id: "stay", label: "Stay", kind: "extension", name: "hold" },
+			],
 		});
+		let last: Awaited<ReturnType<typeof rig.app.inject>> | undefined;
+		for (let index = 0; index < 41; index += 1) {
+			last = await rig.app.inject({
+				method: "POST",
+				url: `/v1/notices/${id}/actions/stay`,
+				headers: { ...auth(rig, "alice"), "content-type": "application/json" },
+				payload: {},
+			});
+		}
+		expect(last?.statusCode).toBe(429);
+		expect(last?.json()).toEqual({ error: "rate_limited" });
+	} finally {
+		vi.useRealTimers();
 	}
-	expect(last?.statusCode).toBe(429);
-	expect(last?.json()).toEqual({ error: "rate_limited" });
 });
 
 test("unknown actionId → 400; a navigate action id → 400", async () => {

@@ -1737,7 +1737,7 @@ describe("App extension-surface route (UI-blocks U3 Task 5)", () => {
 		// SurfacePage and drive the prop directly (the transport act
 		// delivery is SurfacePage's own unit test).
 		const { SurfacePage } = await import("./blocks/SurfacePage");
-		// The page mounts once the async event-key hash resolves.
+		// The page mounts after the surface navigation action.
 		const page = await vi.waitFor(() => renderer.root.findByType(SurfacePage));
 		const onNavigate = page.props.onNavigate as (action: {
 			params?: Record<string, unknown>;

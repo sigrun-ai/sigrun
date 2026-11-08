@@ -259,6 +259,32 @@ describe("syncPackages", () => {
 			syncPackages([], packagesDir, { log: false }),
 		).rejects.toThrow(/not valid JSON/);
 	});
+
+	test("an absolute directory entry with an explicit override loads that file", async () => {
+		const dir = freshDir("sigrun-path-entry-");
+		mkdirSync(join(dir, "dist"));
+		writeFileSync(
+			join(dir, "package.json"),
+			JSON.stringify({ name: "acme-path-ext", sigrun: { extension: "./dist/manifest.js" } }),
+		);
+		writeFileSync(join(dir, "dist", "manifest.js"), "export const entry = 'manifest';\n");
+		writeFileSync(join(dir, "dist", "custom.js"), "export const entry = 'custom';\n");
+		const packagesDir = join(freshDir("sigrun-pkg-"), "packages");
+		const resolutions = await syncPackages(
+			[{ source: dir, entry: "./dist/custom.js" }],
+			packagesDir,
+			{ log: false },
+		);
+		expect(resolutions).toEqual([
+			{
+				kind: "entry",
+				entry: pathToFileURL(join(dir, "dist", "custom.js")).href,
+				enabled: true,
+			},
+		]);
+		const loaded = await import(resolutions[0].kind === "entry" ? resolutions[0].entry : "");
+		expect(loaded.entry).toBe("custom");
+	});
 });
 
 describe("resolveExtensionEntry", () => {
