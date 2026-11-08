@@ -848,99 +848,105 @@ export class EventBus {
 	public async replayUndelivered(storage: Storage, context: Context): Promise<number> {
 		if (this.#closed || this.#replayStarted) return 0;
 		this.#replayStarted = true;
-		const durable = toDurableContext(context);
-		const marker = await this.#harness.snapshot(RunDeliveryDoc, context);
-		let through = marker?.through ?? 0;
-		const inspection = await this.#harness.inspect(durable);
-		const live = inspection.submissions.filter(
-			(one) => one.type === "input" || one.type === "continue",
-		);
-		if (through === 0) {
-			const pending: SubmissionRecord[] = [];
+		try {
+			const durable = toDurableContext(context);
+			const marker = await this.#harness.snapshot(RunDeliveryDoc, context);
+			let through = marker?.through ?? 0;
+			const inspection = await this.#harness.inspect(durable);
+			const live = inspection.submissions.filter(
+				(one) => one.type === "input" || one.type === "continue",
+			);
+			if (through === 0) {
+				const pending: SubmissionRecord[] = [];
+				for (const submission of live) {
+					if (await this.#snapshotInternal(submission.conversationId, durable)) {
+						continue;
+					}
+					pending.push(submission);
+				}
+				if (pending.length > 0) {
+					through = Math.min(...pending.map((one) => one.id));
+				} else {
+					const newest = await storage.scanSubmissions(
+						{ order: "descending" },
+						1,
+						undefined,
+						durable,
+					);
+					through = (newest.items[0]?.id ?? 0) + 1;
+				}
+				await this.#harness.commit(async (tx) => {
+					const draft = await tx.doc(RunDeliveryDoc);
+					(draft as { through: number }).through = through;
+				}, durable);
+				this.#storedThrough = through;
+				this.#highestTerminalObserved = through - 1;
+				return 0;
+			}
+			this.#storedThrough = through;
+
+			// Close the Harness.open → EventBus.open admission window: queued and
+			// placed deliverables remain live until their terminal observation.
 			for (const submission of live) {
 				if (await this.#snapshotInternal(submission.conversationId, durable)) {
 					continue;
 				}
-				pending.push(submission);
+				this.#undeliveredLive.add(submission.id);
 			}
-			if (pending.length > 0) {
-				through = Math.min(...pending.map((one) => one.id));
-			} else {
-				const newest = await storage.scanSubmissions(
-					{ order: "descending" },
-					1,
-					undefined,
-					durable,
-				);
-				through = (newest.items[0]?.id ?? 0) + 1;
-			}
-			await this.#harness.commit(async (tx) => {
-				const draft = await tx.doc(RunDeliveryDoc);
-				(draft as { through: number }).through = through;
-			}, durable);
-			this.#storedThrough = through;
-			this.#highestTerminalObserved = through - 1;
-			return 0;
-		}
-		this.#storedThrough = through;
 
-		// Close the Harness.open → EventBus.open admission window: queued and
-		// placed deliverables remain live until their terminal observation.
-		for (const submission of live) {
-			if (await this.#snapshotInternal(submission.conversationId, durable)) {
-				continue;
-			}
-			this.#undeliveredLive.add(submission.id);
-		}
-
-		const terminal: SubmissionRecord[] = [];
-		for (const status of ["done", "unanswered"] as const) {
-			let cursor: Cursor | undefined;
-			for (;;) {
-				const page = await storage.scanSubmissions(
-					{ status, order: "descending" },
-					REPLAY_SCAN_PAGE,
-					cursor,
-					durable,
-				);
-				let belowMarker = false;
-				for (const submission of page.items) {
-					if (submission.id < through) {
-						belowMarker = true;
-						break;
+			const terminal: SubmissionRecord[] = [];
+			for (const status of ["done", "unanswered"] as const) {
+				let cursor: Cursor | undefined;
+				for (;;) {
+					const page = await storage.scanSubmissions(
+						{ status, order: "descending" },
+						REPLAY_SCAN_PAGE,
+						cursor,
+						durable,
+					);
+					let belowMarker = false;
+					for (const submission of page.items) {
+						if (submission.id < through) {
+							belowMarker = true;
+							break;
+						}
+						if (submission.type !== "input" && submission.type !== "continue") {
+							continue;
+						}
+						terminal.push(submission);
 					}
-					if (submission.type !== "input" && submission.type !== "continue") {
-						continue;
-					}
-					terminal.push(submission);
+					if (belowMarker || page.next === undefined) break;
+					cursor = page.next;
 				}
-				if (belowMarker || page.next === undefined) break;
-				cursor = page.next;
 			}
-		}
-		terminal.sort((a, b) => a.id - b.id);
-		const byConversation = new Map<ConversationId, SubmissionRecord[]>();
-		for (const submission of terminal) {
-			if (await this.#snapshotInternal(submission.conversationId, durable)) {
-				continue;
+			terminal.sort((a, b) => a.id - b.id);
+			const byConversation = new Map<ConversationId, SubmissionRecord[]>();
+			for (const submission of terminal) {
+				if (await this.#snapshotInternal(submission.conversationId, durable)) {
+					continue;
+				}
+				const records = byConversation.get(submission.conversationId) ?? [];
+				records.push(submission);
+				byConversation.set(submission.conversationId, records);
 			}
-			const records = byConversation.get(submission.conversationId) ?? [];
-			records.push(submission);
-			byConversation.set(submission.conversationId, records);
+			const groups: SettleGroup[] = [];
+			for (const [conversationId, records] of byConversation) {
+				groups.push(...this.#regroupReplay(conversationId, records));
+			}
+			groups.sort((a, b) => a.settled[0]!.id - b.settled[0]!.id);
+			this.#replayBacklog = groups;
+			const highest = terminal.reduce((highest, one) => Math.max(highest, one.id), 0);
+			this.#highestTerminalObserved = Math.max(through - 1, highest);
+			const total = groups.length;
+			this.#enqueueReplayPage();
+			return total;
+		} catch (error) {
+			// A partial/absent replay leaves live marker computation unsafe:
+			// freeze saves so the next boot retries the same durable tail.
+			this.#replayFailed = true;
+			throw error;
 		}
-		const groups: SettleGroup[] = [];
-		for (const [conversationId, records] of byConversation) {
-			groups.push(...this.#regroupReplay(conversationId, records));
-		}
-		groups.sort((a, b) => a.settled[0]!.id - b.settled[0]!.id);
-		this.#replayBacklog = groups;
-		const highest = terminal.reduce((highest, one) => Math.max(highest, one.id), 0);
-		this.#highestTerminalObserved = Math.max(through - 1, highest);
-		const total = groups.length;
-		this.#enqueueReplayPage();
-		return total;
 	}
-
 	/** Snapshot and cache one conversation's immutable internal flag. */
 	async #snapshotInternal(conversationId: ConversationId, context: Context): Promise<boolean> {
 		const cached = this.#internal.get(conversationId);

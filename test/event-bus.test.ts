@@ -31,6 +31,7 @@ import type {
 	ConversationId,
 	HarnessSettings,
 	CommitPublication,
+	Storage,
 } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import { loadConfig } from "../src/config.js";
@@ -1953,6 +1954,44 @@ describe("startup replay", () => {
 		expect(await restarted.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({ through: before });
 	});
 
+	test("a failed replay leaves the marker unchanged after a later live settle", async () => {
+		const first = await bootBus({
+			responses: [
+				fauxAssistantMessage("marker answer"),
+				fauxAssistantMessage("undelivered answer"),
+			],
+		});
+		await seedMarker(first.root, first.bus);
+		const undelivered = await runTurn(first.root, "undelivered before replay failure");
+		const { release } = await crashWithBlockedDelivery(first.bus);
+		try {
+			const { restarted } = await restartAfterCrash(first, release);
+			const failingStorage = new Proxy(restarted.opened.storage, {
+				get(target, property, receiver) {
+					if (property === "scanSubmissions") {
+						return async () => {
+							throw new Error("synthetic replay scan failure");
+						};
+					}
+					return Reflect.get(target, property, receiver);
+				},
+			}) as Storage;
+			await expect(
+				restarted.bus.replayUndelivered(failingStorage, BACKGROUND_CONTEXT),
+			).rejects.toThrow("synthetic replay scan failure");
+			restarted.faux.setResponses([fauxAssistantMessage("live after replay failure")]);
+			const live = await runTurn(restarted.root, "live after replay failure");
+			expect(live.record.status).toBe("done");
+			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
+			expect(await restarted.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({
+				through: first.bus.deliveredThrough(),
+			});
+			expect(live.submission.id).toBeGreaterThan(undelivered.submission.id);
+		} finally {
+			release();
+		}
+	});
+
 	test("an internal live run seeded at boot never pins the marker", { timeout: 20_000 }, async () => {
 		const first = await bootBus({
 			responses: [fauxAssistantMessage("marker answer")],
@@ -2134,24 +2173,31 @@ describe("startup replay", () => {
 				await firstGate;
 			},
 		});
-		const dropped = await runTurn(first.root, "overflow-dropped input");
+		const blocked = await runTurn(first.root, "overflow-blocked input");
 		const draining = first.bus.drain(10_000, BACKGROUND_CONTEXT);
 		await dispatchStarted;
 		const other = await first.opened.harness.createConversation({
 			ownership: { kind: "ownerless" },
 			agent: { model: first.opened.defaultModel },
 		}, BACKGROUND_CONTEXT);
-		const queued = await runTurn(other, "queued behind overflow");
+		const dropped = await runTurn(other, "overflow-dropped input");
+		expect(blocked.record.status).toBe("done");
 		expect(dropped.record.status).toBe("done");
-		expect(queued.record.status).toBe("done");
 		// Deterministic overflow: evict the queued settle group with one
 		// lifecycle event while the first group is still in dispatch.
 		await first.opened.harness.createConversation({
 			ownership: { kind: "ownerless" },
 		}, BACKGROUND_CONTEXT);
-		first.bus.close();
+		// Drain BEFORE close: the dropped id itself must pin the marker,
+		// not merely the absence of a save during the blocked crash.
 		releaseFirst();
 		await draining;
+		await first.bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(await first.opened.harness.snapshot(RunDeliveryDoc, BACKGROUND_CONTEXT)).toEqual({
+			through: expect.any(Number),
+		});
+		expect(first.bus.deliveredThrough()).toBeLessThanOrEqual(dropped.submission.id);
+		first.bus.close();
 		await first.opened.harness.close(BACKGROUND_CONTEXT);
 		const restarted = await bootBus({ dir: first.dir });
 		const events: RunSettledEvent[] = [];
@@ -2161,9 +2207,9 @@ describe("startup replay", () => {
 			},
 		});
 		try {
-			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(2);
+			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
 			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
-			expect(events.map((event) => event.inputs)).toEqual([[dropped.submission.id], [queued.submission.id]]);
+			expect(events.map((event) => event.inputs)).toEqual([[dropped.submission.id]]);
 		} finally {
 			releaseFirst();
 		}
