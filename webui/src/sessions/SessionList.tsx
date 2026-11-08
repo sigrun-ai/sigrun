@@ -23,8 +23,15 @@
  * - Children indent one level per depth with the ↳ lineage mark.
  * - The bottom "Job runs" toggle reveals quiet scheduled runs
  *   (`includeJobRuns`, default false); "Archived" switches
- *   `includeArchived`. Search narrows the same filtered tree, so it never
- *   reveals quiet runs while their toggle is off.
+ *   `includeArchived`; "Deleted" switches `deletedOnly` — the Deleted
+ *   view shows ONLY deleted rows (ignoring the other two toggles) and
+ *   each deleted row's menu offers Restore and nothing destructive.
+ *   Search narrows the same filtered tree, so it never reveals quiet
+ *   runs while their toggle is off, nor deleted rows while Deleted is.
+ * - Delete (owner or admin, non-deleted rows only) calls `onDelete(id)`
+ *   and shows the rail-local UndoToast (message + Undo, auto-dismiss
+ *   8 s) — Undo restores the id captured at delete time, never the
+ *   active id, so the toast survives conversation switches.
  * - Rename edits the STORED user name, not `displayName`: a failed run's
  *   "Failed · " label never enters the draft, and an auto-named row starts
  *   with an empty draft so typing its generated name saves a user name.
@@ -35,7 +42,7 @@
  * N+1 removal dropped. The row is name + age, per the refresh spec.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ageGroup,
 	buildConversationTree,
@@ -47,6 +54,7 @@ import {
 import { MoreIcon, PlusIcon } from "../layout/icons";
 import { useDismiss } from "../useDismiss";
 import type { ConversationSummary } from "../api";
+import { UndoToast } from "./UndoToast";
 
 /** The Ctrl+K / ⌘K focus target (a stable id; the shortcut is global). */
 export const SESSION_SEARCH_INPUT_ID = "sigrun-session-search";
@@ -169,11 +177,33 @@ export function SessionList(props: {
 	readonly currentUser?: string;
 	/** Open the share editor for a conversation id (App renders ShareMenu). */
 	onShare?(id: number): void;
+	/** Delete a conversation (App patches deleted:true and reloads); the
+	 *  sidebar shows the Undo toast after it resolves. */
+	onDelete?(id: number): Promise<void>;
+	/** Restore a deleted conversation (App patches deleted:false). */
+	onRestore?(id: number): Promise<void>;
+	/** The signed-in principal's admin flag (App's options.identity?.admin):
+	 *  Delete shows for the row's owner OR an admin. */
+	readonly admin?: boolean;
 }) {
-	const { rows, activeId, onSelect, onNew, onRename, onArchive, onFork, currentUser, onShare } = props;
+	const { rows, activeId, onSelect, onNew, onRename, onArchive, onFork, currentUser, onShare, onDelete, onRestore, admin } = props;
 	const [query, setQuery] = useState("");
 	const [includeArchived, setIncludeArchived] = useState(false);
 	const [includeJobRuns, setIncludeJobRuns] = useState(false);
+	const [deletedOnly, setDeletedOnly] = useState(false);
+	// The Undo toast's captured conversation id (deleted-conversations
+	// Task 4): set when Delete resolves, restored by the toast's Undo —
+	// NEVER the active id (the toast survives conversation switches).
+	const [undoFor, setUndoFor] = useState<number | null>(null);
+	// Stable callbacks keep UndoToast's auto-dismiss effect from being
+	// torn down and restarted on every parent re-render (SSE frames).
+	const dismissUndo = useCallback(() => setUndoFor(null), []);
+	const restoreUndo = useCallback(
+		async (id: number) => {
+			await onRestore?.(id);
+		},
+		[onRestore],
+	);
 	const [menuFor, setMenuFor] = useState<number | null>(null);
 	const menuSlot = useRef<HTMLSpanElement | null>(null);
 	useDismiss(menuFor !== null, () => setMenuFor(null), menuSlot);
@@ -206,11 +236,15 @@ export function SessionList(props: {
 		const tree = buildConversationTree(visible, {
 			includeArchived,
 			includeJobRuns,
+			// The Deleted view shows ONLY deleted rows, ignoring the other
+			// two options; search narrows the same filtered tree, so it
+			// never reveals deleted rows while the toggle is off.
+			deletedOnly,
 		});
 		return layoutEntries(tree, now);
 		// `now` is read per render; a memo keyed on it stays consistent.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [rows, query, includeArchived, includeJobRuns, now.getTime()]);
+	}, [rows, query, includeArchived, includeJobRuns, deletedOnly, now.getTime()]);
 
 	const commitRename = (id: number) => {
 		if (renaming === null || renaming.id !== id) return;
@@ -272,6 +306,14 @@ export function SessionList(props: {
 						onShare !== undefined &&
 						currentUser !== undefined &&
 						row.owner === currentUser;
+					// Delete (deleted-conversations Task 4): the owner OR an
+					// admin, on NON-deleted rows only (a deleted row's menu
+					// offers Restore and nothing destructive).
+					const canDelete =
+						onDelete !== undefined &&
+						row.deleted !== true &&
+						(admin === true ||
+							(currentUser !== undefined && row.owner === currentUser));
 					const className = [
 						"session-item",
 						row.id === activeId ? "session-item-active" : "",
@@ -336,8 +378,24 @@ export function SessionList(props: {
 								>
 									<MoreIcon />
 								</button>
-										{menuFor === row.id && (
-											<div className="session-menu" role="menu">
+								{menuFor === row.id && (
+									<div className="session-menu" role="menu">
+										{row.deleted === true ? (
+											// A deleted row's menu: Restore and nothing
+											// destructive (the plan's Global Constraints).
+											<button
+												type="button"
+												role="menuitem"
+												data-menu-action="restore"
+												onClick={() => {
+													setMenuFor(null);
+													void onRestore?.(row.id).catch(() => undefined);
+												}}
+											>
+												Restore
+											</button>
+										) : (
+											<>
 												{canShare && (
 													<button
 														type="button"
@@ -356,11 +414,11 @@ export function SessionList(props: {
 													role="menuitem"
 													data-menu-action="rename"
 													onClick={() => {
-													setMenuFor(null);
-													setRenaming({
-														id: row.id,
-														draft: storedUserName(row),
-													});
+														setMenuFor(null);
+														setRenaming({
+															id: row.id,
+															draft: storedUserName(row),
+														});
 													}}
 												>
 													Rename
@@ -387,8 +445,30 @@ export function SessionList(props: {
 												>
 													{row.archived ? "Unarchive" : "Archive"}
 												</button>
-											</div>
+												{canDelete && (
+													<button
+														type="button"
+														role="menuitem"
+														data-menu-action="delete"
+														onClick={() => {
+															setMenuFor(null);
+															// Capture the id AT DELETE TIME: the
+															// toast restores this id, never the
+															// active one (a switch must not
+															// re-target the undo).
+															void onDelete?.(row.id).then(
+																() => setUndoFor(row.id),
+																() => undefined,
+															);
+														}}
+													>
+														Delete
+													</button>
+												)}
+											</>
 										)}
+									</div>
+								)}
 							</span>
 						</li>
 					);
@@ -415,6 +495,31 @@ export function SessionList(props: {
 			>
 				Archived
 			</button>
+			<button
+				type="button"
+				className="session-deleted-toggle"
+				aria-pressed={deletedOnly}
+				title="Show deleted conversations"
+				onClick={() =>
+				setDeletedOnly((shown) => {
+					const next = !shown;
+					if (next) {
+						setIncludeArchived(false);
+						setIncludeJobRuns(false);
+					}
+					return next;
+				})
+			}
+			>
+				Deleted
+			</button>
+			{undoFor !== null && (
+				<UndoToast
+					conversationId={undoFor}
+					onRestore={restoreUndo}
+					onDismiss={dismissUndo}
+				/>
+			)}
 		</nav>
 	);
 }

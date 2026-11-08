@@ -713,6 +713,79 @@ describe("job.failed", () => {
 		await new Promise((resolve) => setTimeout(resolve, 300));
 		expect(ofType("job.failed")).toHaveLength(1);
 	});
+
+	test("conversation_deleted notifies once; another failure re-arms", { timeout: 30_000 }, async () => {
+		// Deleted conversations Task 3: consecutive `conversation_deleted`
+		// failures of the SAME job notify once (the deleted conversation
+		// would otherwise re-notify on every scheduled fire); a failure
+		// with any other error re-arms the per-job flag.
+		const server = await bootServer();
+		const job = {
+			id: "acme-deleted",
+			name: "acme-deleted",
+			owner: "bob",
+			lastRun: undefined,
+		} as unknown as JobWire;
+		const carry = (startedAt: string, error: string): void => {
+			server.opened.events.publish({
+				type: "job.changed",
+				job: {
+					...job,
+					lastRun: {
+						jobId: job.id,
+						version: 1,
+						fireAt: "2026-01-01T00:00:00.000Z",
+						manual: true,
+						outcome: "failed",
+						startedAt,
+						error,
+					},
+				},
+			});
+		};
+		resetNotifierEvents();
+		// Two consecutive conversation_deleted failures, distinct runs.
+		carry("2026-01-01T00:00:00.000Z", "conversation_deleted");
+		await waitForEvent((event) => event.type === "job.failed");
+		carry("2026-01-01T00:01:00.000Z", "conversation_deleted");
+		// A different error re-arms: it notifies.
+		carry("2026-01-01T00:02:00.000Z", "model_error: boom");
+		await waitForEvent(
+			(event) =>
+				event.type === "job.failed" && event.body === "model_error: boom",
+		);
+		// A succeeded run also re-arms (restore → succeed → delete).
+		server.opened.events.publish({
+				type: "job.changed",
+				job: {
+					...job,
+					lastRun: {
+						jobId: job.id,
+						version: 1,
+						fireAt: "2026-01-01T00:00:00.000Z",
+						manual: true,
+						outcome: "succeeded",
+						startedAt: "2026-01-01T00:02:30.000Z",
+					},
+				},
+		});
+		// And a deleted failure after the re-arm notifies again.
+		carry("2026-01-01T00:03:00.000Z", "conversation_deleted");
+		await waitFor(
+			async () => ofType("job.failed"),
+			(events) => events.length === 3,
+		);
+		// The second consecutive deleted failure never delivered.
+		await new Promise((resolve) => setTimeout(resolve, 300));
+		expect(ofType("job.failed")).toHaveLength(3);
+		expect(
+			ofType("job.failed").map((event) => event.body),
+		).toEqual([
+			"conversation_deleted",
+			"model_error: boom",
+			"conversation_deleted",
+		]);
+	});
 });
 
 describe("run.settled structured outcome (release-readiness-2 §2)", () => {

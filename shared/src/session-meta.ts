@@ -42,6 +42,12 @@ export type SessionMeta = {
 	tagged: string[];
 	/** Archived/hidden from the default sidebar listing. */
 	archived: boolean;
+	/**
+	 * The deleted marker (deleted-conversations Task 1): a flag BESIDE
+	 * `archived` — nothing is erased. Patchable by the OWNER or a superuser
+	 * (403 otherwise, same gate as `sharing`); absent = not deleted.
+	 */
+	deleted?: boolean;
 	/** The composer draft; survives a reload. */
 	draft: { text: string; attachments: string[] };
 	/** Who created the session: an interactive user, a cron job, a channel
@@ -114,6 +120,7 @@ export interface SessionMetaPatch {
 	readonly pinned?: boolean | null;
 	readonly tagged?: readonly string[] | null;
 	readonly archived?: boolean | null;
+	readonly deleted?: boolean | null;
 	readonly draft?: {
 		readonly text?: string | null;
 		readonly attachments?: readonly string[] | null;

@@ -373,6 +373,64 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		expect(final.json()).toEqual(DEFAULT_BODY);
 	});
 
+	test("deleted round-trips: PATCH sets it, GET serves it, false and null clear it", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const deleted = await patchMeta(app, root.id, { deleted: true });
+		expect(deleted.statusCode).toBe(200);
+		expect(deleted.json().deleted).toBe(true);
+		// A fresh GET (not the PATCH echo) serves the stored flag.
+		const served = await getMeta(app, root.id);
+		expect(served.json().deleted).toBe(true);
+		// `false` restores by REMOVING the key (absent = not deleted).
+		const restored = await patchMeta(app, root.id, { deleted: false });
+		expect(restored.statusCode).toBe(200);
+		expect(restored.json()).not.toHaveProperty("deleted");
+		// `null` removes the key entirely (like name/sharing: absent = not deleted).
+		await patchMeta(app, root.id, { deleted: true });
+		const cleared = await patchMeta(app, root.id, { deleted: null });
+		expect(cleared.statusCode).toBe(200);
+		expect(cleared.json()).not.toHaveProperty("deleted");
+		const after = await getMeta(app, root.id);
+		expect(after.json()).toEqual(DEFAULT_BODY);
+	});
+
+	test("deleted is independent of archived", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		await patchMeta(app, root.id, { archived: true });
+		await patchMeta(app, root.id, { deleted: true });
+		const restored = await patchMeta(app, root.id, { deleted: false });
+		expect(restored.statusCode).toBe(200);
+		expect(restored.json()).not.toHaveProperty("deleted");
+		expect(restored.json().archived).toBe(true);
+		const stored = await opened.harness.snapshot(
+			SessionMetaDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(stored?.archived).toBe(true);
+		expect(stored?.deleted).toBeUndefined();
+	});
+
+	test("rejects a non-boolean deleted value (400 invalid_body)", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		for (const value of ["yes", 1, {}, []]) {
+			const response = await patchMeta(app, root.id, { deleted: value });
+			expect(response.statusCode).toBe(400);
+			expect(response.json()).toEqual({ error: "invalid_body" });
+		}
+		const final = await getMeta(app, root.id);
+		expect(final.json()).toEqual(DEFAULT_BODY);
+	});
+
 	test("rejects unknown field (invalid_field) and wrong types (invalid_body)", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {

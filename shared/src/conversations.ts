@@ -17,6 +17,8 @@ export interface ListRow {
 	readonly parent?: { readonly id: number };
 	readonly archived: boolean;
 	readonly pinned: boolean;
+	/** The deleted marker (deleted-conversations Task 1); absent = not deleted. */
+	readonly deleted?: boolean;
 	readonly source?: string;
 	readonly jobOutcome?: "succeeded" | "failed";
 	readonly adopted?: boolean;
@@ -56,15 +58,25 @@ function epoch(iso: string | undefined): number {
 
 export function buildConversationTree<R extends ListRow>(
 	rows: readonly R[],
-	options: { includeArchived: boolean; includeJobRuns?: boolean },
+	options: {
+		includeArchived: boolean;
+		includeJobRuns?: boolean;
+		/** The Deleted view: only deleted rows, ignoring the other options. */
+		deletedOnly?: boolean;
+	},
 ): TreeNode<R>[] {
 	const nodes = new Map<number, BuilderNode<R>>();
 	for (const row of rows) {
 		// `parent` is fork lineage — an ancestor by construction (set once,
 		// at fork time), so the resulting forest is acyclic.
+		// Deleted rows are hidden by default; the Deleted view shows ONLY
+		// them (archived or not, quiet job run or not).
 		if (
-			(options.includeArchived || !row.archived) &&
-			(options.includeJobRuns === true || !isQuietJobRun(row))
+			options.deletedOnly === true
+				? row.deleted === true
+				: row.deleted !== true &&
+					(options.includeArchived || !row.archived) &&
+					(options.includeJobRuns === true || !isQuietJobRun(row))
 		) {
 			nodes.set(row.id, { row, children: [] });
 		}

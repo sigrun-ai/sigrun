@@ -206,6 +206,8 @@ export interface ConversationSummary {
 	readonly parent?: { readonly id: number; readonly at: number };
 	/** The session-meta archive flag (the sidebar's hide), default false. */
 	readonly archived: boolean;
+	/** True when the conversation is deleted; absent otherwise. */
+	readonly deleted?: boolean;
 	/** The session-meta pin flag (pinned conversations float to top), default false. */
 	readonly pinned: boolean;
 	/**

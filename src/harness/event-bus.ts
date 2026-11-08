@@ -102,6 +102,7 @@ interface MetaBasis {
 	autoName?: string;
 	archived: boolean;
 	pinned: boolean;
+	deleted: boolean;
 	lastActivityAt?: string;
 	owner?: string;
 	source?: string;
@@ -117,6 +118,7 @@ function metaBasisOf(value: {
 	readonly autoName?: string;
 	readonly archived?: boolean;
 	readonly pinned?: boolean;
+	readonly deleted?: boolean;
 	readonly lastActivityAt?: string;
 	readonly owner?: string;
 	readonly source?: string;
@@ -127,6 +129,7 @@ function metaBasisOf(value: {
 	const basis: MetaBasis = {
 		archived: value.archived === true,
 		pinned: value.pinned === true,
+		deleted: value.deleted === true,
 	};
 	if (value.name !== undefined) basis.name = value.name;
 	if (value.autoName !== undefined) basis.autoName = value.autoName;
@@ -1254,6 +1257,12 @@ export class EventBus {
 					const childBasis: MetaBasis = {
 						archived: inherited,
 						pinned: parentBasis?.pinned ?? false,
+						// A fork is NOT deleted: seed deleted:false explicitly
+						// (never copy the parent's marker). Omitting the key would
+						// diff false!==undefined and emit a spurious
+						// conversation.changed {deleted:false} when forkOp's
+						// reset commit clears the copied key.
+						deleted: false,
 					};
 					if (parentBasis?.name !== undefined) childBasis.name = parentBasis.name;
 					if (parentBasis?.autoName !== undefined) childBasis.autoName = parentBasis.autoName;
@@ -1262,6 +1271,10 @@ export class EventBus {
 					if (parentBasis?.jobOutcome !== undefined) childBasis.jobOutcome = parentBasis.jobOutcome;
 					if (parentBasis?.adopted !== undefined) childBasis.adopted = parentBasis.adopted;
 					if (parentBasis?.sharing !== undefined) childBasis.sharing = parentBasis.sharing;
+					// `deleted` is deliberately NOT copied: a fork is not
+					// deleted — copying would emit a spurious
+					// conversation.changed {deleted: false} when forkOp's
+					// reset commit clears the copied key.
 					this.#metaBasis.set(conversationId, childBasis);
 					continue;
 				}
@@ -1281,6 +1294,7 @@ export class EventBus {
 					const basis = this.#metaBasis.get(conversationId) ?? {
 						archived: false,
 						pinned: false,
+						deleted: false,
 					};
 					const next = metaBasisOf(change.value);
 					const moved: Record<string, unknown> = {};
@@ -1294,6 +1308,7 @@ export class EventBus {
 					// materialized already-pinned/-archived is real changed news.
 					if (next.archived !== basis.archived) moved.archived = next.archived;
 					if (next.pinned !== basis.pinned) moved.pinned = next.pinned;
+					if (next.deleted !== basis.deleted) moved.deleted = next.deleted;
 					// lastActivityAt deliberately EXCLUDED: activity rides every
 					// create and submission (creation stamps it since the
 					// sort-order fix), so diffing it here would spam one
@@ -1346,10 +1361,12 @@ export class EventBus {
 				const basis = this.#metaBasis.get(conversationId) ?? {
 					archived: false,
 					pinned: false,
+					deleted: false,
 				};
 				const next = metaBasisOf(change.value);
 				// Built through a mutable mirror (the wire fields are readonly);
-				// cleared keys ride as null (explicit-clear semantics).
+				// cleared keys ride as null — except `deleted`, whose clears ride
+				// `false` on the event while the doc drops the key.
 				const moved: Record<string, unknown> = {};
 				if (next.name !== basis.name) {
 					moved.name = next.name === undefined ? null : next.name;
@@ -1359,6 +1376,7 @@ export class EventBus {
 				}
 				if (next.archived !== basis.archived) moved.archived = next.archived;
 				if (next.pinned !== basis.pinned) moved.pinned = next.pinned;
+				if (next.deleted !== basis.deleted) moved.deleted = next.deleted;
 				if (next.lastActivityAt !== basis.lastActivityAt) {
 					moved.lastActivityAt =
 						next.lastActivityAt === undefined ? null : next.lastActivityAt;

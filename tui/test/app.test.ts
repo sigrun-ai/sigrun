@@ -29,7 +29,7 @@ import type { Unwatch, WatchHandlers, WatchOptions } from "../src/sse.js";
 
 function summary(
 	id: number,
-	init?: { owner?: string; archived?: boolean; name?: string },
+	init?: { owner?: string; archived?: boolean; deleted?: boolean; name?: string },
 ): ConversationSummary {
 	return {
 		id,
@@ -42,6 +42,7 @@ function summary(
 		// the boot listing is newest-id-first and app.refresh() selects
 		// row 0 (the greatest id).
 		lastActivityAt: "2026-01-01T00:00:00.000Z",
+		...(init?.deleted === true ? { deleted: true } : {}),
 		...(init?.owner === undefined ? {} : { owner: init.owner }),
 		...(init?.name === undefined ? {} : { name: init.name }),
 	};
@@ -58,7 +59,7 @@ function view(id: number, entries: unknown[]): ConversationViewWire {
 
 function stubClient(init: {
 	/** Per-id sidebar metadata the summaries carry (A1: one request). */
-	rows?: Record<number, { archived?: boolean; name?: string }>;
+	rows?: Record<number, { archived?: boolean; deleted?: boolean; name?: string }>;
 	watch?: (handlers: WatchHandlers) => void;
 	/** Fix-wave seam: make createConversation/forkConversation reject. */
 	createError?: Error;
@@ -78,14 +79,39 @@ function stubClient(init: {
 	const watchRegistry = new Map<number, WatchHandlers>();
 	// The stub's listing is stateful: created/forked conversations join it,
 	// the way a real server's listing would reflect them on the next poll.
+	// Meta PATCHes fold back into the listing (deleted-conversations
+	// Task 4): deleted is true-only on the wire, false/null removes it.
 	const listed: ConversationSummary[] = [
 		summary(1, init.rows?.[1]),
 		summary(2, init.rows?.[2]),
 		summary(3, init.rows?.[3]),
 	];
+	const patchCalls: { id: number; patch: unknown }[] = [];
 	const client = {
 		listConversations(): Promise<ConversationList> {
 			return Promise.resolve({ conversations: [...listed] });
+		},
+		patchMeta(id: number, patch: { archived?: boolean; deleted?: boolean | null }) {
+			patchCalls.push({ id, patch });
+			const target = listed.find((one) => one.id === id);
+			if (target !== undefined && patch.archived !== undefined) {
+				(target as { archived: boolean }).archived = patch.archived;
+			}
+			if (target !== undefined && patch.deleted !== undefined) {
+				(target as { deleted?: boolean }).deleted =
+					patch.deleted === true ? true : undefined;
+			}
+			return Promise.resolve({});
+		},
+		getCommands() {
+			return Promise.resolve({
+				commands: [
+					{ name: "archive", description: "Archive this conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+					{ name: "unarchive", description: "Unarchive this conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+					{ name: "delete", description: "Delete this conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+					{ name: "restore", description: "Restore this deleted conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+				],
+			});
 		},
 		createConversation() {
 			if (init.createError !== undefined)
@@ -158,6 +184,7 @@ function stubClient(init: {
 		forkCalls,
 		watchCalls,
 		watchRegistry,
+		patchCalls,
 	};
 }
 
@@ -453,6 +480,79 @@ describe("TuiApp", () => {
 		await app.createAndSelect();
 		expect(app.activeConversationId).toBe(4);
 		expect(watchCalls).toEqual([3, 4]);
+	});
+});
+
+// ─── Deleted conversations (Task 4) ────────────────────────────────────
+
+describe("TuiApp deleted conversations", () => {
+	test("/archive reaches its case (served by the catalog) and patches archived:true", async () => {
+		const { client, watchCalls, watchRegistry, patchCalls } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		await app.runCommand("/archive");
+		expect(patchCalls).toEqual([{ id: 3, patch: { archived: true } }]);
+	});
+
+	test("/delete patches deleted:true for the active conversation and the pane shows the dim line", async () => {
+		const { client, watchCalls, watchRegistry, patchCalls } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		await app.runCommand("/delete");
+		expect(patchCalls).toEqual([{ id: 3, patch: { deleted: true } }]);
+		// After /delete the pane shows the dim line (the raw list row
+		// marked deleted on the post-patch sidebar refresh).
+		expect(app.pane.render(60).join("\n")).toContain(
+			"this conversation is deleted · /restore to restore it",
+		);
+	});
+
+	test("/restore patches deleted:false and the dim line clears", async () => {
+		const { client, watchCalls, watchRegistry, patchCalls } = stubClient({
+			rows: { 3: { deleted: true } },
+		});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// Boot selects a NON-deleted row (3 is deleted); open the deleted
+		// conversation explicitly — the raw list row marks it deleted
+		// (the sidebar drops it from its display rows; the pane reads
+		// the raw response).
+		await app.selectConversation(3);
+		expect(app.pane.render(60).join("\n")).toContain(
+			"this conversation is deleted · /restore to restore it",
+		);
+		await app.runCommand("/restore");
+		expect(patchCalls).toEqual([{ id: 3, patch: { deleted: false } }]);
+		expect(app.pane.render(60).join("\n")).not.toContain(
+			"this conversation is deleted",
+		);
+	});
+
+	test("/delete without an active conversation errors", async () => {
+		const { client, watchCalls, watchRegistry, patchCalls } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		// No refresh: no active conversation.
+		await app.runCommand("/delete");
+		expect(patchCalls).toEqual([]);
+		expect(app.pane.render(60).join("\n")).toContain(
+			"/delete needs an active conversation",
+		);
+		await app.runCommand("/restore");
+		expect(app.pane.render(60).join("\n")).toContain(
+			"/restore needs an active conversation",
+		);
 	});
 });
 

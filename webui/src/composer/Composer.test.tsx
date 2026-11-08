@@ -72,6 +72,11 @@ const COMMANDS = [
 	{ name: "thinking", description: "Set thinking level", argsHint: "<level>", endpoint: { method: "POST", path: "/v1/conversations/:id/configure" } },
 		{ name: "hello", description: "Say hello", argsHint: "<name>", extension: "fixture-commands", endpoint: { method: "POST", path: "/v1/conversations/:id/commands/hello" } },
 	{ name: "settings", description: "Open the settings panel (sections + search)", endpoint: { method: "GET", path: "/v1/settings/sections" } },
+	// Deleted-conversations Task 4: the catalog's archive/delete family.
+	{ name: "archive", description: "Archive this conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+	{ name: "unarchive", description: "Unarchive this conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+	{ name: "delete", description: "Delete this conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
+	{ name: "restore", description: "Restore this deleted conversation", endpoint: { method: "PATCH", path: "/v1/conversations/:id/meta" } },
 	// Task 2c expand entries: a prompt template (with its argument-hint as
 	// argsHint) and a skill (no hint) — no endpoint; the server expands at
 	// admission.
@@ -480,6 +485,44 @@ describe("Composer", () => {
 		).toEqual([]);
 	});
 
+	test("readOnly disables commands and pickers", async () => {
+		const { calls, client } = makeHarness();
+		const renderer = await renderAsync(
+			<Composer
+				client={client}
+				conversationId={1}
+				view={makeView()}
+				readOnly
+			/>,
+		);
+		// The whole composer is gated, not only Send: the pickers and the
+		// attach input are disabled too.
+		expect(
+			renderer.root.findByProps({ "data-picker": "model" }).props.disabled,
+		).toBe(true);
+		expect(
+			renderer.root.findByProps({ "data-picker": "thinking" }).props.disabled,
+		).toBe(true);
+		expect(
+			renderer.root.findByProps({ className: "composer-file-input" }).props
+				.disabled,
+		).toBe(true);
+		// The slash menu never opens (the textarea is disabled; the send
+		// path is guarded as well).
+		await act(async () => {
+			await sendButton(renderer).props.onClick();
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "composer-command-menu" }),
+		).toHaveLength(0);
+		// No PATCH/POST of any kind landed (no configure, no submissions).
+		expect(
+			calls.filter(
+				(call) => call.method === "POST" || call.method === "PATCH",
+			),
+		).toEqual([]);
+	});
+
 	describe("toolbar: live model + thinking pickers (B6)", () => {
 		test("picking a model from the popover POSTs configure and the pill follows", async () => {
 			const { calls, client } = makeHarness();
@@ -771,6 +814,10 @@ describe("Composer", () => {
 				"/thinking",
 				"/hello",
 				"/settings",
+				"/archive",
+				"/unarchive",
+				"/delete",
+				"/restore",
 				"/review",
 				"/skill:greet",
 			]);
@@ -833,6 +880,62 @@ describe("Composer", () => {
 				calls.filter((c) => c.input.endsWith("/submissions")),
 			).toEqual([]);
 			expect(composerTextarea(renderer).props.value).toBe("");
+		});
+
+		test("`/archive` patches archived:true and notices `archived`", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/archive");
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ archived: true }),
+			);
+			expect(
+				renderer.root.findByProps({ className: "composer-notice" })
+					.children.join(""),
+			).toBe("archived");
+		});
+
+		test("`/unarchive` patches archived:false and notices `unarchived`", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/unarchive");
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ archived: false }),
+			);
+			expect(
+				renderer.root.findByProps({ className: "composer-notice" })
+					.children.join(""),
+			).toBe("unarchived");
+		});
+
+		test("`/delete` patches deleted:true and notices `deleted`", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/delete");
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ deleted: true }),
+			);
+			expect(
+				renderer.root.findByProps({ className: "composer-notice" })
+					.children.join(""),
+			).toBe("deleted");
+		});
+
+		test("`/restore` patches deleted:false and notices `restored`", async () => {
+			const { calls, client } = makeHarness();
+			const renderer = await renderComposer(client, makeView());
+			await submitLine(renderer, "/restore");
+			const patches = calls.filter((c) => c.method === "PATCH");
+			expect(patches.map((c) => c.body)).toContain(
+				JSON.stringify({ deleted: false }),
+			);
+			expect(
+				renderer.root.findByProps({ className: "composer-notice" })
+					.children.join(""),
+			).toBe("restored");
 		});
 
 		test("an unknown /command on submit is a CLEAR alert-strip error, not a submission", async () => {
@@ -1023,7 +1126,7 @@ describe("Composer", () => {
 		test("the menu shows expand entries with their argument-hint, filtered by prefix", async () => {
 			const { client } = makeHarness();
 			const renderer = await renderComposer(client, makeView());
-			await typeText(renderer, "/re");
+			await typeText(renderer, "/rev");
 			expect(menuNames(renderer)).toEqual(["/review"]);
 			// The template's argument-hint renders in the option (the menu is
 			// the only text on screen with `/review` in it right now).
@@ -1035,7 +1138,7 @@ describe("Composer", () => {
 		test("selecting an expand template from the menu inserts `/review ` and does NOT submit", async () => {
 			const { calls, client } = makeHarness();
 			const renderer = await renderComposer(client, makeView());
-			await typeText(renderer, "/re");
+			await typeText(renderer, "/rev");
 			const option = renderer.root.findByProps({
 				className: "composer-command-name",
 			});

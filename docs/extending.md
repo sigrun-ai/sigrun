@@ -305,6 +305,15 @@ effects are identical by construction:
   declines the conversation's pending declinable interaction records
   (`declinedVia: "message"`); a submit without `user` never declines
   anything (spec §5.3 of the ask-user design).
+  A DELETED conversation (`SessionMeta.deleted`, below) refuses every
+  work-starting op: `submit`, `configure`, `compact`, `upload` and the
+  extension-command invoke route throw/reply
+  `ConversationOpError({error: "conversation_deleted"}, 409)` — the guard
+  is the FIRST statement of the op, so no pending-change note lands
+  either. Reads, `watch`, `fork`, `patchMeta`, `abort` and interaction
+  answers are never gated (a deleted conversation stays openable, and a
+  live run admitted before the deletion still finishes). Restore with
+  `patchMeta(id, {deleted: false})`.
 - `watch(id, listener)` — the SSE stream's snapshot-first shape.
 - `list({owner, archived})` / `meta(id)` — the durable listing and the
   session-meta read (a superuser-shaped view: extensions are trusted).
@@ -324,11 +333,18 @@ effects are identical by construction:
   `owner` stamps the fork's session owner (absent = the key removed —
   the fork is the forker's private copy, sharing dropped, autoName
   seeded `"<source> (fork)"`).
-- `patchMeta(id, {name, archived, sharing})` — the meta PATCH route's
-  op. **Trusted-host note:** the sharing patch runs with NO
+- `patchMeta(id, {name, archived, sharing, deleted})` — the meta PATCH
+  route's op. **Trusted-host note:** the sharing patch runs with NO
   owner-or-superuser gate — the caller is in-process server code that
   already decided the write is legitimate. The HTTP route keeps its
   403 for a non-owner; the host carries no principal to check.
+  `SessionMeta.deleted` (`deleted: true`) marks the conversation
+  read-only (the guard above); it is TRUE-only in the doc — `false`
+  or `null` removes the key, so restored rows carry no `deleted`
+  field. The HTTP PATCH is owner-gated; a fixed-conversation job fire
+  into a deleted conversation writes an immediately-settled failed
+  run (`error: "conversation_deleted"`) without submitting, and the
+  curator's fork review refuses deleted conversations.
 - `upload(id, {name, mime?, bytes})` → `{path}` — the raw-upload route's
   op (gateway C4b): writes `uploads/<conversationId>/<name>` through
   the conversation's workspace env and returns the path exactly as a

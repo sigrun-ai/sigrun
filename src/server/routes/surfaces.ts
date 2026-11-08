@@ -47,6 +47,10 @@ import {
 import { NamedUserRequiredError } from "../surfaces/settings-surfaces.js";
 import { applyChatAction, chatActionStartsTurn, readChatBlock, resolveChatHandlers } from "../blocks/chat-surfaces.js";
 import { answerBlock } from "../blocks/answers.js";
+import {
+	assertNotDeleted,
+	ConversationOpError,
+} from "../conversation-ops.js";
 import { accessOf } from "@sigrun/shared/access";
 import { accessPrincipalOf } from "../auth/access-principal.js";
 import { SessionMetaDoc } from "../session-meta.js";
@@ -672,16 +676,36 @@ export function registerSurfaceRoutes(
 			if (chatActionStartsTurn(block.tree, body.action)) {
 				const answerPayload = (body.payload ?? null) as JsonValue;
 				const wrapped = { ok: true as const, rev: block.state.rev };
-				await answerBlock(
-					ctx,
-					id,
-					entryId,
-					body.action,
-					answerPayload,
-					actionId,
-					// The acting user authors the answer turn (curator P1).
-					request.principal.user,
-				);
+				try {
+					// The deleted guard precedes answerBlock's fold: a refused
+					// answer must not advance notedThrough in the deleted
+					// conversation (Task 3 review P1).
+					const conversation = await ctx.opened.harness.conversation(
+						id as never,
+						BACKGROUND_CONTEXT,
+					);
+					if (conversation === undefined) {
+						return await reply
+							.code(404)
+							.send({ error: "conversation_not_found" });
+					}
+					await assertNotDeleted(ctx, conversation);
+					await answerBlock(
+						ctx,
+						id,
+						entryId,
+						body.action,
+						answerPayload,
+						actionId,
+						// The acting user authors the answer turn (curator P1).
+						request.principal.user,
+					);
+				} catch (error) {
+					if (error instanceof ConversationOpError) {
+						return await reply.code(error.status).send(error.body);
+					}
+					throw error;
+				}
 				if (actionId !== undefined) {
 						ctx.surfaces.chatDedupRecord(actionId, address, fingerprint, wrapped);
 				}

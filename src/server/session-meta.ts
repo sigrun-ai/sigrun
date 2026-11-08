@@ -114,6 +114,7 @@ export function validateSessionMetaPatch(
 		pinned?: boolean | null;
 		tagged?: readonly string[] | null;
 		archived?: boolean | null;
+		deleted?: boolean | null;
 		draft?: {
 			text?: string | null;
 			attachments?: readonly string[] | null;
@@ -125,12 +126,14 @@ export function validateSessionMetaPatch(
 		const value = record[key];
 		switch (key) {
 			case "pinned":
-			case "archived": {
+			case "archived":
+			case "deleted": {
 				if (value !== null && typeof value !== "boolean") {
 					return { error: "invalid_body" };
 				}
 				if (key === "pinned") patch.pinned = value;
-				else patch.archived = value;
+				else if (key === "archived") patch.archived = value;
+				else patch.deleted = value;
 				break;
 			}
 			case "tagged": {
@@ -249,6 +252,12 @@ export function applySessionMetaPatch(
 ): void {
 	if (patch.pinned !== undefined) draft.pinned = patch.pinned ?? false;
 	if (patch.archived !== undefined) draft.archived = patch.archived ?? false;
+	// `deleted` is present only while true: both `false` and `null`
+	// remove the key, so restored rows never carry `deleted: false`.
+	if (patch.deleted !== undefined) {
+		if (patch.deleted === true) draft.deleted = true;
+		else delete draft.deleted;
+	}
 	if (patch.tagged !== undefined) {
 		draft.tagged = patch.tagged === null ? [] : [...patch.tagged];
 	}

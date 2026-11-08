@@ -122,6 +122,30 @@ export class ConversationOpError extends Error {
 const WAIT_MS_MAX = 60_000;
 
 /**
+ * Deleted conversations Task 3: the read-only guard. A deleted
+ * conversation (`SessionMeta.deleted === true`) stays OPENABLE — reads,
+ * SSE, fork, meta PATCH, abort and interaction answers are never gated —
+ * but every op that would start NEW work in it throws
+ * `ConversationOpError({error: "conversation_deleted"}, 409)`. The guarded
+ * ops are submitOp, compactOp, configureOp, uploadOp and the
+ * extension-command invoke route (routes/submissions.ts); jobs check the
+ * same flag in fire.ts.
+ */
+export async function assertNotDeleted(
+	ctx: ServerContext,
+	conversation: Conversation,
+): Promise<void> {
+	const meta = await ctx.opened.harness.snapshot(
+		SessionMetaDoc,
+		conversation.id,
+		BACKGROUND_CONTEXT,
+	);
+	if (meta?.deleted === true) {
+		throw new ConversationOpError({ error: "conversation_deleted" }, 409);
+	}
+}
+
+/**
  * Race `submission.wait` against a `waitMs` timer (§7.1): the wait winning
  * returns the settled record; the timer winning returns whichever record is
  * CURRENT (mid-run). The losing wait's eventual rejection is never left
@@ -490,6 +514,11 @@ export async function continueOp(
 	opts: { readonly requestId?: unknown; readonly user?: string } = {},
 ): Promise<ContinueResponse> {
 	const { opened } = ctx;
+	// The deleted guard precedes the pending-note write, exactly as in
+	// submitOp: a refused Continue neither declines a pending question
+	// nor appends a `sigrun.blocks.note` entry to a deleted conversation
+	// (the deleted-conversations plan's deferred obligation for this op).
+	await assertNotDeleted(ctx, conversation);
 	if (
 		opts.requestId !== undefined &&
 		(typeof opts.requestId !== "string" || opts.requestId.startsWith("job:"))
@@ -581,6 +610,11 @@ export async function submitOp(
 	opts: SubmitOpOptions = {},
 ): Promise<SubmissionRecord> {
 	const { opened } = ctx;
+	// The deleted guard is the FIRST statement: it precedes
+	// parseSubmissionInput AND writePendingNote, so a refused submission
+	// neither admits an input nor appends a `sigrun.blocks.note` entry to
+	// the deleted conversation.
+	await assertNotDeleted(ctx, conversation);
 	const parsed = parseSubmissionInput(input);
 	if (!parsed.ok) {
 		throw new ConversationOpError({ error: "invalid_input" });
@@ -886,6 +920,7 @@ export async function listConversationsOp(
 					? {}
 					: { jobOutcome: meta.jobOutcome }),
 				...(meta?.adopted === undefined ? {} : { adopted: meta.adopted }),
+				...(meta?.deleted === true ? { deleted: true } : {}),
 				...(meta?.lastActivityAt === undefined
 					? {}
 					: { lastActivityAt: meta.lastActivityAt }),
@@ -947,6 +982,7 @@ export async function configureOp(
 	},
 ): Promise<ConfigureResponse> {
 	const { opened } = ctx;
+	await assertNotDeleted(ctx, conversation);
 	if (
 		body === undefined ||
 		body === null ||
@@ -1107,6 +1143,7 @@ export async function compactOp(
 	conversation: Conversation,
 	instructions?: unknown,
 ): Promise<CompactResponse> {
+	await assertNotDeleted(ctx, conversation);
 	// The route's instructions validation, moved in: the HTTP caller's
 	// raw value and the host's typed value take the SAME check (host
 	// inputs are typed, but the op still validates).
@@ -1253,6 +1290,9 @@ export async function forkOp(
 		delete draft.autoName;
 		delete draft.autoNameAttempts;
 		delete draft.sharing;
+		// A fork is not deleted: drop the copied deleted marker (the doc
+		// briefly inherits it via fork: "current").
+		delete draft.deleted;
 		if (opts.owner === undefined) delete draft.owner;
 		else draft.owner = opts.owner;
 		if (sourceName !== undefined) draft.autoName = `${sourceName} (fork)`;
@@ -1315,10 +1355,15 @@ export async function patchMetaOp(
 	if ("error" in validated) {
 		throw new ConversationOpError(validated);
 	}
-	// §5.9: `sharing` additionally requires the OWNER or a superuser —
-	// write access (granted by a share) must not let a recipient re-share
-	// the resource. Host callers pass no principal (trusted).
-	if (opts.principal !== undefined && validated.sharing !== undefined) {
+	// §5.9: `sharing` and `deleted` additionally require the OWNER or a
+	// superuser — write access (granted by a share) must not let a
+	// recipient re-share the resource nor delete/restore it (the gate
+	// covers ANY `deleted` patch value, so a recipient can neither delete
+	// nor restore). Host callers pass no principal (trusted).
+	if (
+		opts.principal !== undefined &&
+		(validated.sharing !== undefined || validated.deleted !== undefined)
+	) {
 		const meta = await opened.harness.snapshot(
 			SessionMetaDoc,
 			conversation.id,
@@ -1406,6 +1451,7 @@ export async function uploadOp(
 	conversation: Conversation,
 	file: { readonly name: string; readonly mime?: string; readonly bytes: Uint8Array },
 ): Promise<{ readonly path: string }> {
+	await assertNotDeleted(ctx, conversation);
 	if (!validUploadName(file.name)) {
 		throw new ConversationOpError({ error: "invalid_field", field: "name" });
 	}

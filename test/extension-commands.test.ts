@@ -193,6 +193,11 @@ describe("extension slash commands: the catalog merge", () => {
 			"name",
 			"model",
 			"thinking",
+			// Deleted conversations Task 3: the meta-PATCH command entries.
+			"archive",
+			"unarchive",
+			"delete",
+			"restore",
 			"jobs",
 			"settings",
 			// The gateway built-in's commands and the curator's `/learn`

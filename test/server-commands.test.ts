@@ -104,6 +104,11 @@ describe("GET /v1/commands", () => {
 			"name",
 			"model",
 			"thinking",
+			// Deleted conversations Task 3: the meta-PATCH command entries.
+			"archive",
+			"unarchive",
+			"delete",
+			"restore",
 			"jobs",
 			// U4's core settings command, then the built-ins' commands —
 			// the gateway's two (gateway Task 4, §8.2) and the curator's

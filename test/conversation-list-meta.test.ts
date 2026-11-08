@@ -257,6 +257,37 @@ describe("GET /v1/conversations list metadata", () => {
 		expect("parent" in rows.find((row) => row.id === root.id)!).toBe(false);
 	});
 
+	test("a fork of a deleted conversation is not deleted", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const settled = await submit(app, root.id, "hello");
+		expect(settled.submission.status).toBe("done");
+		expect((await patchMeta(app, root.id, { deleted: true })).statusCode).toBe(200);
+		const forked = await app.inject({
+			method: "POST",
+			url: `/v1/conversations/${root.id}/fork`,
+		});
+		expect(forked.statusCode).toBe(201);
+		const forkId = forked.json().id as number;
+		// The copied meta doc briefly inherits `deleted` (fork: "current");
+		// forkOp's meta-reset commit drops it: a fork is not deleted.
+		const meta = await opened.harness.snapshot(
+			SessionMetaDoc,
+			forkId as never,
+			BACKGROUND_CONTEXT,
+		);
+		expect(meta).not.toHaveProperty("deleted");
+		// The source stays deleted.
+		const sourceMeta = await opened.harness.snapshot(
+			SessionMetaDoc,
+			root.id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(sourceMeta?.deleted).toBe(true);
+	});
+
 	test("creation and settled runs both stamp lastActivityAt", async () => {
 		const { app, opened } = await bootServer({ now: () => new Date(PINNED) });
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -342,6 +373,24 @@ describe("GET /v1/conversations lean list", () => {
 		const plainRow = rows.find((row) => row.id === plain.id)!;
 		expect("jobOutcome" in plainRow).toBe(false);
 		expect("adopted" in plainRow).toBe(false);
+	});
+
+	test("the list carries deleted; a non-deleted row has no deleted key", async () => {
+		const { app } = await bootServer();
+		const plain = await createViaRoute(app);
+		const deleted = await createViaRoute(app);
+		expect((await patchMeta(app, deleted, { deleted: true })).statusCode).toBe(200);
+		const rows = await listRows(app);
+		expect(rows.find((row) => row.id === deleted)).toMatchObject({
+			deleted: true,
+		});
+		const plainRow = rows.find((row) => row.id === plain)!;
+		expect("deleted" in plainRow).toBe(false);
+		// Restoring also removes the key from the list row.
+		expect((await patchMeta(app, deleted, { deleted: false })).statusCode).toBe(200);
+		const restoredRows = await listRows(app);
+		const restoredRow = restoredRows.find((row) => row.id === deleted)!;
+		expect("deleted" in restoredRow).toBe(false);
 	});
 
 	test("summaries carry no entryCount key", async () => {

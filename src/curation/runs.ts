@@ -678,6 +678,13 @@ export async function forkReviewRun(
 		return notEligible("the conversation is internal");
 	}
 	const meta = await harness.snapshot(SessionMetaDoc, id, BACKGROUND_CONTEXT);
+	// Deleted conversations Task 3: core gates loop 1 only — a deleted
+	// conversation spawns no NEW review runs. Loop 2's digests are text
+	// queued by the curator extension, and digests queued before a
+	// deletion still run (accepted).
+	if (meta?.deleted === true) {
+		return notEligible("the conversation is deleted");
+	}
 	const owner = meta?.owner;
 	if (owner === undefined) {
 		return notEligible("the conversation has no owner");

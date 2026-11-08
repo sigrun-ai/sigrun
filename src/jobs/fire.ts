@@ -320,6 +320,37 @@ async function firePrompt(
 		if (conversation === undefined) {
 			return { outcome: "blocked" };
 		}
+		// Deleted conversations Task 3: a fixed fire into a DELETED
+		// conversation never submits. It writes an immediately-settled
+		// failed run (the overlap-skip shape, so task.ts needs no change),
+		// refreshes lastRun, and reports the fire skipped — the deleted
+		// conversation gains no submission and no change note.
+		const meta = await deps.harness.snapshot(
+			SessionMetaDoc,
+			conversationId as ConversationId,
+			context,
+		);
+		if (meta?.deleted === true) {
+			const failed: JobRunWire = {
+				...baseRun,
+				conversationId,
+				outcome: "failed",
+				error: "conversation_deleted",
+				settledAt: baseRun.startedAt,
+			};
+			await deps.harness.commit(async (tx) => {
+				await tx.doc(JobRunDoc, fireKey, failed);
+			}, context);
+			await patchJob(
+				deps.harness,
+				id,
+				(draft) => {
+					draft.lastRun = failed;
+				},
+				context,
+			);
+			return { outcome: "skipped" };
+		}
 		const run: JobRunWire = {
 			...baseRun,
 			conversationId,

@@ -258,6 +258,10 @@ export class ConversationPane implements Component {
 	readonly #noticeComponents: Component[] = [];
 
 	#turns: readonly Turn<EntryShape>[] = [];
+	/** Deleted-conversations Task 4: the app sets this from the RAW list
+	 *  row (re-checked per sidebar refresh and on conversation swap);
+	 *  the dim line renders under the last turn until restored. */
+	#deleted = false;
 	/** The latest view's `run ended:` line (stream state — recomputed on
 	 *  every `showView`, unlike the composer-owned notices). */
 	#runFailureLine: string | undefined;
@@ -417,6 +421,15 @@ export class ConversationPane implements Component {
 		this.#appendNotice({ kind: "error", text });
 	}
 
+	/** Deleted-conversations Task 4: show (or clear) the dim deleted
+	 *  line. The app drives it from the raw list rows, never the view
+	 *  stream (which carries no meta). */
+	setDeleted(deleted: boolean): void {
+		if (deleted === this.#deleted) return;
+		this.#deleted = deleted;
+		this.#rebuild();
+	}
+
 	/** Append a `[notice]` line (an outcome, e.g. an abort that settled). */
 	showNotice(text: string): void {
 		this.#appendNotice({ kind: "notice", text });
@@ -535,6 +548,20 @@ export class ConversationPane implements Component {
 		if (this.#runFailureLine !== undefined) {
 			this.#container.addChild(
 				new Text(this.#theme.dim(this.#runFailureLine), 0, 0),
+			);
+		}
+		// The deleted dim line (deleted-conversations Task 4) rides under
+		// the transcript, above the composer notices — verbatim copy from
+		// the plan's Global Constraints.
+		if (this.#deleted) {
+			this.#container.addChild(
+				new Text(
+					this.#theme.dim(
+						"this conversation is deleted · /restore to restore it",
+					),
+					0,
+					0,
+				),
 			);
 		}
 		for (const notice of this.#notices) {

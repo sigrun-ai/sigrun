@@ -1136,6 +1136,79 @@ describe("pi-durable 1.5.0 commit semantics", () => {
 // ---------------------------------------------------------------------------
 
 describe("conversation summary change events", () => {
+	test("deleted changes emit conversation.changed", async () => {
+		const { bus, root } = await bootBus();
+		const events: HostEvent[] = [];
+		bus.onHostEvent((event) => events.push(event));
+
+		// The creating commit (materializing the doc with deleted set) emits.
+		// The creation diff also carries `source` (the doc's default source
+		// is creation-time news, same as the existing jobOutcome fixture).
+		await root.commit(async (tx) => {
+			const draft = await tx.doc(SessionMetaDoc, root.id);
+			draft.deleted = true;
+		}, BACKGROUND_CONTEXT);
+		expect(events).toContainEqual(
+			expect.objectContaining({
+				type: "conversation.changed",
+				conversationId: root.id,
+				fields: expect.objectContaining({ deleted: true }),
+			}),
+		);
+
+		// Clearing through the generalized path emits deleted: false on the
+		// EVENT even though the stored key is removed (event vs doc shape).
+		events.length = 0;
+		await root.commit(async (tx) => {
+			const draft = await tx.doc(SessionMetaDoc, root.id);
+			delete draft.deleted;
+		}, BACKGROUND_CONTEXT);
+		expect(events).toContainEqual({
+			type: "conversation.changed",
+			conversationId: root.id,
+			fields: { deleted: false },
+		});
+	});
+
+	test("a fork of a deleted conversation emits no deleted change", async () => {
+		const { bus, root } = await bootBus({
+			responses: [fauxAssistantMessage("turn one")],
+		});
+		const events: HostEvent[] = [];
+		bus.onHostEvent((event) => events.push(event));
+		await runTurn(root, "hello");
+		await root.commit(async (tx) => {
+			const draft = await tx.doc(SessionMetaDoc, root.id);
+			draft.deleted = true;
+		}, BACKGROUND_CONTEXT);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		events.length = 0;
+
+		const at = await newestEntryId(root);
+		const child = await root.fork(
+			at,
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+		// The fork-reset follow-up commit drops the copied `deleted` key —
+		// mirroring forkOp's meta reset (name/autoName/sharing/deleted).
+		await child.commit(async (tx) => {
+			const draft = await tx.doc(SessionMetaDoc, child.id);
+			delete draft.deleted;
+		}, BACKGROUND_CONTEXT);
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+
+		// The child's basis must NOT inherit `deleted`: the fork itself and
+		// the reset both stay silent about it (a copied basis would emit a
+		// spurious {deleted: false} when the reset clears the copied key).
+		const deletedEvents = events.filter(
+			(event) =>
+				event.type === "conversation.changed" &&
+				"deleted" in event.fields,
+		);
+		expect(deletedEvents).toEqual([]);
+	});
+
 	test("jobOutcome, adopted and source changes emit conversation.changed", async () => {
 		const { bus, root } = await bootBus();
 		const events: HostEvent[] = [];

@@ -13,6 +13,7 @@ import type { SigrunHost } from "../../extension.js";
 import { UnservedModelError } from "../../harness/providers/index.js";
 import {
 	abortOp,
+	assertNotDeleted,
 	compactOp,
 	configureOp,
 	continueOp,
@@ -96,7 +97,10 @@ export function registerSubmissionRoutes(
 				return await reply.code(202).send({ submission: record });
 			} catch (error) {
 				if (error instanceof ConversationOpError) {
-					return await reply.code(400).send(error.body);
+					// Each op error carries its own status (deleted
+					// conversations Task 3: 409 conversation_deleted); the
+					// existing validation vocabulary keeps its default 400.
+					return await reply.code(error.status).send(error.body);
 			}
 				if (error instanceof UnservedModelError) {
 					return await reply.code(400).send({
@@ -304,6 +308,18 @@ export function registerSubmissionRoutes(
 		async (request, reply): Promise<void> => {
 			const conversation = request.conversation;
 			const { name } = request.params as { name: string };
+			// Deleted conversations Task 3: an extension command starts NEW
+			// work (it may submit or mutate), so it takes the read-only
+			// guard BEFORE anything else — body validation, the catalog
+			// lookup, the run.
+			try {
+				await assertNotDeleted(ctx, conversation);
+			} catch (error) {
+				if (error instanceof ConversationOpError) {
+					return await reply.code(error.status).send(error.body);
+				}
+				throw error;
+			}
 			// The body convention of configure/compact: absent is valid (no
 			// args); an object may carry ONLY `args`, a non-string `args` is a
 			// fail-loud 400.

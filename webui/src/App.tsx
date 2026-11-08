@@ -1376,6 +1376,45 @@ function AppShell(options: AppOptions = {}) {
 		[client, list.reload],
 	);
 
+	// Deleted-conversations Task 4: delete/restore ride the SAME meta
+	// channel as archive (a true-only flag — restore patches deleted:false
+	// and the server REMOVES the key). The reload refreshes the raw list
+	// row the read-only gate below reads.
+	const deleteConversation = useCallback(
+		async (id: number): Promise<void> => {
+			try {
+				await client.patchConversationMeta(id, { deleted: true });
+				await list.reload();
+				setShellError(null);
+			} catch (cause) {
+				setShellError(
+					`delete failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+				// A failed delete must not produce a "Conversation deleted"
+				// Undo toast; SessionList handles the rejection as a no-op.
+				throw cause;
+			}
+		},
+		[client, list.reload],
+	);
+
+	const restoreConversation = useCallback(
+		async (id: number): Promise<void> => {
+			try {
+				await client.patchConversationMeta(id, { deleted: false });
+				await list.reload();
+				setShellError(null);
+			} catch (cause) {
+				setShellError(
+					`restore failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+				);
+				// Keep the Undo toast's failure path explicit as well.
+				throw cause;
+			}
+		},
+		[client, list.reload],
+	);
+
 	const onFork = useCallback(
 		(id: number): void => {
 			client
@@ -1444,6 +1483,14 @@ function AppShell(options: AppOptions = {}) {
 		if (activeId === null) return;
 		void archiveConversation(activeId, !activeArchived);
 	}, [activeId, activeArchived, archiveConversation]);
+
+	// The open conversation's deleted state comes from the RAW list row
+	// (the same channel as activeArchived), refreshed by the existing
+	// conversation.changed → list reload — the view stream carries NO
+	// meta. A deleted conversation is read-only (the banner owns the
+	// message; the composer's placeholder stays as-is).
+	const activeDeleted =
+		list.rows.find((row) => row.id === activeId)?.deleted === true;
 
 	// The sign-out closure (W1 Task 8; tabs+skills Task 2): ONE callback
 	// shared by the rail footer and the bottom bar's More sheet — the
@@ -1539,6 +1586,9 @@ function AppShell(options: AppOptions = {}) {
 						onFork={onFork}
 						currentUser={identity?.user}
 						onShare={setShareFor}
+						onDelete={deleteConversation}
+						onRestore={restoreConversation}
+						admin={identity?.admin}
 					/>
 				)}
 			</div>
@@ -1679,6 +1729,27 @@ function AppShell(options: AppOptions = {}) {
 						/>
 					) : route.kind === "chat" ? (
 						<div className="chat-column">
+						{activeDeleted && activeId !== null && (
+							<div className="deleted-banner" role="status">
+								<span className="deleted-banner-message">
+									This conversation is deleted.
+								</span>
+								<button
+									type="button"
+									className="deleted-banner-restore"
+									data-menu-action="restore"
+									onClick={() => {
+										if (activeId !== null) {
+											// The shell error above owns the failure text; the
+											// banner has no toast to gate, so just consume it.
+											void restoreConversation(activeId).catch(() => undefined);
+										}
+									}}
+								>
+									Restore
+								</button>
+							</div>
+						)}
 						<ChatCenter
 							activeId={activeId}
 							view={view}
@@ -1710,8 +1781,9 @@ function AppShell(options: AppOptions = {}) {
 							onOpenSettings={onOpenSettings}
 							enterToSend={prefsState.prefs.enterToSend}
 							readOnly={
+								activeDeleted ||
 								list.rows.find((row) => row.id === activeId)?.access ===
-								"read"
+									"read"
 							}
 							inlineNotices={
 								activeId === null

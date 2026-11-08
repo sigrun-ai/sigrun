@@ -182,6 +182,7 @@ describe("host.curation (curator P6 surface)", () => {
 		const eligibility = await curation.eligibility(id as ConversationId);
 		expect(eligibility.owner).toBe("alice");
 		expect(eligibility.internal).toBe(false);
+		expect(eligibility.deleted).toBe(false);
 		// The one settled turn's user entry is attributed to alice (the
 		// harness-level submit records the author through P1's seam when
 		// given a user; the ownedConversation helper submits bare —
@@ -265,6 +266,13 @@ describe("host.curation (curator P6 surface)", () => {
 				oldest.items[0].id,
 			),
 		).toBe(504);
+
+		// Loop 2's deletion gate reads the live meta, not a list projection.
+		await opened.harness.commit(async (tx) => {
+			const meta = await tx.doc(SessionMetaDoc, id as ConversationId);
+			meta.deleted = true;
+		}, BACKGROUND_CONTEXT);
+		expect((await curation.eligibility(id as ConversationId)).deleted).toBe(true);
 	});
 
 	/**
