@@ -143,6 +143,7 @@
 .blk-field-row dd {
 	display: flex;
 	gap: 0.4rem;
+	justify-content: flex-end;
 	margin: 0;
 	overflow-wrap: anywhere;
 	text-align: end;
