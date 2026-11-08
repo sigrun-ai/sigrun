@@ -121,19 +121,22 @@ export function registerMetricsRoutes(
 		let up = 1;
 		try {
 			const inspection = await opened.harness.inspect(BACKGROUND_CONTEXT);
-			// Live runs: conversations holding a placed-but-unsettled INPUT
+			// Live runs: conversations holding a placed-but-unsettled run
 			// submission (queued inputs run nothing yet; write-type
 			// submissions never run at all). Durable-derived, so a
 			// pre-restart run still counts — only the wedge AGE above is
 			// restart-invisible.
 			const liveConversations = new Set<number>();
 			for (const submission of inspection.submissions) {
-				if (submission.type !== "input" || submission.status !== "placed") {
+				if (
+					(submission.type !== "input" && submission.type !== "continue") ||
+					submission.status !== "placed"
+				) {
 					continue;
 				}
 				liveConversations.add(submission.conversationId);
 			}
-			family("sigrun_live_runs", "Conversations with a live input run", [
+			family("sigrun_live_runs", "Conversations with a live run", [
 				{ labels: {}, value: liveConversations.size },
 			]);
 			// The wedge gauge: the admission clock's age over the oldest

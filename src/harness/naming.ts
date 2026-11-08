@@ -141,6 +141,7 @@ export function createAutoNamer(deps: AutoNamerDeps): AutoNamer {
 		const id = event.conversationId;
 		try {
 			if (event.outcome.status !== "answered") return;
+			if (event.continued === true && event.inputs.length === 1) return;
 			if (deps.readSettings().namingModel === false) return;
 			if (await deps.isTaskOwned(id)) return;
 			const conversation = await deps.harness.conversation(id, BACKGROUND_CONTEXT);

@@ -27,7 +27,9 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
+	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
+import type { AssistantMessage } from "@earendil-works/pi-ai";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { seededIdentity } from "./helpers/identity.js";
@@ -44,6 +46,7 @@ const SAMPLE_LINE = /^[a-z_]+(\{[^}]*\})? -?[0-9.e+]+$/;
 interface TestServer {
 	app: FastifyInstance;
 	opened: OpenedHarness;
+	faux: FauxProviderHandle;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -87,7 +90,7 @@ async function bootServer(): Promise<TestServer> {
 		await opened.harness.close(BACKGROUND_CONTEXT).catch(() => {});
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened };
+	return { app, opened, faux };
 }
 
 /** GET /metrics (200 asserted) as raw exposition text. */
@@ -212,6 +215,39 @@ describe("GET /metrics (W2 Task 8, spec §6.9)", () => {
 		expect(samples).toContain('sigrun_durable_reports_total{type="task_faulted"} 1');
 		expect(samples).toContain('sigrun_durable_reports_total{type="storage_failed"} 0');
 		expect(samples).toContain('sigrun_jobs_blocked{reason="restart_limit"} 0');
+	});
+
+	test("a placed continue counts as a live run", async () => {
+		const { app, opened, faux } = await bootServer();
+		// The first run fails, leaving the conversation resumable. The
+		// continue's response is then held so its placed row is observable.
+		faux.setResponses([
+			fauxAssistantMessage("boom", {
+				stopReason: "error",
+				errorMessage: "faux provider failure",
+			}),
+		]);
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const failed = await root.submit(
+			{ type: "input", content: "hello" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await failed.wait(BACKGROUND_CONTEXT)).status).toBe("unanswered");
+		let release!: () => void;
+		const gate = new Promise<AssistantMessage>((resolve) => {
+			release = () => resolve(fauxAssistantMessage("resumed"));
+		});
+		faux.setResponses([async () => await gate]);
+		const continued = await root.submit(
+			{ type: "continue" },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await continued.status(BACKGROUND_CONTEXT)).status).toBe("placed");
+		expect(parseExposition(await getMetrics(app))).toContain("sigrun_live_runs 1");
+		release();
+		expect((await continued.wait(BACKGROUND_CONTEXT)).status).toBe("done");
 	});
 
 	test("a scrape racing shutdown (harness closed) answers 200 with sigrun_up 0", async () => {

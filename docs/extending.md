@@ -256,9 +256,21 @@ what core does with each, and where its rules are documented:
 | `publishedHooks` | `readonly PublishedHook[]` | named, schema-validated calls other extensions invoke via `host.publishedHooks`; a malformed declaration or uncompilable schema quarantines | ["Published hooks: calling another extension"](#published-hooks-calling-another-extension) |
 | `jobs` | `readonly JobSpec[]` | declared jobs under `ext:<slug>:<name>` ids; jobs are the only time-based scheduler | "Declaring jobs" |
 | `routes` | `readonly ExtensionRouteContribution[]` | HTTP routes mounted at `/v1/ext/<slug>/<path>` | ["HTTP routes"](#http-routes) |
+
+`runSettled` also covers runs started by a **Continue** press. A Continue
+input has no entry and contributes `""` at its position in `inputTexts`.
+The event's `continued` field is true whenever the run holds one; a run
+started by only a Continue is `event.continued === true &&
+event.inputs.length === 1`.
 | `commands` | `readonly ExtensionCommandContribution[]` | slash commands merged into `/v1/commands` | ["Slash commands"](#slash-commands) |
 | `skills` | `readonly string[]` | absolute skill directories your package contributes (validated: existing dirs; a bad entry quarantines) | ["Skills"](#skills) |
 | `noticeActions` | `{ readonly [name: string]: UserNoticeActionHandler }` | the handler names this extension's notice `extension` buttons may dispatch; a malformed entry quarantines | ["Notices"](#notices-a-transient-message-for-one-user) |
+
+`runSettled` also covers runs started by a **Continue** press. A Continue
+input has no entry and contributes `""` at its position in `inputTexts`.
+The event's `continued` field is true whenever the run holds one; a run
+started by only a Continue is `event.continued === true &&
+event.inputs.length === 1`.
 | `notifiers` | `readonly NotifierContribution[]` | notification transports core delivers events to (best-effort, per-recipient) | ["Notifiers"](#notifiers) |
 | `channels` | `readonly ChannelContribution[]` | chat-platform adapters the gateway engine drives; channel-id collisions across extensions quarantine the later loader | ["Channel adapters"](#channel-adapters) |
 | `gateway` | `GatewayEngine` | the ONE gateway engine (supervises every channel adapter); a second declarer quarantines — and never pair it with `health` | ["Gateway engines"](#gateway-engines) |
