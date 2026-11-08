@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 
+## [0.11.2] - 2026-11-08
+
+- Notices overlay: an extension action carrying a confirm asks before running (y/n); n/Esc/q cancels without posting.
+
+
 ## [0.11.1] - 2026-11-07
 
 - Version-locked bump with the 0.11.1 core line (no changes).
