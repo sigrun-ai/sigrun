@@ -724,10 +724,16 @@ describe("git sources in the unified extensions list", () => {
 	let fixture: ReturnType<typeof createGitFixture>;
 	let configDir: string;
 	let gitDir: string;
-	beforeAll(() => {
+	beforeAll(async () => {
 		fixture = createGitFixture();
 		configDir = freshDir("sigrun-gitcfg-");
 		gitDir = gitDirOf(configDir);
+		// Own the clone these tests inspect; shuffled order must not rely
+		// on the clone test having run first.
+		await syncPackages([fixture.url], packagesDirOf(configDir), {
+			log: false,
+			configDir,
+		});
 	});
 
 	test("an absent git source is cloned and its manifest entry discovered", async () => {
