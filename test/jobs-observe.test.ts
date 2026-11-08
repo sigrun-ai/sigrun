@@ -78,7 +78,11 @@ function observerRig(options: {
 	} as unknown as Harness;
 	const storage = {
 		scanDocuments: async () => ({
-			items: (options.listedRuns ?? []).map((item, index) => ({ id: index + 1, key: item.jobId })),
+			items: (options.listedRuns ?? []).map((item, index) => ({
+				id: index + 1,
+				// listRuns filters by the `<jobId>:` key prefix (docs.ts).
+				key: `${item.jobId}:${Date.parse(item.fireAt)}`,
+			})),
 			next: undefined,
 		}),
 		document: async (id: number) => ({
