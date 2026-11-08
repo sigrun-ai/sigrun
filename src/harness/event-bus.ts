@@ -834,11 +834,12 @@ export class EventBus {
 		if (this.#undeliveredLive.size > 0) {
 			terms.push(Math.min(...this.#undeliveredLive));
 		}
-		// Lowest first-input id over queued settle groups.
+		// Lowest first-input id over EVERY queued settle group: groups are
+		// id-sorted within one publication, but the queue holds enqueue order
+		// across publications, so the first queued group need not be the lowest.
 		for (const item of this.#queue) {
 			if (item.kind === "settled" && item.event.settled.length > 0) {
 				terms.push(item.event.settled[0]!.id);
-				break; // queue is ordered; the first settle group is the lowest
 			}
 		}
 		if (this.#droppedLowest !== undefined) {
