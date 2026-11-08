@@ -173,6 +173,102 @@ describe("buildConversationTree", () => {
 		).toEqual([1]);
 	});
 
+	it("deleted rows are dropped by default", () => {
+		// Every combination of the other options still drops `deleted: true`
+		// rows, whether archived, quiet job runs, or both.
+		const rows = [
+			row({ id: 1, deleted: true }),
+			row({ id: 2, deleted: true, archived: true }),
+			row({ id: 3, deleted: true, source: "cron", jobOutcome: "succeeded" }),
+			row({ id: 4, deleted: true, source: "cron", jobOutcome: "failed" }),
+			row({ id: 5, deleted: true, source: "cron", adopted: true }),
+			row({ id: 6 }),
+			row({ id: 7, archived: true }),
+			row({ id: 8, source: "cron", jobOutcome: "succeeded" }),
+		];
+		const options = [
+			{ includeArchived: false },
+			{ includeArchived: true },
+			{ includeArchived: false, includeJobRuns: false },
+			{ includeArchived: false, includeJobRuns: true },
+			{ includeArchived: true, includeJobRuns: false },
+			{ includeArchived: true, includeJobRuns: true },
+			{ includeArchived: false, deletedOnly: false },
+			{ includeArchived: true, includeJobRuns: true, deletedOnly: false },
+		];
+		for (const opts of options) {
+			const tree = buildConversationTree(rows, opts);
+			const ids = tree.map((node) => node.row.id);
+			expect(ids, JSON.stringify(opts)).not.toContain(1);
+			expect(ids, JSON.stringify(opts)).not.toContain(2);
+			expect(ids, JSON.stringify(opts)).not.toContain(3);
+			expect(ids, JSON.stringify(opts)).not.toContain(4);
+			expect(ids, JSON.stringify(opts)).not.toContain(5);
+			expect(ids, JSON.stringify(opts)).toContain(6);
+		}
+		// Non-deleted archived/quiet rows still follow their own rules.
+		expect(
+			buildConversationTree(rows, { includeArchived: false }).map((node) => node.row.id),
+		).toEqual([6]);
+		expect(
+			buildConversationTree(rows, {
+				includeArchived: true,
+				includeJobRuns: true,
+			}).map((node) => node.row.id),
+		).toEqual([8, 7, 6]);
+	});
+
+	it("deletedOnly keeps only deleted rows", () => {
+		// Archived and quiet job runs are kept when deleted; every
+		// non-deleted row is dropped and the other options are ignored.
+		const rows = [
+			row({ id: 1, deleted: true }),
+			row({ id: 2, deleted: true, archived: true }),
+			row({ id: 3, deleted: true, source: "cron", jobOutcome: "succeeded" }),
+			row({ id: 4, deleted: true, source: "cron" }),
+			row({ id: 5, deleted: true, source: "cron", jobOutcome: "failed" }),
+			row({ id: 6 }),
+			row({ id: 7, archived: true }),
+			row({ id: 8, source: "cron", jobOutcome: "succeeded" }),
+			row({ id: 9, source: "cron", jobOutcome: "failed" }),
+		];
+		const options = [
+			{ includeArchived: false, deletedOnly: true },
+			{ includeArchived: true, deletedOnly: true },
+			{ includeArchived: false, includeJobRuns: false, deletedOnly: true },
+			{ includeArchived: false, includeJobRuns: true, deletedOnly: true },
+			{ includeArchived: true, includeJobRuns: true, deletedOnly: true },
+		];
+		for (const opts of options) {
+			const ids = buildConversationTree(rows, opts).map((node) => node.row.id);
+			expect(ids, JSON.stringify(opts)).toEqual([5, 4, 3, 2, 1]);
+		}
+	});
+
+	it("a deleted parent's child is a root in the default view", () => {
+		const tree = buildConversationTree(
+			[
+				row({ id: 1, deleted: true }),
+				row({ id: 2, parent: { id: 1 } }),
+			],
+			{ includeArchived: false },
+		);
+		expect(tree.map((node) => node.row.id)).toEqual([2]);
+		expect(tree[0]!.children).toEqual([]);
+	});
+
+	it("a non-deleted parent's deleted child is a root in the deleted view", () => {
+		const tree = buildConversationTree(
+			[
+				row({ id: 1 }),
+				row({ id: 2, parent: { id: 1 }, deleted: true }),
+			],
+			{ includeArchived: false, deletedOnly: true },
+		);
+		expect(tree.map((node) => node.row.id)).toEqual([2]);
+		expect(tree[0]!.children).toEqual([]);
+	});
+
 	it("a fork of a quiet row is still placed", () => {
 		const tree = buildConversationTree(
 			[
