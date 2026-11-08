@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.4] - 2026-11-08
+
 ### Added
 
 - A Continue button on a failed run's line (webui) and a `/continue` command (webui and TUI) resume the run without a message. A failed job run rescued only by Continue loses its `Failed · ` label.

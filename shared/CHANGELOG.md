@@ -1,3 +1,7 @@
+## [0.11.4] - 2026-11-08
+
+- Version-locked bump with the 0.11.4 core line (no changes).
+
 # Changelog
 
 All notable changes to this project will be documented in this file.

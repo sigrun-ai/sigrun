@@ -294,12 +294,12 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		// while keeping 0.3.0). Each legitimately declares its line's
 		// acceptance; anything older — or a declaration from the WRONG
 		// line — is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.([3-9]|1[0-9]|2[0-5])$/);
+		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.([3-9]|1[0-9]|2[0-6])$/);
 		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
 			// The peer-widening line appends each new shared minor; the
 			// acceptance is the cumulative chain ending at the line's
-			// newest minor (0.11.3 as of the core 0.11.3 line).
-			/^0\.3\.0( \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2( \|\| 0\.11\.0( \|\| 0\.11\.1( \|\| 0\.11\.2( \|\| 0\.11\.3)?)?)?)?)?)?)?)?)?)?)?)?)?))?)?$/,
+			// newest minor (0.11.4 as of the core 0.11.4 line).
+			/^0\.3\.0( \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2( \|\| 0\.11\.0( \|\| 0\.11\.1( \|\| 0\.11\.2( \|\| 0\.11\.3( \|\| 0\.11\.4)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?$/,
 		);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not
