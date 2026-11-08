@@ -22,7 +22,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import http from "node:http";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
@@ -623,6 +623,9 @@ test("bob reusing alice's requestId gets no replay of alice's result", async () 
 });
 
 test("the 41st rapid call is 429", async () => {
+	// Freeze only Date: the burst assertion must not gain refill tokens
+	// when a loaded worker takes longer to issue the 41 calls.
+	vi.useFakeTimers({ toFake: ["Date"] });
 	const rig = await bootRig({ extensionSpecifiers: [NOTES_SPECIFIER] });
 	cleanups.push(rig.close);
 	const id = await postNotice(rig, {
