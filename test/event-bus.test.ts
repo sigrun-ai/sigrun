@@ -2385,11 +2385,11 @@ describe("startup replay", () => {
 			expect(await restarted.bus.replayUndelivered(restarted.opened.storage, BACKGROUND_CONTEXT)).toBe(1);
 			await restarted.bus.drain(10_000, BACKGROUND_CONTEXT);
 			expect(events.map((one) => one.event.inputs)).toEqual([
-				[queued.id, continued.id],
+				[original.id, queued.id, continued.id],
 			]);
 			expect(events[0]!.event).toMatchObject({
 				continued: true,
-				inputTexts: ["queued for continue", ""],
+				inputTexts: ["original failure", "queued for continue", ""],
 				replayed: true,
 				outcome: { status: "unanswered", reason: "model_error" },
 			});
