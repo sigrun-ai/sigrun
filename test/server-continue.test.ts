@@ -505,35 +505,73 @@ describe("POST /v1/conversations/:id/continue", () => {
 	});
 
 	test("continue declines a pending question", async () => {
-		const { app, opened, faux } = await bootServer({ declinable: true });
-		const root = await rootOf(opened);
+		const { app, opened, faux, aliceToken } = await bootServer({
+			declinable: true,
+			auth: "token",
+		});
+		if (aliceToken === undefined) throw new Error("alice token missing");
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			headers: { authorization: `Bearer ${aliceToken}` },
+		});
+		expect(created.statusCode).toBe(201);
+		const conversationId = created.json().id as number;
 		faux.setResponses([failedMessage()]);
-		const failed = await submitInput(app, root.id, "hello");
+		const failed = await submitInput(
+			app,
+			conversationId,
+			"hello",
+			undefined,
+			aliceToken,
+		);
 		await (await submissionOf(opened, failed.id)).wait(BACKGROUND_CONTEXT);
 		const host = (globalThis as Record<string, unknown>).__declinableHost as
 			| SeamHost
 			| undefined;
 		if (host === undefined) throw new Error("declinable host not captured");
 		await host.seedInteraction(
-			root.id,
+			conversationId as ConversationId,
 			{
 				kind: "decl.ask",
 				callId: "continue-question",
 				status: "pending",
 				createdAt: 1,
 				declinable: true,
-			} as never,
+				body: {
+					v: 1,
+					root: {
+						type: "form",
+						id: "continue-question",
+						bind: "/values",
+						mode: "submit",
+						children: [
+							{
+								type: "choice",
+								name: "decision",
+								label: "Proceed?",
+								options: [{ id: "continue", label: "Continue" }],
+							},
+						],
+					},
+				},
+			},
 			BACKGROUND_CONTEXT,
 		);
 		faux.setResponses([fauxAssistantMessage("resumed")]);
-		const response = await postContinue(app, root.id, {});
+		const response = await postContinue(
+			app,
+			conversationId,
+			{},
+			aliceToken,
+		);
 		expect(response.statusCode).toBe(202);
 		await (
 			await submissionOf(opened, response.json().submissionId)
 		).wait(BACKGROUND_CONTEXT);
 		const record = await opened.harness.snapshot(
 			InteractionDoc,
-			root.id,
+			conversationId as ConversationId,
 			"continue-question",
 			BACKGROUND_CONTEXT,
 		);
@@ -541,6 +579,7 @@ describe("POST /v1/conversations/:id/continue", () => {
 			status: "skipped",
 			declinedVia: "message",
 			answeredBy: "human",
+			answeredByUser: "alice",
 		});
 	});
 });
