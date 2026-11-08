@@ -85,7 +85,7 @@ interface RunRow {
 	readonly manual: boolean;
 	readonly outcome: string;
 	readonly error: string | null;
-	readonly conversationId: number | null;
+	readonly conversationId?: number;
 }
 
 /** One revision card row (JobsPanel parity: version/changedAt/changedBy).
@@ -286,7 +286,9 @@ function runRow(run: JobRunWire): RunRow {
 		manual: run.manual,
 		outcome: run.outcome,
 		error: run.error ?? null,
-		conversationId: run.conversationId ?? null,
+		...(run.conversationId === null || run.conversationId === undefined
+			? {}
+			: { conversationId: run.conversationId }),
 	};
 }
 

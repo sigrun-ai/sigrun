@@ -36,14 +36,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { defineTask } from "@earendil-works/pi-durable";
 import type { FastifyInstance } from "fastify";
 import {
 	fauxAssistantMessage,
 	fauxProvider,
 } from "@earendil-works/pi-ai/providers/faux";
 import type { JobSpec, JobWire } from "@sigrun/shared/jobs";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import { loadConfig } from "../src/config.js";
 import { definedInOf } from "../src/server/core-views/jobs.js";
+import { resolveActionBindings } from "../webui/src/blocks/context.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { jobStateDir } from "../src/jobs/state-dir.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -750,6 +753,53 @@ describe("core/jobs view polish", () => {
 		]);
 		expect(JSON.stringify(runs?.item?.actions)).not.toContain(String(first.conversationId));
 		expect(JSON.stringify(runs?.item?.actions)).not.toContain(String(second.conversationId));
+	});
+
+	test("a task run omits its Conversation binding while a prompt run keeps it", async () => {
+		const { app, opened, alice } = await bootServer({
+			settings: {
+				jobs: [
+					{
+						name: "acme-task-job",
+						owner: "alice",
+						schedule: { every: "3600s" },
+						action: { kind: "task", task: "acme-fixture-task" },
+					},
+				],
+			},
+		});
+		opened.registry.install({
+			name: "acme-task-fixture",
+			tasks: [defineTask<Record<string, never>, { phase: "done" }, void, object>({
+				name: "acme-fixture-task",
+				version: 1,
+				initial: () => ({ phase: "done" }),
+				phases: { done: async () => {} },
+				abort: async () => {},
+			})],
+		});
+		const promptJob = await createJob(app, alice, promptSpec("acme-prompt-job"));
+		const promptFire = await opened.jobs.runNow(promptJob.id);
+		const taskFire = await opened.jobs.runNow("file:acme-task-job");
+		expect(promptFire.conversationId).toBeTypeOf("number");
+		expect(taskFire.conversationId).toBeUndefined();
+		const rendered = await view(app, alice, { job: "file:acme-task-job" });
+		const rows = (atPointer(rendered.json.data, "/main/runs/items") as any[]);
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).not.toHaveProperty("conversationId");
+		const runs = findBlocks(rendered.json.tree.root.main, "collection").find((one) => one.id === "runs");
+		const button = runs?.item?.actions?.[0];
+		expect(button?.label).toBe("Conversation");
+		const resolve = (row: JsonObject) => resolveActionBindings(button.action, {
+			data: {},
+			item: row,
+			locale: "en-US",
+		});
+		expect(resolve(rows[0])).toBeUndefined();
+		expect(resolve({ ...rows[0], conversationId: promptFire.conversationId })).toEqual({
+			type: "navigate",
+			target: { conversation: promptFire.conversationId },
+		});
 	});
 
 	test("job actions ride the summary section", async () => {

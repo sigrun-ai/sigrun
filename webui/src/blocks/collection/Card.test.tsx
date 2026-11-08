@@ -230,6 +230,27 @@ describe("card slots (spec §5.5.1)", () => {
 		expect(handled).toBe(1);
 	});
 
+	test("a missing conversation id hides the Conversation button", () => {
+		const card: Card = {
+			title: "Acme run",
+			actions: [
+				{
+					id: "conversation",
+					label: "Conversation",
+					icon: "link",
+					action: {
+						type: "navigate",
+						target: { conversation: { $: "./conversationId" } },
+					},
+				},
+			],
+		};
+		const prompt = renderCard(card, { id: "prompt", conversationId: 42 });
+		expect(prompt.root.findAllByType("button")).toHaveLength(1);
+		const task = renderCard(card, { id: "task" });
+		expect(task.root.findAllByType("button")).toHaveLength(0);
+	});
+
 	test("long unbroken titles wrap or ellipsize, never widen (focus 4)", () => {
 		const card: Card = { title: { $: "./title" } };
 		const longTitle = `acme-${"x".repeat(200)}`;
