@@ -38,6 +38,11 @@ on:
         required: false
         type: boolean
         default: false
+      core-ref:
+        description: Test against core main or its latest release
+        required: false
+        type: string
+        default: main
       dry-run:
         description: "Run npm publish --dry-run instead of publishing"
         required: false
@@ -66,6 +71,8 @@ jobs:
   # tag == manifest version, and ancestry against origin/main.
   guard:
     runs-on: ubuntu-latest
+    outputs:
+      refs: ${{ steps.resolve.outputs.refs }}
     steps:
       # The repo under test with FULL history — the default fetch-depth 1
       # leaves origin/main absent and the ancestry check fails closed.
@@ -86,6 +93,20 @@ jobs:
           ref: main
           path: .sigrun-tools
           clean: false
+      - name: Resolve the core and family refs
+        id: resolve
+        shell: bash
+        run: |
+          set -euo pipefail
+          refs="$(
+            node .sigrun-tools/scripts/ci-core-ref.mjs \
+              '${{ inputs['core-ref'] }}'
+          )"
+          {
+            echo 'refs<<EOF'
+            echo "$refs"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
       - name: Fetch origin/main for the ancestry check
         run: git fetch origin main:refs/remotes/origin/main
       - name: Resolve the tag
@@ -129,81 +150,22 @@ jobs:
     needs: guard
     runs-on: ubuntu-latest
     steps:
-      # Same sibling layout as ext-ci.yml: core at `sigrun`, the repo
-      # under test at its own sibling name, family-checkout excluding it.
-      - uses: actions/checkout@v5
-        if: inputs.needs-core
+      - uses: sigrun-ai/sigrun/.github/actions/ext-test@main
         with:
-          repository: sigrun-ai/sigrun
-          path: sigrun
-      - name: Check out the built-in family siblings
-        if: inputs.needs-core
-        uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
-        with:
-          exclude: ${{ github.event.repository.name }}
-      # Release: pin the repo under test to the TAG, never the default
-      # branch; dry-run: the caller's dispatch ref (or triggering SHA).
-      # The tag comes from the caller's input on a dispatch re-run
-      # (github.ref is the branch there), else the pushed tag ref.
-      - uses: actions/checkout@v5
-        if: inputs.needs-core
-        with:
-          path: ${{ github.event.repository.name }}
+          package-dir: ${{ inputs.package-dir }}
+          needs-core: ${{ inputs.needs-core }}
+          core-ref: ${{ inputs['core-ref'] }}
+          repo: ${{ github.event.repository.name }}
+          refs: ${{ needs.guard.outputs.refs }}
           ref: >-
             ${{
               inputs.dry-run && inputs.dry-run-ref
               || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)
               || github.ref)
             }}
-      - uses: actions/checkout@v5
-        if: "!inputs.needs-core"
-        with:
-          ref: >-
-            ${{
-              inputs.dry-run && inputs.dry-run-ref
-              || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag)
-              || github.ref)
-            }}
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-      - name: Build core and the built-in siblings (file:-linked repos)
-        if: inputs.needs-core
-        run: |
-          # Core plus every built-in sibling the file: links resolve into:
-          # the links point at the sibling CHECKOUTS, so their deps must be
-          # installed there too (pi-durable 1.5.0: ext-mcp's dist imports
-          # typebox at runtime, resolved from its own node_modules).
-          npm ci --prefix sigrun && (cd sigrun && npm run build)
-          for repo in sigrun-ext-codemode sigrun-ext-curator \
-            sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-oauth \
-            sigrun-memory-markdown; do
-            if [ -d "$repo" ] && [ "$repo" != "${{ github.event.repository.name }}" ]; then
-              npm ci --prefix "$repo" >/dev/null 2>&1 || npm install --prefix "$repo" >/dev/null 2>&1 || true
-            fi
-          done
-      - name: Resolve the package working directory
-        id: workdir
-        shell: bash
-        env:
-          REPO: ${{ github.event.repository.name }}
-          PKGDIR: ${{ inputs.package-dir }}
-        run: |
-          if [ "${{ inputs.needs-core }}" = "true" ]; then
-            echo "dir=${REPO}/${PKGDIR}" >> "$GITHUB_OUTPUT"
-          else
-            echo "dir=${PKGDIR}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install, build, test, typecheck
-        working-directory: ${{ steps.workdir.outputs.dir }}
-        run: |
-          npm ci
-          npm run build
-          npm test
-          npm run typecheck
 
   publish:
-    needs: test
+    needs: [guard, test]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -219,12 +181,14 @@ jobs:
         if: inputs.needs-core
         with:
           repository: sigrun-ai/sigrun
+          ref: ${{ fromJSON(needs.guard.outputs.refs).sigrun || '' }}
           path: sigrun
       - name: Check out the built-in family siblings
         if: inputs.needs-core
         uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
         with:
           exclude: ${{ github.event.repository.name }}
+          refs: ${{ needs.guard.outputs.refs }}
       - uses: actions/checkout@v5
         if: inputs.needs-core
         with:

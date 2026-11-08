@@ -23,6 +23,7 @@ import { describe, expect, test } from "vitest";
 const WORKFLOW_FILE = new URL("../.github/workflows/ci.yml", import.meta.url);
 const RELEASE_FILE = new URL("../.github/workflows/release.yml", import.meta.url);
 const SANDBOX_BUILD_FILE = new URL("../.github/workflows/sandbox-build.yml", import.meta.url);
+const EXT_CI_FILE = new URL("../.github/workflows/ext-ci.yml", import.meta.url);
 const EXT_RELEASE_FILE = new URL("../.github/workflows/ext-release.yml", import.meta.url);
 const CHART_RELEASE_FILE = new URL("../.github/workflows/chart-release.yml", import.meta.url);
 
@@ -31,8 +32,10 @@ interface Step {
 	run?: string | number;
 	uses?: string;
 	if?: string;
+	id?: string;
 	with?: Record<string, unknown>;
 	env?: Record<string, string>;
+	shell?: string;
 	"working-directory"?: string;
 }
 
@@ -43,6 +46,7 @@ interface Job {
 	if?: string;
 	permissions?: Record<string, string>;
 	env?: Record<string, string>;
+	outputs?: Record<string, string>;
 	steps?: Step[];
 }
 
@@ -96,6 +100,37 @@ function actionSiblingRepositories(): string[] {
 	return (action.runs?.steps ?? [])
 		.filter((step) => step.uses?.startsWith("actions/checkout@"))
 		.map((step) => String(step.with?.repository ?? ""));
+}
+
+/** Parsed ext-ci.yml (the reusable workflow shared by extension repos). */
+function extCiWorkflow(): ParsedWorkflow {
+	return parseWorkflowFile(EXT_CI_FILE, "ext-ci.yml");
+}
+
+/** The shared extension test procedure, parsed independently of either
+ * reusable workflow so its checkout order cannot drift between them. */
+function extTestAction(): {
+	inputs: Record<string, { default?: unknown; required?: boolean; type?: string }>;
+	runs: { steps: Step[] };
+} {
+	const action = YAML.parse(
+		readFileSync(new URL("../.github/actions/ext-test/action.yml", import.meta.url), "utf8"),
+	);
+	expect(action, "ext-test action must exist and parse").toBeTypeOf("object");
+	return action;
+}
+
+/** The family-checkout composite's inputs and checkout steps. */
+function familyCheckoutAction(): {
+	inputs: Record<string, { default?: unknown }>;
+	runs: { steps: Step[] };
+} {
+	return YAML.parse(
+		readFileSync(
+			new URL("../.github/actions/family-checkout/action.yml", import.meta.url),
+			"utf8",
+		),
+	);
 }
 
 /** Parsed release.yml. */
@@ -764,6 +799,174 @@ describe(".github/workflows/sandbox-build.yml (Task 2.1 reusable musl build)", (
 		expect(paths).toContain("sandbox/target/aarch64-unknown-linux-musl/release/sigrun-sandbox");
 		expect(paths).toContain("sandbox/npm/linux-x64/*.tgz");
 		expect(paths).toContain("sandbox/npm/linux-arm64/*.tgz");
+	});
+});
+
+describe(".github/actions/ext-test (shared extension test procedure)", () => {
+	test("ext-ci and ext-release take core-ref (default main) and delegate to the ext-test action", () => {
+		const ci = extCiWorkflow();
+		const release = parseWorkflowFile(EXT_RELEASE_FILE, "ext-release.yml");
+		for (const [label, workflowFile] of [
+			["ext-ci.yml", ci],
+			["ext-release.yml", release],
+		] as const) {
+			const call = workflowFile.on.workflow_call as {
+				inputs?: Record<string, { type?: string; default?: unknown }>;
+			};
+			expect(call.inputs?.["core-ref"]?.type, label).toBe("string");
+			expect(call.inputs?.["core-ref"]?.default, label).toBe("main");
+			const steps = workflowFile.jobs.test?.steps ?? [];
+			expect(steps.filter((step) => step.uses?.startsWith("actions/checkout@"))).toHaveLength(0);
+			const testAction = steps.find(
+				(step) => step.uses === "sigrun-ai/sigrun/.github/actions/ext-test@main",
+			);
+			expect(testAction, `${label} test job must delegate to ext-test`).toBeDefined();
+			expect(testAction?.with?.["package-dir"]).toBe("${{ inputs.package-dir }}");
+			expect(testAction?.with?.["needs-core"]).toBe("${{ inputs.needs-core }}");
+			expect(testAction?.with?.["core-ref"]).toBe("${{ inputs['core-ref'] }}");
+			expect(testAction?.with?.repo).toBe("${{ github.event.repository.name }}");
+		}
+		expect(ci.jobs.test?.steps?.some((step) => runOf(step).includes("npm test"))).toBe(false);
+		expect(release.jobs.test?.steps?.some((step) => runOf(step).includes("npm test"))).toBe(false);
+	});
+
+	test("release mode checks core out at the resolved tag", () => {
+		const action = extTestAction();
+		expect(Object.keys(action.inputs)).toEqual([
+			"package-dir",
+			"needs-core",
+			"core-ref",
+			"repo",
+			"refs",
+			"ref",
+		]);
+		const steps = action.runs.steps;
+		const resolve = steps.find((step) => step.id === "resolve");
+		expect(resolve, "the resolver must expose refs").toBeDefined();
+		expect(runOf(resolve as Step)).toContain("node .sigrun-tools/scripts/ci-core-ref.mjs");
+		expect(String(resolve?.if ?? "")).toContain("inputs.refs");
+		const tools = steps.find(
+			(step) => step.with?.repository === "sigrun-ai/sigrun" && step.with?.path === ".sigrun-tools",
+		);
+		expect(tools, "release mode needs the resolver from core main").toBeDefined();
+		expect(tools?.with?.ref).toBe("main");
+		expect(tools?.with?.["sparse-checkout"]).toBe("scripts/");
+		const core = steps.find(
+			(step) => step.with?.repository === "sigrun-ai/sigrun" && step.with?.path === "sigrun",
+		);
+		expect(core, "needs-core must check out core").toBeDefined();
+		expect(core?.if).toBe("inputs.needs-core == 'true'");
+		expect(core?.with?.ref).toBe(
+			"${{ fromJSON(steps.resolve.outputs.refs || inputs.refs).sigrun || '' }}",
+		);
+		const family = steps.find(
+			(step) => step.uses === "sigrun-ai/sigrun/.github/actions/family-checkout@main",
+		);
+		expect(family?.with?.exclude).toBe("${{ inputs.repo }}");
+		expect(family?.with?.refs).toBe("${{ steps.resolve.outputs.refs || inputs.refs }}");
+		const underTest = steps.find(
+			(step) => step.uses?.startsWith("actions/checkout@") && step.with?.path === "${{ inputs.repo }}",
+		);
+		expect(underTest?.with?.ref).toBe("${{ inputs.ref }}");
+		expect(
+			steps.indexOf(underTest as Step),
+			"the repo under test must be checked out after core and the family",
+		).toBe(steps.indexOf(family as Step) + 1);
+		const plain = steps.find(
+			(step) => step.uses?.startsWith("actions/checkout@") && step.if === "inputs.needs-core != 'true'",
+		);
+		expect(plain, "the plain lane keeps its root checkout").toBeDefined();
+		expect(plain?.with?.ref).toBe("${{ inputs.ref }}");
+		const needsCoreSteps = steps.filter(
+			(step) => step.if !== undefined && String(step.if).includes("needs-core"),
+		);
+		expect(
+			needsCoreSteps.every(
+				(step) =>
+					step.if === "inputs.needs-core == 'true'" ||
+					step.if === "inputs.needs-core != 'true'",
+			),
+			"composite inputs are strings: if: inputs.needs-core would treat 'false' as true",
+		).toBe(true);
+		const runs = steps.map(runOf).join("\n");
+		expect(runs).toContain("npm ci --prefix sigrun && (cd sigrun && npm run build)");
+		for (const repo of [
+			"sigrun-ext-codemode",
+			"sigrun-ext-curator",
+			"sigrun-ext-gateway",
+			"sigrun-ext-mcp",
+			"sigrun-ext-oauth",
+			"sigrun-memory-markdown",
+		]) {
+			expect(runs).toContain(repo);
+		}
+		expect(runs).toContain(
+			"This package links ../ sibling repos (file:); set needs-core: true in .github/workflows/ci.yml and release.yml",
+		);
+		expect(runs).toContain(
+			"npm ci failed; if it reports the lockfile out of sync (EUSAGE), regenerate package-lock.json in the family layout (npm install next to ../sigrun) and commit it",
+		);
+		for (const command of ["npm run build", "npm test", "npm run typecheck"]) {
+			expect(runs).toContain(command);
+		}
+		for (const step of steps.filter((step) => step.run !== undefined)) {
+			expect(step.shell, "composite run steps must declare bash").toBe("bash");
+		}
+	});
+
+	test("push + core-ref main waits; pull_request does not", () => {
+		const settle = extTestAction().runs.steps.find((step) => runOf(step).includes("sleep 180"));
+		expect(settle, "a 180 second settle step must exist").toBeDefined();
+		expect(settle?.if).toBe(
+			"inputs.core-ref == 'main' && github.event_name == 'push'",
+		);
+		expect(settle?.if).not.toContain("pull_request");
+		const steps = extTestAction().runs.steps;
+		const core = steps.find((step) => step.with?.path === "sigrun");
+		expect(steps.indexOf(settle as Step)).toBeLessThan(steps.indexOf(core as Step));
+	});
+
+	test("publish uses the resolved refs", () => {
+		const workflowFile = parseWorkflowFile(EXT_RELEASE_FILE, "ext-release.yml");
+		const { guard, test, publish } = workflowFile.jobs;
+		expect(guard?.outputs?.refs).toBe("${{ steps.resolve.outputs.refs }}");
+		const resolver = (guard?.steps ?? []).find(
+			(step) => step.id === "resolve" && runOf(step).includes("ci-core-ref.mjs"),
+		);
+		expect(resolver, "guard resolves once for both test and publish").toBeDefined();
+		const testAction = (test?.steps ?? []).find(
+			(step) => step.uses === "sigrun-ai/sigrun/.github/actions/ext-test@main",
+		);
+		expect(testAction?.with?.refs).toBe("${{ needs.guard.outputs.refs }}");
+		expect(String(testAction?.with?.ref).replace(/\s+/g, " ")).toBe(
+			"${{ inputs.dry-run && inputs.dry-run-ref || (inputs.tag != '' && format('refs/tags/{0}', inputs.tag) || github.ref) }}",
+		);
+		const core = (publish?.steps ?? []).find((step) => step.with?.path === "sigrun");
+		expect(core?.with?.ref).toBe("${{ fromJSON(needs.guard.outputs.refs).sigrun || '' }}");
+		const family = (publish?.steps ?? []).find(
+			(step) => step.uses === "sigrun-ai/sigrun/.github/actions/family-checkout@main",
+		);
+		expect(family?.with?.refs).toBe("${{ needs.guard.outputs.refs }}");
+		expect(family?.with?.exclude).toBe("${{ github.event.repository.name }}");
+		const publishSteps = publish?.steps ?? [];
+		const underTest = publishSteps.find(
+			(step) => step.with?.path === "${{ github.event.repository.name }}",
+		);
+		expect(publishSteps.indexOf(underTest as Step)).toBe(publishSteps.indexOf(family as Step) + 1);
+	});
+
+	test("family-checkout accepts refs", () => {
+		const action = familyCheckoutAction();
+		expect(action.inputs.refs?.default).toBe("{}");
+		const repositories = actionSiblingRepositories();
+		expect(repositories).toHaveLength(7);
+		for (const repository of repositories) {
+			const repo = repository.split("/")[1];
+			const step = action.runs.steps.find((entry) => entry.with?.repository === repository);
+			expect(step?.with?.ref, `${repo} must consume the resolved ref`).toBe(
+				`\${{ fromJSON(inputs.refs)['${repo}'] || '' }}`,
+			);
+		}
 	});
 });
 
