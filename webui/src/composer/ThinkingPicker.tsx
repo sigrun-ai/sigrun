@@ -42,6 +42,9 @@ export const DEFAULT_THINKING_LABEL = "default";
 export function ThinkingPicker(props: {
 	/** The last level picked this session, or null (→ "default"). */
 	readonly current: string | null;
+	/** A read-only composer (deleted-conversations Task 4): the toggle is
+	 *  disabled, the popover never opens. */
+	readonly disabled?: boolean;
 	/**
 	 * Apply a level — the caller's `configure` call. MUST NOT reject: the
 	 * caller owns error display (the composer's alert strip) and keeps its
@@ -49,7 +52,7 @@ export function ThinkingPicker(props: {
 	 */
 	onPick: (level: string) => Promise<void>;
 }) {
-	const { current, onPick } = props;
+	const { current, onPick, disabled = false } = props;
 	const [open, setOpen] = useState(false);
 	const [highlight, setHighlight] = useState(0);
 	const pickerSlot = useRef<HTMLSpanElement | null>(null);
@@ -124,6 +127,7 @@ export function ThinkingPicker(props: {
 				aria-activedescendant={
 					open ? `composer-thinking-option-${highlight}` : undefined
 				}
+				disabled={disabled}
 				onClick={() => (open ? setOpen(false) : openMenu())}
 				onKeyDown={onKeyDown}
 			>

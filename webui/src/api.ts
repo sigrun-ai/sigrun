@@ -258,6 +258,9 @@ export type ConversationMetaPatch = {
 	readonly pinned?: boolean | null;
 	readonly tagged?: readonly string[] | null;
 	readonly archived?: boolean | null;
+	/** The deleted marker (deleted-conversations Task 4): `true` deletes,
+	 *  `false`/`null` restores (the server REMOVES the key on restore). */
+	readonly deleted?: boolean | null;
 	readonly draft?:
 		| { readonly text?: string | null; readonly attachments?: readonly string[] | null }
 		| null;

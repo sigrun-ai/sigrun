@@ -471,7 +471,7 @@ export function Composer(props: {
 	const usage = contextUsage(view, model);
 
 	async function attach(files: Iterable<File>): Promise<void> {
-		if (conversationId === null || uploading) return;
+		if (readOnly || conversationId === null || uploading) return;
 		setUploading(true);
 		setError(null);
 		try {
@@ -508,7 +508,7 @@ export function Composer(props: {
 	 * arrow-key index into `filtered`.
 	 */
 	const slashQuery =
-		conversationId !== null && /^\/\S*$/.test(draft.text)
+		!readOnly && conversationId !== null && /^\/\S*$/.test(draft.text)
 			? draft.text.slice(1)
 			: null;
 	const filteredCommands =
@@ -523,6 +523,7 @@ export function Composer(props: {
 	 *  whole point, and there is no endpoint to call: the server expands
 	 *  the submitted line at admission. */
 	function selectCommand(command: CommandWire): void {
+		if (readOnly) return;
 		if (command.kind === "expand" || command.argsHint !== undefined) {
 			setHighlight(0);
 			draft.setText(`/${command.name} `);
@@ -545,6 +546,10 @@ export function Composer(props: {
 		args: string,
 		catalog: readonly CommandWire[] = commands,
 	): Promise<void> {
+		// A read-only composer (a read-access share, or a deleted
+		// conversation) executes NOTHING — the disabled surface normally
+		// makes this unreachable; the guard keeps it true (Task 4).
+		if (readOnly) return;
 		const command = catalog.find((c) => c.name === name);
 		if (command === undefined) {
 			setError(`unknown command: /${name}`);
@@ -650,6 +655,26 @@ export function Composer(props: {
 					setNotice(`named “${args}”`);
 					break;
 				}
+				case "archive": {
+					await client.patchConversationMeta(conversationId, { archived: true });
+					setNotice("archived");
+					break;
+				}
+				case "unarchive": {
+					await client.patchConversationMeta(conversationId, { archived: false });
+					setNotice("unarchived");
+					break;
+				}
+				case "delete": {
+					await client.patchConversationMeta(conversationId, { deleted: true });
+					setNotice("deleted");
+					break;
+				}
+				case "restore": {
+					await client.patchConversationMeta(conversationId, { deleted: false });
+					setNotice("restored");
+					break;
+				}
 				case "model": {
 					await client.configure(conversationId, { model: args });
 					// The pill follows the command too (one spelling of "current").
@@ -696,7 +721,7 @@ export function Composer(props: {
 	 * silently swap or drop what the composer shows.
 	 */
 	async function pickModel(id: string): Promise<void> {
-		if (conversationId === null) return;
+		if (readOnly || conversationId === null) return;
 		try {
 			await client.configure(conversationId, { model: id });
 			setPickedModel(id);
@@ -708,7 +733,7 @@ export function Composer(props: {
 
 	/** The thinking twin of {@link pickModel} (same contract). */
 	async function pickThinking(level: string): Promise<void> {
-		if (conversationId === null) return;
+		if (readOnly || conversationId === null) return;
 		try {
 			await client.configure(conversationId, { thinking: level });
 			setPickedThinking(level);
@@ -1021,13 +1046,13 @@ export function Composer(props: {
 					<ModelPicker
 						models={models}
 						current={currentModel}
-						disabled={conversationId === null}
+						disabled={conversationId === null || readOnly}
 						onPick={pickModel}
 					/>
 					{/* ALWAYS rendered (B6): the catalog's `reasoning` flag is
 					    unreliable (glm-5.3-flash thinks but reports false) — it must
 					    never gate this control. */}
-					<ThinkingPicker current={pickedThinking} onPick={pickThinking} />
+					<ThinkingPicker current={pickedThinking} disabled={readOnly} onPick={pickThinking} />
 					<span className="composer-toolbar-spacer" />
 					<UsageRing used={usage?.used ?? null} window={usage?.window ?? null} />
 					<button

@@ -4,8 +4,11 @@
  * indent two spaces + `↳ `), names are single-line via B1's
  * `displayName` + pi-tui's `truncateToWidth`, ages right-align via B1's
  * `formatAge`, and the active row highlights accent-fg + bold. Archived
- * conversations stay hidden (the tree's `includeArchived: false`; the
- * server has no delete, archive is the hide), and quiet job runs stay
+ * conversations stay hidden (the tree's `includeArchived: false`),
+ * deleted conversations stay hidden too (the tree's default deleted
+ * filter; {@link rawConversations} keeps the RAW list response so the
+ * app can still read the active conversation's deleted marker), and
+ * quiet job runs stay
  * hidden (`includeJobRuns: false`; failed runs remain visible with their
  * `displayName` prefix). `+ New conversation` is always the last row.
  *
@@ -81,6 +84,11 @@ export class Sidebar implements Component {
 	#rowComponents: Component[] = [];
 	/** Conversation rows only (the action row is {@link #newRow}). */
 	#rows: SidebarRow[] = [];
+	/** The RAW list response from the last refresh (deleted-conversations
+	 *  Task 4): the app's dim-line check reads it because the display
+	 *  rows below DROP deleted conversations (the tree's default filter).
+	 *  The listing is the same one request — no extra fetch. */
+	#rawConversations: readonly ConversationSummary[] = [];
 	/** The extension VIEW rows (U3 Task 5): one per declared view surface,
 	 *  rendered under the VIEWS group header. */
 	#views: { readonly slug: string; readonly id: string; readonly title: string }[] = [];
@@ -122,6 +130,13 @@ export class Sidebar implements Component {
 		return this.#cursor;
 	}
 
+	/** The RAW list rows from the last refresh (deleted rows included).
+	 *  The app reads the active conversation's deleted marker here —
+	 *  `rows` above never carries deleted rows. */
+	get rawConversations(): readonly ConversationSummary[] {
+		return this.#rawConversations;
+	}
+
 	/**
 	 * Re-fetch the listing and rebuild the rows from the tree (summary
 	 * fields only — no per-row meta fetch). The cursor follows its
@@ -129,6 +144,7 @@ export class Sidebar implements Component {
 	 */
 	async refresh(): Promise<void> {
 		const list = await this.#client.listConversations();
+		this.#rawConversations = list.conversations;
 		const previousId = this.#display[this.#cursor]?.id;
 		const tree = buildConversationTree(list.conversations, {
 			includeArchived: false,

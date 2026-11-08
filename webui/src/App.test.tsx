@@ -98,6 +98,9 @@ function makeHarness(init?: {
 			pinned: false,
 			name: "Tide table rewrite",
 			lastActivityAt: new Date().toISOString(),
+			// The deleted marker (Task 4): absent = not deleted; the test's
+			// delete flow sets it, and the list rows carry it true-only.
+			deleted: undefined as boolean | undefined,
 		},
 		{
 			id: 2,
@@ -106,6 +109,7 @@ function makeHarness(init?: {
 			pinned: false,
 			name: "Moor line inspection",
 			lastActivityAt: new Date().toISOString(),
+			deleted: undefined as boolean | undefined,
 		},
 	];
 	const calls: Call[] = [];
@@ -178,12 +182,15 @@ function makeHarness(init?: {
 			}
 			if (init2?.method === "PATCH") {
 				// The server-side merge: a name/archived patch updates the
-				// summary the list serves (the reload re-reads it).
+				// summary the list serves (the reload re-reads it). The
+				// deleted patch is true-only: false/null REMOVES the key
+				// (deleted-conversations Task 1's restore semantics).
 				const patch = JSON.parse(
 					typeof init2.body === "string" ? init2.body : "{}",
 				) as {
 					name?: string;
 					archived?: boolean;
+					deleted?: boolean | null;
 				};
 				const target = conversations.find((one) => one.id === id);
 				if (target !== undefined && patch.name !== undefined) {
@@ -191,6 +198,9 @@ function makeHarness(init?: {
 				}
 				if (target !== undefined && patch.archived !== undefined) {
 					target.archived = patch.archived;
+				}
+				if (target !== undefined && patch.deleted !== undefined) {
+					target.deleted = patch.deleted === true ? true : undefined;
 				}
 				body = {};
 			} else {
@@ -273,7 +283,13 @@ function makeHarness(init?: {
 		} else {
 			// A copy per response — freshly parsed JSON in reality; a
 			// same-reference list would bail out of the reload re-render.
-			body = { conversations: conversations.map((one) => ({ ...one })) };
+			body = {
+				conversations: conversations.map((one) => ({
+					...one,
+					// True-only on the wire (deleted-conversations Task 1).
+					...(one.deleted === true ? { deleted: true } : {}),
+				})),
+			};
 		}
 		return Promise.resolve({
 			ok: true,
@@ -832,6 +848,131 @@ describe("App shell", () => {
 		expect(item.children).toEqual(["Unarchive"]);
 		await clickArchiveItem();
 		expect(patches()).toEqual([{ archived: true }, { archived: false }]);
+		renderer.unmount();
+	});
+
+	test("the open conversation turns read-only when its list row becomes deleted; the banner's Restore patches deleted:false", async () => {
+		const { client, createEventSource, sources, calls } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		// Initially: no banner, live composer.
+		expect(
+			renderer.root.findAllByProps({ className: "deleted-banner" }),
+		).toHaveLength(0);
+		expect(
+			renderer.root.findByProps({ className: "composer-input" }).props
+				.disabled,
+		).toBe(false);
+		// The server marks the conversation deleted (out of band): the
+		// conversation.changed event drives the list refetch, and the
+		// refetched row carries deleted:true. sources[0] is /v1/events.
+		await act(async () => {
+			await client.patchConversationMeta(1, { deleted: true });
+		});
+		await act(async () => {
+			sources[0]?.source.emit(
+				"conversation.changed",
+				JSON.stringify({ id: 1, fields: { deleted: true } }),
+			);
+		});
+		await act(async () => {
+			for (let hop = 0; hop < 5; hop += 1) await Promise.resolve();
+		});
+		const banner = renderer.root.findByProps({ className: "deleted-banner" });
+		expect(
+			banner.findByProps({ className: "deleted-banner-message" }).children.join(""),
+		).toBe("This conversation is deleted.");
+		// The composer is read-only (the whole composer, not only send).
+		expect(
+			renderer.root.findByProps({ className: "composer-input" }).props
+				.disabled,
+		).toBe(true);
+		// Restore from the banner: deleted:false (the restore semantics —
+		// the key is REMOVED server-side, never materialized false).
+		await act(async () => {
+			await (
+				banner.findByProps({ "data-menu-action": "restore" }).props as {
+					onClick: () => unknown;
+				}
+			).onClick();
+		});
+		const patches = calls
+			.filter((call) => call.method === "PATCH")
+			.map((call) => JSON.parse(String(call.body)));
+		expect(patches).toEqual([{ deleted: true }, { deleted: false }]);
+		await act(async () => {
+			for (let hop = 0; hop < 5; hop += 1) await Promise.resolve();
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "deleted-banner" }),
+		).toHaveLength(0);
+		renderer.unmount();
+	});
+
+	test("undo restores the deleted state only — an archived conversation stays archived", async () => {
+		const { client, createEventSource, sources, calls } = makeHarness();
+		const renderer = await renderAsync(
+			<App
+				client={client}
+				createEventSource={createEventSource}
+				identity={{ user: "alice", admin: false, service: false, method: "token" }}
+			/>,
+		);
+		// Archive the root conversation, then delete it through the sidebar.
+		await act(async () => {
+			await client.patchConversationMeta(1, { archived: true });
+		});
+		await act(async () => {
+			await client.patchConversationMeta(1, { deleted: true });
+		});
+		await act(async () => {
+			sources[0]?.source.emit(
+				"conversation.changed",
+				JSON.stringify({ id: 1, fields: { deleted: true } }),
+			);
+		});
+		await act(async () => {
+			for (let hop = 0; hop < 5; hop += 1) await Promise.resolve();
+		});
+		// The deleted conversation is read-only now.
+		expect(
+			renderer.root.findAllByProps({ className: "deleted-banner" }),
+		).toHaveLength(1);
+		// Restore from the banner (the Undo path's patch shape).
+		await act(async () => {
+			await (
+				renderer.root
+					.findByProps({ className: "deleted-banner" })
+					.findByProps({ "data-menu-action": "restore" }).props as {
+					onClick: () => unknown;
+				}
+			).onClick();
+		});
+		const patches = calls
+			.filter((call) => call.method === "PATCH")
+			.map((call) => JSON.parse(String(call.body)));
+		// The restore patch touches `deleted` ONLY — archived is untouched.
+		expect(patches[patches.length - 1]).toEqual({ deleted: false });
+		await act(async () => {
+			for (let hop = 0; hop < 5; hop += 1) await Promise.resolve();
+		});
+		// The conversation stays archived (the header's archive item still
+		// reads Unarchive), and the read-only banner is gone.
+		expect(
+			renderer.root.findAllByProps({ className: "deleted-banner" }),
+		).toHaveLength(0);
+		await act(async () => {
+			(
+				renderer.root.findByProps({ "aria-label": "more actions" })
+					.props as { onClick: () => unknown }
+			).onClick();
+		});
+		expect(
+			renderer.root
+				.findByProps({ className: "chat-menu" })
+				.findByProps({ "data-menu-action": "archive" }).children,
+		).toEqual(["Unarchive"]);
 		renderer.unmount();
 	});
 

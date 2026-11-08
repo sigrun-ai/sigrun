@@ -601,6 +601,193 @@ describe("SessionList", () => {
 		expect(props.onNew).toHaveBeenCalledTimes(1);
 	});
 
+	test("Delete shows for the owner or an admin only", async () => {
+		const rows = [
+			summary({ id: 1, name: "Mine", owner: "alice" }),
+			summary({ id: 2, name: "Someone else's", owner: "bob" }),
+		];
+		const props = {
+			...makeProps(rows),
+			currentUser: "alice",
+			onDelete: vi.fn(async () => {}),
+		};
+		const renderer = render(<SessionList {...props} />);
+
+		// The owner's row offers Delete; a row someone else owns does not.
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		const mine = renderer.root.findByProps({ className: "session-menu" });
+		expect(
+			mine
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["rename", "fork", "archive", "delete"]);
+		await click(
+			rowById(renderer, 2).findByProps({ className: "session-menu-toggle" }),
+		);
+		const theirs = renderer.root.findByProps({ className: "session-menu" });
+		expect(
+			theirs
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["rename", "fork", "archive"]);
+
+		// An admin deletes anyone's row.
+		const adminProps = { ...props, admin: true };
+		const adminRenderer = render(<SessionList {...adminProps} />);
+		await click(
+			rowById(adminRenderer, 2).findByProps({
+				className: "session-menu-toggle",
+			}),
+		);
+		const adminMenu = adminRenderer.root.findByProps({
+			className: "session-menu",
+		});
+		expect(
+			adminMenu
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["rename", "fork", "archive", "delete"]);
+		await click(adminMenu.findByProps({ "data-menu-action": "delete" }));
+		expect(props.onDelete).toHaveBeenCalledWith(2);
+	});
+
+		test("deleting shows an Undo toast; Undo restores the captured id even after switching conversations", async () => {
+		const rows = [
+			summary({ id: 1, name: "Mine", owner: "alice" }),
+			summary({ id: 2, name: "Other", owner: "alice" }),
+		];
+		const props = {
+			...makeProps(rows, { activeId: 1 }),
+			currentUser: "alice",
+			onDelete: vi.fn(async () => {}),
+			onRestore: vi.fn(async () => {}),
+		};
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "delete" }),
+		);
+		await flush();
+		expect(props.onDelete).toHaveBeenCalledWith(1);
+		// The toast renders in the rail with the verbatim copy.
+		const toast = renderer.root.findByProps({ className: "undo-toast" });
+		expect(toast.findByProps({ className: "undo-toast-message" }).children.join("")).toBe(
+			"Conversation deleted",
+		);
+		// Switching conversations (the active id flips) keeps the toast —
+		// Undo restores the id captured at delete time, never the active id.
+		await act(async () => {
+			renderer.update(
+				<SessionList {...props} activeId={2} />,
+			);
+		});
+		await click(
+			renderer.root
+				.findByProps({ className: "undo-toast" })
+				.findByProps({ "data-undo-action": "undo" }),
+		);
+		await flush();
+		expect(props.onRestore).toHaveBeenCalledWith(1);
+		// The toast is gone after the undo.
+		expect(
+			renderer.root.findAllByProps({ className: "undo-toast" }),
+		).toHaveLength(0);
+	});
+
+		test("the Undo toast auto-dismisses after 8 seconds", async () => {
+		const rows = [summary({ id: 1, name: "Mine", owner: "alice" })];
+		const props = {
+			...makeProps(rows),
+			currentUser: "alice",
+			onDelete: vi.fn(async () => {}),
+		};
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "delete" }),
+		);
+		await flush();
+		expect(
+			renderer.root.findAllByProps({ className: "undo-toast" }),
+		).toHaveLength(1);
+		await act(async () => {
+			vi.advanceTimersByTime(8_000);
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "undo-toast" }),
+		).toHaveLength(0);
+	});
+
+		test("the Deleted toggle shows only deleted rows with Restore", async () => {
+		const rows = [
+			summary({ id: 1, name: "Harbor dredging log" }),
+			summary({
+				id: 2,
+				name: "Retired beacon audit",
+				archived: true,
+				deleted: true,
+			}),
+		];
+		const props = makeProps(rows);
+		const renderer = render(<SessionList {...props} />);
+		// Deleted rows stay hidden by default.
+		expect(rowIds(renderer)).toEqual([1]);
+		const toggle = renderer.root.findByProps({
+			className: "session-deleted-toggle",
+		});
+		expect(toggle.props["aria-pressed"]).toBe(false);
+		expect(toggle.props.title).toBe("Show deleted conversations");
+		await click(toggle);
+		expect(toggle.props["aria-pressed"]).toBe(true);
+		// The Deleted view shows ONLY deleted rows (archived included,
+		// ignoring the Archived toggle's state).
+		expect(rowIds(renderer)).toEqual([2]);
+		// A deleted row's menu offers Restore and nothing destructive.
+		await click(
+			rowById(renderer, 2).findByProps({ className: "session-menu-toggle" }),
+		);
+		const menu = renderer.root.findByProps({ className: "session-menu" });
+		expect(
+			menu
+				.findAllByProps({ type: "button" })
+				.map((button) => button.props["data-menu-action"]),
+		).toEqual(["restore"]);
+		expect(
+			menu.findByProps({ "data-menu-action": "restore" }).children.join(""),
+		).toBe("Restore");
+		const onRestore = vi.fn(async () => {});
+		await act(async () => {
+			renderer.update(<SessionList {...props} onRestore={onRestore} />);
+		});
+		await click(menu.findByProps({ "data-menu-action": "restore" }));
+		expect(onRestore).toHaveBeenCalledWith(2);
+	});
+
+		test("search does not reveal deleted rows", async () => {
+		const rows = [
+			summary({ id: 1, name: "Harbor dredging log" }),
+			summary({ id: 2, name: "Harbor notes", deleted: true }),
+		];
+		const renderer = render(<SessionList {...makeProps(rows)} />);
+		await typeSearch(renderer, "harbor");
+		expect(rowIds(renderer)).toEqual([1]);
+		// The Deleted toggle is the only way to search within deleted rows.
+		await click(
+			renderer.root.findByProps({ className: "session-deleted-toggle" }),
+		);
+		expect(rowIds(renderer)).toEqual([2]);
+	});
+
 	test("Ctrl+K and ⌘K focus the search input; other keys do not", async () => {
 		interface FakeKeyEvent {
 			key: string;

@@ -262,6 +262,12 @@ export class TuiApp implements Component, ActionHost {
 	 *  nothing and swallow keys). Exported for the launcher's mount. */
 	readonly mainContent: MainSlot;
 	#activeId: number | undefined;
+	/** Deleted-conversations Task 4: whether the ACTIVE conversation's
+	 *  RAW list row carries deleted:true. Re-checked on every sidebar
+	 *  refresh (sidebar.rows drops deleted rows, so the pane reads the
+	 *  raw listConversations() response via the sidebar). Drives the
+	 *  pane's dim line and the composer gate. */
+	#activeDeleted = false;
 	#unwatch: Unwatch | undefined;
 	/** Monotonic watch generation: a stale watch's frames must never land. */
 	#watchGen = 0;
@@ -702,6 +708,17 @@ export class TuiApp implements Component, ActionHost {
 	 */
 	async refresh(): Promise<void> {
 		await this.sidebar.refresh();
+		// Deleted-conversations Task 4: the deleted state comes from the
+		// RAW list response (the sidebar drops deleted rows from its
+		// display rows but keeps the raw list). Re-checked on EVERY
+		// sidebar refresh, so a /delete, /restore, or another client's
+		// change lands on the next poll.
+		this.#activeDeleted =
+			this.#activeId !== undefined &&
+			this.sidebar.rawConversations.find(
+				(row) => row.id === this.#activeId,
+			)?.deleted === true;
+		this.pane.setDeleted(this.#activeDeleted);
 		// Notices Task 8: the count rides the boot refresh too (quiet —
 		// the chrome keeps its last list on a fetch failure).
 		void this.notices.refresh().catch(() => {});
@@ -732,6 +749,13 @@ export class TuiApp implements Component, ActionHost {
 			// Busy state is per-frame: unknown for the new conversation until
 			// its first frame arrives.
 			this.#busy = false;
+			// Deleted-conversations Task 4: the swap re-checks the deleted
+			// state from the raw rows the last sidebar refresh left (a
+			// refresh may be mid-flight; the next one re-checks again).
+			this.#activeDeleted =
+				this.sidebar.rawConversations.find((row) => row.id === id)
+					?.deleted === true;
+			this.pane.setDeleted(this.#activeDeleted);
 			this.sidebar.setActive(id);
 			// Notices are per-conversation context (fix wave F4): an error
 			// from the OLD conversation must never render in the new one.
@@ -969,6 +993,15 @@ export class TuiApp implements Component, ActionHost {
 	#submitLine(text: string): void {
 		const id = this.#activeId;
 		if (id === undefined) return;
+		// Deleted-conversations Task 4: a deleted conversation is
+		// read-only — the server 409s any submission; the client keeps
+		// the draft and says so instead of firing the doomed POST.
+		if (this.#activeDeleted) {
+			this.pane.showError(
+				"this conversation is deleted · /restore to restore it",
+			);
+			return;
+		}
 		this.editor.setText("");
 		const whenBusy: WhenBusyMode | undefined = this.#busy ? "steer" : undefined;
 		this.#client.submit(id, text, whenBusy).catch((error: unknown) => {
@@ -1063,6 +1096,20 @@ export class TuiApp implements Component, ActionHost {
 					}
 					await this.#client.patchMeta(id, { archived: parsed.name === "archive" });
 					await this.sidebar.refresh();
+					return;
+				}
+				case "delete":
+				case "restore": {
+					const id = this.#activeId;
+					if (id === undefined) {
+						this.pane.showError(`/${parsed.name} needs an active conversation`);
+						return;
+					}
+					await this.#client.patchMeta(id, { deleted: parsed.name === "delete" });
+					// Re-read the RAW list row so the pane's dim line lands
+					// at once (the next poll would catch up, but the user
+					// just acted — same rule as the archive refresh above).
+					await this.refresh();
 					return;
 				}
 				case "model":

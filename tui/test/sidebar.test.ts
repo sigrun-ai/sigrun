@@ -23,6 +23,7 @@ function summary(
 	init?: {
 		name?: string;
 		archived?: boolean;
+		deleted?: boolean;
 		parent?: number;
 		lastActivityAt?: string;
 		source?: string;
@@ -36,6 +37,7 @@ function summary(
 		archived: init?.archived ?? false,
 		pinned: false,
 		access: "write",
+		...(init?.deleted === true ? { deleted: true } : {}),
 		...(init?.source === undefined ? {} : { source: init.source }),
 		...(init?.jobOutcome === undefined ? {} : { jobOutcome: init.jobOutcome }),
 		...(init?.adopted === undefined ? {} : { adopted: init.adopted }),
@@ -172,6 +174,18 @@ describe("Sidebar (C2 tree rows)", () => {
 		await sidebar.refresh();
 		expect(sidebar.rows.map((row) => row.id)).toEqual([3, 1]);
 		expect(sidebar.rows[0]?.name).toBe("Failed · acme failed run");
+	});
+
+	test("deleted rows stay hidden", async () => {
+		const sidebar = new Sidebar(
+			stubClient([
+				summary(1, { name: "one", lastActivityAt: "2026-10-17T11:00:00Z" }),
+				summary(2, { name: "two", deleted: true }),
+				summary(3, { name: "three", lastActivityAt: "2026-10-17T10:00:00Z" }),
+			]),
+		);
+		await sidebar.refresh();
+		expect(sidebar.rows.map((row) => row.id)).toEqual([1, 3]);
 	});
 
 	test("archived rows stay hidden; refresh preserves the cursor's conversation", async () => {

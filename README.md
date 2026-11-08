@@ -1417,6 +1417,29 @@ gap). Access is exactly the `/v1/jobs` rule — including the naive
 single-operator posture: the userless superuser (no `X-Sigrun-User`
 header) sees and manages every job, matching the REST routes' grant.
 
+## Deleted conversations
+
+A conversation can be **deleted** without losing its history: deleting
+is a flag, not a purge. In the webui the conversation list's row menu
+offers **Delete** to the conversation's owner (or an admin); in either
+client `/delete` deletes the open conversation. Deleted rows disappear
+from the conversation list and from sidebar search; the webui's
+**Deleted** toggle beside **Archived** and **Job runs** switches the
+rail to a Deleted-only view whose rows offer **Restore** (and nothing
+destructive). `/restore` restores the open conversation.
+
+A deleted conversation is **read-only**: the webui shows a
+`This conversation is deleted.` banner with a **Restore** button and
+disables the whole composer (send, attach, the model and thinking
+pickers, and slash commands); the TUI shows the dim line
+`this conversation is deleted · /restore to restore it` and refuses
+submissions. The server independently answers `409` to any write
+(submissions, jobs, notifications, curator passes). Deleting shows an
+**Undo** toast in the rail (auto-dismiss after 8 s) — Undo restores the
+conversation that was deleted, even after you switch conversations.
+Restoring touches only the deleted flag: an archived conversation stays
+archived.
+
 ## Restarting
 
 Restart-only settings (the registry marks every key `live` or
