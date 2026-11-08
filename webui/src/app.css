@@ -41,6 +41,9 @@
 	--sans: Inter, -apple-system, "Segoe UI", system-ui, sans-serif;
 	--mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
 
+	/* The block/form vertical rhythm. */
+	--sp-3: 0.75rem;
+
 	color-scheme: dark;
 }
 
@@ -2772,6 +2775,7 @@ body {
 	display: flex;
 	gap: 8px;
 	flex-wrap: wrap;
+	margin-top: 6px;
 }
 
 .settings-palette {
@@ -2803,6 +2807,7 @@ body {
 	display: flex;
 	gap: 10px;
 	flex-wrap: wrap;
+	margin-top: 6px;
 }
 
 .settings-accent {
@@ -3453,6 +3458,9 @@ body {
 }
 
 .settings-ext-settings {
+	max-height: 70vh;
+	overflow-y: auto;
+	resize: none;
 	font-family: var(--mono);
 	font-size: 12px;
 	background: var(--bg);
@@ -3640,3 +3648,13 @@ body {
  * height follows content; the gallery sample column keeps it visible. */
 .gallery-sample { min-width: 0; height: 100%; display: flex; flex-direction: column; }
 .gallery-sample > .blk-surface { flex: 1 1 auto; min-height: 0; }
+
+/* iOS Safari zooms focused text controls below 16px. Keep desktop's
+   14px rhythm; touch gets the no-zoom threshold on every text control.
+   Last in the sheet so component shorthand `font` declarations cannot
+   reset this (notably .composer-input). */
+@media (pointer: coarse) {
+	body :is(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="color"], [type="button"], [type="submit"], [type="reset"]), textarea, select) {
+		font-size: 16px;
+	}
+}

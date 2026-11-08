@@ -60,6 +60,64 @@ function inputByLabel(
 	return input;
 }
 
+describe("field chrome", () => {
+	test("help renders between the label and the control", () => {
+		const { renderer } = harness(
+			[
+				{
+					type: "text",
+					name: "title",
+					label: "Title",
+					help: "A short title.",
+				},
+			],
+			{ f: { title: "acme" } },
+		);
+		const children = renderer.root.findByProps({ "data-name": "title" }).children;
+		expect(children.map((child) => {
+			if (typeof child === "string") return child;
+			return child.props.className ?? child.type;
+		})).toEqual(["blk-field-label", "blk-field-help", "input"]);
+	});
+
+	test("a toggle is one row with its label", () => {
+		const { renderer } = harness(
+			[{ type: "toggle", name: "enabled", label: "Enabled", help: "Enable it." }],
+			{ f: { enabled: true } },
+		);
+		const row = renderer.root.findByProps({ "data-name": "enabled" });
+		expect(row.children.map((child) => typeof child === "string" ? child : child.props.className ?? child.type)).toEqual([
+			"blk-toggle",
+			"blk-field-help",
+		]);
+		expect(row.findAllByProps({ className: "blk-field-label" })).toHaveLength(1);
+		const toggle = row.findByProps({ className: "blk-toggle" });
+		expect(toggle.children.map((child) => typeof child === "string" ? child : child.type)).toEqual([
+			"input",
+			"span",
+		]);
+		const label = toggle.children[1];
+		expect(typeof label === "string" ? label : label.props.children[0]).toBe("Enabled");
+		expect(textContent(renderer.toJSON()).match(/Enabled/g)).toHaveLength(1);
+	});
+
+	test("longtext starts at its rows", () => {
+		const { renderer } = harness(
+			[{ type: "longtext", name: "body", label: "Body", rows: 12 }],
+			{ f: { body: "text" } },
+		);
+		expect(inputByLabel(renderer, "Body").props.rows).toBe(12);
+	});
+
+	test("fill longtext carries the fill class", () => {
+		const { renderer } = harness(
+			[{ type: "longtext", name: "body", label: "Body", fill: true } as never],
+			{ f: { body: "text" } },
+		);
+		expect(inputByLabel(renderer, "Body").props.className).toBe("blk-longtext-fill");
+	});
+});
+
 describe("deployment-managed fields", () => {
 	test("a disabled text field renders its managed help", () => {
 		const { renderer } = harness(

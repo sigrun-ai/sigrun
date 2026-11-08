@@ -30,6 +30,19 @@ test.afterAll(async () => {
 	await server.cleanup();
 });
 
+test("touch inputs are at least 16px", async ({ browser }) => {
+	const context = await browser.newContext({
+		...devices["Pixel 7"],
+		extraHTTPHeaders: { "x-sigrun-user": "tester" },
+	});
+	const page = await context.newPage();
+	await page.goto(server.url);
+	const input = page.locator("textarea.composer-input");
+	await expect(input).toBeVisible();
+	expect(await input.evaluate((el) => Number.parseFloat(getComputedStyle(el).fontSize))).toBeGreaterThanOrEqual(16);
+	await context.close();
+});
+
 test("phone: no sideways drift, tables scroll in their card, one-row composer", async ({
 	browser,
 }) => {

@@ -81,6 +81,18 @@
 	margin-bottom: 0.6rem;
 }
 
+/* Page and section content share one vertical rhythm. Page slots render
+   their blocks directly, so this is the gap between rounded sections,
+   callouts and collections as well as their neighbours. */
+.blk-page-main,
+.blk-page-sidebar,
+.blk-page-detail,
+.blk-section-body {
+	display: flex;
+	flex-direction: column;
+	gap: var(--sp-3, 0.75rem);
+}
+
 .blk-section-title {
 	color: var(--text);
 	font-size: 0.95em;
@@ -1321,6 +1333,7 @@
 .blk-form[data-mode="inline"] { flex-direction: row; align-items: flex-end; }
 .blk-field { display: flex; flex-direction: column; gap: 0.25rem; }
 .blk-field-label { font-weight: 500; }
+.blk-toggle { align-items: center; display: flex; gap: 0.5rem; }
 .blk-field-help { color: var(--fg-dim, #888); font-size: 0.875em; }
 .blk-field-error { color: var(--bad, #d33); font-size: 0.875em; }
 .blk-choice { display: flex; gap: 1rem; }
@@ -1356,6 +1369,20 @@
 	width: 100%;
 }
 .blk-field textarea { max-width: 48rem; }
+.blk-field[data-field="longtext"] textarea {
+	max-height: 70vh;
+	overflow-y: auto;
+	resize: none;
+}
+@media (min-height: 900px) {
+	.blk-page-main > .blk-form:has(.blk-longtext-fill) { flex: 1 1 auto; min-height: 0; }
+	.blk-page-main .blk-field:has(.blk-longtext-fill) { flex: 1 1 auto; min-height: 0; }
+	.blk-page-main .blk-longtext-fill {
+		flex: 1 1 auto;
+		height: 100%;
+		min-height: 60vh;
+	}
+}
 .blk-field :is(input, textarea, select):focus-visible { border-color: var(--accent); outline: none; }
 /* Row-laid controls keep their own widths (same specificity as the rule
    above, later in the sheet — so it wins). */

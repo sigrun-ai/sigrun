@@ -523,6 +523,8 @@ export interface LongtextField extends FieldBase {
 	readonly syntax?: "plain" | "markdown" | "code";
 	readonly lang?: string;
 	readonly rows?: number;
+	/** Take the editor's available height on large viewports. */
+	readonly fill?: boolean;
 }
 
 export interface NumberField extends FieldBase {

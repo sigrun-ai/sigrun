@@ -555,6 +555,7 @@ const LongtextField = Type.Object({
 	),
 	lang: Type.Optional(Type.String()),
 	rows: Type.Optional(Type.Integer()),
+	fill: Type.Optional(Type.Boolean()),
 });
 
 const NumberField = Type.Object({

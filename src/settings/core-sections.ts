@@ -178,8 +178,8 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 							{
 								type: "choice",
 								name: "defaultTools",
-								label: "Default tools",
-								help: "The model-offered tool filter for new conversations (empty = every installed tool); the filter hides listed tools and can never disable them all",
+								label: "Tools offered to the model",
+								help: "Only the selected tools are offered to the model in new conversations; the others stay callable by other tools. Leave empty to offer every installed tool. Applies to conversations created after the change.",
 								apply: applyOf("defaultTools"),
 								multi: true,
 								// The roster is server data (the boot registry's tool
@@ -305,7 +305,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								apply: applyOf("perModelThinking"),
 								syntax: "code",
 								lang: "json",
-								rows: 6,
+								rows: 12,
 							},
 						],
 					},
@@ -474,7 +474,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								apply: applyOf("extensions"),
 								syntax: "code",
 								lang: "json",
-								rows: 4,
+								rows: 12,
 							},
 						],
 					},

@@ -323,6 +323,23 @@ test("create a token in Settings → API tokens and authenticate with it", async
 	}
 });
 
+test("the palette outline clears its label", async ({ page }) => {
+	await page.goto(`${server.url}/#/settings/interface`);
+	const selected = page.locator('.settings-palette[aria-pressed="true"]');
+	await expect(selected).toBeVisible();
+	const geometry = await selected.evaluate((swatch) => {
+		const legend = swatch.closest("fieldset")?.querySelector("legend");
+		if (legend === null || legend === undefined) throw new Error("palette legend missing");
+		const style = getComputedStyle(swatch);
+		return {
+			legendBottom: legend.getBoundingClientRect().bottom,
+			swatchTop: swatch.getBoundingClientRect().top,
+			outline: Number.parseFloat(style.outlineWidth) + Number.parseFloat(style.outlineOffset),
+		};
+	});
+	expect(geometry.swatchTop - geometry.outline).toBeGreaterThanOrEqual(geometry.legendBottom);
+});
+
 // UI feedback 2026-11-05: the section forms read as page content, not
 // overlay leftovers — the Save button sizes to its label and fields cap
 // at a readable width on a desktop viewport.
