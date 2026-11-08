@@ -296,7 +296,7 @@ describe("POST/GET/PATCH/DELETE /v1/jobs — the CRUD round trip as alice", () =
 
 	test("maxTurns validation", async () => {
 		const { app, alice } = await bootServer();
-		for (const maxTurns of [0, 1.5, "10"] as const) {
+		for (const maxTurns of [0, 1.5, "10", 2 ** 53] as const) {
 			const rejected = await call(app, "POST", "/v1/jobs", alice, promptSpec({
 				action: { kind: "prompt", prompt: "say ok", conversation: "new", maxTurns: maxTurns as never },
 			}));

@@ -25,6 +25,7 @@ import {
 	formFieldOf,
 	formFromJob,
 	formValuesOf,
+	jobFormFields,
 	savePatchOf,
 } from "../src/server/core-views/jobs-form.js";
 
@@ -229,4 +230,15 @@ test("saving with null deletes maxTurns from the stored action", () => {
 	});
 	const kept = savePatchOf({ ...formFromJob(prior), maxTurns: 12 }, prior);
 	expect(kept.ok && kept.patch.action).toMatchObject({ maxTurns: 12 });
+});
+
+test("the maxTurns field carries help (the blocks contract prop), never hint", () => {
+	const field = jobFormFields("prompt").find((one) => one.name === "maxTurns");
+	expect(field).toMatchObject({
+		type: "number",
+		label: "Max turns",
+		min: 1,
+		help: "Blank uses the default (150). Applies to runs in new conversations.",
+	});
+	expect(field).not.toHaveProperty("hint");
 });

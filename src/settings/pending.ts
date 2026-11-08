@@ -40,6 +40,7 @@ const SUB_MERGED: ReadonlySet<string> = new Set([
 	"defaultProvider",
 	"skills",
 	"jobHistory",
+	"jobDefaults",
 	"builtinExtensions",
 	"notifications",
 ]);

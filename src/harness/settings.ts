@@ -399,7 +399,8 @@ function validate(value: Record<string, unknown>): void {
 		}
 	}
 	// The live job-run defaults (jobs quiet runs Task 3): an object
-	// with only `maxTurns`, a positive integer when present.
+	// with only `maxTurns`, a SAFE positive integer when present
+	// (pi-durable's agent guard rejects unsafe integers at fire).
 	if (value.jobDefaults !== undefined) {
 		const jobDefaults = asRecord(value.jobDefaults);
 		if (jobDefaults === undefined) {
@@ -408,7 +409,7 @@ function validate(value: Record<string, unknown>): void {
 		checkKeys("jobDefaults.", jobDefaults, ["maxTurns"]);
 		if (
 			jobDefaults.maxTurns !== undefined &&
-			!isPositiveInt(jobDefaults.maxTurns)
+			!isSafePositiveInt(jobDefaults.maxTurns)
 		) {
 			throw new SettingsValidationError(
 				"jobDefaults.maxTurns",
@@ -1018,6 +1019,15 @@ function isPositiveInt(value: unknown): boolean {
 	return (
 		typeof value === "number" &&
 		Number.isInteger(value) &&
+		value > 0
+	);
+}
+
+/** `jobDefaults.maxTurns`: pi-durable's agent guard is safe-integer ≥ 1. */
+function isSafePositiveInt(value: unknown): boolean {
+	return (
+		typeof value === "number" &&
+		Number.isSafeInteger(value) &&
 		value > 0
 	);
 }

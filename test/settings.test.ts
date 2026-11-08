@@ -438,6 +438,7 @@ describe("SettingsStore", () => {
 			[{ jobDefaults: { maxTurns: 0 } }, /jobDefaults\.maxTurns/],
 			[{ jobDefaults: { maxTurns: "x" } }, /jobDefaults\.maxTurns/],
 			[{ jobDefaults: { maxTurns: 1.5 } }, /jobDefaults\.maxTurns/],
+			[{ jobDefaults: { maxTurns: 2 ** 53 } }, /jobDefaults\.maxTurns/],
 			[{ jobDefaults: { other: 1 } }, /jobDefaults\.other/],
 			[{ jobDefaults: 42 }, /jobDefaults/],
 		] as const) {

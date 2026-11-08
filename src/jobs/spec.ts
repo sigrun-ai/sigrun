@@ -30,11 +30,11 @@ export const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
 /** The longest a job description may be (spec §8.2). */
 export const DESCRIPTION_MAX = 500;
 
-/** `action.maxTurns`: an integer ≥ 1 (the agent change's own rule). */
+/** `action.maxTurns`: a SAFE integer ≥ 1 (the agent change's own rule). */
 function isPositiveInt(value: unknown): value is number {
 	return (
 		typeof value === "number" &&
-		Number.isInteger(value) &&
+		Number.isSafeInteger(value) &&
 		value > 0
 	);
 }

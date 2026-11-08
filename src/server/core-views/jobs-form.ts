@@ -385,7 +385,7 @@ export function jobFormFields(kind: "prompt" | "task"): JsonObject[] {
 				name: "maxTurns",
 				label: "Max turns",
 				min: 1,
-				hint: "Blank uses the default (150). Applies to runs in new conversations.",
+				help: "Blank uses the default (150). Applies to runs in new conversations.",
 			},
 		);
 	}

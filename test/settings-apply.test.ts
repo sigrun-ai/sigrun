@@ -439,6 +439,32 @@ describe("PATCH /v1/settings: applied, pending, pendingRestart", () => {
 		expect(get.pendingRestart).toEqual(["server.port"]);
 	});
 
+	test("jobDefaults.maxTurns classifies live (sub-merged), never restart-pending", async () => {
+		const { app, opened } = await bootServer();
+		const seen: unknown[] = [];
+		const unsubscribe = opened.events.subscribe((event) => {
+			if ((event as { type: string }).type === "settings.changed") {
+				seen.push(event);
+			}
+		});
+		const response = await patch(app, { jobDefaults: { maxTurns: 40 } });
+		unsubscribe();
+		expect(response.statusCode).toBe(200);
+		const body = response.json() as {
+			applied: string[];
+			pending: string[];
+		};
+		expect(body.applied).toEqual(["jobDefaults.maxTurns"]);
+		expect(body.pending).toEqual([]);
+		const get = (await app.inject({ method: "GET", url: "/v1/settings" }))
+			.json() as { pendingRestart: string[] };
+		expect(get.pendingRestart).toEqual([]);
+		// settings.changed carries the flattened sub-key, not "jobDefaults".
+		expect(seen).toEqual([
+			{ type: "settings.changed", scope: "server", keys: ["jobDefaults.maxTurns"] },
+		]);
+	});
+
 	test("patching a restart key back to its boot value removes it (Review Focus 2)", async () => {
 		const { app } = await bootServer({
 			file: { server: { port: 4080 } },
