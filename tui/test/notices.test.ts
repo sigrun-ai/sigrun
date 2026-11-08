@@ -248,6 +248,68 @@ describe("NoticeChrome: the overlay", () => {
 		expect(results).toEqual(["action done"]);
 	});
 
+	test("Enter on a confirm-carrying action asks first", async () => {
+		const served = {
+			notices: [
+				notice("n-1", {
+					actions: [
+						{
+							id: "undo",
+							label: "Undo",
+							kind: "extension",
+							name: "undo",
+							confirm: "Undo every change this review made?",
+						},
+					],
+				}),
+			],
+		};
+		const stub = stubClient(served);
+		const chrome = new NoticeChrome(stub.client, { theme: plainTuiTheme() });
+		await chrome.refresh();
+		const { tui, shown } = stubTui();
+		chrome.openOverlay(tui, {});
+		shown.component!.handleInput!("\r");
+		expect(stub.actionCalls).toEqual([]);
+		expect(shown.component!.render(120)).toEqual(
+			expect.arrayContaining([expect.stringContaining("Undo every change this review made? (y/n)")]),
+		);
+		shown.component!.handleInput!("y");
+		expect(stub.actionCalls).toEqual([{ id: "n-1", actionId: "undo" }]);
+	});
+
+	test("n or Esc cancels the confirm", async () => {
+		const served = {
+			notices: [
+				notice("n-1", {
+					actions: [
+						{
+							id: "undo",
+							label: "Undo",
+							kind: "extension",
+							name: "undo",
+							confirm: "Undo every change this review made?",
+						},
+					],
+				}),
+			],
+		};
+		const stub = stubClient(served);
+		const chrome = new NoticeChrome(stub.client, { theme: plainTuiTheme() });
+		await chrome.refresh();
+		const { tui, shown } = stubTui();
+		chrome.openOverlay(tui, {});
+		shown.component!.handleInput!("\r");
+		shown.component!.handleInput!("n");
+		expect(stub.actionCalls).toEqual([]);
+		expect(shown.component).toBeDefined();
+		expect(shown.component!.render(120).join("\n")).not.toContain("Undo every change this review made? (y/n)");
+		shown.component!.handleInput!("\r");
+		shown.component!.handleInput!("\x1b");
+		expect(stub.actionCalls).toEqual([]);
+		expect(shown.component).toBeDefined();
+	});
+
 	test("an `open` action prints the URL and dismisses the notice", async () => {
 		const served = {
 			notices: [

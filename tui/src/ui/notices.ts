@@ -78,6 +78,8 @@ class NoticesOverlay implements Component {
 	#overlay: OverlayHandle | undefined;
 	/** The selected row index into {@link rows}. */
 	#index = 0;
+	/** An extension action waiting for an explicit yes/no confirmation. */
+	#confirming: { notice: UserNotice; action: UserNoticeAction } | undefined;
 
 	constructor(chrome: NoticeChrome, options: NoticeOverlayOptions) {
 		this.#chrome = chrome;
@@ -110,6 +112,10 @@ class NoticesOverlay implements Component {
 	#runSelected(): void {
 		const row = this.rows[this.#index];
 		if (row === undefined || row.action === undefined) return;
+		if (row.action.kind === "extension" && row.action.confirm !== undefined && row.action.confirm !== "") {
+			this.#confirming = { notice: row.notice, action: row.action };
+			return;
+		}
 		void this.#chrome.run(row.notice, row.action);
 	}
 
@@ -121,6 +127,19 @@ class NoticesOverlay implements Component {
 	}
 
 	handleInput(data: string): void {
+		if (this.#confirming !== undefined) {
+			const confirming = this.#confirming;
+			if (data === "y" || data === "Y") {
+				this.#confirming = undefined;
+				void this.#chrome.run(confirming.notice, confirming.action);
+				return;
+			}
+			if (data === "n" || data === "N" || matchesKey(data, Key.escape) || data === "q" || data === "\x07") {
+				this.#confirming = undefined;
+			}
+			// Every other key is consumed while the confirm is pending.
+			return;
+		}
 		if (matchesKey(data, Key.escape) || data === "q" || data === "\x07") {
 			this.#close();
 			return;
@@ -148,7 +167,12 @@ class NoticesOverlay implements Component {
 		const lines: string[] = [];
 		const rows = this.rows;
 		let rowIndex = 0;
-		lines.push(`notices (${rows.length}) — enter run · d dismiss · esc close`);
+		const confirming = this.#confirming?.action;
+		lines.push(
+			confirming === undefined
+				? `notices (${rows.length}) — enter run · d dismiss · esc close`
+				: `${confirming.kind === "extension" ? confirming.confirm : ""} (y/n)`,
+		);
 		for (const notice of this.#chrome.notices) {
 			const age = relativeAge(notice.at);
 			lines.push(

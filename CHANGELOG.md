@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Skills: a deleted or archived skill opened from the sidebar shows
   *Restore deleted*, and restoring always uses the deletion commit.
+- TUI: a notice action carrying a confirm asks before running (y/n in the notices overlay).
 
 ## [0.11.1] - 2026-11-07
 
