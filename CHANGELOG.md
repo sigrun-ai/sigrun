@@ -5,7 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.11.5] - 2026-11-08
+
+The deleted-conversations release. Companion published first:
+ext-gateway 0.1.27 (shared peer 0.11.5, deleted-conversation chat
+notice).
 
 ### Added
 
@@ -21,7 +25,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   immediately-settled failed run without submitting, consecutive
   `conversation_deleted` failures notify once, the curator's fork review
   refuses deleted conversations, and `/archive`, `/unarchive`, `/delete`
-  and `/restore` join the slash-command catalog.
+  and `/restore` join the slash-command catalog. Clients gain Delete,
+  Undo, a read-only Deleted view, and per-view toggles; recall and the
+  gateway exclude deleted conversations.
 
 ### Changed
 
@@ -33,6 +39,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - An absolute directory path or `file://` directory URL in
   `extensions[]` resolves its entry like an installed package instead of
   reaching `import()` as an unsupported directory import.
+- Extension panels swap transports in place on params changes.
 
 ## [0.11.4] - 2026-11-08
 
