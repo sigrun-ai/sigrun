@@ -42,7 +42,7 @@
  * N+1 removal dropped. The row is name + age, per the refresh spec.
  */
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	ageGroup,
 	buildConversationTree,
@@ -195,6 +195,15 @@ export function SessionList(props: {
 	// Task 4): set when Delete resolves, restored by the toast's Undo —
 	// NEVER the active id (the toast survives conversation switches).
 	const [undoFor, setUndoFor] = useState<number | null>(null);
+	// Stable callbacks keep UndoToast's auto-dismiss effect from being
+	// torn down and restarted on every parent re-render (SSE frames).
+	const dismissUndo = useCallback(() => setUndoFor(null), []);
+	const restoreUndo = useCallback(
+		async (id: number) => {
+			await onRestore?.(id);
+		},
+		[onRestore],
+	);
 	const [menuFor, setMenuFor] = useState<number | null>(null);
 	const menuSlot = useRef<HTMLSpanElement | null>(null);
 	useDismiss(menuFor !== null, () => setMenuFor(null), menuSlot);
@@ -369,96 +378,97 @@ export function SessionList(props: {
 								>
 									<MoreIcon />
 								</button>
-									{menuFor === row.id && (
-										<div className="session-menu" role="menu">
-											{row.deleted === true ? (
-												// A deleted row's menu: Restore and nothing
-												// destructive (the plan's Global Constraints).
-												<button
-													type="button"
-													role="menuitem"
-													data-menu-action="restore"
-													onClick={() => {
-														setMenuFor(null);
-														void onRestore?.(row.id);
-													}}
-												>
-													Restore
-												</button>
-											) : (
-												<>
-											{canShare && (
-												<button
-													type="button"
-													role="menuitem"
-													data-menu-action="share"
-													onClick={() => {
-														setMenuFor(null);
-														onShare?.(row.id);
-													}}
-												>
-													Share…
-												</button>
-											)}
+								{menuFor === row.id && (
+									<div className="session-menu" role="menu">
+										{row.deleted === true ? (
+											// A deleted row's menu: Restore and nothing
+											// destructive (the plan's Global Constraints).
 											<button
 												type="button"
 												role="menuitem"
-												data-menu-action="rename"
-												onClick={() => {
-												setMenuFor(null);
-												setRenaming({
-													id: row.id,
-													draft: storedUserName(row),
-												});
-												}}
-											>
-												Rename
-											</button>
-											<button
-												type="button"
-												role="menuitem"
-												data-menu-action="fork"
+												data-menu-action="restore"
 												onClick={() => {
 													setMenuFor(null);
-													onFork(row.id);
+													void onRestore?.(row.id);
 												}}
 											>
-												Fork
+												Restore
 											</button>
-											<button
-												type="button"
-												role="menuitem"
-												data-menu-action="archive"
-												onClick={() => {
-													setMenuFor(null);
-													void onArchive(row.id, !row.archived);
-												}}
-											>
-												{row.archived ? "Unarchive" : "Archive"}
-											</button>
-											{canDelete && (
+										) : (
+											<>
+												{canShare && (
+													<button
+														type="button"
+														role="menuitem"
+														data-menu-action="share"
+														onClick={() => {
+															setMenuFor(null);
+															onShare?.(row.id);
+														}}
+													>
+														Share…
+													</button>
+												)}
 												<button
 													type="button"
 													role="menuitem"
-													data-menu-action="delete"
+													data-menu-action="rename"
 													onClick={() => {
 														setMenuFor(null);
-														// Capture the id AT DELETE TIME: the
-														// toast restores this id, never the
-														// active one (a switch must not
-														// re-target the undo).
-														void onDelete?.(row.id).then(() => {
-															setUndoFor(row.id);
+														setRenaming({
+															id: row.id,
+															draft: storedUserName(row),
 														});
 													}}
 												>
-													Delete
+													Rename
 												</button>
-											)}
-												</>
-											)}
-										</div>
-									)}
+												<button
+													type="button"
+													role="menuitem"
+													data-menu-action="fork"
+													onClick={() => {
+														setMenuFor(null);
+														onFork(row.id);
+													}}
+												>
+													Fork
+												</button>
+												<button
+													type="button"
+													role="menuitem"
+													data-menu-action="archive"
+													onClick={() => {
+														setMenuFor(null);
+														void onArchive(row.id, !row.archived);
+													}}
+												>
+													{row.archived ? "Unarchive" : "Archive"}
+												</button>
+												{canDelete && (
+													<button
+														type="button"
+														role="menuitem"
+														data-menu-action="delete"
+														onClick={() => {
+															setMenuFor(null);
+															// Capture the id AT DELETE TIME: the
+															// toast restores this id, never the
+															// active one (a switch must not
+															// re-target the undo).
+															void onDelete?.(row.id).then(
+																() => setUndoFor(row.id),
+																() => undefined,
+															);
+														}}
+													>
+														Delete
+													</button>
+												)}
+											</>
+										)}
+									</div>
+								)}
 							</span>
 						</li>
 					);
@@ -497,10 +507,8 @@ export function SessionList(props: {
 			{undoFor !== null && (
 				<UndoToast
 					conversationId={undoFor}
-					onRestore={async (id) => {
-						await onRestore?.(id);
-					}}
-					onDismiss={() => setUndoFor(null)}
+					onRestore={restoreUndo}
+					onDismiss={dismissUndo}
 				/>
 			)}
 		</nav>

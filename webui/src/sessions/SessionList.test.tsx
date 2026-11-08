@@ -653,7 +653,7 @@ describe("SessionList", () => {
 		expect(props.onDelete).toHaveBeenCalledWith(2);
 	});
 
-		test("deleting shows an Undo toast; Undo restores the captured id even after switching conversations", async () => {
+	test("deleting shows an Undo toast; Undo restores the captured id even after switching conversations", async () => {
 		const rows = [
 			summary({ id: 1, name: "Mine", owner: "alice" }),
 			summary({ id: 2, name: "Other", owner: "alice" }),
@@ -700,7 +700,7 @@ describe("SessionList", () => {
 		).toHaveLength(0);
 	});
 
-		test("the Undo toast auto-dismisses after 8 seconds", async () => {
+	test("the Undo toast auto-dismisses after 8 seconds", async () => {
 		const rows = [summary({ id: 1, name: "Mine", owner: "alice" })];
 		const props = {
 			...makeProps(rows),
@@ -721,14 +721,47 @@ describe("SessionList", () => {
 			renderer.root.findAllByProps({ className: "undo-toast" }),
 		).toHaveLength(1);
 		await act(async () => {
-			vi.advanceTimersByTime(8_000);
+			vi.advanceTimersByTime(4_000);
+		});
+		// A parent re-render (e.g. an SSE frame) must not restart the
+		// toast's 8-second clock.
+		await act(async () => {
+			renderer.update(<SessionList {...props} />);
+		});
+		await act(async () => {
+			vi.advanceTimersByTime(4_000);
 		});
 		expect(
 			renderer.root.findAllByProps({ className: "undo-toast" }),
 		).toHaveLength(0);
 	});
 
-		test("the Deleted toggle shows only deleted rows with Restore", async () => {
+	test("a failed delete does not show an Undo toast", async () => {
+		const rows = [summary({ id: 1, name: "Mine", owner: "alice" })];
+		const props = {
+			...makeProps(rows),
+			currentUser: "alice",
+			onDelete: vi.fn(async () => {
+				throw new Error("meta write failed");
+			}),
+		};
+		const renderer = render(<SessionList {...props} />);
+		await click(
+			rowById(renderer, 1).findByProps({ className: "session-menu-toggle" }),
+		);
+		await click(
+			renderer.root
+				.findByProps({ className: "session-menu" })
+				.findByProps({ "data-menu-action": "delete" }),
+		);
+		await flush();
+		expect(props.onDelete).toHaveBeenCalledWith(1);
+		expect(
+			renderer.root.findAllByProps({ className: "undo-toast" }),
+		).toHaveLength(0);
+	});
+
+	test("the Deleted toggle shows only deleted rows with Restore", async () => {
 		const rows = [
 			summary({ id: 1, name: "Harbor dredging log" }),
 			summary({
@@ -773,7 +806,7 @@ describe("SessionList", () => {
 		expect(onRestore).toHaveBeenCalledWith(2);
 	});
 
-		test("search does not reveal deleted rows", async () => {
+	test("search does not reveal deleted rows", async () => {
 		const rows = [
 			summary({ id: 1, name: "Harbor dredging log" }),
 			summary({ id: 2, name: "Harbor notes", deleted: true }),

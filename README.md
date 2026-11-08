@@ -1426,7 +1426,8 @@ client `/delete` deletes the open conversation. Deleted rows disappear
 from the conversation list and from sidebar search; the webui's
 **Deleted** toggle beside **Archived** and **Job runs** switches the
 rail to a Deleted-only view whose rows offer **Restore** (and nothing
-destructive). `/restore` restores the open conversation.
+destructive). `/restore` restores the open conversation in the TUI; in
+the webui use the banner's **Restore** (or **Undo**).
 
 A deleted conversation is **read-only**: the webui shows a
 `This conversation is deleted.` banner with a **Restore** button and

@@ -1347,6 +1347,9 @@ function AppShell(options: AppOptions = {}) {
 				setShellError(
 					`delete failed: ${cause instanceof Error ? cause.message : String(cause)}`,
 				);
+				// A failed delete must not produce a "Conversation deleted"
+				// Undo toast; SessionList handles the rejection as a no-op.
+				throw cause;
 			}
 		},
 		[client, list.reload],
@@ -1362,6 +1365,8 @@ function AppShell(options: AppOptions = {}) {
 				setShellError(
 					`restore failed: ${cause instanceof Error ? cause.message : String(cause)}`,
 				);
+				// Keep the Undo toast's failure path explicit as well.
+				throw cause;
 			}
 		},
 		[client, list.reload],

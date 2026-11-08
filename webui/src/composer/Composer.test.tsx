@@ -803,7 +803,8 @@ describe("Composer", () => {
 				"/restore",
 				"/review",
 				"/skill:greet",
-			]);		});
+			]);
+		});
 
 		test("typing filter: `/na` narrows the menu to /name; a plain text line keeps it closed", async () => {
 			const { client } = makeHarness();
