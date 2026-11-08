@@ -945,11 +945,12 @@ describe("conversation summary change events", () => {
 			}),
 		);
 
-		// Clearing through the generalized path emits deleted: false.
+		// Clearing through the generalized path emits deleted: false on the
+		// EVENT even though the stored key is removed (event vs doc shape).
 		events.length = 0;
 		await root.commit(async (tx) => {
 			const draft = await tx.doc(SessionMetaDoc, root.id);
-			draft.deleted = false;
+			delete draft.deleted;
 		}, BACKGROUND_CONTEXT);
 		expect(events).toContainEqual({
 			type: "conversation.changed",

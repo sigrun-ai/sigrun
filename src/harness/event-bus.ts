@@ -100,7 +100,7 @@ interface MetaBasis {
 	autoName?: string;
 	archived: boolean;
 	pinned: boolean;
-	deleted?: boolean;
+	deleted: boolean;
 	lastActivityAt?: string;
 	owner?: string;
 	source?: string;

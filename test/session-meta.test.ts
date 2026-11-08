@@ -384,10 +384,10 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		// A fresh GET (not the PATCH echo) serves the stored flag.
 		const served = await getMeta(app, root.id);
 		expect(served.json().deleted).toBe(true);
-		// `false` restores (the key stays, as false).
+		// `false` restores by REMOVING the key (absent = not deleted).
 		const restored = await patchMeta(app, root.id, { deleted: false });
 		expect(restored.statusCode).toBe(200);
-		expect(restored.json().deleted).toBe(false);
+		expect(restored.json()).not.toHaveProperty("deleted");
 		// `null` removes the key entirely (like name/sharing: absent = not deleted).
 		await patchMeta(app, root.id, { deleted: true });
 		const cleared = await patchMeta(app, root.id, { deleted: null });
@@ -406,7 +406,7 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 		await patchMeta(app, root.id, { deleted: true });
 		const restored = await patchMeta(app, root.id, { deleted: false });
 		expect(restored.statusCode).toBe(200);
-		expect(restored.json().deleted).toBe(false);
+		expect(restored.json()).not.toHaveProperty("deleted");
 		expect(restored.json().archived).toBe(true);
 		const stored = await opened.harness.snapshot(
 			SessionMetaDoc,
@@ -414,7 +414,7 @@ describe("PATCH /v1/conversations/:id/meta", () => {
 			BACKGROUND_CONTEXT,
 		);
 		expect(stored?.archived).toBe(true);
-		expect(stored?.deleted).toBe(false);
+		expect(stored?.deleted).toBeUndefined();
 	});
 
 	test("rejects a non-boolean deleted value (400 invalid_body)", async () => {

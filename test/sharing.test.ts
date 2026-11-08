@@ -698,7 +698,7 @@ describe("PATCH …/meta deleted authority", () => {
 			headers: authJson("test-service-token"),
 		});
 		expect(superRestore.statusCode).toBe(200);
-		expect(superRestore.json().deleted).toBe(false);
+		expect(superRestore.json()).not.toHaveProperty("deleted");
 		const superDelete = await app.inject({
 			method: "PATCH",
 			url: `/v1/conversations/${id}/meta`,

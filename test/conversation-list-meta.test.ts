@@ -386,6 +386,11 @@ describe("GET /v1/conversations lean list", () => {
 		});
 		const plainRow = rows.find((row) => row.id === plain)!;
 		expect("deleted" in plainRow).toBe(false);
+		// Restoring also removes the key from the list row.
+		expect((await patchMeta(app, deleted, { deleted: false })).statusCode).toBe(200);
+		const restoredRows = await listRows(app);
+		const restoredRow = restoredRows.find((row) => row.id === deleted)!;
+		expect("deleted" in restoredRow).toBe(false);
 	});
 
 	test("summaries carry no entryCount key", async () => {

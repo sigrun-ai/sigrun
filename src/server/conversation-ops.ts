@@ -781,7 +781,7 @@ export async function listConversationsOp(
 					? {}
 					: { jobOutcome: meta.jobOutcome }),
 				...(meta?.adopted === undefined ? {} : { adopted: meta.adopted }),
-			...(meta?.deleted === undefined ? {} : { deleted: meta.deleted }),
+				...(meta?.deleted === true ? { deleted: true } : {}),
 				...(meta?.lastActivityAt === undefined
 					? {}
 					: { lastActivityAt: meta.lastActivityAt }),

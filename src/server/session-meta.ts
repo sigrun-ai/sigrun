@@ -252,11 +252,11 @@ export function applySessionMetaPatch(
 ): void {
 	if (patch.pinned !== undefined) draft.pinned = patch.pinned ?? false;
 	if (patch.archived !== undefined) draft.archived = patch.archived ?? false;
-	// `deleted` clears like `name`/`sharing`: absent = not deleted, so a
-	// `null` clear removes the key (it is not in DEFAULT_SESSION_META).
+	// `deleted` is present only while true: both `false` and `null`
+	// remove the key, so restored rows never carry `deleted: false`.
 	if (patch.deleted !== undefined) {
-		if (patch.deleted === null) delete draft.deleted;
-		else draft.deleted = patch.deleted;
+		if (patch.deleted === true) draft.deleted = true;
+		else delete draft.deleted;
 	}
 	if (patch.tagged !== undefined) {
 		draft.tagged = patch.tagged === null ? [] : [...patch.tagged];
