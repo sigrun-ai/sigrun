@@ -27,7 +27,7 @@ import type { JobRunWire } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "../harness/settings.js";
 import { SessionMetaDoc } from "../server/session-meta.js";
 import { EventBus, type RunSettledEvent } from "../harness/event-bus.js";
-import { JobDoc, JobRunDoc, jobIdOfFireKey, listRuns, patchJob, pruneHistory, scanJobs } from "./docs.js";
+import { JobDoc, JobRunDoc, listRuns, patchJob, pruneHistory, scanJobs } from "./docs.js";
 import type { JobRuntimeDeps } from "./fire.js";
 
 /** The `sigrun.job.run` key a run record was written under. */
@@ -117,40 +117,22 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 			// Every `job:<fireKey>` input settles its OWN exact run record.
 			// One settle group may carry several jobs' queued inputs.
 			const runsToSettle = new Map<string, JobRunWire>();
+			let hasJobInput = false;
 			for (const id of event.inputs) {
 				const submission = await deps.harness.submission(id, ctx);
 				if (submission === undefined) continue;
 				const record = await submission.status(ctx);
 				const requestId = record.requestId;
 				if (requestId === undefined || !requestId.startsWith("job:")) continue;
+				hasJobInput = true;
 				const fireKey = requestId.slice("job:".length);
 				const run = await deps.harness.snapshot(JobRunDoc, fireKey, ctx);
-				if (run?.outcome === "running") {
-					runsToSettle.set(fireKey, run);
-					continue;
-				}
-				// Compatibility only: a record predating exact-key storage is
-				// resolved by the colon-safe fire-key tail parser below.
-				const jobId = jobIdOfFireKey(fireKey);
-				if (jobId === undefined) continue;
-				const runs = await listRuns(
-					deps.storage,
-					jobId,
-					Number.MAX_SAFE_INTEGER,
-					ctx,
-				);
-				// SAFETY: ConversationId is the branded number the run record stores.
-				const legacyRun = runs.find(
-					(one) =>
-						one.outcome === "running" &&
-						one.conversationId === (event.conversationId as unknown as number),
-				);
-				if (legacyRun !== undefined) runsToSettle.set(runKeyOf(legacyRun), legacyRun);
+				if (run?.outcome === "running") runsToSettle.set(fireKey, run);
 			}
 
-			// Compatibility fallback for pre-fire-key records: the conversation's
-			// persistent job stamp identifies the newest running run as before.
-			if (runsToSettle.size === 0) {
+			// Compatibility fallback for pre-fire-key submissions: only a run
+			// with NO job input uses the conversation's persistent job stamp.
+			if (!hasJobInput) {
 				const meta = await deps.harness.snapshot(
 					SessionMetaDoc,
 					event.conversationId,
@@ -177,15 +159,19 @@ export function registerJobObservers(deps: JobObserversDeps): () => void {
 
 			const answered = event.outcome.status === "answered";
 			for (const run of runsToSettle.values()) {
-				const settled: JobRunWire = {
-					...run,
-					outcome: answered ? "succeeded" : "failed",
-					settledAt: nowIso(),
-					...(answered || event.outcome.status !== "unanswered"
-						? {}
-						: { error: event.outcome.reason }),
-				};
-				await settleJobRun(deps, run, settled, ctx);
+				try {
+					const settled: JobRunWire = {
+						...run,
+						outcome: answered ? "succeeded" : "failed",
+						settledAt: nowIso(),
+						...(answered || event.outcome.status !== "unanswered"
+							? {}
+							: { error: event.outcome.reason }),
+					};
+					await settleJobRun(deps, run, settled, ctx);
+				} catch (error) {
+					console.error("jobs: runSettled observer failed:", error);
+				}
 			}
 		} catch (error) {
 			console.error("jobs: runSettled observer failed:", error);

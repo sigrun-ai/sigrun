@@ -206,11 +206,9 @@ describe("job run settlement", () => {
 		expect(userSubmission).toBeDefined();
 		await opened.jobs.runNow(a.id);
 		await opened.jobs.runNow(b.id);
-		faux.setResponses([
-			fauxAssistantMessage("user done"),
-			fauxAssistantMessage("job a done"),
-			fauxAssistantMessage("job b done"),
-		]);
+		// Append: replacing the queue could discard the still-pending gate and
+		// silently turn this into three non-discriminating settle groups.
+		faux.appendResponses([fauxAssistantMessage("both jobs done")]);
 		gate.release();
 
 		await waitSettled(opened, a.id);
