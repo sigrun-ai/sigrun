@@ -58,6 +58,9 @@ test("Skills tab: create a workspace skill, see it + its one-commit history, edi
 		await expect(historyRows).toHaveCount(1);
 		await expect(historyRows.first()).toContainText("create acme-e2e-skill");
 		await expect(historyRows.first()).toContainText("tester");
+		// Every row carries at most its own Review button; these workspace
+		// commits have no curator review, so the bound button hides.
+		await expect(historyRows.first().getByRole("button", { name: "Review" })).toHaveCount(0);
 
 		// Edit it: the form pre-fills (name read-only), save, TWO history rows.
 		await page.getByRole("button", { name: "Edit" }).click();
@@ -66,12 +69,20 @@ test("Skills tab: create a workspace skill, see it + its one-commit history, edi
 		await page.getByRole("button", { name: "Save" }).click();
 		await expect(historyRows).toHaveCount(2);
 		await expect(historyRows.first()).toContainText("edit acme-e2e-skill");
+		await expect(historyRows.nth(1).getByRole("button", { name: "Review" })).toHaveCount(0);
 
-		// Open the newest commit: a diff block of the before/after renders.
+		// Open the newest commit: its diff is immediately below that row,
+		// before the remaining history collection (not below the full list).
 		await historyRows.first().click();
 		const diff = main.locator(".blk-diff");
 		await expect(diff.first()).toBeVisible();
 		await expect(diff.first()).toContainText("edited");
+		await expect(historySection.locator(".blk-diff")).toHaveCount(1);
+		const historyOrder = await historySection.locator(".blk-list-card, .blk-diff").evaluateAll((nodes) =>
+			nodes.map((node) => (node.classList.contains("blk-diff") ? "diff" : "row")),
+		);
+		expect(historyOrder).toEqual(["row", "diff", "row"]);
+		await expect(historySection.locator(".blk-section-title", { hasText: /^Commit / })).toHaveCount(0);
 	} finally {
 		await context.close();
 	}

@@ -352,6 +352,35 @@ describe("copy action", () => {
 
 // ─── No-Unicode terminals (§10.2: ASCII glyph + marker fallbacks) ──────
 
+describe("fields hideEmpty", () => {
+	test("omits undefined, null and empty-string values, preserving false and zero", () => {
+		const block: Block = {
+			type: "fields",
+			hideEmpty: true,
+			rows: [
+				{ label: "Missing", value: { $: "/missing" } },
+				{ label: "Null", value: null },
+				{ label: "Empty", value: "" },
+				{ label: "Zero", value: 0 },
+				{ label: "False", value: false },
+			],
+		};
+		const { ctx } = makeCtx();
+		const lines = renderBlock(block, ctx).render(72).join("\n");
+		expect(lines).not.toContain("Missing");
+		expect(lines).not.toContain("Null");
+		expect(lines).not.toContain("Empty");
+		expect(lines).toContain("Zero");
+		expect(lines).toContain("False");
+	});
+
+	test("without hideEmpty an empty value keeps its row", () => {
+		const block: Block = { type: "fields", rows: [{ label: "Empty", value: "" }] };
+		const { ctx } = makeCtx();
+		expect(renderBlock(block, ctx).render(72).join("\n")).toContain("Empty");
+	});
+});
+
 describe("no-Unicode capability", () => {
 	test("iconGlyph answers the ASCII fallback exactly when asked", () => {
 		expect(iconGlyph("error", true)).toBe("!!");

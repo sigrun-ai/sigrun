@@ -106,7 +106,7 @@ function mainData(overrides?: Partial<SkillMainData>): SkillMainData {
 		body: "# Acme deploy\n\nRun the deploy.",
 		supportFiles: [],
 		overlay: null,
-		history: { available: true, reason: null, items: [], hasMore: false, nextCursor: null },
+		history: { available: true, reason: null, before: [], after: [], hasMore: false, nextCursor: null },
 		commit: null,
 		...overrides,
 	};
@@ -186,7 +186,8 @@ describe("history paging", () => {
 				history: {
 					available: true,
 					reason: null,
-					items: page.items,
+					before: page.items,
+					after: [],
 					hasMore: page.hasMore,
 					nextCursor: page.nextCursor,
 				},
@@ -201,13 +202,25 @@ describe("history paging", () => {
 			type: "navigate",
 			params: { skill: "acme-deploy", root: "workspace", cursor: commits[24]?.sha },
 		});
-		// The history collection is data-bound and drills in per row.
-		const history = blocksOfType(tree, "collection").find((block) => block.id === "history");
-		expect(history?.items).toEqual({ $: "/main/history/items" });
-		expect(history?.onActivate).toEqual({ type: "edit", name: "openCommit" });
+		// The two history collections bind their own page halves and share
+		// exactly the same row activation and card template.
+		const before = blocksOfType(tree, "collection").find((block) => block.id === "history-before");
+		const after = blocksOfType(tree, "collection").find((block) => block.id === "history-after");
+		expect(before?.items).toEqual({ $: "/main/history/before" });
+		expect(after?.items).toEqual({ $: "/main/history/after" });
+		expect(before?.onActivate).toEqual({ type: "edit", name: "openCommit" });
+		expect(after?.onActivate).toEqual(before?.onActivate);
+		expect(after?.item).toEqual(before?.item);
+		// Load more remains inside History, after the second collection.
+		const historySection = blocksOfType(tree, "section").find((block) => block.id === "skill-history");
+		expect(historySection?.children.map((block: any) => block.id)).toEqual([
+			"history-before",
+			"history-after",
+			"history-more",
+		]);
 	});
 
-	test("a curator commit row carries the curator review navigation", () => {
+	test("one Review button per history row", () => {
 		const page = historyPage([
 			commitOf("a".repeat(40), { actor: { kind: "curator" }, reviewId: "rev-1" }),
 			commitOf("b".repeat(40)),
@@ -218,41 +231,124 @@ describe("history paging", () => {
 		const tree = buildSkillsTree(
 			{ skill: "acme-deploy", root: "workspace" },
 			mainData({
-				history: { available: true, reason: null, items: page.items, hasMore: false, nextCursor: null },
+				history: { available: true, reason: null, before: page.items, after: [], hasMore: false, nextCursor: null },
 			}),
 			EMPTY_FORM,
 			{ writable: true, historyAvailable: true, selectedExists: true },
 		);
-		const history = blocksOfType(tree, "collection").find((block) => block.id === "history");
-		const reviewButton = (history?.item?.actions ?? []).find((button: any) => button.id === `curator-${"a".repeat(40)}`);
-		expect(reviewButton?.action).toEqual({
-			type: "navigate",
-			target: { view: { extension: "curator", id: "curator", params: { review: "rev-1" } } },
-		});
+		const history = blocksOfType(tree, "collection").find((block) => block.id === "history-before");
+		expect(history?.item?.actions).toEqual([
+			{
+				id: "review",
+				label: "Review",
+				icon: "link",
+				action: {
+					type: "navigate",
+					target: {
+						view: {
+							extension: "curator",
+							id: "curator",
+							params: { review: { $: "./reviewId" } },
+						},
+					},
+				},
+			},
+		]);
+		expect(JSON.stringify(history?.item?.actions)).not.toContain("rev-1");
 	});
 });
 
 describe("a selected commit", () => {
-	test("renders ONE diff block per changed file", () => {
+	test("a selected commit's diffs render under its row", () => {
 		const files = [
 			{ path: "acme-deploy/SKILL.md", before: "# Old\n", after: "# New\n" },
 			{ path: "acme-deploy/references/ops.md", before: "", after: "ops notes\n" },
 		];
+		const rows = historyPage([
+			commitOf("a".repeat(40)),
+			commitOf("b".repeat(40)),
+			commitOf("c".repeat(40)),
+		]);
 		const tree = buildSkillsTree(
-			{ skill: "acme-deploy", root: "workspace", commit: "c".repeat(40) },
-			mainData({ commit: { sha: "c".repeat(40), files } }),
+			{ skill: "acme-deploy", root: "workspace", commit: "b".repeat(40) },
+			mainData({
+				history: {
+					available: true,
+					reason: null,
+					before: rows.items.slice(0, 2),
+					after: rows.items.slice(2),
+					hasMore: true,
+					nextCursor: rows.nextCursor,
+				},
+				commit: { sha: "b".repeat(40), files },
+			}),
 			EMPTY_FORM,
 			{ writable: true, historyAvailable: true, selectedExists: true },
 		);
+		const section = blocksOfType(tree, "section").find((block) => block.id === "skill-history");
+		expect(section?.children.map((block: any) => block.id)).toEqual([
+			"history-before",
+			"commit-diff-0",
+			"commit-diff-1",
+			"history-after",
+			"history-more",
+		]);
+		expect(blocksOfType(tree, "section").some((block) => block.id === "commit-section")).toBe(false);
+		const before = blocksOfType(tree, "collection").find((block) => block.id === "history-before");
+		const after = blocksOfType(tree, "collection").find((block) => block.id === "history-after");
+		expect(before?.items).toEqual({ $: "/main/history/before" });
+		expect(after?.items).toEqual({ $: "/main/history/after" });
+		expect(after?.item).toEqual(before?.item);
+		expect(after?.onActivate).toEqual(before?.onActivate);
 		const diffs = blocksOfType(tree, "diff");
 		expect(diffs).toHaveLength(2);
 		expect(diffs[0]).toMatchObject({ before: "# Old\n", after: "# New\n", lang: "markdown" });
 		expect(diffs[1]).toMatchObject({ before: "", after: "ops notes\n" });
 		expect(diffs[0]?.id).not.toBe(diffs[1]?.id);
-		// The selected commit's restore action rides the actions callout.
-		const actions = blocksOfType(tree, "callout").find((block) => block.id === "skill-actions");
-		const restore = (actions?.actions ?? []).find((button: any) => button.id === "skill-restore");
+		// The selected commit's restore action rides the skill section.
+		const summary = blocksOfType(tree, "section").find((block) => block.id === "skill-summary");
+		const restore = (summary?.actions ?? []).find((button: any) => button.id === "skill-restore");
 		expect(restore?.action).toMatchObject({ type: "submit", name: "restoreVersion" });
+	});
+
+	test("a commit off the current page renders its diff at the end", () => {
+		const rows = historyPage([commitOf("a".repeat(40)), commitOf("b".repeat(40))]);
+		const tree = buildSkillsTree(
+			{ skill: "acme-deploy", root: "workspace", commit: "c".repeat(40) },
+			mainData({
+				history: {
+					available: true,
+					reason: null,
+					before: rows.items,
+					after: [],
+					hasMore: true,
+					nextCursor: rows.nextCursor,
+				},
+				commit: { sha: "c".repeat(40), files: [{ path: "acme-deploy/SKILL.md", before: "old", after: "new" }] },
+			}),
+			EMPTY_FORM,
+			{ writable: true, historyAvailable: true, selectedExists: true },
+		);
+		const section = blocksOfType(tree, "section").find((block) => block.id === "skill-history");
+		expect(section?.children.map((block: any) => block.id)).toEqual([
+			"history-before",
+			"history-after",
+			"commit-diff-0",
+			"history-more",
+		]);
+	});
+
+	test("skill actions ride the skill section", () => {
+		const tree = buildSkillsTree(
+			{ skill: "acme-deploy", root: "workspace" },
+			mainData(),
+			EMPTY_FORM,
+			{ writable: true, historyAvailable: true, selectedExists: true },
+		);
+		const summary = blocksOfType(tree, "section").find((block) => block.id === "skill-summary");
+		expect((summary?.actions ?? []).map((button: any) => button.id)).toEqual(["skill-edit", "skill-delete"]);
+		expect(blocksOfType(tree, "callout").some((block) => block.id === "skill-actions")).toBe(false);
+		expect(validateTree(tree, { placement: "view" }).ok).toBe(true);
 	});
 
 	test("a wide commit stays under the total-bytes cap with an elision marker (review I6)", () => {
@@ -323,7 +419,7 @@ describe("the 3000-commit guard (view limits: < 2000 blocks, < 4 MiB data)", () 
 				),
 			),
 			main: mainData({
-				history: { available: true, reason: null, items: page.items, hasMore: page.hasMore, nextCursor: page.nextCursor },
+				history: { available: true, reason: null, before: page.items, after: [], hasMore: page.hasMore, nextCursor: page.nextCursor },
 				supportFiles: Array.from({ length: 30 }, (_, index) => `references/file-${index}.md`),
 				body: "body ".repeat(2000),
 			}),
@@ -356,12 +452,26 @@ describe("a deleted selection without a deletion commit", () => {
 		);
 		const actions = blocksOfType(tree, "callout").find((block) => block.id === "skill-actions");
 		expect(actions?.body).toBe("No deletion commit was found for this skill.");
-		expect(actions?.actions).toEqual([]);
+		expect(actions?.actions).toBeUndefined();
+		const summary = blocksOfType(tree, "section").find((block) => block.id === "skill-summary");
+		expect(summary?.actions ?? []).toEqual([]);
 		expect(validateTree(tree, { placement: "view" }).ok).toBe(true);
 	});
 });
 
 describe("the new-skill form", () => {
+	test("the editor field fills the viewport", () => {
+		const tree = buildSkillsTree(
+			{ skill: "acme-deploy", root: "workspace", edit: true },
+			mainData(),
+			EMPTY_FORM,
+			{ writable: true, historyAvailable: true, selectedExists: true },
+		);
+		const form = blocksOfType(tree, "form").find((block) => block.id === "skill-form");
+		const body = form?.children.find((field: any) => field.name === "body");
+		expect(body).toMatchObject({ type: "longtext", fill: true });
+	});
+
 	test("offers no Where choice: learned skills are the curator's", () => {
 		const tree = buildSkillsTree(
 			{ edit: true },

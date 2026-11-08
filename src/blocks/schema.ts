@@ -293,6 +293,7 @@ const FieldsBlock = Type.Object({
 	...BlockBase,
 	type: Type.Literal("fields"),
 	rows: Type.Union([Type.Array(FieldsRow), Type.Ref("Binding")]),
+	hideEmpty: Type.Optional(Type.Boolean()),
 });
 
 const StatBlock = Type.Object({

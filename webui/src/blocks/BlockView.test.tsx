@@ -354,6 +354,40 @@ describe("BlockView: fields", () => {
 		expect(text).toContain("yes");
 		renderer.unmount();
 	});
+
+	test("hideEmpty omits undefined, null and empty-string resolved values only", () => {
+		const { renderer } = renderBlock(
+			{
+				type: "fields",
+				hideEmpty: true,
+				rows: [
+					{ label: "Missing", value: { $: "/missing" } },
+					{ label: "Null", value: null },
+					{ label: "Empty", value: "" },
+					{ label: "Zero", value: 0 },
+					{ label: "False", value: false },
+					{ label: "Present", value: "acme" },
+				],
+			},
+			{ data: {} },
+		);
+		expect(renderer.root.findAllByProps({ className: "blk-field-row" })).toHaveLength(3);
+		const text = textContent(renderer.toJSON());
+		expect(text).not.toContain("Missing");
+		expect(text).not.toContain("Null");
+		expect(text).not.toContain("Empty");
+		expect(text).toContain("Zero");
+		expect(text).toContain("False");
+		expect(text).toContain("Present");
+		renderer.unmount();
+	});
+
+	test("without hideEmpty an empty resolved row still renders", () => {
+		const { renderer } = renderBlock({ type: "fields", rows: [{ label: "Empty", value: "" }] });
+		expect(renderer.root.findAllByProps({ className: "blk-field-row" })).toHaveLength(1);
+		expect(textContent(renderer.toJSON())).toContain("Empty");
+		renderer.unmount();
+	});
 });
 
 describe("BlockView: stat", () => {

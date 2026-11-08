@@ -89,8 +89,15 @@ function fieldRows(block: FieldsBlock, ctx: BlockCtx): FieldRow[] {
 		if (entry === null || typeof entry !== "object" || Array.isArray(entry)) continue;
 		const record: Record<string, unknown> = entry;
 		const label = bindText(record.label, ctx);
+		const resolved = bindRaw(record.value, ctx);
+		if (
+			block.hideEmpty === true &&
+			(resolved === undefined || resolved === null || resolved === "")
+		) {
+			continue;
+		}
 		const value = formatValue(
-			(bindRaw(record.value, ctx) ?? null) as Parameters<typeof formatValue>[0],
+			(resolved ?? null) as Parameters<typeof formatValue>[0],
 			undefined,
 			ctx.locale,
 		);

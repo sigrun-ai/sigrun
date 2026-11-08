@@ -501,7 +501,8 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 		let history: SkillMainData["history"] = {
 			available: selection.historyAvailable,
 			reason: selection.historyReason,
-			items: [],
+			before: [],
+			after: [],
 			hasMore: false,
 			nextCursor: null,
 		};
@@ -531,10 +532,14 @@ export function createSkillsView(deps: SkillsViewDeps): SurfaceDef<"view"> {
 					)
 					: raw;
 			const page = historyPage(commits);
+			const selectedIndex = selection.params.commit === undefined
+				? -1
+				: page.items.findIndex((row) => row.sha === selection.params.commit);
 			history = {
 				available: true,
 				reason: null,
-				items: page.items,
+				before: selectedIndex === -1 ? page.items : page.items.slice(0, selectedIndex + 1),
+				after: selectedIndex === -1 ? [] : page.items.slice(selectedIndex + 1),
 				hasMore: page.hasMore,
 				nextCursor: page.nextCursor,
 			};

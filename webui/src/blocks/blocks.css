@@ -127,13 +127,12 @@
 .blk-fields dl {
 	display: grid;
 	gap: 0.35rem;
+	grid-template-columns: max-content minmax(0, 1fr);
 	margin: 0;
 }
 
 .blk-field-row {
-	display: flex;
-	gap: 1rem;
-	justify-content: space-between;
+	display: contents;
 }
 
 .blk-field-row dt {

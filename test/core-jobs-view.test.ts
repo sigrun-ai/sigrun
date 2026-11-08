@@ -267,13 +267,12 @@ function atPointer(data: Record<string, any>, pointer: string): unknown {
 }
 
 /**
- * Channel-shape assertion (Critical 1 regression guard): walk the tree
- * the way the channels do and assert every block carrying `actions` is
- * a type whose CONTRACT includes them — `page`, `callout`, or a card
- * template (never `section`, which the channels silently drop).
+ * Channel-shape assertion: walk the tree the way the channels do and
+ * assert every block carrying `actions` is a type whose CONTRACT
+ * includes them — `page`, `section`, `callout`, or a card template.
  */
 function assertActionBlocksValid(root: Record<string, any>): void {
-	const BLOCKS_WITH_ACTIONS = new Set(["page", "callout"]);
+	const BLOCKS_WITH_ACTIONS = new Set(["page", "callout", "section"]);
 	for (const node of walk([root])) {
 		if (node.actions !== undefined && !BLOCKS_WITH_ACTIONS.has(node.type)) {
 			throw new Error(
@@ -536,15 +535,22 @@ describe("core/jobs selected job", () => {
 		expect("error" in runs[0]).toBe(true);
 		expect("at" in runs[0]).toBe(true);
 		expect(main.runs.hasMore).toBe(false);
-		// A run with a conversation carries a navigate button into it.
+		// One row-bound Conversation template serves every run; a run
+		// without a conversation resolves it away in the channel.
 		const runButtons = findBlocks(root.main, "collection")
 			.filter((one) => one.id === "runs")
 			.flatMap((one) => one.item?.actions ?? []);
-		expect(runButtons).toContainEqual(
-			expect.objectContaining({
-				action: { type: "navigate", target: { conversation: conversationId } },
-			}),
-		);
+		expect(runButtons).toEqual([
+			{
+				id: "conversation",
+				label: "Conversation",
+				icon: "link",
+				action: {
+					type: "navigate",
+					target: { conversation: { $: "./conversationId" } },
+				},
+			},
+		]);
 		// Revisions: newest first (v2 then v1), each with changedBy/changedAt.
 		const revisions = main.revisions.items as any[];
 		expect(revisions.map((one) => one.version)).toEqual([2, 1]);
@@ -722,6 +728,69 @@ describe("core/jobs selected job", () => {
 
 // ─── actions ──────────────────────────────────────────────────────────────
 
+describe("core/jobs view polish", () => {
+	test("one Conversation button per run, bound to its own conversation", async () => {
+		const { app, opened, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		const first = await opened.jobs.runNow(job.id);
+		const second = await opened.jobs.runNow(job.id);
+		expect(first.conversationId).not.toBe(second.conversationId);
+		const rendered = await view(app, alice, { job: job.id });
+		const runs = findBlocks(rendered.json.tree.root.main, "collection").find((one) => one.id === "runs");
+		expect(runs?.item?.actions).toEqual([
+			{
+				id: "conversation",
+				label: "Conversation",
+				icon: "link",
+				action: {
+					type: "navigate",
+					target: { conversation: { $: "./conversationId" } },
+				},
+			},
+		]);
+		expect(JSON.stringify(runs?.item?.actions)).not.toContain(String(first.conversationId));
+		expect(JSON.stringify(runs?.item?.actions)).not.toContain(String(second.conversationId));
+	});
+
+	test("job actions ride the summary section", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		const rendered = await view(app, alice, { job: job.id });
+		const summary = findBlocks(rendered.json.tree.root.main, "section").find((one) => one.id === "job-summary");
+		expect((summary?.actions ?? []).map((one: any) => one.id)).toEqual([
+			"run-now",
+			"reset-state",
+			"job-edit",
+			"job-delete",
+		]);
+		expect(findBlocks(rendered.json.tree.root.main, "callout").some((one) => one.id === "job-actions")).toBe(false);
+		assertActionBlocksValid(rendered.json.tree.root);
+	});
+
+	test("empty summary rows are omitted", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		const rendered = await view(app, alice, { job: job.id });
+		const summary = findBlocks(rendered.json.tree.root.main, "section").find((one) => one.id === "job-summary");
+		const fields = findBlocks(summary?.children, "fields")[0];
+		expect(fields?.hideEmpty).toBe(true);
+	});
+
+	test("the prompt has its own section", async () => {
+		const { app, alice } = await bootServer();
+		const job = await createJob(app, alice, promptSpec("acme-nightly"));
+		const rendered = await view(app, alice, { job: job.id });
+		const section = findBlocks(rendered.json.tree.root.main, "section").find((one) => one.id === "job-prompt");
+		expect(section?.title).toBe("Prompt");
+		expect(findBlocks(section?.children, "markdown").map((one) => one.text)).toEqual([
+			{ $: "/main/job/prompt" },
+			{ $: "/main/job/taskInputMarkdown" },
+		]);
+		const summary = findBlocks(rendered.json.tree.root.main, "section").find((one) => one.id === "job-summary");
+		expect(findBlocks(summary?.children, "markdown")).toEqual([]);
+	});
+});
+
 describe("core/jobs actions", () => {
 	test("runNow requires write access (read → the forbidden action error; the buttons hide)", async () => {
 		const { app, alice, bob } = await bootServer();
@@ -733,35 +802,32 @@ describe("core/jobs actions", () => {
 			}),
 		);
 
-		// The writer's tree offers both buttons (with the reset confirm),
-		// on a block whose CONTRACT carries actions (a callout — never a
-		// section, which silently drops them).
+		// The writer's tree offers both buttons (with the reset confirm)
+		// on the summary section's header.
 		const writers = await view(app, alice, { job: job.id });
-		const actionCallout = findBlocks(writers.json.tree.root.main, "callout").find(
-			(one) => one.id === "job-actions",
+		const summary = findBlocks(writers.json.tree.root.main, "section").find(
+			(one) => one.id === "job-summary",
 		);
-		expect(actionCallout).toBeDefined();
-		const offered = (actionCallout?.actions ?? []).map((one: any) => one.id);
+		expect(summary).toBeDefined();
+		const offered = (summary?.actions ?? []).map((one: any) => one.id);
 		expect(offered).toContain("run-now");
 		expect(offered).toContain("reset-state");
-		const resetButton = (actionCallout?.actions ?? []).find(
+		const resetButton = (summary?.actions ?? []).find(
 			(one: any) => one.id === "reset-state",
 		);
 		expect(resetButton?.action?.confirm?.body).toBe(
 			"Reset this job's state? Its state folder is emptied.",
 		);
-		// Channel-shape assertion (Critical 1 regression guard): every
-		// block carrying `actions` in the served tree is a type whose
-		// contract includes actions (page, callout, or a card template —
-		// never a section, which the channels silently drop).
+		// Channel-shape assertion: every block carrying `actions` in the
+		// served tree is a type whose contract includes actions.
 		assertActionBlocksValid(writers.json.tree.root);
 
-		// The reader's tree hides both (the callout never renders).
+		// The reader's tree hides both.
 		const readers = await view(app, bob, { job: job.id });
-		const readCallout = findBlocks(readers.json.tree.root.main, "callout").find(
-			(one) => one.id === "job-actions",
+		const readSummary = findBlocks(readers.json.tree.root.main, "section").find(
+			(one) => one.id === "job-summary",
 		);
-		expect(readCallout).toBeUndefined();
+		expect(readSummary?.actions ?? []).toEqual([]);
 
 		// runNow as the writer fires the job (the surface renders first,
 		// so the action route's access gate has the instance cached).
@@ -1280,25 +1346,21 @@ describe("core/jobs Edit + Delete (saveJob/deleteJob)", () => {
 			thinking: "default",
 			enabled: true,
 		});
-		// Write actions include edit+delete with the confirm copy.
-		const actionCallout = findBlocks(rendered.json.tree.root.main, "callout").find(
-			(one) => one.id === "job-actions",
-		);
-		// (edit mode renders the form, not the details — the buttons live
-		// on the DETAILS page.)
-		expect(actionCallout).toBeUndefined();
+		// Write actions include edit+delete with the confirm copy on the
+		// DETAILS page's summary section (edit mode renders the form).
+		expect(findBlock(rendered.json.tree.root.main, "form")).toBeDefined();
 		const details = await view(app, alice, { job: job.id });
-		const detailCallout = findBlocks(details.json.tree.root.main, "callout").find(
-			(one) => one.id === "job-actions",
+		const detailSummary = findBlocks(details.json.tree.root.main, "section").find(
+			(one) => one.id === "job-summary",
 		);
-		const offered = (detailCallout?.actions ?? []).map((one: any) => one.id);
+		const offered = (detailSummary?.actions ?? []).map((one: any) => one.id);
 		expect(offered).toEqual(["run-now", "reset-state", "job-edit", "job-delete"]);
-		const editButton = detailCallout?.actions.find((one: any) => one.id === "job-edit");
+		const editButton = detailSummary?.actions.find((one: any) => one.id === "job-edit");
 		expect(editButton?.action).toEqual({
 			type: "navigate",
 			params: { job: job.id, edit: true },
 		});
-		const deleteButton = detailCallout?.actions.find((one: any) => one.id === "job-delete");
+		const deleteButton = detailSummary?.actions.find((one: any) => one.id === "job-delete");
 		expect(deleteButton?.action).toEqual({
 			type: "submit",
 			name: "deleteJob",

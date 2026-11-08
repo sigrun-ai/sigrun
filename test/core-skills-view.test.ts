@@ -569,7 +569,7 @@ describe("core/skills delete + restoreDeleted", () => {
 		// anchored PRE-delete must refuse the same way (a plain
 		// history.restore would silently overwrite the live skill).
 		const rendered = await view(app, alice, { skill: "acme-recycled", root: "workspace" });
-		const history = (atPointer(rendered.json.data, "/main/history/items") as any[]).map(
+		const history = (atPointer(rendered.json.data, "/main/history/before") as any[]).map(
 			(one) => one.sha as string,
 		);
 		// The OLDEST commit in the chain is the ORIGINAL skill's create —
@@ -615,9 +615,8 @@ describe("core/skills delete + restoreDeleted", () => {
 			root: "workspace",
 			commit: deletedRow.deletionSha,
 		});
-		const callouts = findBlocks(selected.json.tree.root.main, "callout");
-		const actions = callouts.find((block) => block.id === "skill-actions");
-		const names = (actions?.actions ?? []).map((button: any) => button.id);
+		const summary = findBlocks(selected.json.tree.root.main, "section").find((block) => block.id === "skill-summary");
+		const names = (summary?.actions ?? []).map((button: any) => button.id);
 		expect(names).toContain("skill-restore-deleted");
 		expect(names).not.toContain("skill-edit");
 		expect(names).not.toContain("skill-delete");
@@ -665,10 +664,10 @@ describe("core/skills delete + restoreDeleted", () => {
 // ─── deleted selections anchor on the deletion commit ──────────────────
 
 describe("core/skills deleted selections anchor on the deletion commit", () => {
-	/** The rendered Deleted selection's skill-actions callout buttons. */
+	/** The rendered Deleted selection's summary section. */
 	function actionButtons(rendered: { json: any }): Record<string, any> | undefined {
-		return findBlocks(rendered.json.tree.root.main, "callout").find(
-			(block) => block.id === "skill-actions",
+		return findBlocks(rendered.json.tree.root.main, "section").find(
+			(block) => block.id === "skill-summary",
 		);
 	}
 
@@ -863,8 +862,8 @@ describe("core/skills overlays + read-only roots", () => {
 		const main = atPointer(rendered.json.data, "/main") as any;
 		expect(main.overlay).toBe("Alice's note on the shared skill.");
 		// A read-only root carries NO edit/delete/restore actions — only overlay ones.
-		const actions = findBlocks(rendered.json.tree.root.main, "callout").find((block) => block.id === "skill-actions");
-		const names = (actions?.actions ?? []).map((button: any) => button.id);
+		const summary = findBlocks(rendered.json.tree.root.main, "section").find((block) => block.id === "skill-summary");
+		const names = (summary?.actions ?? []).map((button: any) => button.id);
 		expect(names).toContain("skill-overlay");
 		expect(names).toContain("skill-overlay-remove");
 		expect(names).not.toContain("skill-edit");
@@ -1009,7 +1008,7 @@ describe("core/skills restoreVersion", () => {
 			key: "k",
 			signal: new AbortController().signal,
 		});
-		const rows = atPointer(rendered0.data as Record<string, any>, "/main/history/items") as any[];
+		const rows = atPointer(rendered0.data as Record<string, any>, "/main/history/before") as any[];
 		expect(rows.length).toBeGreaterThanOrEqual(1);
 		const createSha = rows[rows.length - 1]?.sha;
 		expect(typeof createSha).toBe("string");

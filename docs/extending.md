@@ -2622,7 +2622,9 @@ collapsed and pretty-printed.)
 Also available: the layout blocks `stack`, `columns`, `grid`,
 `section`; `image` (see "Images"); `fields` (key/value rows); and
 `treeBlock` (a lazy `tree` block — the `tree` name belongs to the root
-wrapper).
+wrapper). A `fields` block may set `hideEmpty: true` to omit rows whose
+resolved value is `undefined`, `null` or `""`; other falsy values such
+as `false` and `0` remain visible.
 
 ### Actions and the turn rule
 

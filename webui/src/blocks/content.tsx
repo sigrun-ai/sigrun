@@ -80,10 +80,15 @@ export function FieldsBlockView(props: {
 			readonly tone?: Bindable<Tone>;
 			readonly icon?: Bindable<IconName>;
 		}[]>;
+		readonly hideEmpty?: boolean;
 	};
 }): ReactNode {
 	const ctx = useSurfaceData();
-	const rows = bound(ctx, props.block.rows) ?? [];
+	const rows = (bound(ctx, props.block.rows) ?? []).filter((row) => {
+		if (props.block.hideEmpty !== true) return true;
+		const value = bound(ctx, row.value);
+		return value !== undefined && value !== null && value !== "";
+	});
 	return (
 		<div className="blk blk-fields">
 			<dl>

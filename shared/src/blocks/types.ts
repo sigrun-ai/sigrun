@@ -208,6 +208,8 @@ export interface FieldsRow {
 export interface FieldsBlock extends BlockBase {
 	readonly type: "fields";
 	readonly rows: Bindable<readonly FieldsRow[]>;
+	/** Omit rows whose resolved value is undefined, null or an empty string. */
+	readonly hideEmpty?: boolean;
 }
 
 export interface StatBlock extends BlockBase {
