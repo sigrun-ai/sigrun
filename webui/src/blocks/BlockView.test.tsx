@@ -276,6 +276,28 @@ describe("BlockView: section", () => {
 		expect(textContent(renderer.toJSON())).not.toContain("inside");
 		renderer.unmount();
 	});
+
+	test("section actions render in the header", () => {
+		const { renderer, dispatch } = renderBlock({
+			type: "section",
+			id: "summary",
+			title: "Group",
+			actions: [
+				{ id: "open", label: "Open run", action: { type: "navigate", target: { conversation: 7 } } },
+			],
+			children: [{ type: "markdown", text: "inside" }],
+		});
+		const head = renderer.root.findByProps({ className: "blk-section-head" });
+		expect(head.findAll((node) => node.type === "button")).toHaveLength(1);
+		act(() => {
+			findByLabel(renderer, "Open run").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "navigate", target: { conversation: 7 } },
+			null,
+		);
+		renderer.unmount();
+	});
 });
 
 // ─── content blocks ───────────────────────────────────────────────────────
@@ -433,6 +455,23 @@ describe("BlockView: details", () => {
 // ─── actions (spec §6.1/§6.2) ─────────────────────────────────────────────
 
 describe("BlockView: actions", () => {
+	test("a callout button submit still sends null", () => {
+		const { renderer, dispatch } = renderBlock({
+			type: "callout",
+			id: "board",
+			tone: "info",
+			title: "Board",
+			actions: [
+				{ id: "add", label: "Add card", action: { type: "submit", name: "addCard" } },
+			],
+		});
+		act(() => {
+			findByLabel(renderer, "Add card").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith({ type: "submit", name: "addCard" }, null);
+		renderer.unmount();
+	});
+
 	test("a callout action button dispatches its action", () => {
 		const { renderer, dispatch } = renderBlock({ type: "callout", id: "callout", tone: "info", title: "T", actions: [
 			{ id: "a1", label: "Do it", action: { type: "edit", name: "doIt" } },

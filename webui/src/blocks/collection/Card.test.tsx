@@ -10,7 +10,7 @@
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean })
 	.IS_REACT_ACT_ENVIRONMENT = true;
 
-import { createElement as h, type ReactElement, type ReactNode } from "react";
+import { act, createElement as h, type ReactElement, type ReactNode } from "react";
 import { describe, expect, test, vi } from "vitest";
 import type { JsonObject } from "@sigrun/shared/blocks";
 import { render, textContent } from "../../test-utils";
@@ -171,6 +171,63 @@ describe("card slots (spec §5.5.1)", () => {
 		const text = textContent(view.toJSON());
 		expect(text).toContain("Acme deploy");
 		expect(text).not.toContain("after:");
+	});
+
+	test("a card submit sends the row id", () => {
+		const card: Card = {
+			title: "Acme",
+			actions: [{ id: "do", label: "Do it", action: { type: "submit", name: "onDo" } }],
+		};
+		const dispatch = vi.fn();
+		const view = render(
+			h(SurfaceActionsContext.Provider, {
+				value: { dispatch, access: "write", viewState: {} as JsonObject },
+			}, h(CardView, { card, item: acme, display: "list" })),
+		);
+		act(() => {
+			view.root.findByType("button").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "submit", name: "onDo" },
+			{ itemId: "t1" },
+		);
+	});
+
+	test("a card row without a string id still submits null", () => {
+		const card: Card = {
+			title: "Acme",
+			actions: [{ id: "do", label: "Do it", action: { type: "submit", name: "onDo" } }],
+		};
+		const dispatch = vi.fn();
+		const view = render(
+			h(SurfaceActionsContext.Provider, {
+				value: { dispatch, access: "write", viewState: {} as JsonObject },
+			}, h(CardView, { card, item: { title: "Acme" }, display: "list" })),
+		);
+		act(() => {
+			view.root.findByType("button").props.onClick();
+		});
+		expect(dispatch).toHaveBeenCalledWith({ type: "submit", name: "onDo" }, null);
+	});
+
+	test("a card submit handler that ignores its payload still works", () => {
+		const card: Card = {
+			title: "Acme",
+			actions: [{ id: "do", label: "Do it", action: { type: "submit", name: "onDo" } }],
+		};
+		let handled = 0;
+		const handler = (): void => {
+			handled += 1;
+		};
+		const view = render(
+			h(SurfaceActionsContext.Provider, {
+				value: { dispatch: handler, access: "write", viewState: {} as JsonObject },
+			}, h(CardView, { card, item: acme, display: "list" })),
+		);
+		act(() => {
+			view.root.findByType("button").props.onClick();
+		});
+		expect(handled).toBe(1);
 	});
 
 	test("long unbroken titles wrap or ellipsize, never widen (focus 4)", () => {

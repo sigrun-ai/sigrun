@@ -45,7 +45,7 @@ import type {
 	JsonValue,
 } from "@sigrun/shared/blocks";
 import type { AmbientWire, SigrunClient } from "../api.js";
-import type { BlockCtx } from "../blocks/context.js";
+import { resolveActionBindings, type BlockCtx } from "../blocks/context.js";
 import { renderBlock } from "../blocks/render.js";
 import { truncate } from "../blocks/width.js";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
@@ -97,7 +97,10 @@ export class AmbientChrome implements Component {
 	 */
 	dispatchAmbientAction(action: BlockAction): void {
 		if (action.type === "navigate") {
-			if (action.target !== undefined) this.onNavigate?.(action.target);
+			const resolved = resolveActionBindings(action, ambientCtx(this.#theme));
+			if (resolved?.type === "navigate" && resolved.target !== undefined) {
+				this.onNavigate?.(resolved.target);
+			}
 			return;
 		}
 		if (action.type === "open") {

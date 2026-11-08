@@ -1019,6 +1019,110 @@ describe("handlers (spec §6.1: a name with no handler fails validation)", () =>
 	});
 });
 
+// ─── actions: bound navigation and section actions ──────────────────────
+
+describe("bound navigation and section actions", () => {
+	it("navigate targets and params may bind", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "runs",
+			items: { $: "/runs" },
+			display: "list",
+			item: {
+				title: { $: "./title" },
+				actions: [
+					{
+						id: "review",
+						label: "Review",
+						action: {
+							type: "navigate",
+							target: { conversation: { $: "./conversationId" } },
+							params: { review: { $: "./reviewId" } },
+						},
+					},
+				],
+			},
+		});
+		expect(validateTree(tree, { placement: "chat" }).ok).toBe(true);
+	});
+
+	it("literal targets are unchanged", () => {
+		const tree = treeOf({
+			type: "collection",
+			id: "runs",
+			items: { $: "/runs" },
+			display: "list",
+			item: {
+				title: { $: "./title" },
+				actions: [
+					{
+						id: "open",
+						label: "Open",
+						action: { type: "navigate", target: { conversation: 17 } },
+					},
+				],
+			},
+		});
+		expect(validateTree(tree, { placement: "chat" }).ok).toBe(true);
+	});
+
+	it("section actions validate", () => {
+		const tree = treeOf({
+			type: "page",
+			title: "Runs",
+			main: [
+				{
+					type: "section",
+					id: "summary",
+					title: "Summary",
+					actions: [
+						{ id: "refresh", label: "Refresh", action: { type: "submit", name: "refresh" } },
+					],
+					children: [],
+				},
+			],
+		});
+		expect(validateTree(tree, { placement: "view", handlers: new Set(["refresh"]) }).ok).toBe(true);
+	});
+
+	it("a section with actions requires an id", () => {
+		const tree = treeOf({
+			type: "section",
+			title: "Summary",
+			actions: [
+				{ id: "refresh", label: "Refresh", action: { type: "submit", name: "refresh" } },
+			],
+			children: [],
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+		expect(errs.some((e) => e.path === "root" && e.message.includes("id"))).toBe(true);
+	});
+
+	it("a ./ binding in a navigate target outside a card is rejected", () => {
+		const tree = treeOf({
+			type: "callout",
+			id: "run",
+			tone: "info",
+			title: "Run",
+			actions: [
+				{
+					id: "open",
+					label: "Open",
+					action: { type: "navigate", target: { conversation: { $: "./conversationId" } } },
+				},
+			],
+		});
+		const errs = errorsOf(validateTree(tree, { placement: "view" }));
+		expect(
+			errs.some(
+				(e) =>
+					e.path === "root.actions[0].action.target.conversation.$" &&
+					e.message.includes("only valid inside a collection item template"),
+			),
+		).toBe(true);
+	});
+});
+
 // ─── actions: open schemes ────────────────────────────────────────────────
 
 describe("open action schemes (spec §6.1)", () => {

@@ -154,6 +154,51 @@ describe("page actions menu (§5.1)", () => {
 		expect(captured[0]?.action).toEqual({ type: "submit", name: "addCard" });
 	});
 
+	test("section actions appear in the actions menu and a bound navigate resolves", () => {
+		const { ctx, captured } = makeCtx({ conversation: 31 });
+		const page = pageOf(
+			{
+				type: "page",
+				title: "Board",
+				actions: [
+					{ id: "page-add", label: "Page action", action: { type: "submit", name: "addCard" } },
+				],
+				main: [
+					{
+						type: "section",
+						id: "summary",
+						title: "Summary",
+						actions: [
+							{
+								id: "section-open",
+								label: "Section conversation",
+								action: {
+									type: "navigate",
+									target: { conversation: { $: "/conversation" } },
+								},
+							},
+						],
+						children: [textBlock("body")],
+					},
+				],
+			},
+			ctx,
+		);
+		page.handleInput(".");
+		const text = page.render(100).join("\n");
+		expect(text.indexOf("Page action")).toBeLessThan(text.indexOf("Section conversation"));
+		page.handleInput(DOWN);
+		page.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.action).toEqual({
+			type: "navigate",
+			target: { conversation: 31 },
+		});
+		page.handleInput(".");
+		page.handleInput(ENTER);
+		expect(captured[1]?.action).toEqual({ type: "submit", name: "addCard" });
+	});
+
 	test("access read hides edit/answer actions; navigate/open stay", () => {
 		const { ctx } = makeCtx({}, { access: "read" });
 		const page = pageOf(actionsPage, ctx);
@@ -413,6 +458,32 @@ describe("SurfaceView states", () => {
 		await new Promise((resolve) => setImmediate(resolve));
 		expect(loads).toBe(2);
 		expect(view.render(100).join("\n")).toContain("HOSTED-MAIN");
+	});
+
+	test("a bound navigate resolves against page data before the shell", async () => {
+		const { transport } = fakeTransport({
+			load: () =>
+				Promise.resolve({
+					tree: PAGE_TREE,
+					data: { conversation: 41 },
+					rev: 1,
+					treeRev: 1,
+					access: "write" as const,
+				}),
+		});
+		const surface = new SurfaceState(transport);
+		const navigated: unknown[] = [];
+		surface.onNavigate = (action): void => {
+			navigated.push(action);
+		};
+		await surface.load();
+		surface.dispatch(
+			{ type: "navigate", target: { conversation: { $: "/conversation" } } },
+			null,
+		);
+		expect(navigated).toEqual([
+			{ type: "navigate", target: { conversation: 41 } },
+		]);
 	});
 
 	test("input routes to the rendered root while ready (a submit action dispatches)", async () => {

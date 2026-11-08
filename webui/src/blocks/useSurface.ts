@@ -38,6 +38,7 @@ import type {
 	Tree,
 } from "@sigrun/shared/blocks";
 import { DataOpError, applyOps, resolvePointer } from "@sigrun/shared/blocks";
+import { resolveActionBindings } from "./context";
 
 /** An action has 10 s to answer before it counts as a reject (§6.3). */
 export const ACT_TIMEOUT_MS = 10_000;
@@ -558,10 +559,18 @@ export function useSurface(
 		// A navigate action is shell-local: route through onNavigate and
 		// never reach the server (spec §6.1).
 		if (action.type === "navigate") {
-			opts?.onNavigate?.({
-				...(action.params === undefined ? {} : { params: action.params }),
-				...(action.target === undefined ? {} : { target: action.target }),
+			const resolved = resolveActionBindings(action, {
+				data: ref.current.confirmed,
+				locale: "en",
 			});
+			if (resolved?.type === "navigate") {
+				opts?.onNavigate?.({
+					...(resolved.params === undefined ? {} : { params: resolved.params }),
+					...(resolved.target === undefined
+						? {}
+						: { target: resolved.target }),
+				});
+			}
 			return;
 		}
 		const s = ref.current;

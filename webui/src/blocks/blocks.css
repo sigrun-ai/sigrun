@@ -92,6 +92,15 @@
 	font-size: 0.85em;
 }
 
+.blk-section-actions {
+	margin-left: auto;
+}
+
+.blk-section-actions .blk-actions {
+	justify-content: flex-end;
+	margin-top: 0;
+}
+
 .blk-section-toggle {
 	align-items: center;
 	background: none;

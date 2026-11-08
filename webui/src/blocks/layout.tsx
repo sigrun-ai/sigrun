@@ -8,7 +8,8 @@
 
 import { useState, type CSSProperties, type ReactNode } from "react";
 import { bound, boundString, useSurfaceData } from "./context";
-import type { Block, Field, Size, Tone } from "@sigrun/shared/blocks";
+import { ActionButtonRow } from "./content";
+import type { ActionButton, Block, Field, Size, Tone } from "@sigrun/shared/blocks";
 import { toneColor } from "./tones";
 import { useWidthClass, useWidthRem } from "./width";
 
@@ -145,6 +146,7 @@ export function SectionBlockView(props: {
 		readonly tone?: Tone | { readonly $: string };
 		readonly collapsible?: boolean;
 		readonly collapsed?: boolean;
+		readonly actions?: readonly ActionButton[];
 	};
 	children: ReactNode;
 }): ReactNode {
@@ -162,7 +164,7 @@ export function SectionBlockView(props: {
 			data-block="section"
 			data-tone={tone}
 		>
-			{(title !== "" || subtitle !== "" || collapsible) && (
+			{(title !== "" || subtitle !== "" || collapsible || props.block.actions !== undefined) && (
 				<div className="blk-section-head">
 					{collapsible ? (
 						<button
@@ -192,6 +194,11 @@ export function SectionBlockView(props: {
 					{subtitle !== "" && (
 						<div className="blk-section-subtitle" dir="auto">
 							{subtitle}
+						</div>
+					)}
+					{props.block.actions !== undefined && (
+						<div className="blk-section-actions">
+							<ActionButtonRow buttons={props.block.actions} />
 						</div>
 					)}
 				</div>

@@ -771,6 +771,29 @@ describe("useSurface (spec §6.3)", () => {
 		expect(transport.fetchCalls).toEqual([1, undefined]);
 	});
 
+	test("a bound onActivate navigate resolves before onNavigate", async () => {
+		const transport = new FakeTransport();
+		transport.loadResult.data = { selected: 23, review: "r3" };
+		const onNavigate = vi.fn();
+		const { latest } = mount(transport, { onNavigate });
+		await settleLoad();
+		act(() => {
+			latest().dispatch(
+				{
+					type: "navigate",
+					target: { conversation: { $: "/selected" } },
+					params: { review: { $: "/review" } },
+				},
+				{ itemId: "t1" },
+			);
+		});
+		expect(onNavigate).toHaveBeenCalledWith({
+			target: { conversation: 23 },
+			params: { review: "r3" },
+		});
+		expect(transport.actCalls).toEqual([]);
+	});
+
 	test("a navigate action calls onNavigate and never reaches the transport", async () => {
 		const transport = new FakeTransport();
 		const onNavigate = vi.fn();

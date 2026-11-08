@@ -10,7 +10,7 @@
  */
 
 import type { JsonObject, JsonValue } from "../json.js";
-import type { Action, DataOp, Tree } from "./types.js";
+import type { CoreTarget, DataOp, Tree } from "./types.js";
 
 /** The principal's access to a surface (spec §6.5). */
 export type SurfaceAccess = "none" | "read" | "write";
@@ -38,7 +38,8 @@ export type SurfaceActOk = {
 	ok: true;
 	rev: number;
 	ops?: DataOp[];
-	navigate?: Action;
+	/** Accepted handlers return a resolved target, never a data binding. */
+	navigate?: { type: "navigate"; params?: JsonObject; target?: CoreTarget };
 	toast?: string;
 };
 

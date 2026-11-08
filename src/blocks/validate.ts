@@ -205,6 +205,19 @@ function checkAction(ctx: WalkCtx, action: unknown, path: string): void {
 			push(ctx, joinPath(path, "name"), `no handler named ${action.name}`);
 		}
 	}
+	if (type === "navigate") {
+		const walkNavigate = (value: unknown, valuePath: string): void => {
+			if (isBinding(value)) {
+				checkBinding(ctx, value, valuePath);
+			} else if (isRec(value)) {
+				for (const [key, child] of Object.entries(value)) {
+					walkNavigate(child, joinPath(valuePath, key));
+				}
+			}
+		};
+		walkNavigate(action.target, joinPath(path, "target"));
+		walkNavigate(action.params, joinPath(path, "params"));
+	}
 	if (ctx.placement !== "chat" && action.turn === true) {
 		push(ctx, joinPath(path, "turn"), "`turn` is valid only in the chat placement");
 	}
@@ -610,6 +623,7 @@ function carriesActionsOrInputs(type: string, node: Rec): boolean {
 		case "page":
 			return node.actions !== undefined;
 		case "callout":
+		case "section":
 			return node.actions !== undefined;
 		case "tree":
 			return node.onExpand !== undefined || node.onActivate !== undefined;

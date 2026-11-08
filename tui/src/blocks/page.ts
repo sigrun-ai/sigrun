@@ -40,7 +40,7 @@ import type {
 	PageBlock,
 } from "@sigrun/shared/blocks";
 import { resolvePointer } from "@sigrun/shared/blocks";
-import { bindText, type BlockCtx } from "./context.js";
+import { bindText, resolveActionBindings, type BlockCtx } from "./context.js";
 import { iconGlyph } from "./icons.js";
 import { renderBlock, type RenderOptions } from "./render.js";
 import { pad, truncate, wrapPlain } from "./width.js";
@@ -100,6 +100,32 @@ export function isMainEmpty(block: PageBlock, data: JsonObject): boolean {
 	return !Array.isArray(items) || items.length === 0;
 }
 
+/** Section actions in depth-first main-block order (sidebar/detail excluded). */
+function sectionActions(blocks: readonly Block[]): readonly ActionButton[] {
+	const found: ActionButton[] = [];
+	for (const block of blocks) {
+		if (block.type === "section") {
+			found.push(...(block.actions ?? []));
+			found.push(
+				...sectionActions(
+					block.children.filter(
+						(child: Block | Field): child is Block =>
+							child.type === "stack" ||
+							child.type === "columns" ||
+							child.type === "grid" ||
+							child.type === "section",
+					),
+				),
+			);
+		} else if (block.type === "stack") {
+			found.push(...sectionActions(block.children));
+		} else if (block.type === "columns" || block.type === "grid") {
+			found.push(...sectionActions(block.children.map((child) => child.block)));
+		}
+	}
+	return found;
+}
+
 /** Which region has keyboard focus (Tab cycles sidebar → main). */
 type Region = "sidebar" | "main";
 
@@ -145,7 +171,7 @@ export class PageComponent implements Component {
 		const subtitle = bindText(this.#block.subtitle, this.#ctx);
 		const hints: string[] = [];
 		if (this.#block.switcher !== undefined) hints.push("ctrl+s switch");
-		if ((this.#block.actions ?? []).length > 0) hints.push(". actions");
+		if (this.#allActions().length > 0) hints.push(". actions");
 		const hint = hints.length > 0 ? this.#ctx.theme.dim(`  (${hints.join(" · ")})`) : "";
 		const lines = [truncate(`${this.#ctx.theme.bold(title)}${hint}`, width)];
 		if (subtitle !== "") lines.push(truncate(this.#ctx.theme.dim(subtitle), width));
@@ -204,13 +230,18 @@ export class PageComponent implements Component {
 
 	/** The header actions the principal may run (access read hides
 	 *  edit/answer actions; navigate/open/copy stay — §6.5's read rule). */
+	#allActions(): readonly ActionButton[] {
+		return [...(this.#block.actions ?? []), ...sectionActions(this.#block.main)];
+	}
+
 	#visibleActions(): readonly ActionButton[] {
-		if (this.#ctx.access === "write") return this.#block.actions ?? [];
-		return (this.#block.actions ?? []).filter(
+		return this.#allActions().filter(
 			(button) =>
-				button.action.type === "navigate" ||
-				button.action.type === "open" ||
-				button.action.type === "copy",
+				(this.#ctx.access === "write" ||
+					button.action.type === "navigate" ||
+					button.action.type === "open" ||
+					button.action.type === "copy") &&
+				resolveActionBindings(button.action, this.#ctx) !== undefined,
 		);
 	}
 
@@ -323,7 +354,10 @@ export class PageComponent implements Component {
 			}
 			if (data === "\r") {
 				const button = actions[this.#menu.cursor];
-				if (button !== undefined) this.#ctx.dispatch(button.action, {});
+				if (button !== undefined) {
+					const action = resolveActionBindings(button.action, this.#ctx);
+					if (action !== undefined) this.#ctx.dispatch(action, {});
+				}
 				this.#menu = null;
 				return;
 			}

@@ -2653,6 +2653,20 @@ Activating a list item (`onActivate`) opens it. Put destructive actions
 on `callout` or card buttons with a `confirm`; page-header actions
 (`page.actions`) dispatch without confirming.
 
+A navigate button's `target` leaves and `params` values accept bindings.
+Inside a card template, `bind("./conversationId")` resolves against that
+row, so every row can open its own conversation; outside a card, use an
+absolute data pointer such as `bind("/selectedConversation")`. A button
+whose bound target or params resolve to `undefined` is hidden. A submit
+button inside a card dispatches `{itemId: <row id>}` when the row has a
+string `id`; page and callout buttons keep their existing null/empty
+payload behavior.
+
+A `section` accepts the same `actions` button list as a `page`. The webui
+renders those buttons right-aligned in the section header; the TUI lists
+them after the page's own actions in the `.` actions menu. A section with
+actions needs an `id`, like other action-carrying blocks.
+
 An action handler may also return **`navigate`** on its accepted
 `ActionResult` — the channel routes it through the normal navigation
 paths. Both channels apply it.

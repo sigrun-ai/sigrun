@@ -117,6 +117,20 @@ const CoreTarget = Type.Union([
 	}),
 ]);
 
+/** Block navigation may bind each target leaf; notices keep CoreTarget literal. */
+const BoundCoreTarget = Type.Union([
+	Type.Object({ conversation: Type.Union([Type.Integer(), Type.Ref("Binding")]) }),
+	Type.Object({ job: Type.Union([Type.String(), Type.Ref("Binding")]) }),
+	Type.Object({ settings: Type.Union([Type.String(), Type.Ref("Binding")]) }),
+	Type.Object({
+		view: Type.Object({
+			extension: BindableString,
+			id: BindableString,
+			params: Type.Optional(Type.Object({}, { additionalProperties: true })),
+		}),
+	}),
+]);
+
 const Confirm = Type.Object({
 	title: Type.String(),
 	body: Type.Optional(Type.String()),
@@ -134,7 +148,7 @@ const Action = Type.Union([
 	Type.Object({
 		type: Type.Literal("navigate"),
 		params: Type.Optional(Type.Object({}, { additionalProperties: true })),
-		target: Type.Optional(Type.Ref("CoreTarget")),
+		target: Type.Optional(Type.Ref("BoundCoreTarget")),
 	}),
 	Type.Object({
 		type: Type.Literal("move"),
@@ -258,6 +272,7 @@ const SectionBlock = Type.Object({
 	tone: Type.Optional(BindableTone),
 	collapsible: Type.Optional(Type.Boolean()),
 	collapsed: Type.Optional(Type.Boolean()),
+	actions: Type.Optional(Type.Array(Type.Ref("ActionButton"))),
 	children: Type.Array(AnyObject),
 });
 
@@ -625,6 +640,7 @@ const DEFS = {
 	BindableTone,
 	BindableIcon,
 	CoreTarget,
+	BoundCoreTarget,
 	Confirm,
 	Action,
 	ActionButton,

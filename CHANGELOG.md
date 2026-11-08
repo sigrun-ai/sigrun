@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Blocks: navigate targets and params can bind per-row data, unresolved
+  navigate buttons hide, card submits carry the row id, and section
+  headers accept action buttons (also in the TUI actions menu).
 - Deleted conversations: the owner-gated `SessionMeta.deleted` meta flag
   marks a conversation read-only — submissions, compact, configure,
   uploads and extension commands refuse with 409

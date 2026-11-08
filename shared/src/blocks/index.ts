@@ -28,6 +28,7 @@ export type {
 	Bindable,
 	Binding,
 	Block,
+	BoundCoreTarget,
 	BlockBase,
 	BulkAction,
 	CalloutBlock,

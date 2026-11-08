@@ -39,6 +39,7 @@ import { BlockView } from "../blocks/BlockView";
 import {
 	SurfaceActionsContext,
 	SurfaceDataContext,
+	resolveActionBindings,
 } from "../blocks/context";
 import { ContainerWidth } from "../blocks/width";
 
@@ -53,8 +54,14 @@ export type AmbientNavigate = (target: CoreTarget) => void;
 function makeAmbientActions(onNavigate?: AmbientNavigate) {
 	return {
 		dispatch: (action: Action): void => {
-			if (action.type === "navigate" && action.target !== undefined) {
-				onNavigate?.(action.target);
+			if (action.type === "navigate") {
+				const resolved = resolveActionBindings(action, {
+					data: EMPTY_DATA,
+					locale: "en",
+				});
+				if (resolved?.type === "navigate" && resolved.target !== undefined) {
+					onNavigate?.(resolved.target);
+				}
 			}
 		},
 		access: "read" as const,

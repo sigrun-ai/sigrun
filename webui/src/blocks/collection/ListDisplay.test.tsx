@@ -456,12 +456,92 @@ describe("list display (spec §5.5)", () => {
 		act(() => {
 			actionButton.props.onClick({ stopPropagation: () => {} });
 		});
-		expect(dispatch).toHaveBeenCalledWith({ type: "submit", name: "onDo" }, null);
+		expect(dispatch).toHaveBeenCalledWith(
+			{ type: "submit", name: "onDo" },
+			{ itemId: "t1" },
+		);
 		expect(
 			dispatch.mock.calls.some(
 				(call) => (call[0] as { type: string }).type === "navigate",
 			),
 		).toBe(false);
+	});
+
+	test("a bound navigate resolves per row", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: {
+				title,
+				actions: [
+					{
+						id: "open",
+						label: "Open conversation",
+						action: {
+							type: "navigate",
+							target: { conversation: { $: "./conversationId" } },
+							params: { review: { $: "./reviewId" } },
+						},
+					},
+				],
+			},
+			display: "list",
+		};
+		const { renderer, dispatch } = renderCollection(block, {
+			tasks: [
+				{ id: "t1", title: "Alpha", conversationId: 11, reviewId: "r1" },
+				{ id: "t2", title: "Beta", conversationId: 22, reviewId: "r2" },
+			],
+		});
+		const buttons = renderer.root.findAll(
+			(node) => node.type === "button" && textOf(node) === "Open conversation",
+		);
+		expect(buttons).toHaveLength(2);
+		act(() => {
+			buttons[0]?.props.onClick({ stopPropagation: () => {} });
+			buttons[1]?.props.onClick({ stopPropagation: () => {} });
+		});
+		expect(dispatch).toHaveBeenNthCalledWith(
+			1,
+			{ type: "navigate", target: { conversation: 11 }, params: { review: "r1" } },
+			null,
+		);
+		expect(dispatch).toHaveBeenNthCalledWith(
+			2,
+			{ type: "navigate", target: { conversation: 22 }, params: { review: "r2" } },
+			null,
+		);
+	});
+
+	test("a navigate whose binding is missing is hidden", () => {
+		const block: CollectionBlock = {
+			type: "collection",
+			items: { $: "/tasks" },
+			item: {
+				title,
+				actions: [
+					{
+						id: "open",
+						label: "Open conversation",
+						action: {
+							type: "navigate",
+							target: { conversation: { $: "./conversationId" } },
+						},
+					},
+				],
+			},
+			display: "list",
+		};
+		const { renderer } = renderCollection(block, {
+			tasks: [
+				{ id: "t1", title: "Alpha" },
+				{ id: "t2", title: "Beta", conversationId: 22 },
+			],
+		});
+		const buttons = renderer.root.findAll(
+			(node) => node.type === "button" && textOf(node) === "Open conversation",
+		);
+		expect(buttons).toHaveLength(1);
 	});
 
 	test("a collapsed group hides its rows behind the heading", () => {
