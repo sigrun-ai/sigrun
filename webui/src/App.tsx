@@ -1696,7 +1696,11 @@ function AppShell(options: AppOptions = {}) {
 									className="deleted-banner-restore"
 									data-menu-action="restore"
 									onClick={() => {
-										if (activeId !== null) void restoreConversation(activeId);
+										if (activeId !== null) {
+											// The shell error above owns the failure text; the
+											// banner has no toast to gate, so just consume it.
+											void restoreConversation(activeId).catch(() => undefined);
+										}
 									}}
 								>
 									Restore

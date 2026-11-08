@@ -121,7 +121,8 @@ function makeHarness(init?: {
 						? { commands: [...COMMANDS, ...init.laterCommands] }
 						: { commands: COMMANDS };
 		}
-		else if (input.endsWith("/meta")) body = meta;		else if (input.endsWith("/interactions")) {
+		else if (input.endsWith("/meta")) body = meta;
+		else if (input.endsWith("/interactions")) {
 			body = { interactions: init?.interactions ?? [] };
 		}
 

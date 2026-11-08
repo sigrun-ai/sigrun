@@ -389,7 +389,7 @@ export function SessionList(props: {
 												data-menu-action="restore"
 												onClick={() => {
 													setMenuFor(null);
-													void onRestore?.(row.id);
+													void onRestore?.(row.id).catch(() => undefined);
 												}}
 											>
 												Restore
