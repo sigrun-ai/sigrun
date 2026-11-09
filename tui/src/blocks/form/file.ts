@@ -33,6 +33,19 @@ export function secretStatusLine(field: SecretField, formBind: string, ctx: Bloc
 	return secretStatusText(status);
 }
 
+/** Nested entry secret statuses live in data.secrets, not in the entry. */
+export function nestedSecretStatusLine(
+	statusPath: string | undefined,
+	field: SecretField,
+	ctx: BlockCtx,
+): string {
+	const statuses = ctx.data.secrets;
+	const status = statusPath !== undefined && typeof statuses === "object" && statuses !== null && !Array.isArray(statuses)
+		? statuses[`${statusPath}/${field.name}`]
+		: undefined;
+	return secretStatusText(status);
+}
+
 /** The masked editor text: one dot per typed character. */
 export function maskText(textValue: string, unicode: boolean): string {
 	return (unicode ? "•" : "*").repeat(textValue.length);
