@@ -699,7 +699,7 @@ describe("checkSchema", () => {
 				},
 			}),
 		);
-		expect(generated.secrets).toContainEqual({ pattern: "/servers/*/headers/*" });
+		expect(generated.secrets).toContainEqual({ pattern: "/servers/*/headers/*", key: "name" });
 	});
 });
 

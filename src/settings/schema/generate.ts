@@ -47,6 +47,18 @@ export type { Apply, JsonSchema } from "./keywords.js";
 export interface SecretPath {
 	/** JSON pointer with "*" for a table key or array identity segment, e.g. "/servers/*\/headers/*". */
 	readonly pattern: string;
+	/**
+	 * The identity property of the nearest enclosing array item
+	 * (`x-sigrun-key`). A table segment keys on its entry key, which the
+	 * stored data carries; an array segment keys on this property's VALUE,
+	 * which the path alone cannot name.
+	 */
+	readonly key?: string;
+}
+
+/** The secret path for one writeOnly slot, carrying its array identity. */
+function secretPath(ctx: Ctx, pattern: string): SecretPath {
+	return ctx.identity === undefined ? { pattern } : { pattern, key: ctx.identity };
 }
 
 /** The generator's product: the form plus everything the save path needs. */
@@ -169,6 +181,8 @@ interface Ctx {
 	readonly fallbacks: string[];
 	/** Property-name prefix for dotted field names inside titled sections. */
 	readonly namePrefix: string;
+	/** The identity property of the enclosing array item, for its secrets' keys. */
+	readonly identity?: string;
 }
 
 function warnFallback(pointer: string, reason: string): void {
@@ -237,7 +251,7 @@ function propertyNode(
 
 	// writeOnly → secret, anywhere in the tree
 	if (schema.writeOnly === true) {
-		ctx.secrets.push({ pattern: pointer });
+		ctx.secrets.push(secretPath(ctx, pointer));
 		return { ...base, type: "secret" } as Field;
 	}
 
@@ -296,7 +310,7 @@ function propertyNode(
 				if (value.writeOnly === true) {
 					// writeOnly table VALUES (e.g. a headers map): the value is the
 					// secret; the row's key completes the pointer.
-					ctx.secrets.push({ pattern: pointerJoin(pointer, "*") });
+					ctx.secrets.push(secretPath(ctx, pointerJoin(pointer, "*")));
 					return {
 						...base,
 						type: "entries",
@@ -340,9 +354,15 @@ function propertyNode(
 			const item = deref(ctx.root, items);
 			if (item.type === "object") {
 				// array of objects → entries shape "array"
-				const itemChildren = objectChildren({ ...ctx, namePrefix: "" }, item, pointerJoin(pointer, "*"));
-				const summary = summaryOf(item);
 				const key = keyOf(item);
+				// A secret below this item keys on the entry's identity VALUE, so
+				// every secret pattern generated here carries the property name.
+				const itemChildren = objectChildren(
+					{ ...ctx, namePrefix: "", identity: key },
+					item,
+					pointerJoin(pointer, "*"),
+				);
+				const summary = summaryOf(item);
 				if (itemHasSecrets(ctx.root, item) && !key) {
 					// checkSchema rejects this at load; generation falls back so a
 					// direct generateForm call stays honest about the missing identity.
