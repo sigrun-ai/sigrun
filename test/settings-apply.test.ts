@@ -433,6 +433,50 @@ const patch = (app: FastifyInstance, body: unknown) =>
 // ---------------------------------------------------------------------------
 
 describe("PATCH /v1/settings: applied, pending, pendingRestart", () => {
+	test("the three embedding settings classify live, never restart-pending", async () => {
+		const { app } = await bootServer();
+		const response = await patch(app, {
+			embeddingModel: "acme-embed/embed-1",
+			embeddings: { localModels: ["acme-embed/embed-2"] },
+			server: { embeddings: { timeoutMs: 1234 } },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			applied: [
+				"embeddingModel",
+				"embeddings.localModels",
+				"server.embeddings.timeoutMs",
+			],
+			pending: [],
+			pendingRestart: [],
+		});
+	});
+
+	test("null clears embeddings.localModels and server.embeddings.timeoutMs through apply", async () => {
+		const { app } = await bootServer({
+			file: {
+				embeddings: { localModels: ["acme-embed/embed-2"] },
+				server: { embeddings: { timeoutMs: 1234 } },
+			},
+		});
+		const response = await patch(app, {
+			embeddings: { localModels: null },
+			server: { embeddings: { timeoutMs: null } },
+		});
+		expect(response.statusCode).toBe(200);
+		const body = response.json() as SettingsFile & {
+			applied: string[];
+			pending: string[];
+		};
+		expect(body.embeddings).toBeUndefined();
+		expect(body.server?.embeddings).toBeUndefined();
+		expect(body.applied).toEqual([
+			"embeddings.localModels",
+			"server.embeddings.timeoutMs",
+		]);
+		expect(body.pending).toEqual([]);
+	});
+
 	test("a mixed live+restart PATCH reports which is which (Review Focus 1)", async () => {
 		const { app } = await bootServer();
 		const response = await patch(app, {

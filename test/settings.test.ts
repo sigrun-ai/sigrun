@@ -61,6 +61,34 @@ describe("SettingsStore", () => {
 			embeddings: { localModels: ["acme-embed/embed-2"] },
 			server: { embeddings: { timeoutMs: 1234 } },
 		});
+		store.update({ embeddingModel: null });
+		expect(store.read().embeddingModel).toBeUndefined();
+	});
+
+	test("null clears the nested embedding settings", () => {
+		const { store } = freshStore();
+		store.update({
+			embeddings: { localModels: ["acme-embed/embed-2"] },
+			server: { embeddings: { timeoutMs: 1234 } },
+		});
+		store.update({ embeddings: { localModels: null } });
+		expect(store.read().embeddings).toBeUndefined();
+		expect(store.read().server?.embeddings).toEqual({ timeoutMs: 1234 });
+		store.update({ server: { embeddings: { timeoutMs: null } } });
+		expect(store.read().server?.embeddings).toBeUndefined();
+		// Hand-edited nulls are accepted; the next write removes them.
+		expect(store.parse(JSON.stringify({ embeddings: { localModels: null } }))).toEqual({
+			embeddings: { localModels: null },
+		});
+		expect(store.parse(JSON.stringify({ server: { embeddings: { timeoutMs: null } } }))).toEqual({
+			server: { embeddings: { timeoutMs: null } },
+		});
+		store.update({ embeddings: { localModels: ["acme-embed/embed-2"] } });
+		store.update({ server: { embeddings: { timeoutMs: 1234 } } });
+		store.update({ embeddings: { localModels: null } });
+		expect(store.read().embeddings).toBeUndefined();
+		store.update({ server: { embeddings: { timeoutMs: null } } });
+		expect(store.read().server?.embeddings).toBeUndefined();
 	});
 
 	test("an absent file reads as the empty store (all defaults)", () => {
