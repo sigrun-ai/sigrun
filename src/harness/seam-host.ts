@@ -28,6 +28,7 @@ import type {
 	DecisionRequest,
 	DecisionResult,
 } from "@sigrun/shared/decisions";
+import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 import type { HostBridge } from "../server/host-bridge.js";
 import type { SigrunHost } from "../extension.js";
 import type { Tree } from "@sigrun/shared/blocks";
@@ -242,6 +243,7 @@ export interface SeamHost {
 	readonly models: SigrunHost["models"];
 	/** Decision providers (warden Task 5 — the decision-providers spec). */
 	readonly decisions: SigrunHost["decisions"];
+	readonly embeddings: SigrunHost["embeddings"];
 	/** The slash-command surface (gateway C4b): catalog + in-process run. */
 	readonly commands: SigrunHost["commands"];
 	/**
@@ -1055,6 +1057,20 @@ export function createSeamHost(
 				const bridge = await hostBridge("decisions.list");
 				if (bridge.decisions === undefined) return [];
 				return bridge.decisions.list();
+			},
+		},
+		embeddings: {
+			async embed(texts, opts = {}): Promise<EmbeddingResult> {
+				const bridge = await hostBridge("embeddings.embed");
+				if (bridge.embeddings === undefined) {
+					return { ok: false, code: "no_model", message: "no embedding provider is registered" };
+				}
+				return bridge.embeddings.embed(identity.name, texts, opts);
+			},
+			async list() {
+				const bridge = await hostBridge("embeddings.list");
+				if (bridge.embeddings === undefined) return [];
+				return bridge.embeddings.list();
 			},
 		},
 		commands: {

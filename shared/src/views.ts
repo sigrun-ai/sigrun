@@ -773,15 +773,14 @@ export interface AuthCheckProvider {
 	/** How many models the provider currently serves (best-effort count). */
 	readonly models: number;
 	/**
-	 * Warden Task 7: `"chat"` (a chat-catalog provider) or `"decision"` (a
-	 * decision provider from the warden seam). Absent = `"chat"` (older
-	 * servers never carried the field); a chat and a decision provider
-	 * sharing an id stay SEPARATE entries, one of each kind.
+	 * Embedding-providers Task 3: `"chat"`, `"decision"` or
+	 * `"embedding"`. Absent = `"chat"` (older servers never carried the
+	 * field); providers sharing an id stay SEPARATE entries, one per kind.
 	 */
-	readonly kind?: "chat" | "decision";
+	readonly kind?: "chat" | "decision" | "embedding";
 	/**
-	 * The decision provider's bare model ids (warden Task 7) — present
-	 * only on `kind: "decision"` entries (`models` is their count).
+	 * The decision or embedding provider's bare model ids — present
+	 * only on non-chat entries (`models` is their count).
 	 */
 	readonly modelIds?: readonly string[];
 	/** The owning contributor's name; absent for the env-degenerate provider. */

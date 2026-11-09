@@ -886,9 +886,11 @@ The contract:
   `auth.json[id].apiKey` (a LIVE read — a key written through
   `PUT /v1/providers/:id/credential` applies with no restart) wins over
   the ambient `credentialEnv` (an empty env string counts as unset).
-  Neither resolves to `not_configured` — the caller's result, decided
-  by core, never by your tracker. The magic `"default"` auth.json key
-  names the default CHAT provider and never applies to a decision id.
+  When your id IS the default model's provider, the magic `"default"`
+  auth.json key is read as well — that is where the route writes a Save
+  for that provider, so the two stay in step. Neither resolves to
+  `not_configured` — the caller's result, decided by core, never by your
+  tracker.
 - **Readiness** is the same three-state tracker the chat providers
   carry (`not_configured` | `degraded` | `ready`); seed it from
   credential presence. `GET /v1/providers` lists each decision provider
@@ -908,6 +910,65 @@ The contract:
 - **One provider, many models.** Declare each judge as a `models` entry;
   callers address them as `<id>/<modelId>`. `decisionModel` in
   settings.json picks the default without a restart.
+
+## Contributing embedding providers
+
+An embedding provider turns input texts into vectors without serving chat
+models. Declare `embeddingProviders` in the factory result; as with chat
+and decision providers, a result carrying only this field is a valid
+provider-only contributor:
+
+```ts
+export default function acmeEmbeddings() {
+	return {
+		name: "acme-embed",
+		embeddingProviders: [
+			{
+				id: "acme-embed",
+				label: "Acme Embeddings",
+				credentialEnv: "ACME_EMBED_API_KEY",
+				models: [
+					{ id: "embed-1", dimensions: 1536, maxBatch: 2048, local: false },
+				],
+				async embed(request, ctx) {
+					// request: { model, input }; ctx: { credential, signal }
+					return { vectors: await vectorsFromYourBackend(request, ctx) };
+				},
+				readiness() {
+					return { status: "ready" };
+				},
+			},
+		],
+	};
+}
+```
+
+- **Callers** use `host.embeddings.embed(texts, opts)` and
+  `host.embeddings.list()`. `opts.model` (`provider/model`) wins over the
+  live `embeddingModel` setting; with neither configured, `embed` returns
+  `no_model` rather than silently choosing a model. Calls never throw:
+  failures use `EmbeddingResult`'s `ok: false` codes. Core splits inputs
+  at `maxBatch`, preserves input order, and validates every returned
+  vector's dimensions.
+- **Confidentiality is fail-closed.** `confidentiality: "local-only"`
+  succeeds only when the model appears in `embeddings.localModels` AND its
+  declaration does not say `local: false`. A provider whose endpoint can
+  change should report remote endpoints as `local: false`.
+- **Credentials** resolve per call from `auth.json[id].apiKey`, then the
+  ambient `credentialEnv` (empty means unset) — plus the magic `"default"`
+  key when the embedding provider's id IS the default model's provider
+  (where the route writes that provider's Save). A missing key is passed as
+  `undefined` so keyless local endpoints work; a call is refused as
+  `not_configured` only when the key is missing AND your readiness
+  tracker reports `not_configured` (the decisions precedent: the tracker
+  learns a key exists only from calls, so it never gates alone).
+  `PUT`/`DELETE
+  /v1/providers/:id/credential` therefore work for embedding-only ids.
+  `GET /v1/providers` lists embedding rows as `kind: "embedding"` with
+  `modelIds`, model count, readiness and the owning extension.
+- **Timeouts** are capped by live `server.embeddings.timeoutMs` (default
+  30000 ms). Core never includes credentials or input texts in its error
+  messages.
 
 ## Contributing webui bundles
 

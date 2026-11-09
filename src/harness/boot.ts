@@ -57,7 +57,7 @@ import {
 	type ResolvedExtensionInput,
 } from "./loader.js";
 import { createAutoNamer, type AutoNamer } from "./naming.js";
-import { AuthStore } from "./auth.js";
+import { AuthStore, DEFAULT_AUTH_KEY } from "./auth.js";
 import {
 	openIdentityStores,
 	ensureSetupCode,
@@ -77,6 +77,10 @@ import {
 	buildDecisionRegistry,
 	type DecisionRegistry,
 } from "./decisions.js";
+import {
+	buildEmbeddingRegistry,
+	type EmbeddingRegistry,
+} from "./embeddings.js";
 import {
 	buildDecisionEvaluateTool,
 	createDecisionsExtension,
@@ -393,6 +397,11 @@ export interface OpenedHarness {
 	 * `decisions` surface to it; empty = the no-declarer deploy.
 	 */
 	readonly decisions: DecisionRegistry;
+	/**
+	 * The embedding registry: loaded declarations folded into one live
+	 * surface; settings and credentials resolve per call.
+	 */
+	readonly embeddings: EmbeddingRegistry;
 	/**
 	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
 	 * restart key's stored value at boot, taken once after the settings
@@ -1569,6 +1578,18 @@ export async function openHarness(
 	const decisionsSlot: {
 		registry: DecisionRegistry | undefined;
 	} = { registry: undefined };
+	// The default model's provider id, as the credential readers below need
+	// it: `PUT /v1/providers/:id/credential` redirects a Save for THAT id to
+	// the magic `"default"` auth.json key, so the readers must look there
+	// too, or a Save the UI reports as succeeded stays invisible (a silent,
+	// permanent `not_configured`). `config.models` is loadConfig's already-
+	// validated resolution and the collector resolves the same value below
+	// (boot restates it into `effectiveEnv`, which wins over any contributor
+	// proposal) — read from here rather than the later `defaultModel`
+	// binding so a factory-body `host.decisions.evaluate` (which may run
+	// once `decisionsReady` resolves, before that assignment) cannot hit a
+	// temporal-dead-zone reference.
+	const defaultChatProviderId = config.models.provider;
 	// The boot-shared store trio (Task 5): one SecretsStore + one
 	// ExtensionSettingsStore over the roots resolved at the top of boot;
 	// each seam host scopes it to its extension's slug (cheap, no I/O —
@@ -1589,6 +1610,7 @@ export async function openHarness(
 		noticeActionBindings,
 		publishedHookDeclarations,
 		decisionProviderDeclarations,
+		embeddingProviderDeclarations,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -1694,14 +1716,23 @@ export async function openHarness(
 	// flight) proceeds from here. The credential resolves PER CALL:
 	// `auth.json[id].apiKey` (a live read, so a key written through the
 	// providers route applies without a restart) wins over the ambient
-	// `credentialEnv` with the auth bridge's `""`-means-unset rule; the
-	// magic `"default"` key never applies (it names the default CHAT
-	// provider). The settings read is live too: `decisionModel` and
+	// `credentialEnv` with the auth bridge's `""`-means-unset rule. The
+	// magic `"default"` key applies ONLY when this id IS the default
+	// model's provider — that is exactly where `PUT
+	// /v1/providers/:id/credential` writes it (the route redirects the
+	// default provider's Save to `"default"`), so without this fallback a
+	// Save the UI reports as succeeded would stay invisible here. The
+	// settings read is live too: `decisionModel` and
 	// `server.decisions.timeoutMs` apply without a restart.
 	decisionsSlot.registry = buildDecisionRegistry(decisionProviderDeclarations, {
 		credential: (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
+			// The route's `"default"` write, for the id it applies to.
+			if (id === defaultChatProviderId) {
+				const fromDefault = authStore.read()[DEFAULT_AUTH_KEY]?.apiKey;
+				if (fromDefault !== undefined) return fromDefault;
+			}
 			return credentialEnv === undefined
 				? undefined
 				: env[credentialEnv]?.trim() || undefined;
@@ -1714,6 +1745,33 @@ export async function openHarness(
 			? {}
 			: { timeoutMs: config.decisions.timeoutMs }),
 		now: () => Date.now(),
+		warn: (message) => console.warn(message),
+	});
+	// The embedding registry reads live settings on every call. Credentials
+	// are local auth.json reads over the ambient env, as for decisions —
+	// including the same magic-`"default"` fallback for the default model's
+	// provider id (the key `PUT /v1/providers/:id/credential` writes there).
+	const embeddings = buildEmbeddingRegistry(embeddingProviderDeclarations, {
+		settings: () => {
+			const settings = settingsStore.read();
+			return {
+				embeddingModel: settings.embeddingModel,
+				localModels: settings.embeddings?.localModels ?? [],
+				timeoutCapMs: settings.server?.embeddings?.timeoutMs ?? 30_000,
+			};
+		},
+		credential: async (id, credentialEnv) => {
+			const stored = authStore.read()[id]?.apiKey;
+			if (stored !== undefined) return stored;
+			// The route's `"default"` write, for the id it applies to.
+			if (id === defaultChatProviderId) {
+				const fromDefault = authStore.read()[DEFAULT_AUTH_KEY]?.apiKey;
+				if (fromDefault !== undefined) return fromDefault;
+			}
+			return credentialEnv === undefined
+				? undefined
+				: env[credentialEnv]?.trim() || undefined;
+		},
 		warn: (message) => console.warn(message),
 	});
 	decisionRegistryReady();
@@ -1835,6 +1893,16 @@ export async function openHarness(
 	// offline init — the data root is ensured above, so the store never
 	// mkdirs outside a sanctioned root.
 	const modelsStore = fileModelsStore(config.dataDir);
+	const providerContributions = [...(options.extensions ?? []), ...providerContributors];
+	// A provider declared in ANY kind owns its namespace: do not silently
+	// add the env-driven chat fallback when chat was deliberately disabled.
+	const declaredProviderIds = new Set([
+		...providerContributions.flatMap((contributor) =>
+			(contributor.providers ?? []).map((contribution) => contribution.provider.id),
+		),
+		...decisionProviderDeclarations.map((declaration) => declaration.contribution.id),
+		...embeddingProviderDeclarations.map((declaration) => declaration.contribution.id),
+	]);
 	const {
 		models,
 		defaultModel,
@@ -1842,13 +1910,14 @@ export async function openHarness(
 		providerOwnership,
 		readinessTrackers: providerReadiness,
 	} = collectProviders(
-		[...(options.extensions ?? []), ...providerContributors],
+		providerContributions,
 		effectiveEnv,
 		sink,
 		{
 			auth: authStore,
 			baseUrl: config.defaultProviderBaseUrl,
 			modelsStore,
+			declaredProviderIds,
 		},
 	);
 	// The jobs core extension (jobs Task 3, spec §8.1 "The executor"):
@@ -2591,6 +2660,7 @@ export async function openHarness(
 		memoryHealth,
 		settings: settingsStore,
 		decisions: decisionsSlot.registry as DecisionRegistry,
+		embeddings,
 		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,

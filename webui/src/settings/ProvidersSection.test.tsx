@@ -33,14 +33,22 @@ interface Call {
 function makeProvidersHarness(init?: {
 	readonly providers?: readonly {
 		provider: string;
+		kind?: "chat" | "decision" | "embedding";
 		status: string;
 		models: number;
 		detail?: string;
 	}[];
 	/** Serve the credential PUT a 403 (a non-admin session). */
 	readonly putFails?: boolean;
+	/** Fail GET /v1/providers AFTER the initial load (a transient refetch
+	 *  failure following a successful credential write). */
+	readonly listFailsAfterLoad?: boolean;
 }) {
 	const calls: Call[] = [];
+	let providersLoaded = false;
+	// Rows are keyed by (provider, kind): one id can serve several kinds.
+	const rowKey = (provider: string, kind?: string): string =>
+		`${provider}\u0000${kind ?? "chat"}`;
 	const entries = new Map(
 		(init?.providers ?? [
 			{ provider: "acme", status: "not_configured", models: 0 },
@@ -50,7 +58,7 @@ function makeProvidersHarness(init?: {
 				models: 2,
 				detail: "last refresh failed",
 			},
-		]).map((entry) => [entry.provider, { ...entry }]),
+		]).map((entry) => [rowKey(entry.provider, entry.kind), { ...entry }]),
 	);
 	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [], managed: [] };
 	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
@@ -86,25 +94,55 @@ function makeProvidersHarness(init?: {
 		} else if (input === "/v1/settings") {
 			body = settings;
 		} else if (input === "/v1/providers") {
+			if (init?.listFailsAfterLoad === true && providersLoaded) {
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					json: () => Promise.resolve({ error: "refetch exploded" }),
+					text: () => Promise.resolve(""),
+				});
+			}
+			providersLoaded = true;
 			body = { providers: [...entries.values()] };
 		} else if (
 			(m = input.match(/^\/v1\/providers\/([^/]+)\/credential$/)) !== null
 		) {
 			const id = m[1] as string;
-			// PUT → ready with a live catalog; DELETE → not_configured (the
-			// tracker re-seeds on the refresh).
-			entries.set(id, {
-				provider: id,
-				status: init2?.method === "PUT" ? "ready" : "not_configured",
-				models: 3,
-			});
-			body = entries.get(id);
+			// The credential is PER ID: a write flips EVERY row of that id
+			// (PUT → ready with a live catalog; DELETE → not_configured,
+			// the tracker re-seeding on the refresh).
+			for (const [key, entry] of entries) {
+				if (entry.provider !== id) continue;
+				entries.set(key, {
+					...entry,
+					status: init2?.method === "PUT" ? "ready" : "not_configured",
+					models: 3,
+				});
+			}
+			// The response is the ONE preferred entry (core's routableEntry:
+			// chat, then decision, then embedding) — the client re-fetches
+			// the list for the rest.
+			const rows = [...entries.values()].filter(
+				(entry) => entry.provider === id,
+			);
+			body =
+				rows.find((entry) => (entry.kind ?? "chat") === "chat") ??
+				rows.find((entry) => entry.kind === "decision") ??
+				rows.find((entry) => entry.kind === "embedding") ?? {
+					provider: id,
+					status: init2?.method === "PUT" ? "ready" : "not_configured",
+					models: 3,
+				};
 		} else if (
 			(m = input.match(/^\/v1\/providers\/([^/]+)\/refresh$/)) !== null &&
 			init2?.method === "POST"
 		) {
 			const id = m[1] as string;
-			body = entries.get(id) ?? { provider: id, status: "ready", models: 0 };
+			// Refresh is CHAT-only: respond with the seeded CHAT row for the
+			// id (entries are keyed by the composite rowKey, not the bare id).
+			body = [...entries.values()].find(
+				(entry) => entry.provider === id && (entry.kind ?? "chat") === "chat",
+			) ?? { provider: id, status: "ready", models: 0 };
 		} else {
 			throw new Error(`unexpected fetch ${init2?.method ?? "GET"} ${input}`);
 		}
@@ -163,14 +201,16 @@ function renderPanel(
 	return renderAsync(<Probe />).then((renderer) => renderer);
 }
 
-/** One provider's row (the fieldset by its data-provider attr). */
+/** One provider's row (the fieldset by its data-provider + data-kind attrs). */
 function providerRow(
 	renderer: TestRenderer.ReactTestRenderer,
 	id: string,
+	kind = "chat",
 ): TestRenderer.ReactTestInstance {
 	return renderer.root.findByProps({
 		className: "settings-provider",
 		"data-provider": id,
+		"data-kind": kind,
 	}) as TestRenderer.ReactTestInstance;
 }
 
@@ -309,6 +349,155 @@ describe("SettingsPanel Providers section", () => {
 					call.method === "POST",
 			),
 		).toBe(true);
+		// The refresh response applied the SEEDED row (the harness returns
+		// the stored chat row — its status/models, not a synthesized
+		// fallback): after the DELETE the seeded acme2 row is
+		// not_configured with 3 models, so the row reflects exactly that.
+		expect(
+			row.findByProps({ className: "settings-provider-status" }).props[
+				"data-status"
+			],
+		).toBe("not_configured");
+		expect(row.findByProps({ className: "settings-provider-meta" }).children.join("")).toBe(
+			"3 models",
+		);
+	});
+
+	test("a successful save with a failed refetch still reports saved and clears the key", async () => {
+		const { client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "not_configured", models: 0 },
+				{ provider: "openai", kind: "embedding", status: "not_configured", models: 2 },
+			],
+			listFailsAfterLoad: true,
+		});
+		const renderer = await renderPanel(client);
+		const row = providerRow(renderer, "openai", "embedding");
+		const input = row.findByProps({ className: "settings-provider-key" });
+		await act(async () => {
+			input.props.onChange({ target: { value: "openai-test-key" } });
+		});
+		await act(async () => {
+			await row.findByProps({ className: "settings-provider-save" }).props.onClick();
+		});
+		// The PUT landed, so the write is a SUCCESS even though the
+		// follow-up GET failed: ok note, cleared field, no error alert.
+		expect(row.findByProps({ role: "status" }).children.join("")).toBe("saved");
+		expect(row.findAllByProps({ role: "alert" })).toHaveLength(0);
+		expect(
+			row.findByProps({ className: "settings-provider-key" }).props.value,
+		).toBe("");
+		// The PUT response's own entry (core's preferred CHAT row) still
+		// drove that row's badge; the embedding row keeps its seeded state
+		// until the next successful load (the refetch failed).
+		expect(
+			providerRow(renderer, "openai", "chat")
+				.findByProps({ className: "settings-provider-status" })
+				.props["data-status"],
+		).toBe("ready");
+		expect(
+			row.findByProps({ className: "settings-provider-status" }).props[
+				"data-status"
+			],
+		).toBe("not_configured");
+		expect(textContent(renderer.toJSON())).not.toContain("openai-test-key");
+	});
+
+	test("three openai rows of different kinds render separately", async () => {
+		const { client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "ready", models: 2 },
+				{ provider: "openai", kind: "decision", status: "ready", models: 1 },
+				{ provider: "openai", kind: "embedding", status: "ready", models: 2 },
+			],
+		});
+		const renderer = await renderPanel(client);
+		const rows = renderer.root
+			.findAllByType("fieldset")
+			.filter((node) => node.props.className === "settings-provider");
+		expect(
+			rows.map((node) => [node.props["data-provider"], node.props["data-kind"]]),
+		).toEqual([
+			["openai", "chat"],
+			["openai", "decision"],
+			["openai", "embedding"],
+		]);
+		// Each kind renders its own badge (the wire kind projected onto
+		// the user-facing label) — never one row per id.
+		for (const kind of ["chat", "decision", "embedding"]) {
+			const badge = providerRow(renderer, "openai", kind).findByProps({
+				className: "settings-provider-kind",
+			});
+			expect(badge.children.join("")).toBe(
+				kind === "decision" ? "decisions" : kind === "embedding" ? "embeddings" : "chat",
+			);
+		}
+	});
+
+	test("saving the key on the embedding row updates all openai rows", async () => {
+		const { calls, client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "not_configured", models: 0 },
+				{ provider: "openai", kind: "decision", status: "not_configured", models: 1 },
+				{ provider: "openai", kind: "embedding", status: "not_configured", models: 2 },
+			],
+		});
+		const renderer = await renderPanel(client);
+		const row = providerRow(renderer, "openai", "embedding");
+		const input = row.findByProps({ className: "settings-provider-key" });
+		await act(async () => {
+			input.props.onChange({ target: { value: "openai-test-key" } });
+		});
+		await act(async () => {
+			await row.findByProps({ className: "settings-provider-save" }).props.onClick();
+		});
+		// The write targets the shared PER-ID credential…
+		expect(
+			calls.some(
+				(call) =>
+					call.input === "/v1/providers/openai/credential" &&
+					call.method === "PUT",
+			),
+		).toBe(true);
+		// …and the client re-fetched the report to pick up EVERY row of
+		// the id (the PUT's own response is only the preferred entry).
+		expect(
+			calls.filter((call) => call.input === "/v1/providers").length,
+		).toBeGreaterThanOrEqual(2);
+		for (const kind of ["chat", "decision", "embedding"]) {
+			expect(
+				providerRow(renderer, "openai", kind).findByProps({
+					className: "settings-provider-status",
+				}).props["data-status"],
+				kind,
+			).toBe("ready");
+		}
+		// The key never rendered anywhere.
+		expect(textContent(renderer.toJSON())).not.toContain("openai-test-key");
+	});
+
+	test("refresh shows on chat rows only", async () => {
+		const { client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "ready", models: 2 },
+				{ provider: "openai", kind: "decision", status: "ready", models: 1 },
+				{ provider: "openai", kind: "embedding", status: "ready", models: 2 },
+			],
+		});
+		const renderer = await renderPanel(client);
+		expect(
+			providerRow(renderer, "openai", "chat").findAllByProps({
+				className: "settings-provider-refresh",
+			}),
+		).toHaveLength(1);
+		for (const kind of ["decision", "embedding"]) {
+			expect(
+				providerRow(renderer, "openai", kind).findAllByProps({
+					className: "settings-provider-refresh",
+				}),
+				kind,
+			).toHaveLength(0);
+		}
 	});
 
 	test("a known non-admin session never sees the section (hidden, not read-only)", async () => {

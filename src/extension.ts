@@ -50,6 +50,7 @@ import type {
 	SubmissionId,
 } from "@earendil-works/pi-durable";
 import type { Access, Sharing } from "@sigrun/shared/access";
+import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 import type {
 	DecisionAnswers,
 	DecisionLimits,
@@ -756,6 +757,61 @@ export interface DecisionProviderContribution {
 	readonly readiness?: ReadinessTracker;
 	/** May throw; core maps a throw to `failed`. */
 	evaluate(request: DecisionRequest, ctx: DecisionContext): Promise<DecisionAnswers>;
+}
+
+// ---------------------------------------------------------------------------
+// Embedding providers (embedding-providers Task 1, spec §1)
+// ---------------------------------------------------------------------------
+
+/** One embedding model: a bare id plus the vector length it returns. */
+export interface EmbeddingModelInfo {
+	/** Bare model id, e.g. "text-embedding-3-small". */
+	readonly id: string;
+	/** The vector length the model returns. */
+	readonly dimensions: number;
+	/** Inputs per provider request (core splits a call above it). */
+	readonly maxBatch?: number;
+	/** The provider's own view of where this model runs. `false` vetoes local-only use even if the admin lists the model (§2). */
+	readonly local?: boolean;
+}
+
+/** One embedding request: the bare model id plus the input texts. */
+export interface EmbeddingRequest {
+	readonly model: string;
+	readonly input: readonly string[];
+}
+
+/** The context core stamps on every embedding-provider call. */
+export interface EmbeddingContext {
+	/** auth.json[id].apiKey, else the ambient `credentialEnv`; may be absent. */
+	readonly credential: string | undefined;
+	readonly signal: AbortSignal;
+}
+
+/** One embedding response: one vector per input, in input order. */
+export interface EmbeddingResponse {
+	readonly vectors: readonly (readonly number[])[];
+	readonly usage?: { readonly inputTokens: number };
+}
+
+/**
+ * One embedding-provider contribution: vectors for input texts. A
+ * factory result carrying only `embeddingProviders` is a valid
+ * contributor-only result.
+ */
+export interface EmbeddingProviderContribution {
+	/** `^[a-z][a-z0-9-]*$`; the auth.json key and the model prefix. */
+	readonly id: string;
+	/** Display name. */
+	readonly label?: string;
+	/** Ambient env fallback when auth.json has no key. */
+	readonly credentialEnv?: string;
+	/** The fixed model list (restart-required). */
+	readonly models: readonly EmbeddingModelInfo[];
+	/** The chat providers' three-state readiness tracker. */
+	readonly readiness?: ReadinessTracker;
+	/** May throw; core maps a throw to `failed`. */
+	embed(request: EmbeddingRequest, ctx: EmbeddingContext): Promise<EmbeddingResponse>;
 }
 
 /** One provider contribution: a pi-ai `createProvider()` result plus optional boot hints. */
@@ -1817,6 +1873,34 @@ export interface SigrunHost {
 	};
 
 	/**
+	 * Embedding providers: vectorize texts through the configured model.
+	 * `embed` NEVER throws; failures use {@link EmbeddingResult}. Model
+	 * resolution: `opts.model` wins; else the live `embeddingModel`
+	 * setting. There is no silent default when neither is configured.
+	 */
+	readonly embeddings: {
+		embed(
+			texts: readonly string[],
+			opts?: {
+				model?: string;
+				confidentiality?: "normal" | "local-only";
+				signal?: AbortSignal;
+				timeoutMs?: number;
+			},
+		): Promise<EmbeddingResult>;
+		/** Every embedding model, its locality and readiness. */
+		list(): Promise<readonly {
+			model: string;
+			provider: string;
+			dimensions: number;
+			local: boolean;
+			/** True on the one row the `embeddingModel` setting resolves to. */
+			default: boolean;
+			status: ProviderReadiness["status"];
+		}[]>;
+	};
+
+	/**
 	 * The slash-command surface (gateway C4b): the merged catalog for
 	 * listing, and the invoke route's run for driving an extension
 	 * command in-process (chat `/command` handling).
@@ -1901,6 +1985,8 @@ export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
 	readonly providers?: readonly ProviderContribution[];
 	/** Decision-provider contributions (warden Task 5); last-registered wins per id. */
 	readonly decisionProviders?: readonly DecisionProviderContribution[];
+	/** Embedding-provider contributions (embedding-providers Task 1); last-registered wins per id. */
+	readonly embeddingProviders?: readonly EmbeddingProviderContribution[];
 	/** External identity providers; core qualifies ids as `login:<slug>:<id>`. */
 	readonly loginProviders?: readonly LoginProviderContribution[];
 	/** Webui-bundle contributions; each `dir` anchors at the extension ENTRY's directory. */

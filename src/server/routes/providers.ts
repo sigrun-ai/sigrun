@@ -127,6 +127,9 @@ function providerReadinessReport(
 	for (const decision of opened.decisions.providers()) {
 		providers.push(decisionEntry(decision));
 	}
+	for (const embedding of opened.embeddings.providers()) {
+		providers.push(embeddingEntry(embedding));
+	}
 	return { providers };
 }
 
@@ -148,6 +151,22 @@ function decisionEntry(decision: {
 		models: decision.models.length,
 		modelIds: decision.models,
 		owner: decision.extension,
+	};
+}
+
+function embeddingEntry(embedding: {
+	id: string;
+	extension: string;
+	models: readonly string[];
+	status: AuthCheckProvider["status"];
+}): AuthCheckProvider {
+	return {
+		provider: embedding.id,
+		kind: "embedding",
+		status: embedding.status,
+		models: embedding.models.length,
+		modelIds: embedding.models,
+		owner: embedding.extension,
 	};
 }
 
@@ -190,12 +209,13 @@ export function registerProviderRoutes(
 	// refresh).
 	const isDecisionProvider = (providerId: string): boolean =>
 		opened.decisions.providers().some((row) => row.id === providerId);
+	const isEmbeddingProvider = (providerId: string): boolean =>
+		opened.embeddings.providers().some((row) => row.id === providerId);
 	const isRoutableProvider = (providerId: string): boolean =>
-		isKnownProvider(providerId) || isDecisionProvider(providerId);
-	// The entry back from a mutation: the chat derivation for catalog
-	// providers, the decision entry for decision-only ids (a chat AND
-	// decision provider sharing an id answer the CHAT entry — the
-	// mutation there targets the catalog provider's refresh leg).
+		isKnownProvider(providerId) || isDecisionProvider(providerId) || isEmbeddingProvider(providerId);
+	// Embedding-providers Task 3: decision- or embedding-only ids use
+	// their id verbatim; the magic key names the default CHAT provider.
+	// The entry back prefers chat, then decision, then embedding.
 	const routableEntry = (providerId: string): AuthCheckProvider => {
 		if (isKnownProvider(providerId)) {
 			return readinessEntry(opened, providerId, producersIndex(opened));
@@ -203,10 +223,12 @@ export function registerProviderRoutes(
 		const decision = opened.decisions
 			.providers()
 			.find((row) => row.id === providerId);
-		if (decision === undefined) {
-			throw new Error(`provider "${providerId}" is not routable`);
-		}
-		return decisionEntry(decision);
+		if (decision !== undefined) return decisionEntry(decision);
+		const embedding = opened.embeddings
+			.providers()
+			.find((row) => row.id === providerId);
+		if (embedding !== undefined) return embeddingEntry(embedding);
+		throw new Error(`provider "${providerId}" is not routable`);
 	};
 	// The post-write refresh: chat ids only.
 	const refreshAfterWrite = async (providerId: string): Promise<void> => {
@@ -263,9 +285,7 @@ export function registerProviderRoutes(
 				.send({ error: "invalid_field", field: "apiKey" });
 		}
 		// The credential key: chat ids redirect the DEFAULT provider's id
-		// to the magic "default" key; decision-only ids use the id
-		// verbatim (the magic key names the default CHAT provider, never a
-		// decision credential).
+		// to the magic "default" key; non-chat ids use their own id.
 		const key = isKnownProvider(id) ? credentialKey(id) : id;
 		await opened.auth.setApiKey(key, apiKey);
 		await refreshAfterWrite(id);

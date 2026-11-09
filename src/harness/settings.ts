@@ -144,6 +144,8 @@ const SETTING_KEYS = [
 	"defaultModel",
 	"namingModel",
 	"decisionModel",
+	"embeddingModel",
+	"embeddings",
 	"decisions",
 	"defaultProvider",
 	"skills",
@@ -485,6 +487,47 @@ function validate(value: Record<string, unknown>): void {
 			);
 		}
 	}
+	if (value.embeddingModel !== undefined) {
+		const spec = value.embeddingModel;
+		if (typeof spec !== "string" || spec.trim() === "") {
+			throw new SettingsValidationError(
+				"embeddingModel",
+				"must be a non-empty provider/model-id string",
+			);
+		}
+		const trimmed = spec.trim();
+		const slash = trimmed.indexOf("/");
+		if (
+			slash === -1 ||
+			trimmed.slice(0, slash) === "" ||
+			trimmed.slice(slash + 1) === ""
+		) {
+			throw new SettingsValidationError(
+				"embeddingModel",
+				"must have a non-empty provider and model id",
+			);
+		}
+	}
+	if (value.embeddings !== undefined) {
+		const embeddings = asRecord(value.embeddings);
+		if (embeddings === undefined) {
+			throw new SettingsValidationError("embeddings", "must be an object");
+		}
+		checkKeys("embeddings.", embeddings, ["localModels"]);
+		if (
+			embeddings.localModels !== undefined &&
+			embeddings.localModels !== null &&
+			(!Array.isArray(embeddings.localModels) ||
+				embeddings.localModels.some(
+					(model) => typeof model !== "string" || model.trim() === "",
+				))
+		) {
+			throw new SettingsValidationError(
+				"embeddings.localModels",
+				"must be an array of non-empty provider/model-id strings",
+			);
+		}
+	}
 	// The decision surface's toggles (warden Task 6): a flat section —
 	// `tool` a boolean.
 	if (value.decisions !== undefined) {
@@ -609,6 +652,7 @@ function validateServer(server: unknown): void {
 		"supervised",
 		"backup",
 		"decisions",
+		"embeddings",
 	]);
 	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
 	// exactly the names croner's evaluation path resolves, and throws on
@@ -799,6 +843,23 @@ function validateServer(server: unknown): void {
 		) {
 			throw new SettingsValidationError(
 				"server.decisions.timeoutMs",
+				"must be a positive integer",
+			);
+		}
+	}
+	if (record.embeddings !== undefined) {
+		const embeddings = asRecord(record.embeddings);
+		if (embeddings === undefined) {
+			throw new SettingsValidationError("server.embeddings", "must be an object");
+		}
+		checkKeys("server.embeddings.", embeddings, ["timeoutMs"]);
+		if (
+			embeddings.timeoutMs !== undefined &&
+			embeddings.timeoutMs !== null &&
+			!isPositiveInt(embeddings.timeoutMs)
+		) {
+			throw new SettingsValidationError(
+				"server.embeddings.timeoutMs",
 				"must be a positive integer",
 			);
 		}
@@ -1211,7 +1272,7 @@ export class SettingsStore {
 				continue;
 			}
 			if (
-				(key === "retry" || key === "stream") &&
+				(key === "retry" || key === "stream" || key === "embeddings") &&
 				typeof value === "object" &&
 				value !== null
 			) {
@@ -1287,23 +1348,23 @@ export class SettingsStore {
 							if (Object.keys(mergedSeam).length === 0) delete sub.memorySeam;
 							else sub.memorySeam = mergedSeam;
 						} else if (
-							subKey === "providers" &&
+							(subKey === "providers" || subKey === "embeddings") &&
 							typeof subValue === "object"
 						) {
-							// Same sub-merge for the provider runtime knobs: a flat
-							// record merged per-key (the refresh cadence PATCH never
-							// drops the section's other server fields).
-							const mergedProviders: Record<string, unknown> = {
-								...((sub.providers as Record<string, unknown>) ?? {}),
+							// Same sub-merge for the provider/embedding runtime knobs:
+							// a flat record merged per-key (a PATCH never drops the
+							// section's other fields).
+							const mergedNested: Record<string, unknown> = {
+								...((sub[subKey] as Record<string, unknown>) ?? {}),
 							};
-							for (const [provKey, provValue] of Object.entries(
+							for (const [nestedKey, nestedValue] of Object.entries(
 								subValue as Record<string, unknown>,
 							)) {
-								if (provValue === null) delete mergedProviders[provKey];
-								else mergedProviders[provKey] = provValue;
+								if (nestedValue === null) delete mergedNested[nestedKey];
+								else mergedNested[nestedKey] = nestedValue;
 							}
-							if (Object.keys(mergedProviders).length === 0) delete sub.providers;
-							else sub.providers = mergedProviders;
+							if (Object.keys(mergedNested).length === 0) delete sub[subKey];
+							else sub[subKey] = mergedNested;
 					} else if (
 						subKey === "webui" &&
 						typeof subValue === "object"

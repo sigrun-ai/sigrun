@@ -43,6 +43,7 @@ const SUB_MERGED: ReadonlySet<string> = new Set([
 	"jobDefaults",
 	"builtinExtensions",
 	"notifications",
+	"embeddings",
 ]);
 
 /**
@@ -70,6 +71,7 @@ export function touchedKeys(patch: Record<string, unknown>): string[] {
 						serverKey === "compaction" ||
 						serverKey === "memorySeam" ||
 						serverKey === "providers" ||
+						serverKey === "embeddings" ||
 						serverKey === "backup") &&
 					typeof serverValue === "object" &&
 					serverValue !== null

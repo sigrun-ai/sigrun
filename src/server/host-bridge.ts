@@ -24,6 +24,7 @@ import type {
 	DecisionRequest,
 	DecisionResult,
 } from "@sigrun/shared/decisions";
+import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 import type { SigrunHost } from "../extension.js";
 import { completeOnce } from "../harness/complete.js";
 import type { DirectoryUser } from "../harness/identity/index.js";
@@ -97,6 +98,19 @@ export interface HostBridge {
 			opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
 		): Promise<DecisionResult>;
 		list(): ReturnType<SigrunHost["decisions"]["list"]>;
+	};
+	readonly embeddings?: {
+		embed(
+			slug: string,
+			texts: readonly string[],
+			opts?: {
+				model?: string;
+				confidentiality?: "normal" | "local-only";
+				signal?: AbortSignal;
+				timeoutMs?: number;
+			},
+		): Promise<EmbeddingResult>;
+		list(): Awaited<ReturnType<SigrunHost["embeddings"]["list"]>>;
 	};
 	/** The extension-notify server side; the seam host supplies its slug. */
 	readonly notify: (
@@ -431,6 +445,14 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			},
 			async list() {
 				return opened.decisions.list();
+			},
+		},
+		embeddings: {
+			async embed(slug, texts, opts = {}) {
+				return opened.embeddings.embed(slug, texts, opts);
+			},
+			list() {
+				return opened.embeddings.list();
 			},
 		},
 		models: {

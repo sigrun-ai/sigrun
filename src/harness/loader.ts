@@ -88,6 +88,7 @@ import type {
 	ChannelContribution,
 	CurationTarget,
 	DecisionProviderContribution,
+	EmbeddingProviderContribution,
 	ExtensionCommandContribution,
 	ExtensionRouteContribution,
 	ExtensionRunSettledHandler,
@@ -140,6 +141,12 @@ import {
 } from "./published-hooks.js";
 import { wrapExtensionCurationTools } from "../curation/wrap.js";
 import type { ContributedWebuiBundle } from "../server/static.js";
+
+/** One embedding-provider loader declaration: a contribution plus its extension slug. */
+export interface EmbeddingDeclaration {
+	readonly extension: string;
+	readonly contribution: EmbeddingProviderContribution;
+}
 
 /** One loaded extension's boot outcome, for `GET /v1/meta` `extensions[]`. */
 export interface ExtensionOutcome {
@@ -482,6 +489,15 @@ export interface LoadedExtensions {
 	 */
 	readonly decisionProviderDeclarations: readonly DecisionDeclaration[];
 	/**
+	 * `embeddingProviders` declarations from loaded extensions
+	 * (embedding-providers Task 1), one entry per contribution in load
+	 * order, each `{extension, contribution}` with the slug attribution —
+	 * boot folds this flat list into the ONE embedding registry
+	 * (last-registered wins per id, a later task). Quarantined extensions
+	 * contribute none.
+	 */
+	readonly embeddingProviderDeclarations: readonly EmbeddingDeclaration[];
+	/**
 	 * Declared jobs from factory results (jobs §8.3 — the `extension`
 	 * source), one entry per loaded extension whose result carried `jobs`;
 	 * quarantined extensions contribute none. Boot reconciliation folds
@@ -631,6 +647,8 @@ export interface ResolvedExtension {
 	readonly publishedHooks?: readonly PublishedHook[];
 	/** Decision-provider contributions (warden Task 6), validated fail-loud. */
 	readonly decisionProviders?: readonly DecisionProviderContribution[];
+	/** Embedding-provider contributions (embedding-providers Task 1), validated fail-loud. */
+	readonly embeddingProviders?: readonly EmbeddingProviderContribution[];
 	/** Present only when the factory result carried `noticeActions` (validated). */
 	readonly noticeActions?: Readonly<Record<string, UserNoticeActionHandler>>;
 	/** Provider contributions (provider plugins Task 1), validated fail-loud. */
@@ -750,7 +768,8 @@ type LoaderReadKeys =
 	| "curationTargets"
 	| "noticeActions"
 	| "publishedHooks"
-	| "decisionProviders";
+	| "decisionProviders"
+	| "embeddingProviders";
 
 /**
  * The drift assertion (W5 Task 1): compiles only while EVERY key the
@@ -1182,6 +1201,135 @@ function validateDecisionProviders(
 		}
 	}
 	return value as readonly DecisionProviderContribution[];
+}
+
+/** The embedding-provider id grammar (the same rule as decision providers). */
+const EMBEDDING_PROVIDER_ID = /^[a-z][a-z0-9-]*$/;
+/** The embedding-provider id length bound. */
+const EMBEDDING_PROVIDER_ID_MAX_CHARS = 64;
+/** The embedding-model id grammar (the `"<provider>/<model>"` spec's second half). */
+const EMBEDDING_MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]*$/;
+/** The `credentialEnv` grammar: a process-env NAME. */
+const EMBEDDING_CREDENTIAL_ENV = /^[A-Z][A-Z0-9_]*$/;
+
+/**
+ * Validate a factory result's `embeddingProviders` declaration
+ * (embedding-providers Task 1). Absent → undefined (no contributions).
+ * Present but malformed → throw; the loader quarantines the extension
+ * with the thrown message (fail-loud, the decision-provider posture).
+ * Per entry: a string `id` matching {@link EMBEDDING_PROVIDER_ID} (≤64
+ * chars), at least one model whose ids match {@link EMBEDDING_MODEL_ID}
+ * with no intra-provider duplicates, `dimensions` a positive integer,
+ * `local` a boolean when present, `maxBatch` a positive integer when present, `embed` a function,
+ * `readiness` absent or a function, and `credentialEnv` absent or a
+ * NAME.
+ */
+function validateEmbeddingProviders(
+	value: unknown,
+): readonly EmbeddingProviderContribution[] | undefined {
+	if (value === undefined) return undefined;
+	if (!Array.isArray(value)) {
+		throw new Error(
+			"extension factory returned an embeddingProviders field that is not an array",
+		);
+	}
+	for (const entry of value) {
+		const provider = entry as {
+			id?: unknown;
+			models?: unknown;
+			embed?: unknown;
+			readiness?: unknown;
+			credentialEnv?: unknown;
+		} | null;
+		if (
+			typeof provider?.id !== "string" ||
+			provider.id.length > EMBEDDING_PROVIDER_ID_MAX_CHARS ||
+			!EMBEDDING_PROVIDER_ID.test(provider.id)
+		) {
+			throw new Error(
+				`extension factory returned an embedding provider with an invalid id ${JSON.stringify(provider?.id)} (must match ${EMBEDDING_PROVIDER_ID.source}, ≤${EMBEDDING_PROVIDER_ID_MAX_CHARS} chars)`,
+			);
+		}
+		if (
+			!Array.isArray(provider.models) ||
+			provider.models.length === 0
+		) {
+			throw new Error(
+				`extension factory returned an embedding provider "${provider.id}" with no models`,
+			);
+		}
+		const seen = new Set<string>();
+		for (const model of provider.models) {
+			const entry = model as {
+				id?: unknown;
+				dimensions?: unknown;
+				local?: unknown;
+				maxBatch?: unknown;
+			} | null;
+			const modelId = entry?.id;
+			if (
+				typeof modelId !== "string" ||
+				!EMBEDDING_MODEL_ID.test(modelId)
+			) {
+				throw new Error(
+					`extension factory returned an embedding provider "${provider.id}" with an invalid model id ${JSON.stringify(modelId)} (must match ${EMBEDDING_MODEL_ID.source})`,
+				);
+			}
+			if (seen.has(modelId)) {
+				throw new Error(
+					`extension factory returned an embedding provider "${provider.id}" with a duplicate model id "${modelId}"`,
+				);
+			}
+			seen.add(modelId);
+			if (
+				typeof entry?.dimensions !== "number" ||
+				!Number.isInteger(entry.dimensions) ||
+				entry.dimensions <= 0
+			) {
+				throw new Error(
+					`extension factory returned an embedding provider "${provider.id}" whose model "${modelId}" has an invalid dimensions ${JSON.stringify(entry?.dimensions)} (must be a positive integer)`,
+				);
+			}
+			if (entry.local !== undefined && typeof entry.local !== "boolean") {
+				throw new Error(
+					`extension factory returned an embedding provider "${provider.id}" whose model "${modelId}" has an invalid local ${JSON.stringify(entry.local)} (must be a boolean)`,
+				);
+			}
+			if (
+				entry.maxBatch !== undefined &&
+				(typeof entry.maxBatch !== "number" ||
+					!Number.isInteger(entry.maxBatch) ||
+					entry.maxBatch <= 0)
+			) {
+				throw new Error(
+					`extension factory returned an embedding provider "${provider.id}" whose model "${modelId}" has an invalid maxBatch ${JSON.stringify(entry.maxBatch)} (must be a positive integer)`,
+				);
+			}
+		}
+		if (typeof provider.embed !== "function") {
+			throw new Error(
+				`extension factory returned an embedding provider "${provider.id}" whose embed is not a function`,
+			);
+		}
+		if (
+			provider.readiness !== undefined &&
+			typeof provider.readiness !== "function"
+		) {
+			throw new Error(
+				`extension factory returned an embedding provider "${provider.id}" whose readiness is not a function`,
+			);
+		}
+		if (
+			provider.credentialEnv !== undefined &&
+			(typeof provider.credentialEnv !== "string" ||
+				!EMBEDDING_CREDENTIAL_ENV.test(provider.credentialEnv))
+		) {
+			throw new Error(
+				`extension factory returned an embedding provider "${provider.id}" with an invalid credentialEnv ${JSON.stringify(provider.credentialEnv)} (must match ${EMBEDDING_CREDENTIAL_ENV.source})`,
+			);
+		}
+	}
+	return value as readonly EmbeddingProviderContribution[];
 }
 
 function validateCurationTargets(
@@ -2501,6 +2649,7 @@ async function resolvedFromFactory(
 	// Decision providers (warden Task 6): validated with the other
 	// contribution fields, BEFORE the contributor-only check reads them.
 	const decisionProviders = validateDecisionProviders(candidate.decisionProviders);
+	const embeddingProviders = validateEmbeddingProviders(candidate.embeddingProviders);
 	const loginProviders = validateLoginProviders(candidate.loginProviders);
 	const webuiBundles = validateWebuiBundles(candidate.webuiBundles);
 	const jobs = validateJobs(candidate.jobs);
@@ -2531,7 +2680,8 @@ async function resolvedFromFactory(
 			webuiBundles === undefined &&
 			channels === undefined &&
 			userServices === undefined &&
-			decisionProviders === undefined
+			decisionProviders === undefined &&
+			embeddingProviders === undefined
 		) {
 			return undefined;
 		}
@@ -2655,6 +2805,7 @@ async function resolvedFromFactory(
 		...(noticeActions === undefined ? {} : { noticeActions }),
 		...(publishedHooks === undefined ? {} : { publishedHooks }),
 		...(decisionProviders === undefined ? {} : { decisionProviders }),
+		...(embeddingProviders === undefined ? {} : { embeddingProviders }),
 		...(providers === undefined ? {} : { providers }),
 		...(loginProviders === undefined ? {} : { loginProviders }),
 		...(webuiBundles === undefined ? {} : { webuiBundles }),
@@ -2959,6 +3110,10 @@ const publishedHookDeclarations: PublishedHookDeclaration[] = [];
 // Decision-provider declarations (warden Task 6), slug-attributed —
 // boot folds them into the ONE DecisionRegistry.
 const decisionProviderDeclarations: DecisionDeclaration[] = [];
+// Embedding-provider declarations (embedding-providers Task 1),
+// slug-attributed — boot folds them into the ONE embedding registry
+// (a later task).
+const embeddingProviderDeclarations: EmbeddingDeclaration[] = [];
 const userServiceBindings: { extension: string; services: readonly UserService[]; packageDir: string }[] = [];
 // Jobs Task 3: declared jobs, attributed to the extension slug (the
 // `ext:<slug>:<name>` id's namespace).
@@ -3456,6 +3611,15 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 						contribution,
 					});
 				}
+				// Embedding providers (embedding-providers Task 1): collected
+				// AFTER the install — a quarantined extension never reaches
+				// here, so every declaration comes from a LOADED extension.
+				for (const contribution of resolved.embeddingProviders ?? []) {
+					embeddingProviderDeclarations.push({
+						extension: slug,
+						contribution,
+					});
+				}
 				if (resolved.curationTargets !== undefined) {
 					curationBindings.push({
 						extension: slug,
@@ -3599,6 +3763,7 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		noticeActionBindings,
 		publishedHookDeclarations,
 		decisionProviderDeclarations,
+		embeddingProviderDeclarations,
 		jobBindings,
 		interactiveTools,
 		routeBindings,

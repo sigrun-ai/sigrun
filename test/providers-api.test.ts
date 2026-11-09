@@ -36,21 +36,48 @@ import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Model } from "@earendil-works/pi-ai";
 import { createProvider } from "@earendil-works/pi-ai/models";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import type { FastifyInstance } from "fastify";
+import type { DecisionRequest } from "@sigrun/shared/decisions";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
+import {
+	calls as gatedEmbeddingCalls,
+	resetGatedEmbeddingProvider,
+} from "./fixtures/fixture-embedding-provider-gated/index.js";
+import {
+	calls as decisionCalls,
+	resetDecisionProvider,
+} from "./fixtures/fixture-decision-provider/index.js";
 
 // ---------------------------------------------------------------------------
 // The fixture upstream + the ollama-shaped dynamic provider
 // ---------------------------------------------------------------------------
+
+const EMBEDDING_PROVIDER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-embedding-provider", "index.js"),
+).href;
+/**
+ * The credential-GATED embedding fixture: its readiness tracker reports
+ * `not_configured` until a call PRESENTS a credential (the shipped
+ * `provider-openai` shape), so core's "credential missing AND tracker
+ * not_configured" gate — not a missing tracker — decides the refusal.
+ */
+const GATED_EMBEDDING_PROVIDER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-embedding-provider-gated", "index.js"),
+).href;
+/** The decision fixture (warden Task 6): provider `acme-judge`. */
+const DECISION_PROVIDER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-decision-provider", "index.js"),
+).href;
 
 /** One fixture catalog row the upstream serves. */
 interface UpstreamModel {
@@ -208,6 +235,15 @@ const bodies: string[] = [];
  */
 async function bootServer(
 	defaultModel: string,
+	extensionSpecifiers: readonly string[] = [],
+	options: {
+		/**
+		 * The chat provider's id the fixture contributes (default `acme`).
+		 * A test that needs the DEFAULT model's provider id to be some other
+		 * kind's id (the credential-key regression) names it here.
+		 */
+		readonly chatProviderId?: string;
+	} = {},
 ): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-providers-api-"));
 	const upstream = await startUpstream([
@@ -229,7 +265,8 @@ async function bootServer(
 	await identity.users.add({ user: "pleb", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
 		identity,
-		extensions: [fixtureContributor("acme", upstream)],
+		extensions: [fixtureContributor(options.chatProviderId ?? "acme", upstream)],
+		extensionSpecifiers,
 		env: {},
 		settingsDir: dir,
 	});
@@ -295,6 +332,8 @@ interface ProviderEntry {
 	status: string;
 	models: number;
 	owner?: string;
+	kind?: "chat" | "decision" | "embedding";
+	modelIds?: readonly string[];
 	detail?: string;
 }
 
@@ -310,6 +349,120 @@ async function listProviders(
 	expect(response.status).toBe(200);
 	return (response.json() as { providers: ProviderEntry[] }).providers;
 }
+
+describe("embedding provider entries", () => {
+	test("Providers lists an embedding entry with owner and modelIds", async () => {
+		const rig = await bootServer("acme/m1", [EMBEDDING_PROVIDER]);
+		const entries = await listProviders(rig.app, rig.adminToken);
+		const entry = entries.find(
+			(candidate) => candidate.provider === "acme-embed" && candidate.kind === "embedding",
+		);
+		expect(entry).toMatchObject({
+			provider: "acme-embed",
+			kind: "embedding",
+			status: "ready",
+			models: 2,
+			modelIds: ["embed-1", "embed-2"],
+			owner: "acme-embed",
+		});
+	});
+
+	test("credential PUT works for an embedding-only provider id", async () => {
+		const rig = await bootServer("acme/m1", [EMBEDDING_PROVIDER]);
+		const response = await call(rig.app, {
+			method: "PUT",
+			url: "/v1/providers/acme-embed/credential",
+			token: rig.adminToken,
+			payload: { apiKey: "acme-embedding-route-key" },
+		});
+		expect(response.status).toBe(200);
+		expect(response.json()).toMatchObject({
+			provider: "acme-embed",
+			kind: "embedding",
+			modelIds: ["embed-1", "embed-2"],
+			owner: "acme-embed",
+		});
+		expect(rig.opened.auth.read()["acme-embed"]?.apiKey).toBe(
+			"acme-embedding-route-key",
+		);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// The credential-key regression (fix wave): a Providers-page Save for a row
+// whose id IS the default model's provider writes the magic "default" key.
+// Both non-chat registries read only `auth.json[id]`, so that key was
+// INVISIBLE to them — a permanent, silent `not_configured` the UI could
+// never clear (the earlier coverage missed it: its default model was
+// `acme/m1`, so the magic-key branch never fired).
+// ---------------------------------------------------------------------------
+
+describe("the Providers-page credential reaches the non-chat registries", () => {
+	test("an embedding call sees the magic \"default\" key when the embedding provider IS the default model's provider", async () => {
+		resetGatedEmbeddingProvider();
+		// The default chat provider and the embedding provider share the id
+		// `acme-gated` — the shape that makes the route redirect the write.
+		const rig = await bootServer("acme-gated/m1", [GATED_EMBEDDING_PROVIDER], {
+			chatProviderId: "acme-gated",
+		});
+		// Premise: nothing is configured yet. The tracker cannot read auth.json,
+		// so it says not_configured — the state a keyed install starts in.
+		expect(rig.opened.embeddings.providers()).toMatchObject([
+			{ id: "acme-gated", status: "not_configured" },
+		]);
+		// The Save the Providers page performs for this row: the id IS the
+		// default model's provider, so the key lands under "default".
+		const put = await call(rig.app, {
+			method: "PUT",
+			url: "/v1/providers/acme-gated/credential",
+			token: rig.adminToken,
+			payload: { apiKey: "acme-gated-route-key" },
+		});
+		expect(put.status).toBe(200);
+		const auth = rig.opened.auth.read();
+		expect(auth.default?.apiKey).toBe("acme-gated-route-key");
+		expect(auth["acme-gated"]).toBeUndefined();
+		// The regression: the embedding reader looked at auth.json[id] only, so
+		// the saved key was invisible and this call was refused as
+		// not_configured forever. It must now reach the provider WITH the key.
+		const result = await rig.opened.embeddings.embed("fixwave", ["x"], {
+			model: "acme-gated/embed-1",
+		});
+		expect(result).toMatchObject({ ok: true, model: "acme-gated/embed-1" });
+		expect(gatedEmbeddingCalls).toEqual([
+			{ model: "embed-1", credential: "acme-gated-route-key" },
+		]);
+	});
+
+	test("a decision call sees the magic \"default\" key when the decision provider IS the default model's provider", async () => {
+		resetDecisionProvider();
+		const rig = await bootServer("acme-judge/m1", [DECISION_PROVIDER], {
+			chatProviderId: "acme-judge",
+		});
+		const put = await call(rig.app, {
+			method: "PUT",
+			url: "/v1/providers/acme-judge/credential",
+			token: rig.adminToken,
+			payload: { apiKey: "acme-judge-route-key" },
+		});
+		expect(put.status).toBe(200);
+		const auth = rig.opened.auth.read();
+		expect(auth.default?.apiKey).toBe("acme-judge-route-key");
+		expect(auth["acme-judge"]).toBeUndefined();
+		// Same regression on the decisions reader (the magic key DOES apply
+		// here when the ids match, because the route writes it there).
+		const request: DecisionRequest = {
+			state: "acme",
+			questions: { q: { type: "noul" } },
+		};
+		const result = await rig.opened.decisions.evaluate("fixwave", request, {
+			model: "acme-judge/judge-1",
+		});
+		expect(result.ok).toBe(true);
+		if (!result.ok) throw new Error(`evaluate failed: ${result.code} ${result.error}`);
+		expect(decisionCalls.at(-1)?.credential).toBe("acme-judge-route-key");
+	});
+});
 
 // ---------------------------------------------------------------------------
 // GET /v1/providers: model counts + owners

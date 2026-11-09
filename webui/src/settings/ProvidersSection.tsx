@@ -23,12 +23,26 @@
 import { useEffect, useState } from "react";
 import type { AuthCheckProviderWire, SigrunClient } from "../api";
 
-/** One provider row's editor state (the write-only key + a note). */
+/** One provider row's editor state (the write-only key + a note).
+ *  Drafts are keyed by `${provider}\u0000${kind ?? "chat"}`: the key field
+ *  is per ROW, but the credential it writes is the shared per-id one. */
 interface ProviderDraft {
 	/** The typed key — write-only: never populated from any response. */
 	readonly key: string;
 	/** Per-provider note (write/refresh outcome / a server error). */
 	readonly note?: { readonly kind: "ok" | "error"; readonly message: string };
+}
+
+/** One row's identity: provider id + kind (absent kind = "chat"). */
+function rowKey(provider: string, kind?: string): string {
+	return `${provider}\u0000${kind ?? "chat"}`;
+}
+
+/** The user-facing kind badge label (wire kind → plural for non-chat). */
+function kindLabel(kind?: string): string {
+	if (kind === "decision") return "decisions";
+	if (kind === "embedding") return "embeddings";
+	return "chat";
 }
 
 type LoadState =
@@ -61,68 +75,106 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 		};
 	}, [client]);
 
-	/** Apply a write/refresh response's entry to the served list (one row). */
+	/** Apply a write/refresh response's entry to the served list (the
+	 *  ONE row matching its provider AND kind — siblings of other kinds
+	 *  are untouched). */
 	const applyEntry = (entry: AuthCheckProviderWire): void => {
+		const key = rowKey(entry.provider, entry.kind);
 		setLoad((prev) =>
 			prev.status !== "ready"
 				? prev
 				: {
 						status: "ready",
 						providers: prev.providers.map((row) =>
-							row.provider === entry.provider ? entry : row,
+							rowKey(row.provider, row.kind) === key ? entry : row,
 						),
 					},
 		);
 	};
 
-	/** Patch one provider's draft (a shallow per-id merge). */
-	const patchDraft = (id: string, patch: Partial<ProviderDraft>): void => {
+	/** Re-fetch the report after a credential write (BEST-EFFORT): the
+	 *  credential is shared per id, so every row of the id should pick up
+	 *  the new state — but a failed refetch must NOT fail the write (the
+	 *  PUT/DELETE already landed; the response's entry was applied). */
+	const reloadProviders = async (): Promise<void> => {
+		const report = await client.listProviders();
+		setLoad((prev) =>
+			prev.status !== "ready"
+				? prev
+				: { status: "ready", providers: report.providers },
+		);
+	};
+
+	/** Patch one row's draft (a shallow merge keyed by the row's
+	 *  `${provider}\u0000${kind}` key). */
+	const patchDraft = (key: string, patch: Partial<ProviderDraft>): void => {
 		setDrafts((prev) => ({
 			...prev,
-			[id]: { ...{ key: "" }, ...prev[id], ...patch },
+			[key]: { ...{ key: "" }, ...prev[key], ...patch },
 		}));
 	};
 
-	/** Save the typed key (PUT, admin): the response's entry + a cleared field. */
-	const save = async (id: string): Promise<void> => {
-		const draft = drafts[id];
+	/** Save the typed key (PUT, admin): the response's entry + a cleared
+	 *  field. The credential is shared per id, so after the write the
+	 *  report is re-fetched (best-effort) so every row of the id updates;
+	 *  a failed refetch never fails the save. */
+	const save = async (providerId: string, key: string): Promise<void> => {
+		const draft = drafts[key];
 		if (draft === undefined || draft.key === "") return;
 		try {
-			applyEntry(await client.putProviderCredential(id, draft.key));
-			patchDraft(id, { key: "", note: { kind: "ok", message: "saved" } });
+			applyEntry(await client.putProviderCredential(providerId, draft.key));
 		} catch (error: unknown) {
 			// The typed key SURVIVES a failure (the operator retries); the
 			// field clears on success only.
-			patchDraft(id, {
+			patchDraft(key, {
 				note: {
 					kind: "error",
 					message: error instanceof Error ? error.message : String(error),
 				},
 			});
+			return;
+		}
+		// The write landed: clear the field + report success BEFORE the
+		// best-effort refetch, so a refetch failure can't masquerade as a
+		// failed save (or keep the plaintext key in the input).
+		patchDraft(key, { key: "", note: { kind: "ok", message: "saved" } });
+		try {
+			await reloadProviders();
+		} catch {
+			// Best-effort: the entry from the PUT response is already applied;
+			// the next load/refresh reconciles the sibling rows.
 		}
 	};
 
-	/** Clear the credential (DELETE, admin). */
-	const clear = async (id: string): Promise<void> => {
+	/** Clear the credential (DELETE, admin) — the shared per-id one, so
+	 *  the report is re-fetched (best-effort) and every row of the id
+	 *  updates; a failed refetch never fails the clear. */
+	const clear = async (providerId: string, key: string): Promise<void> => {
 		try {
-			applyEntry(await client.deleteProviderCredential(id));
-			patchDraft(id, { note: { kind: "ok", message: "cleared" } });
+			applyEntry(await client.deleteProviderCredential(providerId));
 		} catch (error: unknown) {
-			patchDraft(id, {
+			patchDraft(key, {
 				note: {
 					kind: "error",
 					message: error instanceof Error ? error.message : String(error),
 				},
 			});
+			return;
+		}
+		patchDraft(key, { note: { kind: "ok", message: "cleared" } });
+		try {
+			await reloadProviders();
+		} catch {
+			// Best-effort: see save().
 		}
 	};
 
 	/** One bounded refresh (POST — not admin-gated server-side). */
-	const refresh = async (id: string): Promise<void> => {
+	const refresh = async (providerId: string, key: string): Promise<void> => {
 		try {
-			applyEntry(await client.refreshProvider(id));
+			applyEntry(await client.refreshProvider(providerId));
 		} catch (error: unknown) {
-			patchDraft(id, {
+			patchDraft(key, {
 				note: {
 					kind: "error",
 					message: error instanceof Error ? error.message : String(error),
@@ -156,15 +208,21 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 				immediately, no restart
 			</p>
 			{load.providers.map((provider) => {
-				const draft: ProviderDraft = drafts[provider.provider] ?? { key: "" };
+				const kind = provider.kind ?? "chat";
+				const key = rowKey(provider.provider, provider.kind);
+				const draft: ProviderDraft = drafts[key] ?? { key: "" };
 				return (
 					<fieldset
-						key={provider.provider}
+						key={key}
 						className="settings-provider"
 						data-provider={provider.provider}
+						data-kind={kind}
 					>
 						<legend className="settings-provider-name">
 							{provider.provider}
+							<span className="settings-provider-kind" data-kind={kind}>
+								{kindLabel(provider.kind)}
+							</span>
 							<span
 								className="settings-provider-status"
 								data-status={provider.status}
@@ -186,31 +244,33 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 								value={draft.key}
 								autoComplete="off"
 								onChange={(event) =>
-									patchDraft(provider.provider, { key: event.target.value })
+									patchDraft(key, { key: event.target.value })
 								}
 							/>
 							<button
 								type="button"
 								className="settings-provider-save"
 								disabled={draft.key === ""}
-								onClick={() => void save(provider.provider)}
+								onClick={() => void save(provider.provider, key)}
 							>
 								Save
 							</button>
 							<button
 								type="button"
 								className="settings-provider-clear"
-								onClick={() => void clear(provider.provider)}
+								onClick={() => void clear(provider.provider, key)}
 							>
 								Clear
 							</button>
-							<button
-								type="button"
-								className="settings-provider-refresh"
-								onClick={() => void refresh(provider.provider)}
-							>
-								Refresh
-							</button>
+							{kind === "chat" && (
+								<button
+									type="button"
+									className="settings-provider-refresh"
+									onClick={() => void refresh(provider.provider, key)}
+								>
+									Refresh
+								</button>
+							)}
 							{draft.note !== undefined && (
 								<span
 									className="settings-note"

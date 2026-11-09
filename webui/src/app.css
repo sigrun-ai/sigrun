@@ -3548,7 +3548,8 @@ body {
 	flex-wrap: wrap;
 }
 
-.settings-provider-status {
+.settings-provider-status,
+.settings-provider-kind {
 	font-weight: 600;
 	font-size: 10px;
 	font-family: var(--mono);
