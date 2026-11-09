@@ -183,20 +183,28 @@ export function buildEmbeddingRegistry(
 		}
 
 		const contribution = resolved.entry.declaration.contribution;
-		if (readiness(contribution) === "not_configured") {
-			return {
-				ok: false,
-				code: "not_configured",
-				message: `embedding provider "${contribution.id}" is not configured`,
-			};
-		}
 
+		// 3. Credential — core decides not_configured, never the tracker (the
+		//    decisions precedent: the tracker cannot read auth.json, so gating on
+		//    it before resolving the credential would deadlock a keyed install
+		//    on the default endpoint — the provider's first call is the only way
+		//    the tracker learns a key exists).
 		let credential: string | undefined;
 		try {
 			credential = await deps.credential(contribution.id, contribution.credentialEnv);
 			if (credential === "") credential = undefined;
 		} catch {
 			return { ok: false, code: "failed", message: "could not resolve the embedding credential" };
+		}
+		if (
+			credential === undefined &&
+			readiness(contribution) === "not_configured"
+		) {
+			return {
+				ok: false,
+				code: "not_configured",
+				message: `embedding provider "${contribution.id}" is not configured`,
+			};
 		}
 
 		// 3. One deadline covers all sequential batches; caller cancellation links
