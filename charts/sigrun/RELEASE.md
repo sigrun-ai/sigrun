@@ -232,8 +232,9 @@ is a re-run succeeding, not a failure. Verify the four fields by eye in the
 browser instead, because npm does not validate them at save time and a typo
 only surfaces at publish.
 
-**3. Add it to the enumerations.** `scripts/publish-deps.mjs` is the single
-list the workflows' checkouts, the lock regen, and the smoke all derive from.
+**3. Add it to the enumerations.** `scripts/builtins-map.mjs` is the single
+built-in list; `scripts/publish-deps.mjs` imports it and provides the
+read-only modes the workflows' checkouts, lock regen, and smoke consume.
 `test/builtins-wiring.test.ts` asserts the enumerations agree, so a package
 added in one place and forgotten in another fails core's suite.
 
@@ -304,7 +305,9 @@ kept out of this runbook.
 | Tag + version guard | `scripts/release-guard.mjs` |
 | Registry wait | `scripts/await-registry.mjs` |
 | Registry smoke | `scripts/smoke-registry.sh` |
-| Built-in enumeration | `scripts/publish-deps.mjs` |
+| Built-in enumeration | `scripts/builtins-map.mjs` (consumed by `scripts/publish-deps.mjs`) |
+| Core/family ref resolver | `scripts/ci-core-ref.mjs` |
+| Shared extension test action | `.github/actions/ext-test/action.yml` |
 | CI (build check, no push) | `.github/workflows/ci.yml` |
 | Workflow contract tests | `test/workflows.test.ts`, `test/release-guard.test.ts`, `test/builtins-wiring.test.ts` |
 | Dockerfile (APP_VERSION label) | `Dockerfile` |
