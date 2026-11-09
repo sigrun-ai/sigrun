@@ -1894,6 +1894,8 @@ export interface SigrunHost {
 			provider: string;
 			dimensions: number;
 			local: boolean;
+			/** True on the one row the `embeddingModel` setting resolves to. */
+			default: boolean;
 			status: ProviderReadiness["status"];
 		}[]>;
 	};
