@@ -3,8 +3,9 @@
  * into the settings placement's form blocks.
  *
  * Pure: the same input schema always yields the same form, and the only
- * side effect is one `console.warn` per property that falls back to a
- * JSON box (a load-time warning naming its JSON-pointer path).
+ * side effect is a load-time `console.warn` — one per property that falls
+ * back to a JSON box and one per layout path the schema does not declare,
+ * each naming its JSON-pointer path.
  *
  * `checkSchema` is the load-time gate (root object, local `$ref`
  * resolution, well-formed sigrun keywords, `x-sigrun-key` present where
@@ -28,12 +29,14 @@ import {
 	applyOf,
 	deref,
 	hasNonDrawableKeyword,
+	hasOtherNonDrawableKeyword,
 	isRecord,
 	keyOf,
 	pointerJoin,
 	propertiesOf,
 	resolveRef,
 	summaryOf,
+	unionBranches,
 	type Apply,
 	type JsonSchema,
 } from "./keywords.js";
@@ -70,14 +73,15 @@ type PropertyNode = Field | SectionBlock;
 
 // ─── drawable-subset recognition ─────────────────────────────────────────
 
-/** `enum` / `oneOf` of `{const, title}` → choice options, else undefined. */
+/** `enum` / `oneOf` (or `anyOf`) of `{const, title}` → choice options, else undefined. */
 function choiceOptions(schema: JsonSchema): { id: string; label: string }[] | undefined {
 	if (Array.isArray(schema.enum) && schema.enum.every((v) => typeof v === "string")) {
 		return schema.enum.map((v) => ({ id: v, label: v }));
 	}
-	if (Array.isArray(schema.oneOf) && schema.oneOf.length > 0) {
+	const branches = unionBranches(schema);
+	if (branches) {
 		const options: { id: string; label: string }[] = [];
-		for (const branch of schema.oneOf) {
+		for (const branch of branches) {
 			if (!isRecord(branch) || typeof branch.const !== "string") return undefined;
 			if (branch.type !== undefined && branch.type !== "string") return undefined;
 			if (hasNonDrawableKeyword(branch)) return undefined;
@@ -91,7 +95,7 @@ function choiceOptions(schema: JsonSchema): { id: string; label: string }[] | un
 	return undefined;
 }
 
-/** `oneOf` of objects told apart by one shared const property. */
+/** `oneOf` / `anyOf` of objects told apart by one shared const property. */
 interface VariantBranch {
 	readonly id: string;
 	readonly label: string;
@@ -100,9 +104,11 @@ interface VariantBranch {
 }
 
 function variantBranches(schema: JsonSchema): VariantBranch[] | undefined {
-	if (!Array.isArray(schema.oneOf) || schema.oneOf.length === 0) return undefined;
-	const branches = schema.oneOf;
-	if (!branches.every((b) => isRecord(b) && b.type === "object")) return undefined;
+	const branches = unionBranches(schema);
+	if (!branches) return undefined;
+	if (!branches.every((b) => isRecord(b) && b.type === "object" && !hasNonDrawableKeyword(b))) {
+		return undefined;
+	}
 	// The discriminator: a const property present in EVERY branch, with a
 	// distinct value per branch.
 	const first = branches[0] as JsonSchema;
@@ -148,8 +154,9 @@ function itemHasSecrets(root: JsonSchema, item: JsonSchema): boolean {
 	if (item.type === "array" && isRecord(item.items)) {
 		return itemHasSecrets(root, deref(root, item.items));
 	}
-	if (Array.isArray(item.oneOf)) {
-		return item.oneOf.some((b) => isRecord(b) && itemHasSecrets(root, deref(root, b)));
+	const branches = unionBranches(item);
+	if (branches) {
+		return branches.some((branch) => isRecord(branch) && itemHasSecrets(root, deref(root, branch)));
 	}
 	return false;
 }
@@ -234,13 +241,27 @@ function propertyNode(
 		return { ...base, type: "secret" } as Field;
 	}
 
-	if (hasNonDrawableKeyword(schema)) {
-		return fallbackNode(ctx, name, pointer, "conditional or pattern keyword");
-	}
-
-	const options = choiceOptions(schema);
+	// A union — `oneOf`, or the `anyOf` TypeBox's `Type.Union` emits — draws
+	// as a choice or a variant when its branches name their alternatives.
+	// Both spellings are read the same way; any other blocking keyword on the
+	// schema still forces the JSON box.
+	const blocked = hasOtherNonDrawableKeyword(schema);
+	const options = blocked ? undefined : choiceOptions(schema);
 	if (options) {
 		return { ...base, type: "choice", options };
+	}
+	const branches = blocked ? undefined : variantBranches(schema);
+	if (branches) {
+		return variantNode(ctx, base, pointer, branches);
+	}
+
+	if (hasNonDrawableKeyword(schema)) {
+		return fallbackNode(
+			ctx,
+			name,
+			pointer,
+			unionBranches(schema) ? "union outside the choice/variant subset" : "conditional or pattern keyword",
+		);
 	}
 
 	switch (schema.type) {
@@ -285,14 +306,20 @@ function propertyNode(
 						keyLabel: "Name",
 					};
 				}
-				const item = objectFields({ ...ctx, namePrefix: "" }, value, pointerJoin(pointer, "*"));
+				const item = objectChildren({ ...ctx, namePrefix: "" }, value, pointerJoin(pointer, "*"));
+				if (item.length === 0) {
+					// A table row with no field to draw is not drawable: the row
+					// would render edgeless, and the channel coerces a stored row to
+					// {} on the next save — silently destroying data.
+					return fallbackNode(ctx, name, pointer, "additionalProperties value has no field to draw");
+				}
 				const summary = summaryOf(value);
 				return {
 					...base,
 					type: "entries",
 					shape: "table",
 					item,
-					summary: summary.length > 0 ? summary : item.map((f) => f.name),
+					summary: summary.length > 0 ? summary : rowFieldNames(item),
 					keyLabel: "Name",
 				};
 			}
@@ -326,10 +353,7 @@ function propertyNode(
 					type: "entries",
 					shape: "array",
 					item: itemChildren,
-					summary:
-						summary.length > 0
-							? summary
-							: itemChildren.flatMap((c) => (c.type === "section" ? [] : [c.name])),
+					summary: summary.length > 0 ? summary : rowFieldNames(itemChildren),
 					...(key ? { key } : {}),
 				};
 			}
@@ -346,30 +370,30 @@ function propertyNode(
 			}
 			return { ...base, type: "list", item: scalar };
 		}
-		default: {
-			const branches = variantBranches(schema);
-			if (branches) {
-				const optionsOut: VariantField["options"][number][] = [];
-				for (const branch of branches) {
-					const stripped: JsonSchema = {
-						...branch.schema,
-						properties: withoutDiscriminator(branch.schema, branch.discriminator),
-					};
-					// Secrets inside a variant branch live at the property's own
-					// path (the discriminator selects the branch, not a segment).
-					const children = objectChildren({ ...ctx, namePrefix: "" }, stripped, pointer);
-					optionsOut.push({ id: branch.id, label: branch.label, children });
-				}
-				return {
-					...base,
-					type: "variant",
-					discriminator: branches[0]?.discriminator ?? "type",
-					options: optionsOut,
-				};
-			}
+		default:
 			return fallbackNode(ctx, name, pointer, `unsupported type ${String(schema.type)}`);
-		}
 	}
+}
+
+/** A union of objects told apart by one shared const property, as a variant. */
+function variantNode(
+	ctx: Ctx,
+	base: FieldBase,
+	pointer: string,
+	branches: readonly VariantBranch[],
+): VariantField {
+	const options: VariantField["options"][number][] = [];
+	for (const branch of branches) {
+		const stripped: JsonSchema = {
+			...branch.schema,
+			properties: withoutDiscriminator(branch.schema, branch.discriminator),
+		};
+		// Secrets inside a variant branch live at the property's own path
+		// (the discriminator selects the branch, not a segment).
+		const children = objectChildren({ ...ctx, namePrefix: "" }, stripped, pointer);
+		options.push({ id: branch.id, label: branch.label, children });
+	}
+	return { ...base, type: "variant", discriminator: branches[0]?.discriminator ?? "type", options };
 }
 
 /** A branch's properties minus the discriminator (the choice writes it). */
@@ -380,25 +404,12 @@ function withoutDiscriminator(branch: JsonSchema, discriminator: string): Record
 	return rest;
 }
 
-/** The fields of an object schema's `properties` (nested objects stay fields/sections). */
-function objectFields(ctx: Ctx, schema: JsonSchema, pointer: string): Field[] {
-	const required = new Set(
-		Array.isArray(schema.required) ? schema.required.filter((r): r is string => typeof r === "string") : [],
-	);
-	const fields: Field[] = [];
-	for (const [name, child] of propertiesOf(ctx.root, schema)) {
-		const node = propertyNode(
-			ctx,
-			`${ctx.namePrefix}${name}`,
-			pointerJoin(pointer, name),
-			child,
-			required.has(name),
-		);
-		// Entries items carry fields only in the flat mapping; a titled
-		// nested object inside an entry keeps its section via objectChildren.
-		if (node.type !== "section") fields.push(node);
-	}
-	return fields;
+/**
+ * The derived row summary of an entries item: its field names, in order.
+ * Sections are grouping only, never columns of the one-line row summary.
+ */
+function rowFieldNames(children: readonly (Field | SectionBlock)[]): string[] {
+	return children.flatMap((child) => (child.type === "section" ? [] : [child.name]));
 }
 
 /** The children of an object-typed node: fields plus titled sections. */
@@ -441,6 +452,12 @@ export function generateForm(
 	);
 
 	if (opts.layout) {
+		// Secrets are never left to the layout: a top-level writeOnly property
+		// always renders under Credentials, whether or not the layout lists it.
+		for (const [name, child] of topLevel) {
+			if (child.writeOnly === true) emit(name, pointerJoin("", name), child, topRequired.has(name));
+		}
+
 		// Inclusion: only the listed paths render, grouped by section.
 		const included = new Map<string, JsonSchema>();
 		for (const [name, child] of topLevel) included.set(pointerJoin("", name), child);
@@ -448,7 +465,13 @@ export function generateForm(
 			const children: (Field | SectionBlock)[] = [];
 			for (const path of group.paths) {
 				const child = included.get(path);
-				if (!child) continue;
+				if (!child) {
+					console.warn(
+						`settings schema: layout path ${path} (section "${group.title}") is not a property of the schema; skipping it`,
+					);
+					continue;
+				}
+				if (child.writeOnly === true) continue; // already under Credentials
 				const name = path.split("/").pop() ?? path;
 				apply.set(name, applyOf(child));
 				const node = propertyNode(ctx, name, path, child, topRequired.has(name));
@@ -545,9 +568,14 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 			if (!result.ok) return result;
 		}
 	}
+	// `anyOf` is a union like `oneOf` (TypeBox's `Type.Union` emits it), so
+	// its branches are checked the same way.
 	if (Array.isArray(schema.anyOf)) {
-		for (const branch of schema.anyOf) {
-			if (!isRecord(branch)) return fail("anyOf branches must be objects");
+		for (let i = 0; i < schema.anyOf.length; i++) {
+			const branch = schema.anyOf[i];
+			if (!isRecord(branch)) return fail(`anyOf[${i}] must be an object`);
+			const result = checkNode(root, branch, `${pointer}/anyOf/${i}`);
+			if (!result.ok) return result;
 		}
 	}
 

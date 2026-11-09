@@ -76,6 +76,18 @@ function objectSchema(properties: Record<string, unknown>): JsonSchema {
 	return { type: "object", properties };
 }
 
+/** Run `fn` with `console.warn` captured (one entry per call). */
+function captureWarnings<T>(fn: () => T): { value: T; warnings: string[] } {
+	const warnings: string[] = [];
+	const original = console.warn;
+	console.warn = (message: string) => warnings.push(message);
+	try {
+		return { value: fn(), warnings };
+	} finally {
+		console.warn = original;
+	}
+}
+
 describe("generateForm", () => {
 	it("scalar mapping", () => {
 		const generated = generate(
@@ -237,6 +249,116 @@ describe("generateForm", () => {
 		expect((tags.item as TextField).type).toBe("text");
 	});
 
+	it("a titled nested object inside a table row keeps its section", () => {
+		const schema = objectSchema({
+			servers: {
+				type: "object",
+				additionalProperties: {
+					type: "object",
+					properties: {
+						url: { type: "string" },
+						oauth: {
+							type: "object",
+							title: "OAuth",
+							properties: { clientId: { type: "string" } },
+						},
+					},
+				},
+			},
+		});
+		const entries = fieldNamed(childrenOf(schema), "servers") as EntriesField;
+		expect(entries.shape).toBe("table");
+		// the titled group is a section inside the row, not a dropped field
+		expect(entries.item.map((c) => (c.type === "section" ? c.title : (c as Field).name))).toEqual([
+			"url",
+			"OAuth",
+		]);
+		const oauth = entries.item.find((c) => c.type === "section") as SectionBlock;
+		expect(oauth.children.map((c) => (c as Field).name)).toEqual(["oauth.clientId"]);
+		// the derived row summary never names a section
+		expect(entries.summary).toEqual(["url"]);
+		expect(() => assertDrawable(schema)).not.toThrow();
+	});
+
+	it("scalar additionalProperties falls back instead of building an edgeless table", () => {
+		const schema = objectSchema({ headers: { type: "object", additionalProperties: { type: "string" } } });
+		const { value: generated, warnings } = captureWarnings(() => generate(schema));
+		expect(generated.fallbacks).toEqual(["/headers"]);
+		expect(warnings.some((w) => w.includes("/headers"))).toBe(true);
+		const children = generated.form.root.type === "form" ? generated.form.root.children : [];
+		expect(fieldNamed(children, "headers").type).toBe("longtext");
+	});
+
+	it("a scalar writeOnly table still draws as a secret table", () => {
+		const schema = objectSchema({
+			headers: { type: "object", additionalProperties: { type: "string", writeOnly: true } },
+		});
+		const generated = generate(schema);
+		expect(generated.fallbacks).toEqual([]);
+		expect(generated.secrets).toEqual([{ pattern: "/headers/*" }]);
+		const entries = fieldNamed(childrenOf(schema), "headers") as EntriesField;
+		expect(entries.shape).toBe("table");
+		expect((entries.item as Field[]).map((f) => f.name)).toEqual(["value"]);
+	});
+
+	it("a table with propertyNames still generates table entries", () => {
+		const schema = objectSchema({
+			servers: {
+				type: "object",
+				propertyNames: { pattern: "^[a-z][a-z0-9-]*$" },
+				additionalProperties: { type: "object", properties: { url: { type: "string" } } },
+			},
+		});
+		const entries = fieldNamed(childrenOf(schema), "servers") as EntriesField;
+		expect(entries.type).toBe("entries");
+		expect(entries.shape).toBe("table");
+		expect((entries.item as Field[]).map((f) => f.name)).toEqual(["url"]);
+		expect(() => assertDrawable(schema)).not.toThrow();
+	});
+
+	it("anyOf by const becomes a choice and a variant", () => {
+		const children = childrenOf(
+			objectSchema({
+				mode: {
+					anyOf: [
+						{ type: "string", const: "fast", title: "Fast" },
+						{ type: "string", const: "slow", title: "Slow" },
+					],
+				},
+				transport: {
+					anyOf: [
+						{
+							type: "object",
+							title: "HTTP",
+							properties: { kind: { const: "http" }, url: { type: "string" } },
+						},
+						{
+							type: "object",
+							title: "Command",
+							properties: { kind: { const: "command" }, command: { type: "string" } },
+						},
+					],
+				},
+			}),
+		);
+		const mode = fieldNamed(children, "mode") as ChoiceField;
+		expect(mode.type).toBe("choice");
+		expect(mode.options).toEqual([
+			{ id: "fast", label: "Fast" },
+			{ id: "slow", label: "Slow" },
+		]);
+		const variant = fieldNamed(children, "transport") as VariantField;
+		expect(variant.type).toBe("variant");
+		expect(variant.discriminator).toBe("kind");
+		expect(variant.options.map((o) => o.id)).toEqual(["http", "command"]);
+
+		// a union no recogniser understands still falls back honestly
+		expect(
+			generate(objectSchema({ mixed: { anyOf: [{ type: "string" }, { type: "number" }] } }))
+				.fallbacks,
+		).toEqual(["/mixed"]);
+	});
+
 	it("oneOf by const becomes a variant", () => {
 		const children = childrenOf(
 			objectSchema({
@@ -316,6 +438,10 @@ describe("generateForm", () => {
 			count: Type.Integer({ minimum: 0, maximum: 10 }),
 			enabled: Type.Boolean(),
 			mode: Type.Union([Type.Literal("a"), Type.Literal("b")]),
+			transport: Type.Union([
+				Type.Object({ kind: Type.Literal("http"), url: Type.String() }, { title: "HTTP" }),
+				Type.Object({ kind: Type.Literal("command"), command: Type.String() }, { title: "Command" }),
+			]),
 			tags: Type.Array(Type.String()),
 			nested: Type.Object(
 				{ inner: Type.String() },
@@ -327,8 +453,25 @@ describe("generateForm", () => {
 		const fromTypeBox = generate(schema as unknown as JsonSchema);
 		const fromJson = generate(JSON.parse(JSON.stringify(schema)) as JsonSchema);
 		expect(fromTypeBox.form).toEqual(fromJson.form);
-		expect(fromTypeBox.fallbacks).toEqual(fromJson.fallbacks);
+		expect(fromTypeBox.fallbacks).toEqual([]);
 		expect(fromTypeBox.secrets).toEqual(fromJson.secrets);
+
+		// Type.Union emits `anyOf`: a union of literals is a choice and a
+		// union of objects sharing a discriminator is a variant — the same
+		// forms the `oneOf` spellings above produce.
+		const children = (fromTypeBox.form.root as FormBlock).children;
+		const mode = fieldNamed(children, "mode") as ChoiceField;
+		expect(mode.type).toBe("choice");
+		expect(mode.options).toEqual([
+			{ id: "a", label: "a" },
+			{ id: "b", label: "b" },
+		]);
+		const transport = fieldNamed(children, "transport") as VariantField;
+		expect(transport.type).toBe("variant");
+		expect(transport.discriminator).toBe("kind");
+		expect(transport.options.map((o) => o.id)).toEqual(["http", "command"]);
+		// the secret-free TypeBox schema is fully drawable
+		expect(() => assertDrawable(schema as unknown as JsonSchema)).not.toThrow();
 	});
 
 	it("layout inclusion renders only listed paths and merges overrides", () => {
@@ -352,6 +495,56 @@ describe("generateForm", () => {
 		expect(section.title).toBe("General");
 		expect(section.children.map((c) => (c as Field).name)).toEqual(["a", "b"]);
 		expect((section.children[0] as Field).label).toBe("Overridden");
+
+		// inclusion is per group: a listed path in a later group still renders once
+		const shared = generate(schema, {
+			layout: [
+				{ title: "First", paths: ["/a"] },
+				{ title: "Second", paths: ["/c", "/b"] },
+			],
+		});
+		const groups = (shared.form.root as FormBlock).children;
+		expect(groups.map((g) => (g.type === "section" ? g.title : (g as Field).name))).toEqual([
+			"First",
+			"Second",
+		]);
+		expect((groups[1] as SectionBlock).children.map((c) => (c as Field).name)).toEqual(["c", "b"]);
+	});
+
+	it("a layout path the schema does not declare warns and is skipped", () => {
+		const { value: generated, warnings } = captureWarnings(() =>
+			generate(objectSchema({ a: { type: "string" } }), {
+				layout: [{ title: "General", paths: ["/a", "/nope"] }],
+			}),
+		);
+		expect(warnings.some((w) => w.includes("/nope"))).toBe(true);
+		const children = generated.form.root.type === "form" ? generated.form.root.children : [];
+		expect((children[0] as SectionBlock).children.map((c) => (c as Field).name)).toEqual(["a"]);
+	});
+
+	it("credentials render first even when the layout omits them", () => {
+		const schema = objectSchema({
+			name: { type: "string" },
+			apiKey: { type: "string", writeOnly: true },
+		});
+		const generated = generate(schema, { layout: [{ title: "General", paths: ["/name"] }] });
+		const children = generated.form.root.type === "form" ? generated.form.root.children : [];
+		expect(children.map((c) => (c.type === "section" ? c.title : (c as Field).name))).toEqual([
+			"Credentials",
+			"General",
+		]);
+		const credentials = children[0] as SectionBlock;
+		expect(credentials.children.map((c) => (c as Field).name)).toEqual(["apiKey"]);
+		expect(generated.secrets).toEqual([{ pattern: "/apiKey" }]);
+
+		// a layout that DOES list the secret renders it once, still under Credentials
+		const listed = generate(schema, { layout: [{ title: "General", paths: ["/name", "/apiKey"] }] });
+		const listedChildren = listed.form.root.type === "form" ? listed.form.root.children : [];
+		expect((listedChildren[0] as SectionBlock).title).toBe("Credentials");
+		expect((listedChildren[1] as SectionBlock).children.map((c) => (c as Field).name)).toEqual([
+			"name",
+		]);
+		expect(listed.secrets).toEqual([{ pattern: "/apiKey" }]);
 	});
 
 	it("a dangling $ref falls back instead of crashing", () => {
@@ -464,6 +657,27 @@ describe("checkSchema", () => {
 		).toBe(false);
 		expect(checkSchema(objectSchema({ a: { $ref: "#/definitions/missing" } })).ok).toBe(false);
 		expect(checkSchema(objectSchema({ a: { $ref: "https://example.invalid/x" } })).ok).toBe(false);
+	});
+
+	it("finds secrets declared inside anyOf branches", () => {
+		const result = checkSchema(
+			objectSchema({
+				servers: {
+					type: "array",
+					items: {
+						anyOf: [
+							{
+								type: "object",
+								properties: { name: { type: "string" }, token: { type: "string", writeOnly: true } },
+							},
+							{ type: "object", properties: { name: { type: "string" } } },
+						],
+					},
+				},
+			}),
+		);
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error).toContain("x-sigrun-key");
 	});
 
 	it("collects secret patterns inside array items and tables", () => {

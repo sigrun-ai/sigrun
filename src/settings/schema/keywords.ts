@@ -91,7 +91,15 @@ export function propertiesOf(
 	return result;
 }
 
-/** Whether the schema declares any keyword outside the drawable subset. */
+/**
+ * The keywords outside the drawable subset.
+ *
+ * Two drawable keywords are deliberately absent. `propertyNames` constrains
+ * a table's row keys only, while the form draws the row values (spec §1
+ * admits an `additionalProperties` table "and optional `propertyNames`").
+ * `anyOf` is the spelling TypeBox's `Type.Union` emits, so the generator
+ * reads a union as a choice or a variant before consulting this list.
+ */
 const CONDITIONAL_KEYWORDS = [
 	"if",
 	"then",
@@ -102,13 +110,38 @@ const CONDITIONAL_KEYWORDS = [
 	"dependentSchemas",
 	"dependentRequired",
 	"patternProperties",
-	"propertyNames",
 	"prefixItems",
 	"contains",
 	"unevaluatedProperties",
 	"unevaluatedItems",
 ] as const;
 
+/**
+ * Whether the schema carries a keyword outside the drawable subset, so a
+ * union the recognisers cannot draw still reaches its fallback.
+ */
 export function hasNonDrawableKeyword(schema: JsonSchema): boolean {
 	return CONDITIONAL_KEYWORDS.some((keyword) => schema[keyword] !== undefined);
+}
+
+/**
+ * Whether the schema carries a blocking keyword other than `anyOf`. The
+ * generator asks this before reading a union, so a union costs nothing
+ * while `if`, `allOf`, `patternProperties` and the rest still force the
+ * JSON box.
+ */
+export function hasOtherNonDrawableKeyword(schema: JsonSchema): boolean {
+	return CONDITIONAL_KEYWORDS.some((keyword) => keyword !== "anyOf" && schema[keyword] !== undefined);
+}
+
+/**
+ * The alternatives a schema spells — `oneOf`, or the `anyOf` TypeBox's
+ * `Type.Union` emits. Both spellings mean the same thing here.
+ */
+export function unionBranches(schema: JsonSchema): readonly unknown[] | undefined {
+	for (const keyword of ["oneOf", "anyOf"] as const) {
+		const value = schema[keyword];
+		if (Array.isArray(value) && value.length > 0) return value;
+	}
+	return undefined;
 }
