@@ -186,6 +186,24 @@ describe("ci-core-ref", () => {
 		expect(refs["sigrun-memory-markdown"]).toBe("v0.10.0");
 	});
 
+	test("a rejecting shared peer cannot be overridden by the pi-durable fallback", async () => {
+		const npmView = fakeNpmView(
+			releaseFixture({
+				"@sigrun/memory-markdown versions": ["0.2.4", "0.2.3"],
+				"@sigrun/memory-markdown@0.2.4 peerDependencies": {
+					"@sigrun/shared": "^0.12.0",
+					"@earendil-works/pi-durable": "~1.5.0",
+				},
+				"@sigrun/memory-markdown@0.2.3 peerDependencies": {
+					"@earendil-works/pi-durable": "~1.5.0",
+				},
+			}),
+		);
+
+		const refs = await resolveRefs("release", npmView);
+		expect(refs["sigrun-memory-markdown"]).toBe("v0.2.3");
+	});
+
 	test("memory-markdown falls back to the pi-durable peer when no shared peer exists", async () => {
 		// Real-registry peers: mm 0.2.4 declares pi-durable ~1.5.0 (accepts
 		// core's 1.5.0); 0.2.3 declares 1.3.0 || 1.4.0 (does not). Neither

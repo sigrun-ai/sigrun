@@ -115,8 +115,9 @@ export async function resolveRefs(mode, npmView) {
 		refs[repo] = `v${version}`;
 	}
 
-	// 4. memory-markdown: newest version whose shared OR pi-durable peer
-	// accepts core's corresponding pin (both from the same packument).
+	// 4. memory-markdown: newest version accepted by the shared peer when
+	// declared, or by the pi-durable peer otherwise (both core pins come
+	// from the same packument). A rejecting shared peer is authoritative.
 	const coreShared = deps["@sigrun/shared"];
 	if (typeof coreShared !== "string") {
 		throw new Error(
@@ -156,12 +157,12 @@ export async function resolveRefs(mode, npmView) {
 			typeof peers === "object" && peers !== null
 				? peers["@earendil-works/pi-durable"]
 				: undefined;
-		if (
-			(typeof sharedRange === "string" &&
-				semver.satisfies(coreShared, sharedRange)) ||
-			(typeof piDurableRange === "string" &&
-				semver.satisfies(corePiDurable, piDurableRange))
-		) {
+		const accepts =
+			typeof sharedRange === "string"
+				? semver.satisfies(coreShared, sharedRange)
+				: typeof piDurableRange === "string" &&
+					semver.satisfies(corePiDurable, piDurableRange);
+		if (accepts) {
 			refs["sigrun-memory-markdown"] = `v${v}`;
 			mmResolved = true;
 			break;
