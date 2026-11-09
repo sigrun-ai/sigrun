@@ -7,32 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.11.6] - 2026-11-08
 
-- Blocks: navigate targets and params can bind per-row data, unresolved
-  navigate buttons hide, card submits carry the row id, and section
-  headers accept action buttons (also in the TUI actions menu).
-- Skills and Jobs views: one per-row Review/Conversation button instead
-  of one per card, section-header actions replacing the "Actions"
-  callouts, the selected skill commit's diff rendered inline under its
-  history row, a two-column job summary that omits empty rows, and the
-  prompt in its own `Prompt` section.
-- Diffs: line-level diffs with `-`/`+` markers, theme tinting and
-  collapsed unchanged runs in both clients.
+The CI-noise release: extension CI stops testing against unreleased core
+main, and core's own CI stops failing on release-order artifacts. Companion
+published first: ext-gateway 0.1.28 (shared peer 0.11.6).
 
 ### Changed
 
-- `runSettled` events now survive restarts: a run that settled but was not yet delivered is replayed at the next boot (`replayed: true`), before interrupted runs resume. Delivery is at-least-once.
-- Forms and settings: help text above controls, single-row toggles,
-  growing/capped JSON fields, palette/accent outline clearance,
-  consistent section spacing, and the corrected "Tools offered to the
-  model" copy (the setting is an allow-list).
-
-### Fixed
-
-- Mobile: text controls use at least 16px on touch devices so focusing
-  the composer no longer zooms the page.
-
+- CI: the nine non-built-in extension repos test against the latest
+  released core (`core-ref: release`) instead of core main; the built-ins
+  keep core main and wait out push batches (180 s settle).
+- CI: one shared composite action runs extension tests for both the CI
+  and release workflows (no drifting copies); extension releases resolve
+  the released refs once and publish against exactly what they tested.
+- CI: core's image build skips (with a notice) on main pushes while a
+  pinned companion is not on npm yet; pull requests keep the loud
+  failure. Only a genuine E404 skips — registry errors fail the job.
+- CI: the release pre-check validates the memory-markdown axis against
+  the tagged manifest before publishing.
+- CI: extension releases skip their test job when the tagged commit
+  already has a successful `ci` run (API lookup on the tag's commit,
+  fail-open).
+- Tests: the ext-gateway shared-peer acceptance is derived from semver
+  (core's pin vs the sibling's declared range) instead of a
+  hand-maintained version-chain regex.
 ## [0.11.5] - 2026-11-08
 
 The deleted-conversations release. Companion published first:
