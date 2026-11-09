@@ -1,306 +1,341 @@
 {
-  "general": {
-    "v": 1,
-    "root": {
-      "type": "form",
-      "id": "core-general-form",
-      "bind": "/settings",
-      "mode": "submit",
-      "onSubmit": "save",
-      "submitLabel": "Save",
-      "children": [
-        {
-          "type": "section",
-          "id": "core-general-queue",
-          "title": "Queueing",
-          "children": [
-            {
-              "type": "choice",
-              "name": "steeringMode",
-              "label": "Steering mode",
-              "help": "How a message sent while a run is live steers it; empty = the pi-durable default (one-at-a-time)",
-              "apply": "live",
-              "options": [
-                {
-                  "id": "one-at-a-time",
-                  "label": "One at a time"
-                },
-                {
-                  "id": "all",
-                  "label": "All"
-                }
-              ]
-            },
-            {
-              "type": "choice",
-              "name": "followUpMode",
-              "label": "Follow-up mode",
-              "help": "How queued follow-ups deliver after a run settles; empty = the pi-durable default",
-              "apply": "live",
-              "options": [
-                {
-                  "id": "one-at-a-time",
-                  "label": "One at a time"
-                },
-                {
-                  "id": "all",
-                  "label": "All"
-                }
-              ]
-            }
-          ]
-        },
-        {
-          "type": "section",
-          "id": "core-general-models",
-          "title": "Models",
-          "children": [
-            {
-              "type": "text",
-              "name": "defaultModel",
-              "label": "Default model",
-              "help": "The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
-              "apply": "restart"
-            },
-            {
-              "type": "text",
-              "name": "namingModel",
-              "label": "Naming model",
-              "help": "The model the conversation auto-namer completes through (provider/model-id); absent = the default model",
-              "apply": "live"
-            }
-          ]
-        },
-        {
-          "type": "section",
-          "id": "core-general-behaviour",
-          "title": "Behaviour",
-          "children": [
-            {
-              "type": "number",
-              "name": "skills.sectionMaxBytes",
-              "label": "Skills section size cap",
-              "help": "The skills prompt section's byte cap (truncation notice included)",
-              "apply": "live"
-            },
-            {
-              "type": "text",
-              "name": "notifications.runSettled",
-              "label": "Run-settled notifications",
-              "help": "When a settled run notifies (default: unwatched)",
-              "apply": "live"
-            }
-          ]
-        }
-      ]
-    }
-  },
-  "tools": {
-    "v": 1,
-    "root": {
-      "type": "form",
-      "id": "core-tools-form",
-      "bind": "/settings",
-      "mode": "submit",
-      "onSubmit": "save",
-      "submitLabel": "Save",
-      "children": [
-        {
-          "type": "section",
-          "id": "core-tools-defaults",
-          "title": "Defaults",
-          "children": [
-            {
-              "type": "choice",
-              "name": "defaultTools",
-              "label": "Tools offered to the model",
-              "help": "Only the selected tools are offered to the model in new conversations; the others stay callable by other tools. Leave empty to offer every installed tool. Applies to conversations created after the change.",
-              "apply": "live",
-              "multi": true,
-              "options": {
-                "$": "/toolRoster"
-              }
-            },
-            {
-              "type": "toggle",
-              "default": true,
-              "name": "autoEnableCodemode",
-              "label": "Auto-enable codemode",
-              "help": "When an enabled MCP server exposes codemode, keep the codemode tool (or tool_search) in new conversations' default set",
-              "apply": "live"
-            }
-          ]
-        }
-      ]
-    }
-  },
-  "advanced": {
-    "v": 1,
-    "root": {
-      "type": "form",
-      "id": "core-advanced-form",
-      "bind": "/settings",
-      "mode": "submit",
-      "onSubmit": "save",
-      "submitLabel": "Save",
-      "children": [
-        {
-          "type": "section",
-          "id": "core-advanced-resilience",
-          "title": "Retries and streaming",
-          "children": [
-            {
-              "type": "toggle",
-              "default": true,
-              "name": "retry.enabled",
-              "label": "Retry enabled",
-              "help": "pi-durable's retry policy for failed requests",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "retry.maxRetries",
-              "label": "Max retries",
-              "help": "pi-durable retry.maxRetries",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "retry.baseDelayMs",
-              "label": "Retry base delay (ms)",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "retry.maxAgentDelayMs",
-              "label": "Max agent delay (ms)",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "stream.timeoutMs",
-              "label": "Stream timeout (ms)",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "stream.maxRetries",
-              "label": "Stream max retries",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "stream.maxRetryDelayMs",
-              "label": "Stream max retry delay (ms)",
-              "apply": "live"
-            }
-          ]
-        },
-        {
-          "type": "section",
-          "id": "core-advanced-models",
-          "title": "Model overrides",
-          "children": [
-            {
-              "type": "longtext",
-              "name": "perModelThinking",
-              "label": "Per-model thinking (raw JSON)",
-              "help": "A raw JSON object — \"provider/modelId\": thinking level (off, minimal, low, medium, high, xhigh, max); empty clears",
-              "apply": "live",
-              "syntax": "code",
-              "lang": "json",
-              "rows": 12
-            }
-          ]
-        },
-        {
-          "type": "section",
-          "id": "core-advanced-server",
-          "title": "Server",
-          "children": [
-            {
-              "type": "number",
-              "name": "server.port",
-              "label": "Listen port",
-              "help": "The listener binds at boot — a change applies at restart",
-              "apply": "restart",
-              "min": 1,
-              "max": 65535
-            },
-            {
-              "type": "text",
-              "name": "server.publicUrl",
-              "label": "Public URL",
-              "help": "The deployment's absolute base URL (extension-route URLs and notification deep links)",
-              "apply": "restart"
-            },
-            {
-              "type": "text",
-              "name": "server.timezone",
-              "label": "Jobs default timezone",
-              "help": "The IANA zone jobs without an explicit timezone schedule in",
-              "apply": "restart"
-            }
-          ]
-        },
-        {
-          "type": "section",
-          "id": "core-advanced-compaction",
-          "title": "Compaction",
-          "children": [
-            {
-              "type": "toggle",
-              "default": true,
-              "name": "server.compaction.enabled",
-              "label": "Compaction enabled",
-              "apply": "restart"
-            },
-            {
-              "type": "number",
-              "name": "server.compaction.reserveTokens",
-              "label": "Reserve tokens",
-              "apply": "restart"
-            },
-            {
-              "type": "number",
-              "name": "server.compaction.keepRecentTokens",
-              "label": "Keep recent tokens",
-              "apply": "restart"
-            },
-            {
-              "type": "number",
-              "name": "server.compaction.backgroundTokens",
-              "label": "Background tokens",
-              "apply": "restart"
-            }
-          ]
-        },
-        {
-          "type": "section",
-          "id": "core-advanced-history",
-          "title": "Job history retention",
-          "children": [
-            {
-              "type": "number",
-              "name": "jobHistory.runs",
-              "label": "Runs kept per job",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "jobHistory.revisions",
-              "label": "Revisions kept per job",
-              "apply": "live"
-            },
-            {
-              "type": "number",
-              "name": "jobDefaults.maxTurns",
-              "label": "Default max turns per job run",
-              "apply": "live"
-            }
-          ]
-        }
-      ]
-    }
-  }
+	"general": {
+		"v": 1,
+		"root": {
+			"type": "form",
+			"id": "core-general-form",
+			"bind": "/settings",
+			"mode": "submit",
+			"onSubmit": "save",
+			"submitLabel": "Save",
+			"children": [
+				{
+					"type": "section",
+					"id": "core-general-queue",
+					"title": "Queueing",
+					"children": [
+						{
+							"type": "choice",
+							"name": "steeringMode",
+							"label": "Steering mode",
+							"help": "How a message sent while a run is live steers it; empty = the pi-durable default (one-at-a-time)",
+							"apply": "live",
+							"options": [
+								{
+									"id": "one-at-a-time",
+									"label": "One at a time"
+								},
+								{
+									"id": "all",
+									"label": "All"
+								}
+							]
+						},
+						{
+							"type": "choice",
+							"name": "followUpMode",
+							"label": "Follow-up mode",
+							"help": "How queued follow-ups deliver after a run settles; empty = the pi-durable default",
+							"apply": "live",
+							"options": [
+								{
+									"id": "one-at-a-time",
+									"label": "One at a time"
+								},
+								{
+									"id": "all",
+									"label": "All"
+								}
+							]
+						}
+					]
+				},
+				{
+					"type": "section",
+					"id": "core-general-models",
+					"title": "Models",
+					"children": [
+						{
+							"type": "text",
+							"name": "defaultModel",
+							"label": "Default model",
+							"help": "The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file \u2014 a change applies at restart",
+							"apply": "restart"
+						},
+						{
+							"type": "text",
+							"name": "namingModel",
+							"label": "Naming model",
+							"help": "The model the conversation auto-namer completes through (provider/model-id); absent = the default model",
+							"apply": "live"
+						}
+					]
+				},
+				{
+					"type": "section",
+					"id": "core-general-behaviour",
+					"title": "Behaviour",
+					"children": [
+						{
+							"type": "number",
+							"name": "skills.sectionMaxBytes",
+							"label": "Skills section size cap",
+							"help": "The skills prompt section's byte cap (truncation notice included)",
+							"apply": "live"
+						},
+						{
+							"type": "text",
+							"name": "notifications.runSettled",
+							"label": "Run-settled notifications",
+							"help": "When a settled run notifies (default: unwatched)",
+							"apply": "live"
+						}
+					]
+				}
+			]
+		}
+	},
+	"tools": {
+		"v": 1,
+		"root": {
+			"type": "form",
+			"id": "core-tools-form",
+			"bind": "/settings",
+			"mode": "submit",
+			"onSubmit": "save",
+			"submitLabel": "Save",
+			"children": [
+				{
+					"type": "section",
+					"id": "core-tools-defaults",
+					"title": "Defaults",
+					"children": [
+						{
+							"type": "choice",
+							"name": "defaultTools",
+							"label": "Tools offered to the model",
+							"help": "Only the selected tools are offered to the model in new conversations; the others stay callable by other tools. Leave empty to offer every installed tool. Applies to conversations created after the change.",
+							"apply": "live",
+							"multi": true,
+							"options": {
+								"$": "/toolRoster"
+							}
+						},
+						{
+							"type": "toggle",
+							"default": true,
+							"name": "autoEnableCodemode",
+							"label": "Auto-enable codemode",
+							"help": "When an enabled MCP server exposes codemode, keep the codemode tool (or tool_search) in new conversations' default set",
+							"apply": "live"
+						}
+					]
+				}
+			]
+		}
+	},
+	"advanced": {
+		"v": 1,
+		"root": {
+			"type": "form",
+			"id": "core-advanced-form",
+			"bind": "/settings",
+			"mode": "submit",
+			"onSubmit": "save",
+			"submitLabel": "Save",
+			"children": [
+				{
+					"type": "section",
+					"id": "core-advanced-resilience",
+					"title": "Retries and streaming",
+					"children": [
+						{
+							"type": "toggle",
+							"default": true,
+							"name": "retry.enabled",
+							"label": "Retry enabled",
+							"help": "pi-durable's retry policy for failed requests",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "retry.maxRetries",
+							"label": "Max retries",
+							"help": "pi-durable retry.maxRetries",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "retry.baseDelayMs",
+							"label": "Retry base delay (ms)",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "retry.maxAgentDelayMs",
+							"label": "Max agent delay (ms)",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "stream.timeoutMs",
+							"label": "Stream timeout (ms)",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "stream.maxRetries",
+							"label": "Stream max retries",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "stream.maxRetryDelayMs",
+							"label": "Stream max retry delay (ms)",
+							"apply": "live"
+						}
+					]
+				},
+				{
+					"type": "section",
+					"id": "core-advanced-models",
+					"title": "Model overrides",
+					"children": [
+						{
+							"type": "longtext",
+							"name": "perModelThinking",
+							"label": "Per-model thinking (raw JSON)",
+							"help": "A raw JSON object \u2014 \"provider/modelId\": thinking level (off, minimal, low, medium, high, xhigh, max); empty clears",
+							"apply": "live",
+							"syntax": "code",
+							"lang": "json",
+							"rows": 12
+						}
+					]
+				},
+				{
+					"type": "section",
+					"id": "core-advanced-server",
+					"title": "Server",
+					"children": [
+						{
+							"type": "number",
+							"name": "server.port",
+							"label": "Listen port",
+							"help": "The listener binds at boot \u2014 a change applies at restart",
+							"apply": "restart",
+							"min": 1,
+							"max": 65535
+						},
+						{
+							"type": "text",
+							"name": "server.publicUrl",
+							"label": "Public URL",
+							"help": "The deployment's absolute base URL (extension-route URLs and notification deep links)",
+							"apply": "restart"
+						},
+						{
+							"type": "text",
+							"name": "server.timezone",
+							"label": "Jobs default timezone",
+							"help": "The IANA zone jobs without an explicit timezone schedule in",
+							"apply": "restart"
+						}
+					]
+				},
+				{
+					"type": "section",
+					"id": "core-advanced-compaction",
+					"title": "Compaction",
+					"children": [
+						{
+							"type": "toggle",
+							"default": true,
+							"name": "server.compaction.enabled",
+							"label": "Compaction enabled",
+							"apply": "restart"
+						},
+						{
+							"type": "number",
+							"name": "server.compaction.reserveTokens",
+							"label": "Reserve tokens",
+							"apply": "restart"
+						},
+						{
+							"type": "number",
+							"name": "server.compaction.keepRecentTokens",
+							"label": "Keep recent tokens",
+							"apply": "restart"
+						},
+						{
+							"type": "number",
+							"name": "server.compaction.backgroundTokens",
+							"label": "Background tokens",
+							"apply": "restart"
+						}
+					]
+				},
+				{
+					"type": "section",
+					"title": "Embeddings",
+					"children": [
+						{
+							"name": "embeddingModel",
+							"label": "Embedding model",
+							"help": "The model every extension embeds with, as provider/model. Unset: embeddings are off.",
+							"apply": "live",
+							"placeholder": "",
+							"type": "text"
+						},
+						{
+							"name": "embeddings.localModels",
+							"label": "Local embedding models",
+							"help": "Embedding models trusted to receive local-only content. A provider that reports a model as remote overrides this.",
+							"apply": "live",
+							"type": "list",
+							"item": {
+								"name": "item",
+								"label": "item",
+								"minLength": 1,
+								"type": "text"
+							}
+						},
+						{
+							"name": "server.embeddings.timeoutMs",
+							"label": "Embedding timeout (ms)",
+							"help": "The embedding registry's per-call timeout cap",
+							"apply": "live",
+							"type": "number"
+						}
+					],
+					"id": "core-advanced-embeddings"
+				},
+				{
+					"type": "section",
+					"id": "core-advanced-history",
+					"title": "Job history retention",
+					"children": [
+						{
+							"type": "number",
+							"name": "jobHistory.runs",
+							"label": "Runs kept per job",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "jobHistory.revisions",
+							"label": "Revisions kept per job",
+							"apply": "live"
+						},
+						{
+							"type": "number",
+							"name": "jobDefaults.maxTurns",
+							"label": "Default max turns per job run",
+							"apply": "live"
+						}
+					]
+				}
+			]
+		}
+	}
 }

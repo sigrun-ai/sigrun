@@ -204,9 +204,11 @@ describe("the core settings registry (spec §13.1)", () => {
 	test("the three keys are live", () => {
 		const map = byKey();
 		for (const key of ["embeddingModel", "embeddings.localModels", "server.embeddings.timeoutMs"]) {
+			// The settings rework derives apply from the schema (applyOf); the
+			// entries carry no literal.
+			expect(applyOf(key)).toBe("live");
 			expect(map.get(key)).toMatchObject({
 				key,
-				apply: "live",
 				reason: expect.stringContaining("src/harness/embeddings.ts"),
 			});
 		}

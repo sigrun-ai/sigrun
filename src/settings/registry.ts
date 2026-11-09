@@ -160,13 +160,11 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 	},
 	{
 		key: "embeddingModel",
-		apply: "live",
 		section: "advanced",
 		reason: "read per host.embeddings.embed call by the embedding registry (src/harness/embeddings.ts)",
 	},
 	{
 		key: "embeddings.localModels",
-		apply: "live",
 		section: "advanced",
 		reason: "read per embedding locality check and model listing (src/harness/embeddings.ts)",
 	},
@@ -348,7 +346,6 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 	},
 	{
 		key: "server.embeddings.timeoutMs",
-		apply: "live",
 		section: "advanced",
 		reason: "the embedding registry reads the settings' timeout cap per call (src/harness/embeddings.ts)",
 	},

@@ -174,6 +174,7 @@ export const coreSchema: JsonSchema = {
 				title: "Local embedding models",
 				description:
 					"Embedding models trusted to receive local-only content. A provider that reports a model as remote overrides this.",
+				default: [],
 				"x-sigrun-apply": "live",
 			},
 		}),
@@ -348,10 +349,6 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 			overrides: { "/perModelThinking": { keyLabel: "Model" } },
 		},
 		{
-			title: "Embeddings",
-			paths: ["/embeddingModel", "/embeddings/localModels", "/server/embeddings/timeoutMs"],
-		},
-		{
 			title: "Server",
 			paths: ["/server/port", "/server/publicUrl", "/server/timezone"],
 			overrides: { "/server/port": { placeholder: undefined } },
@@ -366,6 +363,11 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 			"/server/compaction/keepRecentTokens": { placeholder: undefined },
 			"/server/compaction/backgroundTokens": { placeholder: undefined },
 		} },
+		{ title: "Embeddings", paths: [
+			"/embeddingModel",
+			"/embeddings/localModels",
+			"/server/embeddings/timeoutMs",
+		] },
 		{ title: "Job history retention", paths: [
 			"/jobHistory/runs",
 			"/jobHistory/revisions",
