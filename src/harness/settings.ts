@@ -144,6 +144,8 @@ const SETTING_KEYS = [
 	"defaultModel",
 	"namingModel",
 	"decisionModel",
+	"embeddingModel",
+	"embeddings",
 	"decisions",
 	"defaultProvider",
 	"skills",
@@ -485,6 +487,46 @@ function validate(value: Record<string, unknown>): void {
 			);
 		}
 	}
+	if (value.embeddingModel !== undefined) {
+		const spec = value.embeddingModel;
+		if (typeof spec !== "string" || spec.trim() === "") {
+			throw new SettingsValidationError(
+				"embeddingModel",
+				"must be a non-empty provider/model-id string",
+			);
+		}
+		const trimmed = spec.trim();
+		const slash = trimmed.indexOf("/");
+		if (
+			slash === -1 ||
+			trimmed.slice(0, slash) === "" ||
+			trimmed.slice(slash + 1) === ""
+		) {
+			throw new SettingsValidationError(
+				"embeddingModel",
+				"must have a non-empty provider and model id",
+			);
+		}
+	}
+	if (value.embeddings !== undefined) {
+		const embeddings = asRecord(value.embeddings);
+		if (embeddings === undefined) {
+			throw new SettingsValidationError("embeddings", "must be an object");
+		}
+		checkKeys("embeddings.", embeddings, ["localModels"]);
+		if (
+			embeddings.localModels !== undefined &&
+			(!Array.isArray(embeddings.localModels) ||
+				embeddings.localModels.some(
+					(model) => typeof model !== "string" || model.trim() === "",
+				))
+		) {
+			throw new SettingsValidationError(
+				"embeddings.localModels",
+				"must be an array of non-empty provider/model-id strings",
+			);
+		}
+	}
 	// The decision surface's toggles (warden Task 6): a flat section —
 	// `tool` a boolean.
 	if (value.decisions !== undefined) {
@@ -609,6 +651,7 @@ function validateServer(server: unknown): void {
 		"supervised",
 		"backup",
 		"decisions",
+		"embeddings",
 	]);
 	// The jobs default timezone (§8.2): an IANA name — `Intl` accepts
 	// exactly the names croner's evaluation path resolves, and throws on
@@ -799,6 +842,22 @@ function validateServer(server: unknown): void {
 		) {
 			throw new SettingsValidationError(
 				"server.decisions.timeoutMs",
+				"must be a positive integer",
+			);
+		}
+	}
+	if (record.embeddings !== undefined) {
+		const embeddings = asRecord(record.embeddings);
+		if (embeddings === undefined) {
+			throw new SettingsValidationError("server.embeddings", "must be an object");
+		}
+		checkKeys("server.embeddings.", embeddings, ["timeoutMs"]);
+		if (
+			embeddings.timeoutMs !== undefined &&
+			!isPositiveInt(embeddings.timeoutMs)
+		) {
+			throw new SettingsValidationError(
+				"server.embeddings.timeoutMs",
 				"must be a positive integer",
 			);
 		}

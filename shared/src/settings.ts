@@ -202,6 +202,10 @@ export interface ServerSettings {
 	readonly decisions?: {
 		readonly timeoutMs?: number;
 	};
+	/** The embedding-provider per-call timeout cap; default 30000 ms. LIVE. */
+	readonly embeddings?: {
+		readonly timeoutMs?: number;
+	};
 	/** The multi-user execution jail (M1). `mode` and `osUsers` are restart-required. */
 	readonly isolation?: {
 		/** `SIGRUN_ISOLATION` — auto, always, or off; default auto. */
@@ -459,6 +463,17 @@ export interface SettingsFile {
 	 * without a restart.
 	 */
 	readonly decisionModel?: string;
+	/**
+	 * The embedding providers' default model, a non-empty
+	 * `provider/model-id` spec. Absent = embeddings are off; there is no
+	 * silent default. LIVE — the registry reads it per call.
+	 */
+	readonly embeddingModel?: string;
+	/** Embedding-provider settings, read live per call. */
+	readonly embeddings?: {
+		/** Models the admin trusts with local-only content. */
+		readonly localModels?: readonly string[];
+	};
 	/**
 	 * Sigrun: the env-driven OpenAI-compatible provider's endpoint
 	 * (ruling 7), applied when `OPENAI_BASE_URL` is absent.

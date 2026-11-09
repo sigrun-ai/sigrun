@@ -15,15 +15,10 @@ import type {
 	EmbeddingProviderContribution,
 	ProviderReadiness,
 } from "../extension.js";
+import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 import type { EmbeddingDeclaration } from "./loader.js";
 
-export type EmbeddingResult =
-	| { ok: true; model: string; dimensions: number; vectors: Float32Array[] }
-	| {
-			ok: false;
-			code: "no_model" | "not_configured" | "not_local" | "timeout" | "failed" | "bad_response";
-			message: string;
-	  };
+export type { EmbeddingResult } from "@sigrun/shared/embeddings";
 
 export interface EmbeddingRegistry {
 	embed(

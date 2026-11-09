@@ -174,6 +174,18 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "read per host.decisions.evaluate call by the decision registry (src/harness/decisions.ts)",
 	},
 	{
+		key: "embeddingModel",
+		apply: "live",
+		section: "advanced",
+		reason: "read per host.embeddings.embed call by the embedding registry (src/harness/embeddings.ts)",
+	},
+	{
+		key: "embeddings.localModels",
+		apply: "live",
+		section: "advanced",
+		reason: "read per embedding locality check and model listing (src/harness/embeddings.ts)",
+	},
+	{
 		key: "decisions.tool",
 		apply: "live",
 		section: "tools",
@@ -383,6 +395,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		apply: "live",
 		section: "providers",
 		reason: "the decision registry reads the settings' timeoutMs per evaluate call (src/harness/decisions.ts)",
+	},
+	{
+		key: "server.embeddings.timeoutMs",
+		apply: "live",
+		section: "advanced",
+		reason: "the embedding registry reads the settings' timeout cap per call (src/harness/embeddings.ts)",
 	},
 	{
 		key: "server.providers.refreshIntervalMinutes",

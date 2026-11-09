@@ -228,6 +228,9 @@ export function collectProviders(
 		readonly env?: Env;
 		/** File-backed models store; Task 3 wires it into `createModels`. */
 		readonly modelsStore?: ModelsStore;
+		/** Provider ids declared in ANY kind (chat, decision, embedding).
+		 * A declaration suppresses the env-driven chat fallback. */
+		readonly declaredProviderIds?: ReadonlySet<string>;
 	},
 ): CollectedProviders {
 	// The auth bridge: with a credential store present, auth.json owns
@@ -326,7 +329,10 @@ export function collectProviders(
 	// pinned default model's namespace, register the env-driven OpenAI-compat
 	// provider there (any namespace), so a zero-extension boot still serves its
 	// pin instead of leaving the catalog empty and failing loud at submit.
-	if (!models.getProvider(defaultModel.provider)) {
+	if (
+		!models.getProvider(defaultModel.provider) &&
+		!options?.declaredProviderIds?.has(defaultModel.provider)
+	) {
 		models.setProvider(
 			envDegenerateProvider(
 				env,
@@ -334,6 +340,11 @@ export function collectProviders(
 				defaultModel.modelId,
 				options,
 			),
+		);
+	}
+	if (!models.getProvider(defaultModel.provider)) {
+		console.warn(
+			`providers: default model "${defaultModel.provider}/${defaultModel.modelId}" has no chat provider for "${defaultModel.provider}"`,
 		);
 	}
 

@@ -909,6 +909,60 @@ The contract:
   callers address them as `<id>/<modelId>`. `decisionModel` in
   settings.json picks the default without a restart.
 
+## Contributing embedding providers
+
+An embedding provider turns input texts into vectors without serving chat
+models. Declare `embeddingProviders` in the factory result; as with chat
+and decision providers, a result carrying only this field is a valid
+provider-only contributor:
+
+```ts
+export default function acmeEmbeddings() {
+	return {
+		name: "acme-embed",
+		embeddingProviders: [
+			{
+				id: "acme-embed",
+				label: "Acme Embeddings",
+				credentialEnv: "ACME_EMBED_API_KEY",
+				models: [
+					{ id: "embed-1", dimensions: 1536, maxBatch: 2048, local: false },
+				],
+				async embed(request, ctx) {
+					// request: { model, input }; ctx: { credential, signal }
+					return { vectors: await vectorsFromYourBackend(request, ctx) };
+				},
+				readiness() {
+					return { status: "ready" };
+				},
+			},
+		],
+	};
+}
+```
+
+- **Callers** use `host.embeddings.embed(texts, opts)` and
+  `host.embeddings.list()`. `opts.model` (`provider/model`) wins over the
+  live `embeddingModel` setting; with neither configured, `embed` returns
+  `no_model` rather than silently choosing a model. Calls never throw:
+  failures use `EmbeddingResult`'s `ok: false` codes. Core splits inputs
+  at `maxBatch`, preserves input order, and validates every returned
+  vector's dimensions.
+- **Confidentiality is fail-closed.** `confidentiality: "local-only"`
+  succeeds only when the model appears in `embeddings.localModels` AND its
+  declaration does not say `local: false`. A provider whose endpoint can
+  change should report remote endpoints as `local: false`.
+- **Credentials** resolve per call from `auth.json[id].apiKey`, then the
+  ambient `credentialEnv` (empty means unset). A missing key is passed as
+  `undefined` so keyless local endpoints work; only your readiness
+  tracker's `not_configured` blocks the call. `PUT`/`DELETE
+  /v1/providers/:id/credential` therefore work for embedding-only ids.
+  `GET /v1/providers` lists embedding rows as `kind: "embedding"` with
+  `modelIds`, model count, readiness and the owning extension.
+- **Timeouts** are capped by live `server.embeddings.timeoutMs` (default
+  30000 ms). Core never includes credentials or input texts in its error
+  messages.
+
 ## Contributing webui bundles
 
 An extension can ship a replacement web UI as a **contributed bundle**: a

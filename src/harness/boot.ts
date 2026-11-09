@@ -78,6 +78,10 @@ import {
 	type DecisionRegistry,
 } from "./decisions.js";
 import {
+	buildEmbeddingRegistry,
+	type EmbeddingRegistry,
+} from "./embeddings.js";
+import {
 	buildDecisionEvaluateTool,
 	createDecisionsExtension,
 } from "./decision-tool.js";
@@ -393,6 +397,11 @@ export interface OpenedHarness {
 	 * `decisions` surface to it; empty = the no-declarer deploy.
 	 */
 	readonly decisions: DecisionRegistry;
+	/**
+	 * The embedding registry: loaded declarations folded into one live
+	 * surface; settings and credentials resolve per call.
+	 */
+	readonly embeddings: EmbeddingRegistry;
 	/**
 	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
 	 * restart key's stored value at boot, taken once after the settings
@@ -1589,6 +1598,7 @@ export async function openHarness(
 		noticeActionBindings,
 		publishedHookDeclarations,
 		decisionProviderDeclarations,
+		embeddingProviderDeclarations,
 		userServices: userServiceBindings,
 		providerContributors,
 		loginProviders,
@@ -1716,6 +1726,26 @@ export async function openHarness(
 		now: () => Date.now(),
 		warn: (message) => console.warn(message),
 	});
+	// The embedding registry reads live settings on every call. Credentials
+	// are local auth.json reads over the ambient env, as for decisions.
+	const embeddings = buildEmbeddingRegistry(embeddingProviderDeclarations, {
+		settings: () => {
+			const settings = settingsStore.read();
+			return {
+				embeddingModel: settings.embeddingModel,
+				localModels: settings.embeddings?.localModels ?? [],
+				timeoutCapMs: settings.server?.embeddings?.timeoutMs ?? 30_000,
+			};
+		},
+		credential: async (id, credentialEnv) => {
+			const stored = authStore.read()[id]?.apiKey;
+			if (stored !== undefined) return stored;
+			return credentialEnv === undefined
+				? undefined
+				: env[credentialEnv]?.trim() || undefined;
+		},
+		warn: (message) => console.warn(message),
+	});
 	decisionRegistryReady();
 	// Warden Task 7: the late fill — swap the placeholder extension for
 	// the tool-bearing one when any decision model exists at boot.
@@ -1835,6 +1865,16 @@ export async function openHarness(
 	// offline init — the data root is ensured above, so the store never
 	// mkdirs outside a sanctioned root.
 	const modelsStore = fileModelsStore(config.dataDir);
+	const providerContributions = [...(options.extensions ?? []), ...providerContributors];
+	// A provider declared in ANY kind owns its namespace: do not silently
+	// add the env-driven chat fallback when chat was deliberately disabled.
+	const declaredProviderIds = new Set([
+		...providerContributions.flatMap((contributor) =>
+			(contributor.providers ?? []).map((contribution) => contribution.provider.id),
+		),
+		...decisionProviderDeclarations.map((declaration) => declaration.contribution.id),
+		...embeddingProviderDeclarations.map((declaration) => declaration.contribution.id),
+	]);
 	const {
 		models,
 		defaultModel,
@@ -1842,13 +1882,14 @@ export async function openHarness(
 		providerOwnership,
 		readinessTrackers: providerReadiness,
 	} = collectProviders(
-		[...(options.extensions ?? []), ...providerContributors],
+		providerContributions,
 		effectiveEnv,
 		sink,
 		{
 			auth: authStore,
 			baseUrl: config.defaultProviderBaseUrl,
 			modelsStore,
+			declaredProviderIds,
 		},
 	);
 	// The jobs core extension (jobs Task 3, spec §8.1 "The executor"):
@@ -2591,6 +2632,7 @@ export async function openHarness(
 		memoryHealth,
 		settings: settingsStore,
 		decisions: decisionsSlot.registry as DecisionRegistry,
+		embeddings,
 		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,

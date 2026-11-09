@@ -50,6 +50,7 @@ import type {
 	SubmissionId,
 } from "@earendil-works/pi-durable";
 import type { Access, Sharing } from "@sigrun/shared/access";
+import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 import type {
 	DecisionAnswers,
 	DecisionLimits,
@@ -1869,6 +1870,32 @@ export interface SigrunHost {
 		): Promise<DecisionResult>;
 		/** Every decision model, with its provider's readiness status. */
 		list(): Promise<readonly { model: string; provider: string; status: ProviderReadiness["status"] }[]>;
+	};
+
+	/**
+	 * Embedding providers: vectorize texts through the configured model.
+	 * `embed` NEVER throws; failures use {@link EmbeddingResult}. Model
+	 * resolution: `opts.model` wins; else the live `embeddingModel`
+	 * setting. There is no silent default when neither is configured.
+	 */
+	readonly embeddings: {
+		embed(
+			texts: readonly string[],
+			opts?: {
+				model?: string;
+				confidentiality?: "normal" | "local-only";
+				signal?: AbortSignal;
+				timeoutMs?: number;
+			},
+		): Promise<EmbeddingResult>;
+		/** Every embedding model, its locality and readiness. */
+		list(): Promise<readonly {
+			model: string;
+			provider: string;
+			dimensions: number;
+			local: boolean;
+			status: ProviderReadiness["status"];
+		}[]>;
 	};
 
 	/**

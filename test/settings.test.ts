@@ -38,6 +38,31 @@ function freshStore(): { store: SettingsStore; dir: string } {
 }
 
 describe("SettingsStore", () => {
+	test("settings validate embeddingModel shape, localModels list, timeout", () => {
+		const { store } = freshStore();
+		for (const embeddingModel of ["acme-embed", "/embed-1", "acme-embed/", "", 42]) {
+			expect(() => store.update({ embeddingModel })).toThrow(/embeddingModel/);
+		}
+		for (const localModels of ["acme-embed/embed-1", [42], [""], ["acme-embed/embed-1", 42]]) {
+			expect(() => store.update({ embeddings: { localModels } })).toThrow(/embeddings/);
+		}
+		for (const timeoutMs of [0, -1, 1.5, "30000"]) {
+			expect(() => store.update({ server: { embeddings: { timeoutMs } } })).toThrow(
+				/server\.embeddings\.timeoutMs/,
+			);
+		}
+		store.update({
+			embeddingModel: "acme-embed/embed-1",
+			embeddings: { localModels: ["acme-embed/embed-2"] },
+			server: { embeddings: { timeoutMs: 1234 } },
+		});
+		expect(store.read()).toMatchObject({
+			embeddingModel: "acme-embed/embed-1",
+			embeddings: { localModels: ["acme-embed/embed-2"] },
+			server: { embeddings: { timeoutMs: 1234 } },
+		});
+	});
+
 	test("an absent file reads as the empty store (all defaults)", () => {
 		const { store } = freshStore();
 		expect(store.read()).toEqual({});

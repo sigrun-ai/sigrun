@@ -374,6 +374,38 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 					},
 					{
 						type: "section",
+						id: "core-advanced-embeddings",
+						title: "Embeddings",
+						children: [
+							{
+								type: "text",
+								name: "embeddingModel",
+								label: "Embedding model",
+								help: "The model every extension embeds with, as provider/model. Unset: embeddings are off.",
+								apply: applyOf("embeddingModel"),
+							},
+							{
+								type: "longtext",
+								name: "embeddings.localModels",
+								label: "Local embedding models (raw JSON)",
+								help: "Embedding models trusted to receive local-only content. A provider that reports a model as remote overrides this.",
+								apply: applyOf("embeddings.localModels"),
+								syntax: "code",
+								lang: "json",
+								rows: 6,
+							},
+							{
+								type: "number",
+								name: "server.embeddings.timeoutMs",
+								label: "Embedding timeout (ms)",
+								help: "Upper bound for one embedding call.",
+								apply: applyOf("server.embeddings.timeoutMs"),
+								min: 1,
+							},
+						],
+					},
+					{
+						type: "section",
 						id: "core-advanced-history",
 						title: "Job history retention",
 						children: [

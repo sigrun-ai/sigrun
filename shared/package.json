@@ -76,6 +76,10 @@
 			"types": "./dist/jobs.d.ts",
 			"default": "./dist/jobs.js"
 		},
+		"./embeddings": {
+			"types": "./dist/embeddings.d.ts",
+			"default": "./dist/embeddings.js"
+		},
 		"./decisions": {
 			"types": "./dist/decisions.d.ts",
 			"default": "./dist/decisions.js"

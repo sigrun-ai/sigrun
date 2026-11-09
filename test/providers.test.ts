@@ -2,7 +2,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { mkdtempSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
 	fauxAssistantMessage,
@@ -37,6 +37,43 @@ function contributor(
 		providers: [{ provider: faux.provider, ...(defaultModel ? { defaultModel } : {}) }],
 	};
 }
+
+test("fallback suppressed when any kind declares the id", () => {
+	const { models } = collectProviders(
+		[],
+		{ SIGRUN_DEFAULT_MODEL: "acme-embed/embed-1" },
+		createProviderMergeSink(),
+		{ declaredProviderIds: new Set(["acme-embed"]) },
+	);
+	expect(models.getProvider("acme-embed")).toBeUndefined();
+});
+
+test("fallback still installs when nothing declares the id", () => {
+	const { models } = collectProviders(
+		[],
+		{ SIGRUN_DEFAULT_MODEL: "openai/gpt-4o" },
+		createProviderMergeSink(),
+		{ declaredProviderIds: new Set() },
+	);
+	expect(models.getProvider("openai")).toBeDefined();
+});
+
+test("an unserved default model warns at boot", () => {
+	const warning = vi.spyOn(console, "warn").mockImplementation(() => {});
+	try {
+		const { models } = collectProviders(
+			[],
+			{ SIGRUN_DEFAULT_MODEL: "acme-embed/embed-1" },
+			createProviderMergeSink(),
+			{ declaredProviderIds: new Set(["acme-embed"]) },
+		);
+		expect(models.getProvider("acme-embed")).toBeUndefined();
+		expect(warning).toHaveBeenCalledTimes(1);
+		expect(warning).toHaveBeenCalledWith(expect.stringContaining("acme-embed"));
+	} finally {
+		warning.mockRestore();
+	}
+});
 
 test("unknown model id at submit fails loud with available ids", () => {
 	const { models, defaultModel } = collectProviders(

@@ -99,6 +99,8 @@ const EXPECTED_KEYS = [
 	"defaultModel",
 	"namingModel",
 	"decisionModel",
+	"embeddingModel",
+	"embeddings.localModels",
 	"decisions.tool",
 	"defaultProvider.baseUrl",
 	"skills.sectionMaxBytes",
@@ -134,6 +136,7 @@ const EXPECTED_KEYS = [
 	"server.memorySeam.workerDeadlineMs",
 	"server.memorySeam.queueMax",
 	"server.decisions.timeoutMs",
+	"server.embeddings.timeoutMs",
 	"server.providers.refreshIntervalMinutes",
 	"server.auth.methods",
 	"server.auth.sessionDays",
@@ -203,6 +206,17 @@ describe("the core settings registry (spec §13.1)", () => {
 				entry as { key: string; apply: string; section: string; reason: string },
 			]),
 		);
+
+	test("the three keys are live", () => {
+		const map = byKey();
+		for (const key of ["embeddingModel", "embeddings.localModels", "server.embeddings.timeoutMs"]) {
+			expect(map.get(key)).toMatchObject({
+				key,
+				apply: "live",
+				reason: expect.stringContaining("src/harness/embeddings.ts"),
+			});
+		}
+	});
 
 	test("every SettingsFile key has exactly one registry entry", () => {
 		const registryKeys: string[] = CORE_SETTING_KEYS.map(

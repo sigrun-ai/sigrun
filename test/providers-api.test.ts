@@ -36,6 +36,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import http from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { Model } from "@earendil-works/pi-ai";
@@ -51,6 +52,10 @@ import { seededIdentity } from "./helpers/identity.js";
 // ---------------------------------------------------------------------------
 // The fixture upstream + the ollama-shaped dynamic provider
 // ---------------------------------------------------------------------------
+
+const EMBEDDING_PROVIDER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-embedding-provider", "index.js"),
+).href;
 
 /** One fixture catalog row the upstream serves. */
 interface UpstreamModel {
@@ -208,6 +213,7 @@ const bodies: string[] = [];
  */
 async function bootServer(
 	defaultModel: string,
+	extensionSpecifiers: readonly string[] = [],
 ): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-providers-api-"));
 	const upstream = await startUpstream([
@@ -230,6 +236,7 @@ async function bootServer(
 	const opened = await openHarness(config, {
 		identity,
 		extensions: [fixtureContributor("acme", upstream)],
+		extensionSpecifiers,
 		env: {},
 		settingsDir: dir,
 	});
@@ -295,6 +302,8 @@ interface ProviderEntry {
 	status: string;
 	models: number;
 	owner?: string;
+	kind?: "chat" | "decision" | "embedding";
+	modelIds?: readonly string[];
 	detail?: string;
 }
 
@@ -310,6 +319,44 @@ async function listProviders(
 	expect(response.status).toBe(200);
 	return (response.json() as { providers: ProviderEntry[] }).providers;
 }
+
+describe("embedding provider entries", () => {
+	test("Providers lists an embedding entry with owner and modelIds", async () => {
+		const rig = await bootServer("acme/m1", [EMBEDDING_PROVIDER]);
+		const entries = await listProviders(rig.app, rig.adminToken);
+		const entry = entries.find(
+			(candidate) => candidate.provider === "acme-embed" && candidate.kind === "embedding",
+		);
+		expect(entry).toMatchObject({
+			provider: "acme-embed",
+			kind: "embedding",
+			status: "ready",
+			models: 2,
+			modelIds: ["embed-1", "embed-2"],
+			owner: "acme-embed",
+		});
+	});
+
+	test("credential PUT works for an embedding-only provider id", async () => {
+		const rig = await bootServer("acme/m1", [EMBEDDING_PROVIDER]);
+		const response = await call(rig.app, {
+			method: "PUT",
+			url: "/v1/providers/acme-embed/credential",
+			token: rig.adminToken,
+			payload: { apiKey: "acme-embedding-route-key" },
+		});
+		expect(response.status).toBe(200);
+		expect(response.json()).toMatchObject({
+			provider: "acme-embed",
+			kind: "embedding",
+			modelIds: ["embed-1", "embed-2"],
+			owner: "acme-embed",
+		});
+		expect(rig.opened.auth.read()["acme-embed"]?.apiKey).toBe(
+			"acme-embedding-route-key",
+		);
+	});
+});
 
 // ---------------------------------------------------------------------------
 // GET /v1/providers: model counts + owners
