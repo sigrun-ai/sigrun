@@ -12,3 +12,8 @@ export function resolveRefs(
 	mode: "main" | "release",
 	npmView: NpmView,
 ): Promise<Record<string, string>>;
+
+export function resolveRefsFromManifest(
+	manifest: { version?: unknown; dependencies?: unknown },
+	npmView: NpmView,
+): Promise<Record<string, string>>;

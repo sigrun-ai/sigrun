@@ -401,8 +401,11 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(memoryMarkdownStep?.shell).toBe("bash");
 		expect(memoryMarkdownStep?.["working-directory"]).toBe("sigrun");
 		const body = runOf(memoryMarkdownStep as Step);
+		expect(body).toContain("rm -f ../.sigrun-tools/package.json ../.sigrun-tools/package-lock.json");
 		expect(body).toContain("npm install --prefix ../.sigrun-tools --no-save semver@^7");
-		expect(body).toContain("node scripts/ci-core-ref.mjs release");
+		expect(body).toContain(
+			"node ../.sigrun-tools/scripts/ci-core-ref.mjs release --core-manifest package.json",
+		);
 		const firstPublish = steps.findIndex((step) => step.name?.includes("Publish @sigrun/"));
 		expect(memoryMarkdown, "the resolver pre-check precedes every publish").toBeLessThan(firstPublish);
 		// Prereleases publish under --tag next, never onto latest.

@@ -249,18 +249,20 @@ jobs:
           node ../.sigrun-tools/scripts/await-registry.mjs \
             --timeout-min 0 ${pins}
       # memory-markdown is a core devDependency, so the built-in pins
-      # pre-check cannot cover it. Resolve the release refs before any
-      # publish: a core pi-durable bump must wait for a compatible
-      # memory-markdown release rather than strand every extension CI.
-      # The tagged workspace has no install yet, and the tooling checkout
-      # has no package manifest; the resolver needs only semver there.
+      # pre-check cannot cover it. Resolve against the TAGGED manifest
+      # before any publish: a core pi-durable bump must wait for a
+      # compatible memory-markdown release rather than strand extension CI.
+      # The tagged workspace has no install yet. Run the tooling copy and
+      # remove the full tooling checkout's manifest/lock before installing
+      # only semver there, so npm does not reify core's whole workspace.
       - name: "Pre-check: memory-markdown resolves against the release"
         shell: bash
         working-directory: sigrun
         run: |
           set -euo pipefail
+          rm -f ../.sigrun-tools/package.json ../.sigrun-tools/package-lock.json
           npm install --prefix ../.sigrun-tools --no-save semver@^7
-          node scripts/ci-core-ref.mjs release
+          node ../.sigrun-tools/scripts/ci-core-ref.mjs release --core-manifest package.json
       # Leaves first. The sandbox platform tarballs publish STRAIGHT
       # from the artifact (npm publish <tarball> uploads it verbatim —
       # repacking would rebuild bin/ permissions against the runner's

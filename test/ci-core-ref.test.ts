@@ -14,7 +14,10 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { resolveRefs } from "../scripts/ci-core-ref.mjs";
+import {
+	resolveRefs,
+	resolveRefsFromManifest,
+} from "../scripts/ci-core-ref.mjs";
 
 /** A fake npmView that returns pre-canned data by spec+field key. */
 function fakeNpmView(data: Record<string, unknown>) {
@@ -232,6 +235,29 @@ describe("ci-core-ref", () => {
 
 		const refs = await resolveRefs("release", npmView);
 		expect(refs["sigrun-memory-markdown"]).toBe("v0.2.4");
+	});
+
+	test("a local core manifest resolves memory-markdown against the tagged pins", async () => {
+		const npmView = fakeNpmView({
+			"@sigrun/memory-markdown versions": ["0.2.4"],
+			"@sigrun/memory-markdown@0.2.4 peerDependencies": {
+				"@earendil-works/pi-durable": "~1.5.0",
+			},
+		});
+		const manifest = {
+			version: "0.12.0",
+			dependencies: {
+				"@sigrun/shared": "0.12.0",
+				"@earendil-works/pi-durable": "1.5.0",
+				"@sigrun/ext-gateway": "file:../sigrun-ext-gateway",
+			},
+		};
+
+		const refs = await resolveRefsFromManifest(manifest, npmView);
+		expect(refs).toEqual({
+			sigrun: "v0.12.0",
+			"sigrun-memory-markdown": "v0.2.4",
+		});
 	});
 
 	test("memory-markdown fails loud when neither peer axis accepts", async () => {

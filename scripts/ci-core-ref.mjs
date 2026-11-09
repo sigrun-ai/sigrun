@@ -5,6 +5,12 @@
  *
  *   node scripts/ci-core-ref.mjs release   → JSON object of repo→tag refs
  *   node scripts/ci-core-ref.mjs main      → {} (every checkout at default branch)
+ *   node scripts/ci-core-ref.mjs release --core-manifest package.json
+ *     → core + memory-markdown refs from a local tagged manifest
+ *
+ * --core-manifest covers the memory-markdown axis only, before the tagged
+ * core is on npm. Built-in pins are omitted (they are file: specs until
+ * prepublishOnly, and the release's existing pins pre-check covers them).
  *
  * The resolver reads npm packuments (via an injectable `npmView`) to
  * determine which versions of the core and each built-in extension are
@@ -34,6 +40,7 @@
  * canned data.
  */
 import { execFileSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { resolve as pathResolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import semver from "semver";
@@ -115,9 +122,39 @@ export async function resolveRefs(mode, npmView) {
 		refs[repo] = `v${version}`;
 	}
 
-	// 4. memory-markdown: newest version accepted by the shared peer when
-	// declared, or by the pi-durable peer otherwise (both core pins come
-	// from the same packument). A rejecting shared peer is authoritative.
+	return resolveMemoryMarkdown(coreVersion, deps, npmView, refs);
+}
+
+/**
+ * Resolve only the memory-markdown ref against a local tagged core
+ * manifest. Built-in pins remain file: specs pre-publish and are covered
+ * by the release workflow's existing pins pre-check, so they are omitted.
+ *
+ * @param {{version?: unknown, dependencies?: unknown}} manifest
+ * @param {(spec: string, field: string) => Promise<unknown>} npmView
+ * @returns {Promise<Record<string, string>>}
+ */
+export async function resolveRefsFromManifest(manifest, npmView) {
+	if (typeof manifest !== "object" || manifest === null) {
+		throw new Error("ci-core-ref: expected a core manifest object");
+	}
+	const coreVersion = manifest.version;
+	if (typeof coreVersion !== "string" || semver.valid(coreVersion) === null) {
+		throw new Error("ci-core-ref: the core manifest has no valid version");
+	}
+	const deps = manifest.dependencies;
+	if (typeof deps !== "object" || deps === null) {
+		throw new Error("ci-core-ref: the core manifest has no dependencies");
+	}
+	return resolveMemoryMarkdown(coreVersion, deps, npmView, {
+		sigrun: `v${coreVersion}`,
+	});
+}
+
+/** Resolve memory-markdown against the supplied core dependencies. */
+async function resolveMemoryMarkdown(coreVersion, deps, npmView, refs) {
+	// Newest version accepted by the shared peer when declared, or by the
+	// pi-durable peer otherwise. A rejecting shared peer is authoritative.
 	const coreShared = deps["@sigrun/shared"];
 	if (typeof coreShared !== "string") {
 		throw new Error(
@@ -185,14 +222,30 @@ const isMain =
 	pathResolve(process.argv[1]) === pathResolve(fileURLToPath(import.meta.url));
 
 if (isMain) {
-	const mode = process.argv[2];
+	const [mode, ...args] = process.argv.slice(2);
+	const usage =
+		"usage: ci-core-ref.mjs <release|main> [--core-manifest <path>]\n";
 	if (mode !== "release" && mode !== "main") {
-		process.stderr.write("usage: ci-core-ref.mjs <release|main>\n");
+		process.stderr.write(usage);
+		process.exit(2);
+	}
+	if (mode === "main" && args.length > 0) {
+		process.stderr.write(usage);
+		process.exit(2);
+	}
+	if (args.length !== 0 && (args.length !== 2 || args[0] !== "--core-manifest")) {
+		process.stderr.write(usage);
 		process.exit(2);
 	}
 
 	try {
-		const refs = await resolveRefs(mode, realNpmView);
+		const refs =
+			args.length === 2
+				? await resolveRefsFromManifest(
+						JSON.parse(readFileSync(args[1], "utf8")),
+						realNpmView,
+					)
+				: await resolveRefs(mode, realNpmView);
 		process.stdout.write(JSON.stringify(refs, null, 2) + "\n");
 	} catch (cause) {
 		process.stderr.write(
