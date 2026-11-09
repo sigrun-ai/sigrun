@@ -28,9 +28,14 @@ import { validateTree } from "../src/blocks/validate.js";
 import {
 	assertDrawable,
 	checkSchema,
+	checkStoredSettings,
 	generateForm,
 	type JsonSchema,
 } from "../src/settings/schema/index.js";
+
+it("the public authoring surface exports the stored-settings check", () => {
+	expect(checkStoredSettings({ type: "object", properties: {} }, {}).value).toEqual({});
+});
 
 /** Generate a form and validate it against the settings placement. */
 function generate(schema: JsonSchema, opts?: { layout?: readonly import("../src/settings/schema/index.js").LayoutGroup[] }) {

@@ -7,6 +7,13 @@
  */
 
 export {
+	applyDefaults,
+	checkStoredSettings,
+	type CheckedSettings,
+	type SettingsRepair,
+} from "./defaults.js";
+
+export {
 	assertDrawable,
 	checkSchema,
 	generateForm,
