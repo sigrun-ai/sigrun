@@ -33,6 +33,7 @@ interface Call {
 function makeProvidersHarness(init?: {
 	readonly providers?: readonly {
 		provider: string;
+		kind?: "chat" | "decision" | "embedding";
 		status: string;
 		models: number;
 		detail?: string;
@@ -41,6 +42,9 @@ function makeProvidersHarness(init?: {
 	readonly putFails?: boolean;
 }) {
 	const calls: Call[] = [];
+	// Rows are keyed by (provider, kind): one id can serve several kinds.
+	const rowKey = (provider: string, kind?: string): string =>
+		`${provider}\u0000${kind ?? "chat"}`;
 	const entries = new Map(
 		(init?.providers ?? [
 			{ provider: "acme", status: "not_configured", models: 0 },
@@ -50,7 +54,7 @@ function makeProvidersHarness(init?: {
 				models: 2,
 				detail: "last refresh failed",
 			},
-		]).map((entry) => [entry.provider, { ...entry }]),
+		]).map((entry) => [rowKey(entry.provider, entry.kind), { ...entry }]),
 	);
 	const settings: SettingsWire = { toolRoster: [], effective: {}, pendingRestart: [], managed: [] };
 	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
@@ -91,14 +95,25 @@ function makeProvidersHarness(init?: {
 			(m = input.match(/^\/v1\/providers\/([^/]+)\/credential$/)) !== null
 		) {
 			const id = m[1] as string;
-			// PUT → ready with a live catalog; DELETE → not_configured (the
-			// tracker re-seeds on the refresh).
-			entries.set(id, {
-				provider: id,
-				status: init2?.method === "PUT" ? "ready" : "not_configured",
-				models: 3,
-			});
-			body = entries.get(id);
+			// The credential is PER ID: a write flips EVERY row of that id
+			// (PUT → ready with a live catalog; DELETE → not_configured,
+			// the tracker re-seeding on the refresh).
+			for (const [key, entry] of entries) {
+				if (entry.provider !== id) continue;
+				entries.set(key, {
+					...entry,
+					status: init2?.method === "PUT" ? "ready" : "not_configured",
+					models: 3,
+				});
+			}
+			// The response is the ONE preferred entry (chat, then decision,
+			// then embedding) — the client re-fetches the list for the rest.
+			body =
+				[...entries.values()].find((entry) => entry.provider === id) ?? {
+					provider: id,
+					status: init2?.method === "PUT" ? "ready" : "not_configured",
+					models: 3,
+				};
 		} else if (
 			(m = input.match(/^\/v1\/providers\/([^/]+)\/refresh$/)) !== null &&
 			init2?.method === "POST"
@@ -163,14 +178,16 @@ function renderPanel(
 	return renderAsync(<Probe />).then((renderer) => renderer);
 }
 
-/** One provider's row (the fieldset by its data-provider attr). */
+/** One provider's row (the fieldset by its data-provider + data-kind attrs). */
 function providerRow(
 	renderer: TestRenderer.ReactTestRenderer,
 	id: string,
+	kind = "chat",
 ): TestRenderer.ReactTestInstance {
 	return renderer.root.findByProps({
 		className: "settings-provider",
 		"data-provider": id,
+		"data-kind": kind,
 	}) as TestRenderer.ReactTestInstance;
 }
 
@@ -309,6 +326,103 @@ describe("SettingsPanel Providers section", () => {
 					call.method === "POST",
 			),
 		).toBe(true);
+	});
+
+	test("three openai rows of different kinds render separately", async () => {
+		const { client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "ready", models: 2 },
+				{ provider: "openai", kind: "decision", status: "ready", models: 1 },
+				{ provider: "openai", kind: "embedding", status: "ready", models: 2 },
+			],
+		});
+		const renderer = await renderPanel(client);
+		const rows = renderer.root
+			.findAllByType("fieldset")
+			.filter((node) => node.props.className === "settings-provider");
+		expect(
+			rows.map((node) => [node.props["data-provider"], node.props["data-kind"]]),
+		).toEqual([
+			["openai", "chat"],
+			["openai", "decision"],
+			["openai", "embedding"],
+		]);
+		// Each kind renders its own badge (the wire kind projected onto
+		// the user-facing label) — never one row per id.
+		for (const kind of ["chat", "decision", "embedding"]) {
+			const badge = providerRow(renderer, "openai", kind).findByProps({
+				className: "settings-provider-kind",
+			});
+			expect(badge.children.join("")).toBe(
+				kind === "decision" ? "decisions" : kind === "embedding" ? "embeddings" : "chat",
+			);
+		}
+	});
+
+	test("saving the key on the embedding row updates all openai rows", async () => {
+		const { calls, client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "not_configured", models: 0 },
+				{ provider: "openai", kind: "decision", status: "not_configured", models: 1 },
+				{ provider: "openai", kind: "embedding", status: "not_configured", models: 2 },
+			],
+		});
+		const renderer = await renderPanel(client);
+		const row = providerRow(renderer, "openai", "embedding");
+		const input = row.findByProps({ className: "settings-provider-key" });
+		await act(async () => {
+			input.props.onChange({ target: { value: "openai-test-key" } });
+		});
+		await act(async () => {
+			await row.findByProps({ className: "settings-provider-save" }).props.onClick();
+		});
+		// The write targets the shared PER-ID credential…
+		expect(
+			calls.some(
+				(call) =>
+					call.input === "/v1/providers/openai/credential" &&
+					call.method === "PUT",
+			),
+		).toBe(true);
+		// …and the client re-fetched the report to pick up EVERY row of
+		// the id (the PUT's own response is only the preferred entry).
+		expect(
+			calls.filter((call) => call.input === "/v1/providers").length,
+		).toBeGreaterThanOrEqual(2);
+		for (const kind of ["chat", "decision", "embedding"]) {
+			expect(
+				providerRow(renderer, "openai", kind).findByProps({
+					className: "settings-provider-status",
+				}).props["data-status"],
+				kind,
+			).toBe("ready");
+		}
+		// The key never rendered anywhere.
+		expect(textContent(renderer.toJSON())).not.toContain("openai-test-key");
+	});
+
+	test("refresh shows on chat rows only", async () => {
+		const { client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "ready", models: 2 },
+				{ provider: "openai", kind: "decision", status: "ready", models: 1 },
+				{ provider: "openai", kind: "embedding", status: "ready", models: 2 },
+			],
+		});
+		const renderer = await renderPanel(client);
+		expect(
+			providerRow(renderer, "openai", "chat").findAllByProps({
+				className: "settings-provider-refresh",
+			}),
+		).toHaveLength(1);
+		for (const kind of ["decision", "embedding"]) {
+			expect(
+				providerRow(renderer, "openai", kind).findAllByProps({
+					className: "settings-provider-refresh",
+				}),
+				kind,
+			).toHaveLength(0);
+		}
 	});
 
 	test("a known non-admin session never sees the section (hidden, not read-only)", async () => {
