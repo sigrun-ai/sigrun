@@ -800,12 +800,26 @@ function channelSubmissionToFile(
 		if (!isRec(value)) return value as JsonValue;
 		const result: JsonObject = {};
 		for (const [key, child] of Object.entries(value)) {
-			const property = childSchema(node, key);
+			// The reserved root-table field's schema is a synthetic object
+			// wrapping additionalProperties; unpacking straight into the VALUE
+			// schema would leave each scalar row packed as {value}.
+			const property = key === "" && isRec(node.additionalProperties)
+				? { type: "object", additionalProperties: node.additionalProperties }
+				: childSchema(node, key);
 			result[key] = property === undefined ? child as JsonValue : unpack(child, property);
 		}
 		return result;
 	};
-	return unpack(values, schema) as Record<string, unknown>;
+	const unpacked = unpack(values, schema) as Record<string, unknown>;
+	// A root additionalProperties table binds at the reserved empty field
+	// name. Flatten its rows back to root keys before validation/persistence;
+	// known properties keep their own slots.
+	if (isRec(schema.additionalProperties) && Object.hasOwn(unpacked, "")) {
+		const table = unpacked[""];
+		delete unpacked[""];
+		if (isRec(table)) Object.assign(unpacked, table);
+	}
+	return unpacked;
 }
 
 function stripEntryMarkers(value: unknown): JsonValue {
@@ -901,6 +915,7 @@ export function schemaSettingsSurfaceFor(
 		return "write";
 	};
 	const properties = isRec(schema.properties) ? schema.properties : {};
+	const rootTable = isRec(schema.additionalProperties);
 	const readStored = async (principal: Principal) => {
 		const user = userScope ? namedUser(principal) : undefined;
 		return {
@@ -938,6 +953,14 @@ export function schemaSettingsSurfaceFor(
 			const { user, stored } = await readStored(ctx.principal);
 			const plain = splitSecrets(stored, generated.secrets).plain;
 			const settings = applyDefaults(schema, plain);
+			if (rootTable) {
+				// The root table's reserved empty-name field reads ONLY the
+				// additional-property keys; declared properties render through
+				// their own fields and must not become extra table rows.
+				settings[""] = Object.fromEntries(
+					Object.entries(settings).filter(([key]) => !Object.hasOwn(properties, key)),
+				) as JsonObject;
+			}
 			const statusList = user === undefined
 				? await stores.secretKeys(slug)
 				: (await stores.userSecretKeys(slug, user)).map((key) => ({ key, source: "stored" as const }));
@@ -952,7 +975,9 @@ export function schemaSettingsSurfaceFor(
 				data: {
 					settings: settings as JsonObject,
 					secrets: secretData as JsonObject,
-					unknownKeys: Object.keys(stored).filter((key) => !Object.hasOwn(properties, key)),
+					unknownKeys: Object.keys(stored).filter(
+						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
+					),
 				},
 				access,
 			};
@@ -994,6 +1019,18 @@ export function schemaSettingsSurfaceFor(
 
 						const persisted = stripEntryMarkers(split.plain) as Record<string, unknown>;
 						const next: Record<string, unknown> = { ...stored };
+						if (rootTable) {
+							// Root additionalProperties is a wholesale table: remove
+							// rows the save omitted, then write the submitted rows.
+							for (const key of Object.keys(next)) {
+								if (!Object.hasOwn(properties, key) && !Object.hasOwn(persisted, key)) {
+									delete next[key];
+								}
+							}
+							for (const [key, value] of Object.entries(persisted)) {
+								if (!Object.hasOwn(properties, key)) next[key] = value;
+							}
+						}
 						for (const [name, property] of Object.entries(properties)) {
 							delete next[name];
 							if (!Object.hasOwn(persisted, name)) continue;
@@ -1005,7 +1042,7 @@ export function schemaSettingsSurfaceFor(
 						}
 						if (userStores === undefined) await stores.settingsFor(slug).set(next);
 						else await userStores.settings.set(next);
-						publishSettingsChanged({ extension: slug }, Object.keys(parsed.values), user);
+						publishSettingsChanged({ extension: slug }, Object.keys(validationValues), user);
 						return { ok: true };
 					},
 				);

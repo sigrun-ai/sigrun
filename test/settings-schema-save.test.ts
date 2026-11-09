@@ -356,6 +356,36 @@ test("renamed entry validates (with $from present in the submission)", async () 
 	expect(JSON.stringify(await file(rig))).not.toContain("$from");
 });
 
+test("a root additionalProperties table renders and saves its rows at the root", async () => {
+	const rig = await boot({ specifier: fixture("fixture-settings-root-table") });
+	await mkdir(join(rig.configDir, "user-settings", "alice"), { recursive: true });
+	await writeFile(
+		join(rig.configDir, "user-settings", "alice", "acme-root-table.json"),
+		JSON.stringify({ known: "before", acme: true }),
+	);
+	const surface = "/v1/ext/acme-root-table/surfaces/user-settings";
+	const rendered = await call(rig, "GET", surface);
+	expect(rendered.status).toBe(200);
+	const data = rendered.body.data as Record<string, unknown>;
+	const settings = data.settings as Record<string, unknown>;
+	expect(settings[""]).toEqual({ acme: true });
+	expect(data.unknownKeys).toEqual([]);
+
+	const saved = await save(rig, {
+		known: "after",
+		"": {
+			acme: { value: false, $from: "acme" },
+			other: { value: true },
+		},
+	}, "root-table-save", surface);
+	expect(saved.body).toMatchObject({ ok: true });
+	const stored = JSON.parse(await readFile(
+		join(rig.configDir, "user-settings", "alice", "acme-root-table.json"),
+		"utf8",
+	)) as Record<string, unknown>;
+	expect(stored).toEqual({ known: "after", acme: false, other: true });
+});
+
 test("a view named settings fails the load of a declaring extension", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-reserved-view-"));
 	const config = loadConfig({

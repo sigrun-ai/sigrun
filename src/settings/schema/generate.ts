@@ -544,6 +544,28 @@ export function generateForm(
 		for (const [name, child] of topLevel) emit(name, pointerJoin("", name), child, topRequired.has(name));
 	}
 
+	// A root additionalProperties map is a REAL settings surface, not an
+	// annotation to ignore: it holds arbitrary named values alongside the
+	// declared properties (MCP's flat per-user server toggles). Emit it as a
+	// table whose field name is the reserved empty path — the schema-surface
+	// adapter projects that field from/to the root's undeclared keys. Its
+	// value schema still goes through propertyNode, so a non-drawable value
+	// earns the ordinary JSON-box fallback + warning (and assertDrawable
+	// rejects it) instead of silently disappearing.
+	if (isRecord(schema.additionalProperties)) {
+		const tableSchema: JsonSchema = {
+			type: "object",
+			additionalProperties: schema.additionalProperties,
+			...(typeof schema.additionalProperties.title === "string"
+				? { title: schema.additionalProperties.title }
+				: {}),
+			...(typeof schema.additionalProperties.description === "string"
+				? { description: schema.additionalProperties.description }
+				: {}),
+		};
+		rest.push(propertyNode(ctx, "", "", tableSchema, false));
+	}
+
 	const children: (Field | SectionBlock)[] = [];
 	if (credentialChildren.length > 0) {
 		children.push({

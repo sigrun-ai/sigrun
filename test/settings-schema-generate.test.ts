@@ -286,6 +286,36 @@ describe("generateForm", () => {
 		expect(() => assertDrawable(schema)).not.toThrow();
 	});
 
+	it("root additionalProperties draws as a table", () => {
+		const schema: JsonSchema = {
+			type: "object",
+			properties: { known: { type: "string" } },
+			additionalProperties: {
+				type: "boolean",
+				title: "Server toggles",
+			},
+		};
+		const table = fieldNamed(childrenOf(schema), "") as EntriesField;
+		expect(table).toMatchObject({
+			type: "entries",
+			shape: "table",
+			label: "Server toggles",
+			item: [{ type: "toggle", name: "value" }],
+		});
+		expect(() => assertDrawable(schema)).not.toThrow();
+	});
+
+	it("non-drawable root additionalProperties falls back and assertDrawable throws naming it", () => {
+		const schema: JsonSchema = {
+			type: "object",
+			properties: {},
+			additionalProperties: { type: "object" },
+		};
+		const generated = generate(schema);
+		expect(generated.fallbacks).toEqual([""]);
+		expect(() => assertDrawable(schema)).toThrow(/JSON-box fallbacks at: /);
+	});
+
 	it("scalar additionalProperties draws a table with one synthetic value field", () => {
 		const schema = objectSchema({
 			headers: {
