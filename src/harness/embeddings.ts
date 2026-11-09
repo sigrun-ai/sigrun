@@ -6,8 +6,8 @@
  * `embed` NEVER throws: failures use the contract's coded result. Error
  * text never carries the credential or any submitted input text. Unlike
  * decision providers, a missing credential does not itself block a call
- * (keyless local endpoints are valid); only the provider's readiness can
- * produce `not_configured`.
+ * (keyless local endpoints are valid); `not_configured` requires a missing
+ * credential AND the provider's readiness reporting `not_configured`.
  */
 
 import type {
@@ -184,7 +184,7 @@ export function buildEmbeddingRegistry(
 
 		const contribution = resolved.entry.declaration.contribution;
 
-		// 3. Credential — core decides not_configured, never the tracker (the
+		// 2b. Credential — core decides not_configured, never the tracker alone (the
 		//    decisions precedent: the tracker cannot read auth.json, so gating on
 		//    it before resolving the credential would deadlock a keyed install
 		//    on the default endpoint — the provider's first call is the only way

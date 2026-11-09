@@ -954,8 +954,11 @@ export default function acmeEmbeddings() {
   change should report remote endpoints as `local: false`.
 - **Credentials** resolve per call from `auth.json[id].apiKey`, then the
   ambient `credentialEnv` (empty means unset). A missing key is passed as
-  `undefined` so keyless local endpoints work; only your readiness
-  tracker's `not_configured` blocks the call. `PUT`/`DELETE
+  `undefined` so keyless local endpoints work; a call is refused as
+  `not_configured` only when the key is missing AND your readiness
+  tracker reports `not_configured` (the decisions precedent: the tracker
+  learns a key exists only from calls, so it never gates alone).
+  `PUT`/`DELETE
   /v1/providers/:id/credential` therefore work for embedding-only ids.
   `GET /v1/providers` lists embedding rows as `kind: "embedding"` with
   `modelIds`, model count, readiness and the owning extension.
