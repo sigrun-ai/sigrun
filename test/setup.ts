@@ -14,6 +14,13 @@
  * ~/.config/sigrun. SIGRUN_MCP_CONFIG points at an absent file in the
  * same tmp root; suites exercising the import override it per test.
  * Tests with explicit SIGRUN_* env objects override these defaults.
+ *
+ * The DATA root is pinned as well (settings rework, Task 14): per-user
+ * surfaces (notice stores, curation history) resolve under
+ * `<dataDir>/users/<user>` (boot.ts userAreas), so a boot whose data
+ * root is unpinned writes into the developer's real
+ * ~/.local/share/sigrun — the same contamination class the config pin
+ * closed.
  */
 
 import { mkdtempSync } from "node:fs";
@@ -26,3 +33,6 @@ process.env.SIGRUN_CACHE_DIR = mkdtempSync(
 const configDir = mkdtempSync(join(tmpdir(), "sigrun-vitest-config-"));
 process.env.SIGRUN_CONFIG_DIR = configDir;
 process.env.SIGRUN_MCP_CONFIG = join(configDir, "no-legacy-mcp.json");
+process.env.SIGRUN_DATA_DIR = mkdtempSync(
+	join(tmpdir(), "sigrun-vitest-data-"),
+);

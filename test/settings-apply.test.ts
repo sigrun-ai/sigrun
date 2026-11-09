@@ -674,6 +674,19 @@ describe("extension onSettingsChanged", () => {
 				headers: { "content-type": "application/json" },
 			});
 			expect(response.statusCode).toBe(200);
+			// The bus fan-out is deliberately fire-and-forget (boot's
+			// publishSettingsChanged does not await it — a settings write
+			// never blocks on extension handlers), so the recorder's entry
+			// lands asynchronously: poll briefly instead of racing.
+			let recorded: string[][] | undefined;
+			for (let attempt = 0; attempt < 40; attempt++) {
+				if (fixture.received.length > 0) {
+					recorded = fixture.received;
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			expect(recorded).toEqual([["threshold"]]);
 			expect(fixture.received).toEqual([["threshold"]]);
 			// The THROWING handler (the fixture's second extension) was
 			// logged, not propagated.

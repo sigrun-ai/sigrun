@@ -830,7 +830,8 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		expect(core.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
 		// Task 7's generated-section coverage against the declaring
 		// dev-linked built-ins: curator's shared then per-user pages,
-		// oauth's shared-only page, then MCP's shared and per-user pages.
+		// gateway's shared-only page (Task 13), oauth's shared-only page,
+		// then MCP's shared and per-user pages.
 		expect(body.sections.filter((s) => s.slug !== "core")).toEqual([
 			{
 				slug: "curator",
@@ -848,6 +849,14 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				icon: "key",
 				scope: "user",
 				admin: false,
+			},
+			{
+				slug: "gateway",
+				id: "settings",
+				page: "gateway",
+				title: "Settings",
+				icon: "key",
+				admin: true,
 			},
 			{
 				slug: "oauth",

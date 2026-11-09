@@ -142,7 +142,20 @@ async function boot(
 	cleanups.push(async () => {
 		await app?.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
-		await rm(dir, { recursive: true, force: true });
+		// The notice store's shutdown drain can still be writing when the
+		// harness closes (a settings.invalid notice from the last get());
+		// retry the removal briefly instead of racing the drain's tail.
+		for (let attempt = 0; ; attempt++) {
+			try {
+				await rm(dir, { recursive: true, force: true });
+				return;
+			} catch (cause) {
+				if (attempt >= 20 || (cause as NodeJS.ErrnoException).code !== "ENOTEMPTY") {
+					throw cause;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 50));
+			}
+		}
 	});
 	return { opened, dir, app };
 }

@@ -9,7 +9,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Blocks: navigate targets and params can bind per-row data, unresolved
+- Settings rework: extensions declare their settings as JSON Schema (2020-12)
+  through `host.settings.declare({schema, userSchema?})` at the top of their
+  factory; core generates every settings form (including lists of entries
+  and tables keyed by name, via the new `entries` and `variant` block fields,
+  rendered by both webui and TUI), checks saves against the schema with
+  field-scoped errors, and gives each extension one stacked settings page
+  (header, Credentials, Settings, Your settings, Advanced). Secrets inside
+  settings (including inside list entries) are `writeOnly`: they live in the
+  secrets store, never in the settings file, never in an API response;
+  renames move them, deletes drop them, explicit clears delete them. Invalid
+  stored values fall back to schema defaults with one admin notice per boot.
+  `assertDrawable` ships from `@sigrun/sigrun/settings-schema` so family
+  repos can pin no-JSON-box coverage. Core's own General/Tools/Advanced
+  sections are generated from a core schema (UI byte-identical except
+  `perModelThinking`, now a proper model→level table). `host.stores.secrets`
+  (shared scoped) gained `delete(key)`.
+
+### Changed
+
+- `surfaces.settings` declarations are rejected at load with a replacement
+  message (`host.settings.declare`); the raw-JSON Extensions editor and its
+  "(advanced)" nav rows are removed; the Providers section is a status list
+  linking to each provider extension's page.
+- Built-ins: `@sigrun/ext-mcp` servers live in its settings
+  (`settings/sigrun-mcp.json` + the `sigrun-mcp` secrets section) with a
+  one-time import from `mcp.json`/`SIGRUN_MCP_CONFIG` (secrets move to the
+  store; the file is ignored afterwards; admin notice `mcp.imported`);
+  `@sigrun/ext-codemode` gets its namespace list from the published
+  `mcp.servers` hook (refreshed on settings writes, conversation creation,
+  and settled runs) instead of reading `mcp.json`.
+
+### Blocks: navigate targets and params can bind per-row data, unresolved
   navigate buttons hide, card submits carry the row id, and section
   headers accept action buttons (also in the TUI actions menu).
 - Skills and Jobs views: one per-row Review/Conversation button instead

@@ -187,8 +187,8 @@ describe("gateway shutdown e2e (Task 12)", () => {
 				binding.engine as import("../../src/extension.js").GatewayEngine &
 					import("@sigrun/ext-gateway").EngineInternals
 			).accessState().identities;
-			const { parseGatewayConfig } = await import("@sigrun/ext-gateway");
-			const block = parseGatewayConfig(SETTINGS).channels.loop;
+			const { resolveGatewayConfig } = await import("@sigrun/ext-gateway");
+			const block = resolveGatewayConfig(SETTINGS).channels.loop;
 			if (block === undefined || "failed" in block) throw new Error("bad test config");
 			expect(await identities.userFor(block, "loop", "200000002")).toBeUndefined();
 			// The next DM resolves through the unknown-sender pairing branch.

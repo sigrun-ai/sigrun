@@ -137,6 +137,11 @@ async function bootBuiltins(options?: {
 		// ~/.config/sigrun, and an already-imported registry masks the
 		// clean-install boot path.
 		SIGRUN_CONFIG_DIR: join(dir, "config"),
+		// Per-user surfaces (notices, curation history) resolve under
+		// <dataDir>/users/<user>; without this root the boot writes into the
+		// developer's REAL ~/.local/share/sigrun (same class as the config
+		// pin above).
+		SIGRUN_DATA_DIR: join(dir, "data"),
 	};
 	if (options?.mcpServers !== undefined) {
 		const mcpPath = join(dir, "mcp.json");
