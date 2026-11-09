@@ -630,6 +630,11 @@ describe("SettingsPanel extension pages", () => {
 		const group = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
 		const labels = group.findAllByType("button").map((node) => node.props.children);
 		expect(labels).toEqual(["acme-one", "acme-two"]);
+		const nav = renderer.root.findByProps({ className: "settings-nav" });
+		const flatLabels = nav.findAllByType("button")
+			.filter((node) => node.parent === nav)
+			.map((node) => node.props.children);
+		expect(flatLabels).toEqual(SECTIONS.map((section) => section.title));
 		expect(textContent(renderer.toJSON())).not.toContain("(advanced)");
 		await act(async () => {
 			group.findAllByType("button")[1].props.onClick();
@@ -638,15 +643,9 @@ describe("SettingsPanel extension pages", () => {
 		expect(renderer.root.findAllByProps({ "data-extension-page": "acme-two" })).toHaveLength(1);
 	});
 
-	test("Providers rows link to the extension page", async () => {
+	test("Providers rows link to the extension page even when it declares no sections", async () => {
 		const harness = makeHarness({
-			sectionsResponse: {
-				sections: [
-					...SECTIONS,
-					{ slug: "acme-tool", id: "settings", page: "acme-tool", title: "Settings", icon: "key", admin: true },
-				],
-				index: [...INDEX],
-			},
+			sectionsResponse: { sections: [...SECTIONS], index: [...INDEX] },
 			extensions: { list: EXTENSIONS },
 		});
 		const { renderer, onSectionCalls } = await renderPanelWithPrefs(harness.client, { section: "providers" });
@@ -658,6 +657,24 @@ describe("SettingsPanel extension pages", () => {
 			link.props.onClick();
 		});
 		expect(onSectionCalls()).toContain("acme-tool");
+	});
+
+	test("a non-admin sees only extensions with a visible personal page", async () => {
+		const harness = makeHarness({
+			sectionsResponse: { sections: [...SECTIONS], index: [...INDEX] },
+			extensions: { list: EXTENSIONS },
+		});
+		const { renderer } = await renderPanelWithPrefs(harness.client, { admin: false });
+		expect(renderer.root.findAllByProps({ role: "group", "aria-label": "Extensions" })).toHaveLength(0);
+	});
+
+	test("a stale extension route falls back to General", async () => {
+		const harness = makeHarness({
+			sectionsResponse: { sections: [...SECTIONS], index: [...INDEX] },
+			extensions: { list: [] },
+		});
+		const { renderer } = await renderPanelWithPrefs(harness.client, { section: "missing-extension" });
+		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
 	});
 
 	test("a deep link to an extension page opens its Advanced pane", async () => {

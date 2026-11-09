@@ -613,26 +613,6 @@ export interface SigrunClient {
 	getExtensionSettings(
 		slug: string,
 	): Promise<ExtensionSettingsWire>;
-	/** Replace one extension's settings object (`PUT`, admin). */
-	putExtensionSettings(
-		slug: string,
-		value: Record<string, unknown>,
-	): Promise<ExtensionSettingsWire>;
-	/** One extension's secret keys with their sources (`GET .../secrets`). */
-	listExtensionSecrets(
-		slug: string,
-	): Promise<ExtensionSecretsResponseWire>;
-	/** Set one secret (`PUT .../secrets/:key`, admin; values are never read back). */
-	putExtensionSecret(
-		slug: string,
-		key: string,
-		value: string,
-	): Promise<ExtensionSecretsResponseWire>;
-	/** Delete one secret (`DELETE .../secrets/:key`, admin). */
-	deleteExtensionSecret(
-		slug: string,
-		key: string,
-	): Promise<ExtensionSecretsResponseWire>;
 	/** The per-provider readiness report (`GET /v1/providers`). */
 	listProviders(): Promise<ProvidersResponseWire>;
 	/**
@@ -1015,28 +995,6 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 			get<ExtensionSettingsWire>(
 				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
 			),
-		putExtensionSettings: (slug, value) =>
-			send(
-				"PUT",
-				`/v1/extensions/${encodeURIComponent(slug)}/settings`,
-				value,
-			) as Promise<ExtensionSettingsWire>,
-		listExtensionSecrets: (slug) =>
-			get<ExtensionSecretsResponseWire>(
-				`/v1/extensions/${encodeURIComponent(slug)}/secrets`,
-			),
-		putExtensionSecret: (slug, key, value) =>
-			send(
-				"PUT",
-				`/v1/extensions/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(key)}`,
-				{ value },
-			) as Promise<ExtensionSecretsResponseWire>,
-		deleteExtensionSecret: (slug, key) =>
-			send(
-				"DELETE",
-				`/v1/extensions/${encodeURIComponent(slug)}/secrets/${encodeURIComponent(key)}`,
-				{},
-			) as Promise<ExtensionSecretsResponseWire>,
 		listProviders: () => get<ProvidersResponseWire>("/v1/providers"),
 		putProviderCredential: (id, apiKey) =>
 			send(

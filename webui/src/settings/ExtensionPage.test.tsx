@@ -106,19 +106,27 @@ describe("ExtensionPage", () => {
 		expect(textContent(renderer.toJSON())).not.toContain("not in this version's settings");
 	});
 
-	test("provider page shows the auth.json key row", async () => {
+	test("provider page shows one auth.json key row per provider across chat and decision kinds", async () => {
 		const renderer = await renderPage({
-			providers: [{ provider: "acme", owner: "acme-ext", status: "ready", models: 2 }],
+			providers: [
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 2 },
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1 },
+				{ provider: "acme-decision", owner: "acme-ext", kind: "decision", status: "degraded", models: 1 },
+			],
 		});
+		expect(renderer.root.findAllByProps({ className: "settings-provider-key" })).toHaveLength(2);
 		const credential = renderer.root.findByProps({ className: "settings-provider", "data-provider": "acme" });
 		expect(credential.findByProps({ className: "settings-provider-key" }).props.type).toBe("password");
 		expect(textContent(renderer.toJSON())).toContain("ready");
+		expect(textContent(renderer.toJSON())).toContain("degraded");
 	});
 
 	test("undeclared extension shows the note and Advanced only", async () => {
 		const renderer = await renderPage({ sections: [] });
 		expect(parts(renderer)).toEqual(["advanced"]);
 		expect(textContent(renderer.toJSON())).toContain("This extension doesn't describe its settings.");
+		expect(textContent(renderer.toJSON())).toContain("endpoint, legacy");
+		expect(textContent(renderer.toJSON())).toContain("not in this version's settings");
 	});
 
 	test("Advanced lists unknown stored keys", async () => {

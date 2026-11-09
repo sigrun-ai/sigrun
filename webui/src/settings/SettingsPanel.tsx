@@ -291,6 +291,13 @@ export function SettingsPanel(props: {
 		// not pretend those controls are available.
 		return visibleSettingsSections(load.sections, admin);
 	}, [load, admin]);
+	const pageOwners = useMemo(
+		() => new Set((extensions ?? []).map((extension) => extension.name)),
+		[extensions],
+	);
+	const openExtension = open?.kind === "extension"
+		? extensions?.find((entry) => entry.name === open.slug)
+		: undefined;
 
 	return (
 		<div className="settings-page">
@@ -334,7 +341,7 @@ export function SettingsPanel(props: {
 				{load.status === "ready" && (
 					<div className="settings-layout">
 						<nav className="settings-nav" aria-label="settings sections">
-							{navSections.filter((section) => section.scope !== "user").map((section) => (
+							{navSections.filter((section) => section.slug === "core" && section.scope !== "user").map((section) => (
 								<button
 									key={`${section.slug}/${section.id}`}
 									type="button"
@@ -355,20 +362,21 @@ export function SettingsPanel(props: {
 								extensions={extensions}
 								sections={navSections}
 								open={open}
+								admin={admin !== false}
 								onOpen={onSection}
 							/>
 						</nav>
 						<div className="settings-section" ref={bodyRef}>
 							{open === null ? (
 								<p className="settings-note">select a section</p>
-							) : open.kind === "extension" ? (
+							) : open.kind === "extension" && openExtension !== undefined ? (
 								<ExtensionPage
 									client={client}
-									extension={extensions?.find((entry) => entry.name === open.slug)!}
-									sections={navSections.filter((entry) => entry.page === open.slug)}
+									extension={openExtension}
+									sections={navSections.filter((entry) => entry.page === openExtension.name)}
 									admin={admin !== false}
 								/>
-							) : (
+							) : open.kind === "section" ? (
 								<SettingsSectionBody
 									key={`${open.entry.slug}/${open.entry.id}`}
 									client={client}
@@ -378,10 +386,10 @@ export function SettingsPanel(props: {
 									meta={meta}
 									onCoreMeta={setCoreMeta}
 									valuesRef={sectionDataRef}
-									pageOwners={new Set(navSections.map((entry) => entry.page).filter((page): page is string => page !== undefined))}
+									pageOwners={pageOwners}
 									onOpenPage={onSection}
 								/>
-							)}
+							) : null}
 						</div>
 					</div>
 				)}
@@ -414,14 +422,13 @@ function ExtensionPagesNav(props: {
 	readonly extensions: readonly ExtensionInfoWire[] | null;
 	readonly sections: readonly SettingsSectionEntryWire[];
 	readonly open: OpenSection | null;
+	readonly admin: boolean;
 	readonly onOpen: (page: string) => void;
 }): React.ReactElement | null {
-	const { extensions, sections, open, onOpen } = props;
+	const { extensions, sections, open, admin, onOpen } = props;
 	if (extensions === null) return null;
 	const pages = new Set(sections.map((section) => section.page).filter((page): page is string => page !== undefined));
-	const listed = extensions.filter((extension) =>
-		sections.some((section) => section.slug === "core" && section.id === "providers") || pages.has(extension.name),
-	);
+	const listed = extensions.filter((extension) => admin || pages.has(extension.name));
 	if (listed.length === 0) return null;
 	return (
 		<div className="settings-nav-group" role="group" aria-label="Extensions">

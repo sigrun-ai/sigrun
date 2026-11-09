@@ -10,8 +10,9 @@ import { createExtTransport } from "../blocks/extTransport";
 import { SurfaceView } from "../blocks/SurfaceView";
 import { ProviderCredential } from "./ProviderCredential";
 
-/** Keep the generated form one save unit, but group its non-secret fields
- * under the page's Settings heading; its Credentials section stays first. */
+/** Give the generated form a default Save label. Its generated Credentials
+ * section stays inside the page's Settings section, after provider auth.json
+ * credentials, preserving one save unit for schema-declared fields. */
 function withSaveLabel(tree: Tree | undefined): Tree | undefined {
 	if (tree === undefined || tree.root.type !== "form") return tree;
 	const root = tree.root as FormBlock;
@@ -82,8 +83,11 @@ export function ExtensionPage(props: {
 		return () => { cancelled = true; };
 	}, [client, extension.name, admin, shared]);
 
-	const owned = providers.filter((provider) => provider.kind !== "decision");
+	const credentials = providers.filter((provider, index) =>
+		providers.findIndex((candidate) => candidate.provider === provider.provider) === index,
+	);
 	const declared = shared !== undefined || personal !== undefined;
+	const visibleUnknownKeys = declared ? unknownKeys : Object.keys(stored);
 	return (
 		<div className="settings-body settings-extension-page" data-extension-page={extension.name}>
 			<header className="settings-extension-header">
@@ -95,15 +99,15 @@ export function ExtensionPage(props: {
 			</header>
 			{loadError !== undefined && <p className="settings-note" role="alert">{loadError}</p>}
 			{!declared && <p className="settings-note">This extension doesn't describe its settings.</p>}
-			{admin && owned.length > 0 && (
+			{admin && credentials.length > 0 && (
 				<section className="settings-extension-credentials" data-extension-part="credentials">
 					<h3>Credentials</h3>
-					{owned.map((provider) => (
+					{credentials.map((provider) => (
 						<ProviderCredential
-							key={`${provider.kind ?? "chat"}/${provider.provider}`}
+							key={provider.provider}
 							client={client}
 							provider={provider}
-							onChange={(next) => setProviders((current) => current.map((row) => row.provider === next.provider && row.kind === next.kind ? next : row))}
+							onChange={(next) => setProviders((current) => current.map((row) => row.provider === next.provider ? next : row))}
 						/>
 					))}
 				</section>
@@ -123,8 +127,8 @@ export function ExtensionPage(props: {
 			{admin && (
 				<details className="settings-extension-advanced" data-extension-part="advanced">
 					<summary>Advanced</summary>
-					{unknownKeys.length > 0 && (
-						<p className="settings-note">{unknownKeys.join(", ")} — not in this version's settings</p>
+					{visibleUnknownKeys.length > 0 && (
+						<p className="settings-note">{visibleUnknownKeys.join(", ")} — not in this version's settings</p>
 					)}
 					<pre>{JSON.stringify(stored, null, 2)}</pre>
 				</details>

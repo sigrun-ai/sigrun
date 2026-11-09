@@ -60,5 +60,15 @@ test("an extension table entry keeps its secret set across save, reload, and ren
 	await expect(pageRoot.getByRole("button", { name: "Edit entry renamed" })).toContainText("set");
 	await page.screenshot({ path: join("test-results", "settings-extension-page-desktop.png"), fullPage: true });
 	await page.setViewportSize({ width: 390, height: 844 });
+	const extensionNav = page.locator(".settings-nav-extension[data-ext=acme-settings-page]");
+	await extensionNav.scrollIntoViewIfNeeded();
+	const navBox = await page.locator(".settings-nav").boundingBox();
+	const extensionBox = await extensionNav.boundingBox();
+	expect(navBox).not.toBeNull();
+	expect(extensionBox).not.toBeNull();
+	expect(extensionBox!.width).toBeGreaterThanOrEqual(130);
+	expect(extensionBox!.x).toBeGreaterThanOrEqual(navBox!.x);
+	expect(extensionBox!.x + extensionBox!.width).toBeLessThanOrEqual(navBox!.x + navBox!.width);
+	await expect(extensionNav).toHaveText("acme-settings-page");
 	await page.screenshot({ path: join("test-results", "settings-extension-page-mobile.png"), fullPage: true });
 });

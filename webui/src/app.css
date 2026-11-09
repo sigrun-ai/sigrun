@@ -2390,7 +2390,9 @@ body {
 
 	.settings-nav {
 		flex-direction: row;
-		width: auto;
+		width: 100%;
+		min-width: 0;
+		max-width: 100%;
 		padding-left: 0;
 		overflow-x: auto;
 		overflow-y: hidden;
@@ -2398,12 +2400,6 @@ body {
 		flex-wrap: nowrap;
 		/* The group heading is a desktop-column artifact — the bar rows
 		   carry their own identity. */
-	}
-
-	.settings-nav .settings-nav-group {
-		flex-direction: row;
-		align-items: center;
-		gap: 0.2rem;
 	}
 
 	.settings-nav-item {
@@ -2548,10 +2544,7 @@ body {
 	.token-revoke-cancel,
 	.token-revoke-confirm,
 	.account-remove,
-	.settings-ext-save,
-	.settings-ext-secret-set,
-	.settings-ext-secret-delete,
-	.settings-ext-secret-add,
+	.settings-provider-page-link,
 	.settings-restart
 ) {
 	background: var(--surface-2);
@@ -2563,7 +2556,7 @@ body {
 	font-size: 13px;
 	padding: 0.3rem 0.8rem;
 }
-:is(.settings-provider-save, .token-create, .settings-ext-save) {
+:is(.settings-provider-save, .token-create) {
 	background: var(--accent);
 	border-color: var(--accent);
 	color: var(--bg);
@@ -2576,10 +2569,7 @@ body {
 	.settings-provider-save,
 	.settings-provider-clear,
 	.settings-provider-refresh,
-	.token-create,
-	.settings-ext-save,
-	.settings-ext-secret-set,
-	.settings-ext-secret-add
+	.token-create
 ):disabled {
 	cursor: default;
 	opacity: 0.5;
@@ -2636,8 +2626,7 @@ body {
 	color: var(--text);
 }
 
-/* The "My settings" group (user-scoped extension sections under one
-   heading — the nav column's subsection). */
+/* The loaded extensions' page links form one nav subsection. */
 .settings-nav-group {
 	display: flex;
 	flex-direction: column;
@@ -3427,52 +3416,52 @@ body {
 	font-size: 0.8rem;
 }
 
-/* ── Extensions section (W3 Task 7, spec §7.7) ─────────────────────────── */
+/* ── One stacked page per loaded extension ────────────────────────────── */
 
-.settings-ext-list {
-	gap: 0.75rem;
-}
-/* The editor's settings and secrets groups sit apart (the Save button
-   ran into the Secrets label). */
-.settings-ext .settings-field + .settings-field {
-	margin-top: 0.9rem;
+.settings-extension-page {
+	display: flex;
+	flex-direction: column;
+	gap: 1rem;
 }
 
-.settings-ext {
-	border: 1px solid var(--border);
-	border-radius: 4px;
-	padding: 0.5rem 0.75rem 0.75rem;
+.settings-extension-header {
+	display: flex;
+	align-items: baseline;
+	gap: 0.5rem;
+	flex-wrap: wrap;
+}
+
+.settings-extension-header h2,
+.settings-extension-page section h3 {
 	margin: 0;
 }
 
-.settings-ext-name {
-	font-weight: 600;
-	padding: 0 0.35rem;
-}
-
 .settings-ext-meta {
-	font-weight: 400;
 	font-size: 11px;
 	color: var(--muted);
-	margin-left: 0.4rem;
 }
 
-.settings-ext-settings {
+.settings-extension-credentials,
+.settings-extension-page > section {
+	display: flex;
+	flex-direction: column;
+	gap: 0.6rem;
+}
+
+.settings-extension-advanced pre {
 	max-height: 70vh;
-	overflow-y: auto;
-	resize: none;
+	overflow: auto;
 	font-family: var(--mono);
 	font-size: 12px;
 	background: var(--bg);
-	color: var(--text);
 	border: 1px solid var(--border);
 	border-radius: 4px;
-	padding: 0.4rem;
-	width: 100%;
-	box-sizing: border-box;
-	max-width: 100%;
+	padding: 0.6rem;
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 
+/* Shared by Account links and API tokens. */
 .settings-ext-row {
 	display: flex;
 	align-items: center;
@@ -3500,6 +3489,10 @@ body {
 	border-radius: 6px;
 	padding: 0.35rem 0.5rem;
 	min-width: 8rem;
+}
+
+.settings-provider-page-link {
+	font-family: var(--mono);
 }
 
 /* ── API tokens section (0.4.0 Task 5: the once-only mint display) ───── */
@@ -3652,6 +3645,34 @@ body {
    14px rhythm; touch gets the no-zoom threshold on every text control.
    Last in the sheet so component shorthand `font` declarations cannot
    reset this (notably .composer-input). */
+@media (max-width: 900px) {
+	/* These must follow the base nav's column/11rem rules: the settings
+	   bar is horizontal on mobile and owns its overflow. */
+	.settings-nav {
+		flex-direction: row;
+		width: auto;
+		min-width: 0;
+		max-width: 100%;
+		padding-left: 0;
+		overflow-x: auto;
+		overflow-y: hidden;
+		flex-wrap: nowrap;
+	}
+
+	.settings-nav .settings-nav-group {
+		flex-direction: row;
+		align-items: center;
+		flex: none;
+		min-width: 0;
+		gap: 0.2rem;
+	}
+
+	.settings-nav .settings-nav-heading,
+	.settings-nav .settings-nav-extension {
+		flex: none;
+	}
+}
+
 @media (pointer: coarse) {
 	body :is(input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"], [type="color"], [type="button"], [type="submit"], [type="reset"]), textarea, select) {
 		font-size: 16px;
