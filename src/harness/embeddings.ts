@@ -173,6 +173,8 @@ export function buildEmbeddingRegistry(
 		}
 
 		// 2. Confidentiality fails closed before credentials or provider calls.
+		// The gate also precedes the empty-input success: no confidential call
+		//    succeeds against a non-local model, even with no texts to send.
 		const local = settings.localModels.includes(resolved.full) && resolved.model.local !== false;
 		if (opts.confidentiality === "local-only" && !local) {
 			return {
@@ -226,7 +228,8 @@ export function buildEmbeddingRegistry(
 
 		const vectors: Float32Array[] = [];
 		try {
-			const maxBatch = resolved.model.maxBatch ?? texts.length;
+			// Loader validation forbids zero; keep direct registry construction safe too.
+			const maxBatch = Math.max(1, resolved.model.maxBatch ?? texts.length);
 			for (let start = 0; start < texts.length; start += maxBatch) {
 				const input = texts.slice(start, start + maxBatch);
 				const response = await contribution.embed(
@@ -256,7 +259,7 @@ export function buildEmbeddingRegistry(
 						};
 					}
 					const converted = Float32Array.from(vector);
-					if ([...converted].some((element) => !Number.isFinite(element))) {
+					if (converted.some((element) => !Number.isFinite(element))) {
 						return {
 							ok: false,
 							code: "bad_response",
@@ -293,7 +296,13 @@ export function buildEmbeddingRegistry(
 	return {
 		embed,
 		list() {
-			const configuredDefault = deps.settings().embeddingModel;
+			let settings: ReturnType<typeof deps.settings>;
+			try {
+				settings = deps.settings();
+			} catch {
+				return [];
+			}
+			const configuredDefault = settings.embeddingModel;
 			const out: {
 				model: string;
 				provider: string;
@@ -311,7 +320,7 @@ export function buildEmbeddingRegistry(
 						model: qualified,
 						provider: contribution.id,
 						dimensions: model.dimensions,
-						local: model.local !== false,
+						local: settings.localModels.includes(qualified) && model.local !== false,
 						default: qualified === configuredDefault,
 						status,
 					});

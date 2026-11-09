@@ -171,7 +171,10 @@ describe("buildEmbeddingRegistry", () => {
 					{ id: "embed-2", dimensions: 3, local: false },
 				],
 			},
-			settings: { embeddingModel: "acme-embed/embed-2" },
+			settings: {
+				embeddingModel: "acme-embed/embed-2",
+				localModels: ["acme-embed/embed-1", "acme-embed/embed-2"],
+			},
 		});
 		expect(fixture.registry.list()).toEqual([
 			{ model: "acme-embed/embed-1", provider: "acme-embed", dimensions: 2, local: true, default: false, status: "degraded" },
@@ -180,6 +183,19 @@ describe("buildEmbeddingRegistry", () => {
 		expect(fixture.registry.providers()).toEqual([
 			{ id: "acme-embed", label: "Acme Embeddings", extension: "acme-one", models: ["embed-1", "embed-2"], status: "degraded" },
 		]);
+	});
+
+	it("list requires both the admin list and provider local allowance", () => {
+		const fixture = makeFixture({
+			contribution: {
+				models: [
+					{ id: "embed-1", dimensions: 2 },
+					{ id: "embed-2", dimensions: 3, local: false },
+				],
+			},
+			settings: { localModels: ["acme-embed/embed-2"] },
+		});
+		expect(fixture.registry.list().map((row) => row.local)).toEqual([false, false]);
 	});
 
 	it("batches above maxBatch keep order", async () => {
@@ -265,6 +281,15 @@ describe("buildEmbeddingRegistry", () => {
 		if (result.ok) {
 			expect(result).toEqual({ ok: true, model: "acme-embed/embed-1", dimensions: 2, vectors: [] });
 		}
+		expect(fixture.calls).toHaveLength(0);
+	});
+
+	it("empty local-only input to a non-local model is not_local", async () => {
+		const fixture = makeFixture();
+		const result = await fixture.registry.embed("acme-recall", [], {
+			confidentiality: "local-only",
+		});
+		expect(result).toEqual({ ok: false, code: "not_local", message: expect.any(String) });
 		expect(fixture.calls).toHaveLength(0);
 	});
 });
