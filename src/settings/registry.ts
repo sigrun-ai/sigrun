@@ -23,6 +23,9 @@
  * the value at load (Task 3's sections carry that).
  */
 
+import { applyOf as schemaApplyOf } from "./schema/keywords.js";
+import { coreProperty } from "./core-schema.js";
+
 /** How one setting applies (spec §13.1). */
 export type SettingApply = "live" | "restart";
 
@@ -44,7 +47,7 @@ export type SettingSection =
 export interface CoreSettingKey {
 	/** The flattened dotted path (`"namingModel"`, `"server.port"`). */
 	readonly key: string;
-	readonly apply: SettingApply;
+	readonly apply?: SettingApply;
 	readonly section: SettingSection;
 	/** The audit's one-line record: where the value is read. */
 	readonly reason: string;
@@ -513,9 +516,13 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 	},
 ];
 
-/** The registry keyed by `key` (constant lookup for classification). */
-const BY_KEY: ReadonlyMap<string, CoreSettingKey> = new Map(
-	CORE_SETTING_KEYS.map((entry) => [entry.key, entry]),
+/** The registry keyed by `key`, with apply derived from the core schema. */
+const BY_KEY: ReadonlyMap<string, CoreSettingKey & { readonly apply: SettingApply }> = new Map(
+	CORE_SETTING_KEYS.map((entry) => {
+		const property = coreProperty(entry.key);
+		if (property === undefined) throw new Error(`core registry: no schema property for ${entry.key}`);
+		return [entry.key, { ...entry, apply: schemaApplyOf(property) }];
+	}),
 );
 
 /**

@@ -478,9 +478,16 @@ export function generateForm(
 			if (child.writeOnly === true) emit(name, pointerJoin("", name), child, topRequired.has(name));
 		}
 
-		// Inclusion: only the listed paths render, grouped by section.
+		// Inclusion: only the listed paths render, grouped by section. Core's
+		// layout also names leaves inside nested objects (server/port, etc.).
 		const included = new Map<string, JsonSchema>();
-		for (const [name, child] of topLevel) included.set(pointerJoin("", name), child);
+		const include = (child: JsonSchema, pointer: string): void => {
+			included.set(pointer, child);
+			for (const [childName, grandchild] of propertiesOf(schema, child)) {
+				include(grandchild, pointerJoin(pointer, childName));
+			}
+		};
+		for (const [name, child] of topLevel) include(child, pointerJoin("", name));
 		for (const group of opts.layout) {
 			const children: (Field | SectionBlock)[] = [];
 			for (const path of group.paths) {
@@ -492,17 +499,25 @@ export function generateForm(
 					continue;
 				}
 				if (child.writeOnly === true) continue; // already under Credentials
-				const name = path.split("/").pop() ?? path;
-				apply.set(name, applyOf(child));
-				const node = propertyNode(ctx, name, path, child, topRequired.has(name));
+				const segments = path.split("/").filter((segment) => segment !== "");
+				const name = segments.map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~")).join(".");
+				const node = propertyNode(ctx, name, path, child, false);
 				const override = group.overrides?.[path];
 				if (node.type === "section" && node.title === undefined) {
 					// Untitled nested object: the layout group is its section.
 					children.push(...(node.children as readonly (Field | SectionBlock)[]));
 				} else {
-					children.push(
-						override && node.type !== "section" ? ({ ...node, ...override } as Field) : node,
-					);
+					if (override && node.type !== "section") {
+						const merged = { ...node, ...override } as Record<string, unknown>;
+						for (const [key, value] of Object.entries(override)) {
+							if (value === undefined) delete merged[key];
+						}
+						// SAFETY: the generated node is a Field; overrides only replace
+						// field properties or remove them with an undefined marker.
+						children.push(merged as unknown as Field);
+					} else {
+						children.push(node);
+					}
 				}
 			}
 			rest.push({ type: "section", title: group.title, children });

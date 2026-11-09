@@ -531,6 +531,27 @@ export function settingsSurfaceFor(
 				}
 				continue;
 			}
+			if (field.type === "entries") {
+				// Entries carry the channel's saved-identity marker for secret
+				// moves; it is bookkeeping, never part of the settings file.
+				const stripFrom = (entry: unknown): JsonValue => {
+					// SAFETY: form submissions are JSON; entries are objects or
+					// scalar JSON values, and the marker is the only extra key.
+					if (!isRec(entry)) return entry as JsonValue;
+					const { $from: _from, ...plain } = entry;
+					return plain as JsonObject;
+				};
+				value = Array.isArray(value)
+					? value.map(stripFrom)
+					: isRec(value)
+						? Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+							const plain = stripFrom(entry);
+							return [key, isRec(plain) && Object.keys(plain).length === 1 && "value" in plain
+								? plain.value
+								: plain];
+						}))
+						: value;
+			}
 			writeDotted(patch, name, value);
 		}
 		const managedKeys = managedKeysTouched(patch, options.core.managed());

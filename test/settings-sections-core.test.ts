@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import type { JsonObject } from "@sigrun/shared/blocks";
+import type { EntriesField, JsonObject, Tree } from "@sigrun/shared/blocks";
 import { validateTree } from "../src/blocks/validate.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
@@ -33,6 +33,11 @@ import {
 	CORE_SECTION_IDS,
 	CORE_SETTINGS_SECTIONS,
 } from "../src/settings/core-sections.js";
+import {
+	CORE_LAYOUT,
+	coreProperty,
+	coreSchema,
+} from "../src/settings/core-schema.js";
 import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { seededIdentity } from "./helpers/identity.js";
 
@@ -116,7 +121,104 @@ async function call(
 
 // ─── The declarations (pure, no server) ───────────────────────────────────
 
+/** The pre-Task-8 capture: generated forms must preserve this UI exactly. */
+const beforeForms = JSON.parse(
+	await readFile(
+		new URL("./fixtures/core-section-forms-before-task8.json", import.meta.url),
+		"utf8",
+	),
+) as Record<"general" | "tools" | "advanced", Tree>;
+
+/** Normalize ids and omit perModelThinking, whose table conversion is intended. */
+function normalizedForm(form: Tree): unknown {
+	const copy = structuredClone(form) as unknown as Record<string, unknown>;
+	const walk = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child);
+			return;
+		}
+		if (typeof node !== "object" || node === null) return;
+		const record = node as Record<string, unknown>;
+		delete record.id;
+		if (record.type === "form") record.submitLabel = "Save";
+		if (Array.isArray(record.children)) {
+			record.children = record.children.filter(
+				(child) => (child as { name?: string }).name !== "perModelThinking",
+			);
+		}
+		for (const child of Object.values(record)) walk(child);
+	};
+	walk(copy);
+	return copy;
+}
+
 describe("core settings sections (U4 Task 4)", () => {
+	test("generated core sections equal today's, apart from the thinking table", () => {
+		for (const id of ["general", "tools", "advanced"] as const) {
+			const section = CORE_SETTINGS_SECTIONS.find((candidate) => candidate.id === id);
+			expect(section).toBeDefined();
+			expect(normalizedForm(section!.form), id).toEqual(normalizedForm(beforeForms[id]));
+		}
+		const advanced = CORE_SETTINGS_SECTIONS.find((section) => section.id === "advanced");
+		const root = advanced?.form.root;
+		const group = root?.type === "form" ? root.children.find(
+			(child) => child.type === "section" && child.title === "Model overrides",
+		) : undefined;
+		const thinking = group?.type === "section"
+			? group.children.find((child) => "name" in child && child.name === "perModelThinking")
+			: undefined;
+		expect(thinking).toMatchObject({
+			type: "entries",
+			shape: "table",
+			name: "perModelThinking",
+			keyLabel: "Model",
+			summary: ["value"],
+			item: [{
+				type: "choice",
+				name: "value",
+				label: "Thinking level",
+				options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map(
+					(level) => ({ id: level, label: level }),
+				),
+			}],
+		} satisfies Partial<EntriesField>);
+	});
+
+	test("defaultTools keeps the tool roster binding", () => {
+		const tools = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tools");
+		const json = JSON.stringify(tools?.form);
+		expect(json).toContain('"$":"/toolRoster"');
+	});
+
+	test("unlisted keys are not rendered", () => {
+		const json = JSON.stringify(
+			CORE_SETTINGS_SECTIONS.filter((section) =>
+				["general", "tools", "advanced"].includes(section.id),
+			),
+		);
+		for (const key of [
+			"jobs",
+			"decisionModel",
+			"decisions.tool",
+			"server.workspacePath",
+			"server.storagePath",
+			"server.compaction.modelOverrides",
+		]) expect(json).not.toContain(`"name":"${key}"`);
+	});
+
+	test("every registry key has a nested schema property with x-sigrun-apply", () => {
+		expect(coreSchema.type).toBe("object");
+		for (const entry of CORE_SETTING_KEYS) {
+			const property = coreProperty(entry.key);
+			expect(property, entry.key).toBeDefined();
+			expect(property?.title, entry.key).toEqual(expect.any(String));
+			expect(property?.description, entry.key).toEqual(expect.any(String));
+			expect(property).toHaveProperty("default");
+			expect(property?.["x-sigrun-apply"], entry.key).toBe(entry.apply);
+		}
+		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "tools", "advanced"]);
+	});
+
 	test("every core section's form validates against the settings placement", () => {
 		for (const section of CORE_SETTINGS_SECTIONS) {
 			const result = validateTree(section.form, {
@@ -172,8 +274,10 @@ describe("core settings sections (U4 Task 4)", () => {
 			if (
 				typeof record.name === "string" &&
 				typeof record.type === "string" &&
-				!["section", "form", "page", "stack"].includes(record.type)
+				!["section", "form", "page", "stack"].includes(record.type) &&
+				record.type !== "entries"
 			) {
+				if (record.type === "choice" && record.name === "value") return;
 				out.push({
 					name: record.name,
 					apply: typeof record.apply === "string" ? record.apply : undefined,
@@ -404,7 +508,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 						"stream.timeoutMs": "",
 						"stream.maxRetries": "",
 						"stream.maxRetryDelayMs": "",
-						perModelThinking: "",
+						perModelThinking: {},
 						"server.port": "",
 						"server.publicUrl": "",
 						"server.timezone": "",
@@ -518,6 +622,36 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		});
 		expect((backOn.body as { ok: boolean }).ok).toBe(true);
 		expect(opened.settings.read().retry?.enabled).toBe(true);
+	});
+
+	test("the per-model thinking table saves scalar levels without channel identity markers", async () => {
+		const { app, opened, aliceToken } = await server();
+		const render = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		const rev = (render.body as { rev: number }).rev;
+		const save = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-thinking-table",
+				params: {},
+				payload: {
+					rev,
+					values: {
+						perModelThinking: {
+							"acme/model": { value: "low", $from: "acme/model" },
+						},
+					},
+				},
+			},
+		});
+		expect(save.body).toMatchObject({ ok: true });
+		expect(opened.settings.read().perModelThinking).toEqual({ "acme/model": "low" });
 	});
 
 	test("the Tools section's data carries the tool roster (the defaultTools options)", async () => {
@@ -732,7 +866,9 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			if (
 				typeof record.name === "string" &&
 				typeof record.type === "string" &&
-				!["section", "form", "page", "stack"].includes(record.type)
+				!["section", "form", "page", "stack"].includes(record.type) &&
+				record.type !== "entries" &&
+				!(record.type === "choice" && record.name === "value")
 			) {
 				out.push(record.name);
 			}
@@ -742,6 +878,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			const names: string[] = [];
 			walkNames(section.form, names);
 			for (const name of names) fieldSection.set(name, section.id);
+			if (names.includes("perModelThinking")) fieldSection.set("perModelThinking", section.id);
 		}
 		// Cove-rendered sections (Interface/Providers/Extensions — the
 		// channels draw them natively) drop their core-key rows: a hit

@@ -45,6 +45,7 @@ import type { JobSpec } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "@sigrun/shared/settings";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
+import { coreProperty } from "../src/settings/core-schema.js";
 import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
@@ -223,6 +224,8 @@ describe("the core settings registry (spec §13.1)", () => {
 				const entry = map.get(key);
 				expect(entry, `registry entry for ${key}`).toBeDefined();
 				expect(entry?.apply, `${key} apply`).toBe(apply);
+				// The schema owns apply; the registry derives its classification.
+				expect(coreProperty(key)?.["x-sigrun-apply"], `${key} schema apply`).toBe(apply);
 				// Every entry carries a one-line reason (the audit's record).
 				expect(
 					(entry?.reason.length ?? 0) > 0 && (entry?.section.length ?? 0) > 0,
