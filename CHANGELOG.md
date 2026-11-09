@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-09
+
+The embedding-providers release: embeddings become a first-class provider
+kind beside chat and decisions. Companion published first: ext-gateway
+0.1.29 (shared peer 0.12.0).
+
+### Added
+
+- Extension contract: `embeddingProviders` contributions (id, models
+  with dimensions/maxBatch/local, readiness, embed), loader-validated
+  and quarantined per field like decision providers.
+- A pure embedding registry: coded never-throw results (`no_model`,
+  `not_configured`, `not_local`, `timeout`, `failed`, `bad_response`),
+  maxBatch chunking with order preserved, dimension/finiteness checks,
+  and a fail-closed local-only gate (local ⇔ the model is in
+  `embeddings.localModels` AND its declaration is not `local: false`).
+- `host.embeddings.embed/list` for every extension.
+- Settings: `embeddingModel` (`provider/model`; unset means embeddings
+  are off — no silent default), `embeddings.localModels`, and
+  `server.embeddings.timeoutMs` (default 30000), all live.
+- `/v1/providers` lists embedding rows (`kind: "embedding"`) with owner
+  and modelIds; credential PUT/DELETE work for embedding-only ids, and
+  the env-driven openai chat fallback is suppressed whenever any loaded
+  extension declares the provider id in any kind.
+- webui Providers rows keyed by provider+kind (one id may appear in
+  chat, decisions and embeddings kinds), with kind badges.
+
+### Changed
+
+- `not_configured` for embeddings and decisions is decided by core from
+  the credential plus the provider's readiness — never the tracker
+  alone (the tracker cannot read auth.json).
+- A Providers-page credential save now reaches the decision and
+  embedding registries even when the provider id is also the default
+  chat provider (the magic `default` auth key is read, id-gated).
+
 ## [0.11.6] - 2026-11-08
 
 The CI-noise release: extension CI stops testing against unreleased core

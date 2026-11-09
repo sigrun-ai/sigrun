@@ -1,3 +1,7 @@
+## [0.12.0] - 2026-11-09
+
+- Version-locked bump with the 0.12.0 core line; new `@sigrun/shared/embeddings` subpath (the `EmbeddingResult` type) and the three embedding settings keys.
+
 ## [0.11.6] - 2026-11-08
 
 - Version-locked bump with the 0.11.6 core line (no changes).
