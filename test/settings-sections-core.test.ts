@@ -816,13 +816,48 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		});
 		expect(result.status).toBe(200);
 		const body = result.body as {
-			sections: { slug: string; id: string; title: string; icon: string }[];
+			sections: {
+				slug: string;
+				id: string;
+				title: string;
+				icon: string;
+				page?: string;
+				admin?: boolean;
+				scope?: "user";
+			}[];
 		};
 		const core = body.sections.filter((s) => s.slug === "core");
 		expect(core.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
-		// Old extension surfaces.settings declarations are rejected; Task 7
-		// replaces their generated-section coverage.
-		expect(body.sections.filter((s) => s.slug !== "core")).toEqual([]);
+		// Task 7's generated-section coverage, now against the declaring
+		// dev-linked built-ins: curator's shared then per-user pages come
+		// first alphabetically, followed by oauth's shared-only page.
+		expect(body.sections.filter((s) => s.slug !== "core")).toEqual([
+			{
+				slug: "curator",
+				id: "settings",
+				page: "curator",
+				title: "Settings",
+				icon: "key",
+				admin: true,
+			},
+			{
+				slug: "curator",
+				id: "user-settings",
+				page: "curator",
+				title: "Your settings",
+				icon: "key",
+				scope: "user",
+				admin: false,
+			},
+			{
+				slug: "oauth",
+				id: "settings",
+				page: "oauth",
+				title: "Settings",
+				icon: "key",
+				admin: true,
+			},
+		]);
 	});
 
 	test("the search index covers every core key's label and help; 'naming' resolves to General's naming model", async () => {
