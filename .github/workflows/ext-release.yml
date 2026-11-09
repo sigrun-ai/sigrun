@@ -72,7 +72,7 @@ jobs:
   guard:
     runs-on: ubuntu-latest
     outputs:
-      refs: ${{ steps.resolve.outputs.refs }}
+      refs: ${{ steps.resolve.outputs.refs || '{}' }}
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       # The repo under test with FULL history — the default fetch-depth 1
@@ -96,6 +96,7 @@ jobs:
           clean: false
       - name: Resolve the core and family refs
         id: resolve
+        if: inputs.core-ref != 'main'
         shell: bash
         run: |
           set -euo pipefail

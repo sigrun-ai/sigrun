@@ -150,9 +150,10 @@ jobs:
         shell: bash
         run: sleep 180
       - uses: ./sigrun/.github/actions/family-checkout
-      # A main batch can reach this job before the extensions' own
+      # A main push batch can reach this job before the extensions' own
       # releases have published the versions their checkouts declare.
-      # Missing pins skip the image check; any other error stays fatal.
+      # Missing pins skip the image check on push only; a pull request
+      # keeps the loud failure so its registry-shaped build cannot vanish.
       - name: Check that every built-in pin is live
         id: pins-live
         shell: bash
@@ -180,8 +181,13 @@ jobs:
             fi
           done
           if [ "${#missing[@]}" -gt 0 ]; then
-            echo "live=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::image build skipped: ${missing[*]} not on npm yet (the release checks this)"
+            if [ "$GITHUB_EVENT_NAME" = "push" ]; then
+              echo "live=false" >> "$GITHUB_OUTPUT"
+              echo "::notice::image build skipped: ${missing[*]} not on npm yet (the release checks this)"
+            else
+              echo "::error::built-in pins missing from npm: ${missing[*]}"
+              exit 1
+            fi
           else
             echo "live=true" >> "$GITHUB_OUTPUT"
           fi

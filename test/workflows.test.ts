@@ -388,6 +388,23 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		expect(String(job?.env?.DRY ?? "")).toContain("inputs.dry-run");
 		// Pre-check that every built-in pin is already live (one-shot).
 		expect(runs).toContain("--timeout-min 0");
+		// memory-markdown is a devDependency, outside the built-in pins
+		// pre-check. Resolve the family refs before core publishes so a
+		// pi-durable bump cannot strand every core-ref: release caller.
+		const steps = job?.steps ?? [];
+		const pins = steps.findIndex((step) => step.name === "Pre-check: every built-in pin is live");
+		const memoryMarkdown = steps.findIndex(
+			(step) => step.name === "Pre-check: memory-markdown resolves against the release",
+		);
+		expect(memoryMarkdown, "the release must resolve memory-markdown before publishing").toBeGreaterThan(pins);
+		const memoryMarkdownStep = steps[memoryMarkdown];
+		expect(memoryMarkdownStep?.shell).toBe("bash");
+		expect(memoryMarkdownStep?.["working-directory"]).toBe("sigrun");
+		const body = runOf(memoryMarkdownStep as Step);
+		expect(body).toContain("npm install --prefix ../.sigrun-tools --no-save semver@^7");
+		expect(body).toContain("node scripts/ci-core-ref.mjs release");
+		const firstPublish = steps.findIndex((step) => step.name?.includes("Publish @sigrun/"));
+		expect(memoryMarkdown, "the resolver pre-check precedes every publish").toBeLessThan(firstPublish);
 		// Prereleases publish under --tag next, never onto latest.
 		expect(runs).toContain("--tag next");
 		// npm 11.21+ is the OIDC trusted-publishing-capable line.
@@ -677,9 +694,9 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 			/if \[ -z "\$\{published\}" \]; then\n\s+echo "::error::npm view returned no version for \$\{pin\}"\n\s+echo "\$\{published\}"\n\s+exit 1/,
 		);
 		expect(body).not.toContain('[ -z "${published}" ]; then\n              missing+=');
-		expect(body).toContain("live=false");
-		expect(body).toContain(
-			"::notice::image build skipped: ${missing[*]} not on npm yet (the release checks this)",
+		expect(body).toContain('if [ "$GITHUB_EVENT_NAME" = "push" ]; then');
+		expect(body).toMatch(
+			/if \[ "\$GITHUB_EVENT_NAME" = "push" \]; then\n\s+echo "live=false" >> "\$GITHUB_OUTPUT"\n\s+echo "::notice::image build skipped: \$\{missing\[\*\]\} not on npm yet \(the release checks this\)"\n\s+else\n\s+echo "::error::built-in pins missing from npm: \$\{missing\[\*\]\}"\n\s+exit 1\n\s+fi/,
 		);
 		const regen = steps.find((step) => runOf(step).includes("publish-deps.mjs registry"));
 		expect(steps.indexOf(gate as Step)).toBeLessThan(steps.indexOf(regen as Step));
@@ -920,6 +937,9 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 			"refs",
 			"ref",
 		]);
+		expect(action.inputs.refs.default).toBe("");
+		expect(action.inputs["needs-core"].default).toBe("false");
+		expect(action.inputs["core-ref"].default).toBe("main");
 		const steps = action.runs.steps;
 		const resolve = steps.find((step) => step.id === "resolve");
 		expect(resolve, "the resolver must expose refs").toBeDefined();
@@ -970,10 +990,12 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 		expect(
 			needsCoreSteps.every(
 				(step) =>
-					!/\binputs\.needs-core\s*(?:$|[)&|])/.test(String(step.if)),
-			),
-			"composite inputs are strings: bare if: inputs.needs-core treats 'false' as true",
-		).toBe(true);
+					!/\binputs\.needs-core(?!\s*(?:==|!=))/.test(String(step.if)),
+				),
+				"composite inputs are strings: bare if: inputs.needs-core treats 'false' as true",
+			).toBe(true);
+			expect(/\binputs\.needs-core(?!\s*(?:==|!=))/.test("${{ inputs.needs-core }}")).toBe(true);
+			expect(/\binputs\.needs-core(?!\s*(?:==|!=))/.test("inputs.needs-core == 'true'")).toBe(false);
 		const runs = steps.map(runOf).join("\n");
 		const setupCheck = steps.find((step) => step.name === "Reject sibling links without the family layout");
 		const install = steps.find((step) => step.name === "Install");
@@ -1020,7 +1042,7 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 	test("publish uses the resolved refs", () => {
 		const workflowFile = parseWorkflowFile(EXT_RELEASE_FILE, "ext-release.yml");
 		const { guard, test, publish } = workflowFile.jobs;
-		expect(guard?.outputs?.refs).toBe("${{ steps.resolve.outputs.refs }}");
+		expect(guard?.outputs?.refs).toBe("${{ steps.resolve.outputs.refs || '{}' }}");
 		const resolver = (guard?.steps ?? []).find(
 			(step) => step.id === "resolve" && runOf(step).includes("ci-core-ref.mjs"),
 		);
@@ -1032,6 +1054,7 @@ describe(".github/actions/ext-test (shared extension test procedure)", () => {
 			"rm -f .sigrun-tools/package.json .sigrun-tools/package-lock.json",
 		);
 		expect(runOf(resolver as Step)).toContain("[ -n \"$refs\" ] || refs='{}'");
+		expect(resolver?.if, "main mode needs no registry resolution").toBe("inputs.core-ref != 'main'");
 		const testAction = (test?.steps ?? []).find(
 			(step) => step.uses === "sigrun-ai/sigrun/.github/actions/ext-test@main",
 		);
