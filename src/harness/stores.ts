@@ -479,6 +479,7 @@ export interface ExtensionStores {
 	readonly secrets: {
 		get(key: string): Promise<string | undefined>;
 		set(key: string, value: string): Promise<void>;
+		delete(key: string): Promise<void>;
 	};
 	/** This slug's `settings/<slug>.json` file, absent → `{}`. */
 	readonly settings: {
@@ -734,6 +735,11 @@ export function scopedExtensionStores(
 			async set(key, value) {
 				const section = await shared.secrets.readSection(settingsSlug);
 				section[key] = value;
+				await shared.secrets.writeSection(settingsSlug, section);
+			},
+			async delete(key) {
+				const section = await shared.secrets.readSection(settingsSlug);
+				delete section[key];
 				await shared.secrets.writeSection(settingsSlug, section);
 			},
 		},

@@ -1451,6 +1451,7 @@ export interface SigrunHost {
 		readonly secrets: {
 			get(key: string): Promise<string | undefined>;
 			set(key: string, value: string): Promise<void>;
+			delete(key: string): Promise<void>;
 		};
 		/** Your settings/<slug>.json (absent reads as {}). */
 		readonly settings: {
