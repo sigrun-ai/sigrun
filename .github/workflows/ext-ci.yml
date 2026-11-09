@@ -12,12 +12,12 @@
 #
 # needs-core is true ONLY for the repos whose devDependencies hold a
 # file:../ sibling spec (ext-mcp/ext-curator/ext-gateway/ext-oauth ->
-# sigrun, ext-tool-search -> sigrun-ext-mcp). For those, the job checks core out
-# at path `sigrun`, checks the four OTHER built-in siblings out via the
-# family-checkout composite action with `exclude: <this repo>`, and
-# builds core first so the file: link resolves against real build
-# output. The repo under test is ALWAYS the caller's own checkout at the
-# triggering SHA — never a family-checkout default-branch checkout.
+# sigrun, ext-tool-search -> sigrun-ext-mcp). The shared ext-test action
+# owns the sibling layout and builds core first so file: links resolve
+# against real build output. The repo under test is ALWAYS the caller's
+# own checkout at the triggering SHA — never a family-checkout
+# default-branch checkout. core-ref: release pins non-built-ins to the
+# latest released core and its companion tags instead of core main.
 name: ext-ci
 
 on:
@@ -33,6 +33,11 @@ on:
         required: false
         type: boolean
         default: false
+      core-ref:
+        description: Test against core main or its latest release
+        required: false
+        type: string
+        default: main
 
 permissions:
   contents: read
@@ -41,69 +46,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      # needs-core layout: the file:../sigrun (and file:../sigrun-ext-*)
-      # dev specs resolve against the WORKSPACE ROOT, so core sits at
-      # `sigrun` and the repo under test sits at its own sibling name —
-      # matching the layout its own lockfile was generated in.
-      - uses: actions/checkout@v5
-        if: inputs.needs-core
+      - uses: sigrun-ai/sigrun/.github/actions/ext-test@main
         with:
-          repository: sigrun-ai/sigrun
-          path: sigrun
-      - name: Check out the built-in family siblings
-        if: inputs.needs-core
-        uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
-        with:
-          exclude: ${{ github.event.repository.name }}
-      # After family-checkout: the repo under test at the TRIGGERING SHA
-      # (a PR head for pull_request, the pushed commit for push). This
-      # must come after the family action so the family action's
-      # default-branch checkouts can never overwrite the code under test.
-      - uses: actions/checkout@v5
-        if: inputs.needs-core
-        with:
-          path: ${{ github.event.repository.name }}
-      # needs-core == false: a plain root checkout of the repo under
-      # test; package-dir stays "." and no sibling layout exists.
-      - uses: actions/checkout@v5
-        if: "!inputs.needs-core"
-      - uses: actions/setup-node@v5
-        with:
-          node-version: "22"
-      - name: Build core and the built-in siblings (file:-linked repos)
-        if: inputs.needs-core
-        run: |
-          # Core plus every built-in sibling the file: links resolve into:
-          # the links point at the sibling CHECKOUTS, so their deps must be
-          # installed there too (pi-durable 1.5.0: ext-mcp's dist imports
-          # typebox at runtime, resolved from its own node_modules).
-          npm ci --prefix sigrun && (cd sigrun && npm run build)
-          for repo in sigrun-ext-codemode sigrun-ext-curator \
-            sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-oauth \
-            sigrun-memory-markdown; do
-            if [ -d "$repo" ] && [ "$repo" != "${{ github.event.repository.name }}" ]; then
-              npm ci --prefix "$repo" >/dev/null 2>&1 || npm install --prefix "$repo" >/dev/null 2>&1 || true
-            fi
-          done
-      # WORKDIR: needs-core puts the package under the sibling layout
-      # (<repo>/<package-dir>); the plain lane stays at package-dir.
-      - name: Resolve the package working directory
-        id: workdir
-        shell: bash
-        env:
-          REPO: ${{ github.event.repository.name }}
-          PKGDIR: ${{ inputs.package-dir }}
-          NEEDS_CORE: ${{ inputs.needs-core }}
-        run: |
-          if [ "$NEEDS_CORE" = "true" ]; then
-            echo "dir=${REPO}/${PKGDIR}" >> "$GITHUB_OUTPUT"
-          else
-            echo "dir=${PKGDIR}" >> "$GITHUB_OUTPUT"
-          fi
-      - name: Install, build, test, typecheck
-        working-directory: ${{ steps.workdir.outputs.dir }}
-        run: |
-          npm ci
-          npm run build
-          npm test
-          npm run typecheck
+          package-dir: ${{ inputs.package-dir }}
+          needs-core: ${{ inputs.needs-core }}
+          core-ref: ${{ inputs['core-ref'] }}
+          repo: ${{ github.event.repository.name }}

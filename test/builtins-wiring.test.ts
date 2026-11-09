@@ -150,6 +150,18 @@ function harnessBuiltinNames(): string[] {
 	return BUILTIN_EXTENSIONS.map((builtin) => builtin.specifier);
 }
 
+/** The gateway checkout must be on the released 0.1.x line and its
+ * declared shared peer range must contain core's actual shared pin. */
+function gatewayAcceptsCoreShared(core: MinimalManifest, gateway: MinimalManifest): boolean {
+	const sharedPeer = gateway.peerDependencies?.["@sigrun/shared"];
+	return (
+		satisfies(gateway.version ?? "", ">=0.1.26 <0.2.0") &&
+		typeof sharedPeer === "string" &&
+		sharedPeer.trim() !== "" &&
+		satisfies(core.dependencies?.["@sigrun/shared"] ?? "", sharedPeer)
+	);
+}
+
 /**
  * The released ext-gateway line's @sigrun/shared peer acceptance,
  * derived from BOTH facts the sibling manifest carries — its version
@@ -287,20 +299,12 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 	test("the Part A ext-gateway shared-peer exception stays narrow", () => {
 		const siblings = siblingManifests();
 		const gateway = siblings.get("@sigrun/ext-gateway");
-		// The linked checkout tracks the RELEASED gateway line: 0.1.3
-		// (Part A, exact 0.2.1 peer), 0.1.4 (the peer-widening patch that
-		// adds 0.3.0), and 0.1.5-0.1.24 (the peer-widening line that adds
-		// 0.4.x/0.5.0/0.6.x/0.7.0/0.8.0/0.9.0/0.10.0/0.10.1/0.10.2/0.11.x
-		// while keeping 0.3.0). Each legitimately declares its line's
-		// acceptance; anything older — or a declaration from the WRONG
-		// line — is skew.
-		expect(gateway?.manifest.version ?? "").toMatch(/^0\.1\.([3-9]|1[0-9]|2[0-7])$/);
-		expect(gateway?.manifest.peerDependencies?.["@sigrun/shared"] ?? "").toMatch(
-			// The peer-widening line appends each new shared minor; the
-			// acceptance is the cumulative chain ending at the line's
-			// newest minor (0.11.5 as of the core 0.11.5 line).
-			/^0\.3\.0( \|\| 0\.4\.0( \|\| 0\.4\.1( \|\| 0\.4\.2( \|\| 0\.5\.0( \|\| 0\.6\.0( \|\| 0\.6\.1( \|\| 0\.7\.0( \|\| 0\.8\.0( \|\| 0\.9\.0( \|\| 0\.10\.0( \|\| 0\.10\.1( \|\| 0\.10\.2( \|\| 0\.11\.0( \|\| 0\.11\.1( \|\| 0\.11\.2( \|\| 0\.11\.3( \|\| 0\.11\.4( \|\| 0\.11\.5)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?)?$/,
-		);
+		// The linked checkout tracks the released 0.1.x gateway line.
+		// Acceptance is derived from core's actual shared pin and the
+		// sibling's declared range; appending a core minor must not require
+		// editing a second, hand-maintained version chain here.
+		const core = manifest(join(REPO_ROOT, "package.json"));
+		expect(gatewayAcceptsCoreShared(core, gateway?.manifest ?? {})).toBe(true);
 		// The 0.4.0 core line: only the 0.1.5 declaration installs against
 		// it (the range must CONTAIN core's pin — version alone is not
 		// acceptance), and it keeps the 0.3.0 arm.
@@ -359,6 +363,26 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0", "0.3.0").has("0.2.1")).toBe(
 			false,
 		);
+	});
+
+	test("a gateway fixture whose shared peer excludes core's shared version is rejected", () => {
+		const core = manifest(join(REPO_ROOT, "package.json"));
+		const gateway = siblingManifests().get("@sigrun/ext-gateway")?.manifest;
+		expect(gateway).toBeDefined();
+		const incompatible: MinimalManifest = {
+			...gateway,
+			peerDependencies: {
+				...gateway?.peerDependencies,
+				"@sigrun/shared": "0.11.4",
+			},
+		};
+		expect(gatewayAcceptsCoreShared(core, incompatible)).toBe(false);
+		const withoutSharedPeer: MinimalManifest = {
+			...gateway,
+			peerDependencies: { ...gateway?.peerDependencies },
+		};
+		delete withoutSharedPeer.peerDependencies?.["@sigrun/shared"];
+		expect(gatewayAcceptsCoreShared(core, withoutSharedPeer)).toBe(false);
 	});
 
 	test("no peer skew: every built-in's host peers pin core's own version of that module", () => {
