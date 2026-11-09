@@ -11,6 +11,10 @@
 		"./blocks": {
 			"types": "./dist/blocks/index.d.ts",
 			"default": "./dist/blocks/index.js"
+		},
+		"./settings-schema": {
+			"types": "./dist/settings/schema/index.d.ts",
+			"default": "./dist/settings/schema/index.js"
 		}
 	},
 	"bin": {
