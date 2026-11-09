@@ -30,6 +30,7 @@ import {
 	type ThemeStorage,
 } from "../theme/useTheme";
 import { SettingsPanel, visibleSettingsSections } from "./SettingsPanel";
+import type { SettingsSectionEntryWire } from "../api";
 import { usePrefs } from "./usePrefs";
 
 interface Call {
@@ -39,6 +40,15 @@ interface Call {
 }
 
 /** The extension fixtures the Extensions-cove tests serve. */
+const EXTENSIONS_FIXTURE: ExtensionInfoWire = {
+	name: "acme-tool",
+	status: "ok",
+	interactionKinds: [],
+	ambientKeys: [],
+	workers: [],
+	services: [],
+};
+
 interface ExtensionsHarness {
 	readonly list: readonly ExtensionInfoWire[];
 	readonly settings?: Readonly<Record<string, Record<string, unknown>>>;
@@ -54,7 +64,6 @@ const SECTIONS = [
 	{ slug: "core", id: "interface", title: "Interface", icon: "image" },
 	{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
 	{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
-	{ slug: "core", id: "extensions", title: "Extensions", icon: "add" },
 	{ slug: "core", id: "accounts", title: "Account links", icon: "key" },
 ] as const;
 
@@ -112,6 +121,7 @@ function makeHarness(init?: {
 			readonly id: string;
 			readonly title: string;
 			readonly icon: string;
+			readonly page?: string;
 			readonly scope?: "user";
 			readonly admin?: boolean;
 		}[];
@@ -203,7 +213,7 @@ function makeHarness(init?: {
 			secretState.set(slug, keys);
 			body = { secrets: keys };
 		} else if (input === "/v1/providers") {
-			body = { providers: [] };
+			body = { providers: [{ provider: "acme-provider", owner: "acme-tool", status: "ready", models: 2 }] };
 		} else if (input === "/v1/auth/accounts") {
 			body = { accounts: [] };
 		} else if (input === "/v1/auth/providers") {
@@ -374,25 +384,27 @@ describe("SettingsPanel", () => {
 		);
 	});
 
-	test("user sections are visible to non-admins under My settings; admin+user stays admin-only", async () => {
+	test("non-admins see an extension's user page without its shared section", async () => {
 		const userSections = [
-			{ slug: "acme-ext", id: "profile", title: "Profile", icon: "key", scope: "user" as const, admin: false },
-			{ slug: "acme-ext", id: "personal-admin", title: "Personal admin", icon: "key", scope: "user" as const, admin: true },
+			{ slug: "acme-ext", id: "user-settings", page: "acme-ext", title: "Your settings", icon: "key", scope: "user" as const, admin: false },
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true },
 		];
+		const inventory = [{ ...EXTENSIONS_FIXTURE, name: "acme-ext" }];
 		const nonAdmin = makeHarness({
 			sectionsResponse: { sections: [...SECTIONS, ...userSections], index: [...INDEX] },
+			extensions: { list: inventory },
 		});
 		const { renderer } = await renderPanelWithPrefs(nonAdmin.client, { admin: false });
 		expect(visibleSettingsSections(userSections, false)).toEqual([userSections[0]]);
 		expect(visibleSettingsSections(userSections, true)).toEqual(userSections);
-		expect(textContent(renderer.toJSON())).toContain("My settings");
-		expect(textContent(renderer.toJSON())).toContain("Profile");
-		expect(textContent(renderer.toJSON())).not.toContain("Personal admin");
+		const personalGroup = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
+		expect(personalGroup.findAllByType("button").map((node) => node.props.children)).toEqual(["acme-ext"]);
 		const admin = makeHarness({
 			sectionsResponse: { sections: [...SECTIONS, ...userSections], index: [...INDEX] },
+			extensions: { list: inventory },
 		});
 		const { renderer: adminRenderer } = await renderPanelWithPrefs(admin.client, { admin: true });
-		expect(textContent(adminRenderer.toJSON())).toContain("Personal admin");
+		expect(textContent(adminRenderer.toJSON())).toContain("Settings");
 	});
 
 	test("renders the sections nav from GET /v1/settings/sections, General first", async () => {
@@ -410,7 +422,6 @@ describe("SettingsPanel", () => {
 			"Interface",
 			"Advanced",
 			"Providers",
-			"Extensions",
 			"Account links",
 		]);
 		// The General surface mounted (its SurfaceView renders the form).
@@ -419,21 +430,20 @@ describe("SettingsPanel", () => {
 		).toHaveLength(1);
 	});
 
-	test("an extension's sections follow core in the nav", async () => {
+	test("an extension page follows core in the nav", async () => {
 		const { client } = makeHarness({
 			sectionsResponse: {
 				sections: [
 					...SECTIONS,
-					{ slug: "acme-ext", id: "display", title: "Display", icon: "key" },
+					{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true },
 				],
 				index: [...INDEX],
 			},
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "acme-ext" }] },
 		});
 		const renderer = await renderPanel(client);
-		const navItems = renderer.root
-			.findAllByType("button")
-			.filter((node) => node.props.className === "settings-nav-item");
-		expect(navItems.map((node) => node.props.children)).toContain("Display");
+		const group = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
+		expect(group.findAllByType("button").map((node) => node.props.children)).toContain("acme-ext");
 	});
 
 	test("the search filters the index; a hit jumps to its section and focuses the field", async () => {
@@ -521,7 +531,7 @@ describe("SettingsPanel", () => {
 				section: "providers",
 			});
 			expect(adminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
-			expect(textContent(adminRenderer.renderer.toJSON())).toContain("no providers are loaded");
+			expect(textContent(adminRenderer.renderer.toJSON())).toContain("acme-provider");
 			expect(admin.calls.some((call) => call.input === "/v1/providers")).toBe(true);
 		});
 
@@ -594,7 +604,7 @@ describe("SettingsPanel", () => {
 	});
 });
 
-describe("SettingsPanel Extensions cove", () => {
+describe("SettingsPanel extension pages", () => {
 	const EXTENSIONS: readonly ExtensionInfoWire[] = [
 		{
 			name: "acme-tool",
@@ -606,93 +616,59 @@ describe("SettingsPanel Extensions cove", () => {
 		},
 	];
 
-	async function renderExtensions(harness: ReturnType<typeof makeHarness>) {
-		const renderer = await renderPanel(harness.client);
-		await openSection(renderer, "Extensions");
-		await act(async () => {
-			await new Promise((resolve) => setTimeout(resolve, 0));
-		});
-		return renderer;
-	}
-
-	test("the extension's raw JSON editor round-trips through PUT", async () => {
+	test("nav lists one Extensions entry per page; no (advanced) rows", async () => {
+		const pageSections: readonly SettingsSectionEntryWire[] = [
+			{ slug: "acme-one", id: "settings", page: "acme-one", title: "Settings", icon: "key", admin: true },
+			{ slug: "acme-one", id: "user-settings", page: "acme-one", title: "Your settings", icon: "key", scope: "user", admin: false },
+			{ slug: "acme-two", id: "settings", page: "acme-two", title: "Settings", icon: "key", admin: true },
+		];
 		const harness = makeHarness({
-			extensions: {
-				list: EXTENSIONS,
-				settings: { "acme-tool": { theme: "dark" } },
+			sectionsResponse: { sections: [...SECTIONS, ...pageSections], index: [...INDEX] },
+			extensions: { list: [{ ...EXTENSIONS[0], name: "acme-one" }, { ...EXTENSIONS[0], name: "acme-two" }] },
+		});
+		const { renderer, onSectionCalls } = await renderPanelWithPrefs(harness.client);
+		const group = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
+		const labels = group.findAllByType("button").map((node) => node.props.children);
+		expect(labels).toEqual(["acme-one", "acme-two"]);
+		expect(textContent(renderer.toJSON())).not.toContain("(advanced)");
+		await act(async () => {
+			group.findAllByType("button")[1].props.onClick();
+		});
+		expect(onSectionCalls()).toContain("acme-two");
+		expect(renderer.root.findAllByProps({ "data-extension-page": "acme-two" })).toHaveLength(1);
+	});
+
+	test("Providers rows link to the extension page", async () => {
+		const harness = makeHarness({
+			sectionsResponse: {
+				sections: [
+					...SECTIONS,
+					{ slug: "acme-tool", id: "settings", page: "acme-tool", title: "Settings", icon: "key", admin: true },
+				],
+				index: [...INDEX],
 			},
+			extensions: { list: EXTENSIONS },
 		});
-		const renderer = await renderExtensions(harness);
-		const textarea = find<TestRenderer.ReactTestInstance>(
-			renderer,
-			"settings-ext-settings",
-		);
-		expect(textarea.props.value).toContain('"theme": "dark"');
-		await act(async () => {
-			textarea.props.onChange({ target: { value: '{ "retries": 2 }' } });
-		});
-		await act(async () => {
-			await find(renderer, "settings-ext-save").props.onClick();
-		});
-		const put = harness.calls.find(
-			(call) =>
-				call.input === "/v1/extensions/acme-tool/settings" &&
-				call.method === "PUT",
-		);
-		expect(put).toBeDefined();
-		expect(JSON.parse(put!.body as string)).toEqual({ retries: 2 });
-	});
-
-	test("an extension without a section shows its raw editor under the nav (the carry-over)", async () => {
-		const harness = makeHarness({ extensions: { list: EXTENSIONS } });
-		const renderer = await renderPanel(harness.client);
-		// The nav carries a per-extension row for the uncovered extension.
-		const row = renderer.root
-			.findAllByType("button")
-			.find(
-				(node) =>
-					node.props.className ===
-						"settings-nav-item settings-nav-extension" &&
-						node.props["data-ext"] === "acme-tool",
-			);
-		expect(row).toBeDefined();
-		await act(async () => {
-			row!.props.onClick();
-		});
-		expect(
-			renderer.root.findAllByProps({ className: "settings-ext-settings" }),
-		).toHaveLength(1);
-	});
-
-	test("a deep link to an uncovered extension's slug opens the cove from the ROUTE alone (0.4.0 Task 4 fix)", async () => {
-		// Back/forward and bookmarks land on #/settings/<slug> with NO
-		// in-app click behind them — the cove must resolve from the
-		// fetched extension list, not an in-memory slug.
-		const harness = makeHarness({ extensions: { list: EXTENSIONS } });
-		const onSection = vi.fn();
-		const { renderer } = await renderPanelWithPrefs(harness.client, {
-			section: "acme-tool",
-			onSection,
-		});
+		const { renderer, onSectionCalls } = await renderPanelWithPrefs(harness.client, { section: "providers" });
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
-		expect(
-			renderer.root.findAllByProps({ className: "settings-ext-settings" }),
-		).toHaveLength(1);
-		// And the nav row click routes through onSection (the host writes
-		// the hash — the panel never sets the section directly).
-		const row = renderer.root
-			.findAllByType("button")
-			.find(
-				(node) =>
-					node.props.className ===
-						"settings-nav-item settings-nav-extension" &&
-						node.props["data-ext"] === "acme-tool",
-			);
+		const link = renderer.root.findByProps({ className: "settings-provider-page-link", "data-owner": "acme-tool" });
 		await act(async () => {
-			row!.props.onClick();
+			link.props.onClick();
 		});
-		expect(onSection).toHaveBeenCalledWith("acme-tool");
+		expect(onSectionCalls()).toContain("acme-tool");
+	});
+
+	test("a deep link to an extension page opens its Advanced pane", async () => {
+		const harness = makeHarness({
+			extensions: { list: EXTENSIONS, settings: { "acme-tool": { legacy: true } } },
+		});
+		const { renderer } = await renderPanelWithPrefs(harness.client, { section: "acme-tool" });
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(renderer.root.findAllByProps({ "data-extension-page": "acme-tool" })).toHaveLength(1);
+		expect(textContent(renderer.toJSON())).toContain("This extension doesn't describe its settings.");
 	});
 });

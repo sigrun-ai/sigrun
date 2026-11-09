@@ -95,12 +95,16 @@ function summaryText(
 ): string {
 	return field.summary.map((name) => {
 		const item = nestedFields(field.item).find((candidate) => candidate.name === name);
-		if (item?.type === "secret") {
+		if (item?.type === "secret" || (item?.type === "entries" && item.item.some((child) => child.type === "secret"))) {
 			const identity = savedIdentity(entry);
 			const statuses = data.data.secrets;
-			const status = identity !== undefined && typeof statuses === "object" && statuses !== null && !Array.isArray(statuses)
-				? statuses[`${field.name}/${identity}/${name}`]
-				: undefined;
+			if (identity === undefined || typeof statuses !== "object" || statuses === null || Array.isArray(statuses)) return "not set";
+			const records: JsonObject = statuses;
+			if (item.type === "entries") {
+				const prefix = `${field.name}/${identity}/${name}/`;
+				return Object.entries(records).some(([key, status]) => key.startsWith(prefix) && (status === "stored" || status === "env")) ? "set" : "not set";
+			}
+			const status = records[`${field.name}/${identity}/${name}`];
 			return status === "stored" || status === "env" ? "set" : "not set";
 		}
 		const value = entry.value[name];

@@ -262,7 +262,6 @@ describe("core settings sections (U4 Task 4)", () => {
 			"interface",
 			"advanced",
 			"providers",
-			"extensions",
 			"accounts",
 			"tokens",
 		]);
@@ -541,8 +540,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		const file = opened.settings.read();
 		expect(file.retry?.enabled).toBeUndefined();
 		expect(file.server?.compaction?.enabled).toBeUndefined();
-		// The same rule on the other default-on toggles (Tools +
-		// Extensions sections).
+		// The same rule on the other default-on toggles (Tools).
 		const tools = await call(app, {
 			method: "GET",
 			url: "/v1/ext/core/surfaces/tools",
@@ -565,36 +563,6 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		});
 		expect((toolsSave.body as { ok: boolean }).ok).toBe(true);
 		expect(opened.settings.read().autoEnableCodemode).toBeUndefined();
-		const extensions = await call(app, {
-			method: "GET",
-			url: "/v1/ext/core/surfaces/extensions",
-			token: aliceToken,
-		});
-		const extRev = (extensions.body as { rev: number }).rev;
-		const extSave = await call(app, {
-			method: "POST",
-			url: "/v1/ext/core/surfaces/extensions/actions",
-			token: aliceToken,
-			payload: {
-				action: "save",
-				actionId: "core-default-on-extensions",
-				params: {},
-				payload: {
-					rev: extRev,
-					values: {
-						extensions: "",
-						"builtinExtensions.codemode": true,
-						"builtinExtensions.mcp": true,
-						"builtinExtensions.toolSearch": true,
-						"builtinExtensions.gateway": true,
-						"builtinExtensions.oauth": true,
-						"builtinExtensions.curator": true,
-					},
-				},
-			},
-		});
-		expect((extSave.body as { ok: boolean }).ok).toBe(true);
-		expect(opened.settings.read().builtinExtensions).toBeUndefined();
 
 		// Explicitly flipping the default-on toggle OFF writes the false.
 		const render2 = await call(app, {
@@ -920,10 +888,10 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			for (const name of names) fieldSection.set(name, section.id);
 			if (names.includes("perModelThinking")) fieldSection.set("perModelThinking", section.id);
 		}
-		// Cove-rendered sections (Interface/Providers/Extensions — the
+		// Cove-rendered sections (Interface/Providers — the
 		// channels draw them natively) drop their core-key rows: a hit
 		// must land on a form field, and a cove has none.
-		const coveSections = new Set(["interface", "providers", "extensions"]);
+		const coveSections = new Set(["interface", "providers"]);
 		const coreRows = body.index.filter((entry) => entry.kind === "core-key");
 		for (const [key, sectionId] of fieldSection) {
 			const row = coreRows.find((entry) => entry.key === key);

@@ -145,6 +145,46 @@ describe("entries field", () => {
 		expect(textContent(unset.renderer.toJSON())).toContain("not set");
 	});
 
+	test("a nested secret table summary shows set rather than [object Object]", () => {
+		const nested = {
+			...tableField,
+			summary: ["url", "headers"],
+			item: [
+				{ type: "text", name: "url", label: "URL" },
+				{ type: "entries", name: "headers", label: "Headers", shape: "table", summary: [], item: [{ type: "secret", name: "value", label: "Value" }] },
+			],
+		} as const;
+		const { renderer } = harness([nested], {
+			f: { servers: { alpha: { url: "https://alpha.example.invalid", headers: { Authorization: { value: "" } } } } },
+			secrets: { "servers/alpha/headers/Authorization/value": "stored" },
+		});
+		expect(textContent(renderer.toJSON())).toContain("set");
+		expect(textContent(renderer.toJSON())).not.toContain("[object Object]");
+	});
+
+	test("closing a row preserves its saved identity for secret status", () => {
+		const { renderer } = harness([tableField], {
+			f: { servers: { alpha: { url: "https://alpha.example.invalid" } } },
+			secrets: { "servers/alpha/token": "stored" },
+		});
+		clickButton(renderer, "Edit entry alpha");
+		clickButton(renderer, "Edit entry alpha");
+		expect(textContent(renderer.toJSON())).toContain("set");
+		expect(textContent(renderer.toJSON())).not.toContain("not set");
+	});
+
+	test("renaming then closing a row keeps its saved secret status", () => {
+		const { renderer } = harness([tableField], {
+			f: { servers: { alpha: { url: "https://alpha.example.invalid" } } },
+			secrets: { "servers/alpha/token": "stored" },
+		});
+		clickButton(renderer, "Edit entry alpha");
+		changeInput(renderer, "Server name", "beta");
+		clickButton(renderer, "Edit entry beta");
+		expect(textContent(renderer.toJSON())).toContain("set");
+		expect(textContent(renderer.toJSON())).not.toContain("not set");
+	});
+
 	test("clicking a row opens its form in place; a second click closes it", () => {
 		const { renderer } = harness([tableField], {
 			f: { servers: { alpha: { url: "https://alpha.example.invalid" } } },

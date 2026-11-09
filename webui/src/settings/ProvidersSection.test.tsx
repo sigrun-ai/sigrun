@@ -17,6 +17,7 @@ import { createClient, type FetchLike, type SettingsWire } from "../api";
 import { renderAsync, textContent } from "../test-utils";
 import { useTheme, type ThemeState, type ThemeStorage } from "../theme/useTheme";
 import { SettingsPanel } from "./SettingsPanel";
+import { ExtensionPage } from "./ExtensionPage";
 import { usePrefs } from "./usePrefs";
 
 /** One recorded fetch (input + init), for body/path asserts. */
@@ -33,6 +34,7 @@ interface Call {
 function makeProvidersHarness(init?: {
 	readonly providers?: readonly {
 		provider: string;
+		owner?: string;
 		status: string;
 		models: number;
 		detail?: string;
@@ -43,9 +45,10 @@ function makeProvidersHarness(init?: {
 	const calls: Call[] = [];
 	const entries = new Map(
 		(init?.providers ?? [
-			{ provider: "acme", status: "not_configured", models: 0 },
+			{ provider: "acme", owner: "acme-ext", status: "not_configured", models: 0 },
 			{
 				provider: "acme2",
+				owner: "acme-ext",
 				status: "degraded",
 				models: 2,
 				detail: "last refresh failed",
@@ -61,7 +64,7 @@ function makeProvidersHarness(init?: {
 			{ slug: "core", id: "interface", title: "Interface", icon: "image" },
 			{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
 			{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
-			{ slug: "core", id: "extensions", title: "Extensions", icon: "add" },
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true },
 		],
 		index: [],
 	};
@@ -82,7 +85,11 @@ function makeProvidersHarness(init?: {
 		} else if (input === "/v1/settings/sections") {
 			body = sectionsResponse;
 		} else if (input === "/v1/extensions") {
-			body = { extensions: [] };
+			body = { extensions: [{ name: "acme-ext", status: "ok", interactionKinds: [], ambientKeys: [], workers: [], services: [] }] };
+		} else if (input === "/v1/extensions/acme-ext/settings") {
+			body = { settings: {}, pendingRestart: [] };
+		} else if (input.startsWith("/v1/ext/acme-ext/surfaces/settings")) {
+			body = { tree: { v: 1, root: { type: "form", id: "acme-settings", bind: "/settings", mode: "submit", onSubmit: "save", children: [] } }, data: { settings: {} }, rev: 0, treeRev: 0, access: "write" };
 		} else if (input === "/v1/settings") {
 			body = settings;
 		} else if (input === "/v1/providers") {
@@ -115,7 +122,7 @@ function makeProvidersHarness(init?: {
 			text: () => Promise.resolve(JSON.stringify(body)),
 		});
 	};
-	return { calls, client: createClient({ fetch: fetchImpl }) };
+	return { calls, client: createClient({ fetch: fetchImpl, rawFetch: fetchImpl as never }) };
 }
 
 /**
@@ -160,7 +167,18 @@ function renderPanel(
 			/>
 		);
 	}
-	return renderAsync(<Probe />).then((renderer) => renderer);
+	return renderAsync(<Probe />);
+}
+
+function renderCredential(client: ReturnType<typeof createClient>) {
+	return renderAsync(
+		<ExtensionPage
+			client={client}
+			extension={{ name: "acme-ext", status: "ok", interactionKinds: [], ambientKeys: [], workers: [], services: [] }}
+			sections={[{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true }]}
+			admin={true}
+		/>,
+	);
 }
 
 /** One provider's row (the fieldset by its data-provider attr). */
@@ -211,7 +229,7 @@ describe("SettingsPanel Providers section", () => {
 
 	test("saving a key PUTs {apiKey}, clears the field, and the badge turns ready", async () => {
 		const { calls, client } = makeProvidersHarness();
-		const renderer = await renderPanel(client);
+		const renderer = await renderCredential(client);
 		const row = providerRow(renderer, "acme");
 		const input = row.findByProps({ className: "settings-provider-key" });
 		await act(async () => {
@@ -242,7 +260,7 @@ describe("SettingsPanel Providers section", () => {
 
 	test("the key field is write-only: password type, empty on mount, never populated from any response", async () => {
 		const { client } = makeProvidersHarness();
-		const renderer = await renderPanel(client);
+		const renderer = await renderCredential(client);
 		const inputs = renderer.root.findAllByProps({
 			className: "settings-provider-key",
 		});
@@ -256,7 +274,7 @@ describe("SettingsPanel Providers section", () => {
 
 	test("a rejected save surfaces the server's error and keeps the typed key (no silent success)", async () => {
 		const { client } = makeProvidersHarness({ putFails: true });
-		const renderer = await renderPanel(client);
+		const renderer = await renderCredential(client);
 		const row = providerRow(renderer, "acme");
 		const input = row.findByProps({ className: "settings-provider-key" });
 		await act(async () => {
@@ -282,7 +300,7 @@ describe("SettingsPanel Providers section", () => {
 
 	test("Clear DELETEs and Refresh POSTs the refresh route; both apply the response's entry", async () => {
 		const { calls, client } = makeProvidersHarness();
-		const renderer = await renderPanel(client);
+		const renderer = await renderCredential(client);
 		const row = providerRow(renderer, "acme2");
 		await act(async () => {
 			await row.findByProps({ className: "settings-provider-clear" }).props.onClick();

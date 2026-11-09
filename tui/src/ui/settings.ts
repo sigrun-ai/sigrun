@@ -262,24 +262,19 @@ export class SettingsView implements Component {
 					width,
 				),
 			);
-			for (const section of this.#sections.filter((entry) => entry.scope !== "user")) {
-				lines.push(
-					truncateToWidth(
-						`  ${section.title}${section.slug === "core" ? "" : `  (${section.slug})`}`,
-						width,
-					),
-				);
+			for (const section of this.#sections.filter((entry) => entry.slug === "core")) {
+				lines.push(truncateToWidth(`  ${section.title}`, width));
 			}
-			const personal = this.#sections.filter((entry) => entry.scope === "user");
-			if (personal.length > 0) {
-				lines.push(truncateToWidth(this.#theme.bold("My settings"), width));
-				for (const section of personal) {
-					lines.push(
-						truncateToWidth(
-							`  ${section.title}${section.slug === "core" ? "" : `  (${section.slug})`}`,
-							width,
-						),
-					);
+			const pages = new Map<string, SettingsSectionEntry[]>();
+			for (const section of this.#sections.filter((entry) => entry.slug !== "core")) {
+				const page = section.page ?? section.slug;
+				pages.set(page, [...(pages.get(page) ?? []), section]);
+			}
+			if (pages.size > 0) lines.push(truncateToWidth(this.#theme.bold("Extensions"), width));
+			for (const [page, sections] of pages) {
+				lines.push(truncateToWidth(`  ${page}`, width));
+				for (const section of sections) {
+					lines.push(truncateToWidth(`    ${section.title}`, width));
 				}
 			}
 			// Extensions WITHOUT a declared section keep their raw-JSON

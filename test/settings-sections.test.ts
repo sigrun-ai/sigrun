@@ -81,6 +81,45 @@ test("sections list one page per declaring extension", async () => {
 	expect(body.index.some((entry) => entry.slug === "acme-schema-save" && entry.sectionId === "user-settings" && entry.key === "nickname")).toBe(true);
 });
 
+test("a non-admin direct shared-section save is 404", async () => {
+	const dir = await mkdtemp(join(tmpdir(), "sigrun-schema-non-admin-"));
+	const configDir = join(dir, "config");
+	const config = loadConfig({
+		SIGRUN_DEFAULT_MODEL: "faux/m",
+		SIGRUN_CONFIG_DIR: configDir,
+		SIGRUN_DATA_DIR: join(dir, "data"),
+		SIGRUN_CACHE_DIR: join(dir, "cache"),
+		SIGRUN_STATE_DIR: join(dir, "state"),
+		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+		SIGRUN_WORKSPACE_PATH: dir,
+		SIGRUN_AUTH: "token",
+	});
+	const faux = fauxProvider({ provider: "faux", models: [{ id: "m", contextWindow: 128_000 }] });
+	const contributor: ProviderContributor = { name: "ext-faux", providers: [{ provider: faux.provider }] };
+	const identity = await seededIdentity(join(dir, "seed"), "alice");
+	await identity.users.add({ user: "bob", admin: false, source: "cli" });
+	const specifier = pathToFileURL(join(import.meta.dirname, "fixtures", "fixture-settings-schema-save", "index.js")).href;
+	const opened = await openHarness(config, {
+		identity,
+		extensions: [contributor], extensionSpecifiers: [specifier],
+		env: { SIGRUN_CONFIG_DIR: configDir }, settingsDir: dir, builtins: false, expectHostBridge: true,
+	});
+	const { token } = await opened.identity.tokens.create("bob-cli", "bob");
+	const app = await createServer(opened, config);
+	cleanups.push(async () => {
+		await app.close();
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await rm(dir, { recursive: true, force: true });
+	});
+	const response = await app.inject({
+		method: "POST",
+		url: "/v1/ext/acme-schema-save/surfaces/settings/actions",
+		headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+		payload: { action: "save", actionId: "bob-direct-shared-save", params: {}, payload: { rev: 0, values: {} } },
+	});
+	expect(response.statusCode).toBe(404);
+});
+
 test("search index includes entry item fields", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-schema-index-"));
 	const configDir = join(dir, "config");

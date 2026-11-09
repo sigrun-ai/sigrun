@@ -17,10 +17,6 @@
  *   a settings-object write). Their declarations still exist so the
  *   section LIST and the search index cover them; their forms are
  *   minimal and never rendered by the channels.
- * - **Extensions** is likewise cove-rendered: the extension-list editor
- *   (raw JSON + write-only secrets) is not a settings form. Its
- *   declaration covers the `extensions` install list key in the index.
- *
  * General, Tools and Advanced generate from `core-schema.ts`; their
  * fields' apply values come from the schema (the registry derives the
  * same values). The remaining cove sections keep their declarations.
@@ -40,7 +36,6 @@ export const CORE_SECTION_IDS = [
 	"interface",
 	"advanced",
 	"providers",
-	"extensions",
 	"accounts",
 	"tokens",
 ] as const;
@@ -132,104 +127,6 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								label: "Model catalog refresh (minutes)",
 								help: "The provider catalog refresh cadence; a change re-arms the scheduler live",
 								apply: applyOf("server.providers.refreshIntervalMinutes"),
-							},
-						],
-					},
-				],
-			},
-		},
-	},
-	{
-		id: "extensions",
-		title: "Extensions",
-		icon: "add",
-		// The extension-list editor (per-extension raw JSON + write-only
-		// secrets) is the channels' cove; the form carries the core
-		// extension knobs (the install list + the built-in toggles).
-		form: {
-			v: 1,
-			root: {
-				type: "form",
-				id: "core-extensions-form",
-				bind: "/settings",
-				mode: "submit",
-				onSubmit: "save",
-				submitLabel: "Save",
-				children: [
-					{
-						type: "section",
-						id: "core-extensions-list",
-						title: "Installed extensions",
-						children: [
-							{
-								type: "longtext",
-								name: "extensions",
-								label: "Extension list (raw JSON)",
-								help: "The unified install-and-load list (npm specifiers, bare names, file:/git sources, or {source, entry?, ref?, enabled?} objects) — applied at boot reconciliation, so a change applies at restart",
-								apply: applyOf("extensions"),
-								syntax: "code",
-								lang: "json",
-								rows: 12,
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-extensions-builtins",
-						title: "Built-in extensions",
-						children: [
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.codemode",
-								label: "Codemode",
-								help: "The built-in codemode extension (a disabled built-in never loads) — applies at restart",
-								apply: applyOf("builtinExtensions.codemode"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.mcp",
-								label: "MCP",
-								help: "The built-in MCP extension — applies at restart",
-								apply: applyOf("builtinExtensions.mcp"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.toolSearch",
-								label: "Tool search",
-								help: "The built-in tool-search extension — applies at restart",
-								apply: applyOf("builtinExtensions.toolSearch"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.gateway",
-								label: "Gateway",
-								help: "The built-in channel gateway engine — applies at restart",
-								apply: applyOf("builtinExtensions.gateway"),
-							},
-							{
-								type: "toggle",
-								default: true,
-								name: "builtinExtensions.oauth",
-								label: "OAuth login",
-								help: "The built-in OIDC/OAuth2 login extension — applies at restart",
-								apply: applyOf("builtinExtensions.oauth"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.curator",
-								label: "Curator",
-								help: "The built-in curator extension — applies at restart",
-								apply: applyOf("builtinExtensions.curator"),
 							},
 						],
 					},

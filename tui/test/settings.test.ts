@@ -88,6 +88,7 @@ function fakeWire(init?: {
 	/** Loaded extensions WITHOUT settings sections (the notice lines). */
 	readonly sectionlessExtensions?: readonly string[];
 	readonly savesFlipPending?: boolean;
+	readonly withoutDefaultExtension?: boolean;
 	/** Fix-wave C3: reject a save whose rev is stale (the two-saves
 	 *  test's optimistic-concurrency pin). */
 	readonly enforceRev?: boolean;
@@ -102,7 +103,7 @@ function fakeWire(init?: {
 	const sections: SettingsSectionEntry[] = [
 		{ slug: "core", id: "general", title: "General", icon: "key" },
 		{ slug: "core", id: "tools", title: "Tools", icon: "key" },
-		{ slug: "acme-ext", id: "acme", title: "Acme settings", icon: "key" },
+		...(init?.withoutDefaultExtension === true ? [] : [{ slug: "acme-ext", id: "acme", title: "Acme settings", icon: "key" }]),
 		...(init?.sectionsExtra ?? []),
 	];
 	const index = [
@@ -260,16 +261,32 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(lines).toContain("Acme settings");
 	});
 
+	test("extension sections group by page with Settings then Your settings", async () => {
+		const extra: readonly SettingsSectionEntry[] = [
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true },
+			{ slug: "acme-ext", id: "user-settings", page: "acme-ext", title: "Your settings", icon: "key", scope: "user", admin: false },
+		];
+		const view = makeView(fakeWire({ sectionsExtra: extra, withoutDefaultExtension: true }));
+		await view.load();
+		const lines = view.render(80);
+		const page = lines.findIndex((line) => line.includes("acme-ext"));
+		const settings = lines.findIndex((line) => line === "    Settings");
+		const user = lines.findIndex((line) => line.trim() === "Your settings");
+		expect(page).toBeGreaterThanOrEqual(0);
+		expect(settings).toBeGreaterThan(page);
+		expect(user).toBeGreaterThan(settings);
+	});
+
 	test("user sections list under My settings for non-admins; admin+user stays admin-only", async () => {
 		const extra: readonly SettingsSectionEntry[] = [
-			{ slug: "acme-ext", id: "profile", title: "Profile", icon: "key", scope: "user", admin: false },
+			{ slug: "acme-ext", id: "user-settings", page: "acme-ext", title: "Your settings", icon: "key", scope: "user", admin: false },
 			{ slug: "acme-ext", id: "personal-admin", title: "Personal admin", icon: "key", scope: "user", admin: true },
 		];
 		const nonAdmin = makeView(fakeWire({ admin: false, sectionsExtra: extra }));
 		await nonAdmin.load();
 		const nonAdminLines = nonAdmin.render(80).join("\n");
-		expect(nonAdminLines).toContain("My settings");
-		expect(nonAdminLines).toContain("Profile");
+		expect(nonAdminLines).toContain("Your settings");
+		expect(nonAdminLines).toContain("acme-ext");
 		expect(nonAdminLines).not.toContain("Personal admin");
 		const admin = makeView(fakeWire({ admin: true, sectionsExtra: extra }));
 		await admin.load();
