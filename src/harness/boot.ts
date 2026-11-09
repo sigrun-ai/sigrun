@@ -1615,7 +1615,7 @@ export async function openHarness(
 			// Curator A8 (P9): the wrap feed — the loader grows it with each
 			// validated target tool and wraps those tools at their install.
 			curationFeed,
-			hostContextFactory: (extensionName, kinds, priorHost) => {
+			hostContextFactory: (extensionName, kinds, priorHost, settingsSlug) => {
 				// Two-phase, revised for the provisional identity (provider
 				// plugins Task 9 P1): the loader's PRE-import call passes the
 				// slug derived from the load specifier (a factory-time settings
@@ -1637,8 +1637,8 @@ export async function openHarness(
 					}, userServices, {
 						publishedHooks: { current: publishedHooksSlot, ready: publishedHooksReady },
 						decisions: { current: decisionsSlot, ready: decisionsReady },
-					});
-				host.rekey({ name: extensionName }, kinds);
+					}, undefined, settingsSlug);
+				if (priorHost !== undefined) host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
 				// resolved: the PRE-import call must NOT file (its identity is
 				// provisional; a quarantined load would leak a placeholder

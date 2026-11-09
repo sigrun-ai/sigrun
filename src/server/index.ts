@@ -38,6 +38,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "./session-meta.js";
 import { NoticesService } from "../notices/service.js";
+import { drainNoticeWrites } from "../notices/store.js";
 import { visibleToUser } from "./visibility.js";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
@@ -608,6 +609,7 @@ export async function createServer(
 	// over one harness in tests) can detach a bound server cleanly.
 	app.addHook("onClose", async () => {
 		unsubscribeChatSurfaceChanged();
+		await drainNoticeWrites();
 	});
 
 	return app;

@@ -143,7 +143,7 @@ const schema = Type.Object({
 });
 type Settings = Static<typeof schema>;
 
-export default function createAcme(host: SigrunHost) {
+export default async function createAcme(host: SigrunHost) {
   const settings = host.settings.declare<Settings>({ schema });
   // Fresh on every call: schema-checked, defaults applied, secrets filled.
   // Await this where the value is used (including inside the factory).
@@ -155,9 +155,12 @@ export default function createAcme(host: SigrunHost) {
 A factory-time read resolves the host's provisional, package-derived
 slug. If the final extension slug differs, the load fails naming both,
 rather than reading one file while the settings page writes another.
-Built-ins are pre-keyed on their known final slug. The host is passed only
-to factories with `factory.length > 0`: a zero-argument factory receives
-no host (a defaulted first argument still counts as length zero).
+Built-ins are pre-keyed on their known final slug **for settings and
+secrets only**; raw data/state/cache paths keep the package-derived
+provisional slug until the final rekey, so factory-captured durable paths
+stay stable. The host is passed only to factories with
+`factory.length > 0`: a zero-argument factory receives no host (a
+defaulted first argument still counts as length zero).
 
 `get()` reads `settings/<slug>.json` fresh each time. Defaults recurse
 through objects, entries and variants. `writeOnly` values come from the
@@ -180,6 +183,9 @@ keep their original contract: the **raw** file, no schema checking,
 defaults or secret filling. New code should normally use the handle from
 `declare`. Returning the old `surfaces.settings` declaration now fails
 the load with `"surfaces.settings is replaced by host.settings.declare"`.
+
+TODO(Task 7): restore the generated-form `onSettingsChanged` documentation
+when the schema-backed save adapter lands.
 
 ## The stores handle
 

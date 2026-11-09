@@ -12,9 +12,15 @@ import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { NoticeStore } from "../src/notices/store.js";
 import { createServer } from "../src/server/index.js";
 import type { FastifyInstance } from "fastify";
+import { NOTICE_LIMITS } from "@sigrun/shared/notices";
 import { seededIdentity } from "./helpers/identity.js";
 import {
+	declared as factoryNoticeDeclared,
+	reset as resetFactoryNotice,
+} from "./fixtures/fixture-settings-factory-notice/index.js";
+import {
 	factoryRead as builtinFactoryRead,
+	factoryStateDir as builtinFactoryStateDir,
 	reset as resetBuiltin,
 } from "./fixtures/fixture-settings-builtin-mcp/index.js";
 import {
@@ -34,6 +40,7 @@ const OLD_SECTION = fixture("fixture-settings-old-section");
 const MISMATCH = fixture("fixture-settings-mismatch");
 const BUILTIN_MCP = fixture("fixture-settings-builtin-mcp");
 const RESERVED = fixture("fixture-settings-reserved-id");
+const FACTORY_NOTICE = fixture("fixture-settings-factory-notice");
 const cleanups: Array<() => Promise<void>> = [];
 
 function fixture(name: string): string {
@@ -46,6 +53,7 @@ afterEach(async () => {
 	resetBuiltin();
 	resetMismatch();
 	resetDeclared();
+	resetFactoryNotice();
 });
 
 interface Rig {
@@ -61,6 +69,7 @@ async function boot(
 		readonly userSettings?: Record<string, unknown>;
 		readonly secrets?: Record<string, unknown>;
 		readonly server?: boolean;
+		readonly settingsFile?: string;
 		readonly builtinSettings?: Record<string, unknown>;
 		readonly extraBuiltins?: readonly string[];
 		readonly realBuiltins?: boolean;
@@ -71,7 +80,7 @@ async function boot(
 	await mkdir(join(configDir, "settings"), { recursive: true });
 	if (options.settings !== undefined) {
 		await writeFile(
-			join(configDir, "settings", "acme-settings.json"),
+			join(configDir, "settings", options.settingsFile ?? "acme-settings.json"),
 			JSON.stringify(options.settings),
 		);
 	}
@@ -187,6 +196,49 @@ test("invalid stored value falls back with a notice", async () => {
 	expect(warn.mock.calls.filter((call) => String(call[0]).includes("/interval"))).toHaveLength(1);
 });
 
+test("a factory-time checked read leaves the invalid notice for a post-bind read", async () => {
+	const rig = await boot([FACTORY_NOTICE], {
+		settingsFile: "acme-factory-notice.json",
+		settings: { interval: "often" },
+		server: true,
+	});
+	expect(await invalidNotices(rig)).toHaveLength(0);
+	await expect(factoryNoticeDeclared?.get()).resolves.toMatchObject({ interval: 60 });
+	await vi.waitFor(async () => expect(await invalidNotices(rig)).toHaveLength(1));
+});
+
+test("generateForm warnings are hoisted out of repeated checked reads", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	await boot([FACTORY_NOTICE], {
+		settingsFile: "acme-factory-notice.json",
+		settings: {},
+	});
+	const before = warn.mock.calls.filter((call) => String(call[0]).includes("outside the drawable subset")).length;
+	await factoryNoticeDeclared?.get();
+	await factoryNoticeDeclared?.get();
+	expect(warn.mock.calls.filter((call) => String(call[0]).includes("outside the drawable subset"))).toHaveLength(before);
+});
+
+test("the invalid notice dedupes paths and respects the body limit", async () => {
+	const settings = {
+		interval: "often",
+		untyped: Object.fromEntries(Array.from({ length: 100 }, (_, index) => [
+			`bad${index}`,
+			"wrong",
+		])),
+	};
+	const rig = await boot([FACTORY_NOTICE], {
+		settingsFile: "acme-factory-notice.json",
+		settings,
+		server: true,
+	});
+	await factoryNoticeDeclared?.get();
+	await vi.waitFor(async () => expect(await invalidNotices(rig)).toHaveLength(1));
+	const [notice] = await invalidNotices(rig);
+	expect(notice?.body?.length).toBeLessThanOrEqual(NOTICE_LIMITS.body);
+	expect(notice?.body?.match(/\/interval/g)).toHaveLength(1);
+});
+
 test("declare twice throws", async () => {
 	const { opened } = await boot([TWICE]);
 	expect(opened.extensionOutcomes[0]).toMatchObject({ status: "quarantined" });
@@ -236,6 +288,11 @@ test("a built-in whose package name differs from its slug reads its own file in 
 	// not this package's declared sigrun-mcp settings file.
 	expect(opened.extensionOutcomes.find((row) => row.name === "sigrun-mcp" && row.status === "ok")).toBeDefined();
 	expect(builtinFactoryRead()).toEqual({ endpoint: "https://mcp.example.invalid" });
+});
+
+test("a built-in pre-keys only settings and secrets, not factory-captured paths", async () => {
+	const { dir } = await boot([], { realBuiltins: true });
+	expect(builtinFactoryStateDir()).toBe(join(dir, "state", "ext-mcp"));
 });
 
 test("a slug mismatch after re-key fails the load naming both", async () => {

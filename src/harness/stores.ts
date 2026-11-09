@@ -719,26 +719,27 @@ export function sharedExtensionStores(
 export function scopedExtensionStores(
 	shared: SharedExtensionStores,
 	slug: string,
+	settingsSlug = slug,
 ): ExtensionStores {
 	return {
-		user: (user) => shared.userExtensionStores(slug, user),
+		user: (user) => shared.userExtensionStores(settingsSlug, user),
 		secrets: {
 			async get(key) {
-				const section = await shared.secrets.readSection(slug);
+				const section = await shared.secrets.readSection(settingsSlug);
 				const value = section[key];
 				return value === undefined || value === null
 					? undefined
 					: String(value);
 			},
 			async set(key, value) {
-				const section = await shared.secrets.readSection(slug);
+				const section = await shared.secrets.readSection(settingsSlug);
 				section[key] = value;
-				await shared.secrets.writeSection(slug, section);
+				await shared.secrets.writeSection(settingsSlug, section);
 			},
 		},
 		settings: {
-			get: () => shared.settings.read(slug),
-			set: (value) => shared.settings.write(slug, value),
+			get: () => shared.settings.read(settingsSlug),
+			set: (value) => shared.settings.write(settingsSlug, value),
 		},
 		paths: {
 			data: join(shared.roots.dataDir, slug),

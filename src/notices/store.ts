@@ -113,6 +113,11 @@ function withUserAreaLock<T>(userArea: string, section: () => Promise<T>): Promi
 	return run;
 }
 
+/** Settle every queued notice write before the server closes its stores. */
+export async function drainNoticeWrites(): Promise<void> {
+	await Promise.all([...queues.values()]);
+}
+
 /** One mutation's outcome: the caller's answer plus the new file, if any. */
 interface Mutation<T> {
 	readonly value: T;

@@ -2642,6 +2642,8 @@ export interface LoadExtensionsOptions {
 		kinds: DeclaredKinds,
 		/** The pre-import call's instance — present on the post-resolution call only. */
 		priorHost?: unknown,
+		/** Built-in only: settings/secrets scope, never raw path scope. */
+		settingsSlug?: string,
 	) => unknown;
 }
 
@@ -2991,8 +2993,13 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 			// factory time only when the plugin name matches its package name).
 			let host: unknown;
 			if (options.hostContextFactory !== undefined) {
-				const provisional = settingsSlug ?? provisionalSlugFor(loaded);
-			host = options.hostContextFactory(provisional, {});
+				const provisional = provisionalSlugFor(loaded);
+				host = options.hostContextFactory(
+					provisional,
+					{},
+					undefined,
+					settingsSlug,
+				);
 			}
 			const resolved = await resolveExtension(module, host);
 			if (resolved === undefined) {
@@ -3110,14 +3117,24 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					const declaredSettings = (
 						host as {
 							settingsDeclaration?: () => import("../extension.js").SettingsDeclaration | undefined;
-							settingsIdentity?: () => { readonly provisional: string; readonly factoryRead: boolean };
+							settingsIdentity?: () => {
+								readonly provisional: string;
+								readonly settingsProvisional: string;
+								readonly factoryRead: boolean;
+							};
 						}
 					).settingsDeclaration?.();
 					if (declaredSettings !== undefined) {
 						const settingsIdentity = (
-							host as { settingsIdentity?: () => { readonly provisional: string; readonly factoryRead: boolean } }
+							host as {
+								settingsIdentity?: () => {
+									readonly provisional: string;
+									readonly settingsProvisional: string;
+									readonly factoryRead: boolean;
+								};
+							}
 						).settingsIdentity?.();
-						const provisional = settingsIdentity?.provisional;
+						const provisional = settingsIdentity?.settingsProvisional;
 						if (settingsIdentity?.factoryRead === true && provisional !== slug) {
 							throw new Error(
 								`settings.declare slug mismatch: factory read used "${String(provisional)}", final slug is "${slug}"`,

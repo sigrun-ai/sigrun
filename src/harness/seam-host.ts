@@ -37,6 +37,7 @@ import type {
 import { checkSchema, generateForm } from "../settings/schema/generate.js";
 import { checkStoredSettings } from "../settings/schema/defaults.js";
 import { fillSecrets } from "../settings/schema/secrets.js";
+import { NOTICE_LIMITS } from "@sigrun/shared/notices";
 import { primaryAdmin } from "./identity/primary-admin.js";
 import type { Tree } from "@sigrun/shared/blocks";
 import {
@@ -108,7 +109,11 @@ export interface SeamHost {
 	/** Boot reads the recorded declaration under the final slug. */
 	settingsDeclaration(): SettingsDeclaration | undefined;
 	/** The pre-import identity used by a factory-time checked read. */
-	settingsIdentity(): { readonly provisional: string; readonly factoryRead: boolean };
+	settingsIdentity(): {
+		readonly provisional: string;
+		readonly settingsProvisional: string;
+		readonly factoryRead: boolean;
+	};
 	/** Boot seals declaration once extension loading has completed. */
 	sealSettings(): void;
 	/** Multi-user M2: per-user publication, gated by the factory declaration. */
@@ -412,6 +417,7 @@ export function createSeamHost(
 		slug: string,
 		input: import("@sigrun/shared/notices").UserNoticeInput,
 	) => Promise<unknown>,
+	provisionalSettingsSlug?: string,
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
 	const provisional = identity.name;
@@ -422,8 +428,13 @@ export function createSeamHost(
 	let noticePost = settingsNotice;
 	const warnedPaths = new Set<string>();
 	const declaredSettings = <S, U>(decl: SettingsDeclaration): DeclaredSettings<S, U> => {
+		const generated = generateForm(decl.schema, { idPrefix: identity.name });
+		const generatedUser = decl.userSchema === undefined
+			? undefined
+			: generateForm(decl.userSchema, { idPrefix: identity.name });
 		const read = async (
 			schema: SettingsDeclaration["schema"],
+			form: typeof generated,
 			stored: Record<string, unknown>,
 			secrets: ExtensionStores["secrets"],
 		): Promise<Record<string, unknown>> => {
@@ -437,17 +448,24 @@ export function createSeamHost(
 				}
 			}
 			if (checked.repairs.length > 0 && !invalidNoticePosted) {
-				invalidNoticePosted = true;
 				const user = primaryAdmin(sharedStores.users.list())?.user;
 				if (user !== undefined && noticePost !== undefined) {
 					try {
+						const repairs = [...new Map(checked.repairs.map((repair) => [repair.path, repair])).values()];
+						const lines = repairs.map((repair) =>
+							`${identity.name}${repair.path}: ${repair.action} (${repair.message})`,
+						);
+						let body = "";
+						for (const line of lines) {
+							const next = body === "" ? line : `${body}\n${line}`;
+							if (next.length > NOTICE_LIMITS.body) break;
+							body = next;
+						}
 						await noticePost(identity.name, {
 							user,
 							key: "settings.invalid",
 							title: `${identity.name}: invalid stored settings`,
-							body: checked.repairs.map((repair) =>
-								`${identity.name}${repair.path}: ${repair.action} (${repair.message})`,
-							).join("\n"),
+							body,
 							actions: [{
 								id: "open-settings",
 								label: "Open settings",
@@ -455,14 +473,14 @@ export function createSeamHost(
 								target: { settings: identity.name },
 							}],
 						});
+						invalidNoticePosted = true;
 					} catch (error) {
 						console.warn(`settings: ${identity.name}: could not post invalid-settings notice: ${String(error)}`);
 					}
 				}
 			}
-			const generated = generateForm(schema, { idPrefix: identity.name });
 			const withPlaceholders = structuredClone(checked.value);
-			for (const secret of generated.secrets) {
+			for (const secret of form.secrets) {
 				const parts = secret.pattern.slice(1).split("/").map((part) =>
 					part.replace(/~1/g, "/").replace(/~0/g, "~"),
 				);
@@ -484,7 +502,7 @@ export function createSeamHost(
 			}
 			return fillSecrets(
 				withPlaceholders,
-				generated.secrets,
+				form.secrets,
 				(key) => secrets.get(key),
 			);
 		};
@@ -492,8 +510,9 @@ export function createSeamHost(
 			get: async () => {
 				if (!sealed) factoryRead = true;
 				return (await read(
-				decl.schema,
-				await stores.settings.get(),
+					decl.schema,
+					generated,
+					await stores.settings.get(),
 					stores.secrets,
 				)) as S;
 			},
@@ -504,8 +523,10 @@ export function createSeamHost(
 						throw new Error(`settings.userSchema is not declared by ${identity.name}`);
 					}
 					const scoped = stores.user(user);
+					if (generatedUser === undefined) throw new Error("unreachable");
 					return (await read(
 						decl.userSchema,
+						generatedUser,
 						await scoped.settings.get(),
 						scoped.secrets,
 					)) as U;
@@ -519,7 +540,11 @@ export function createSeamHost(
 	// and the `stores` getter below reads through the closure, so the
 	// factory-captured host object re-scopes IN PLACE (never a second
 	// host, never a stale view).
-	let stores = scopedExtensionStores(sharedStores, identity.name);
+	let stores = scopedExtensionStores(
+		sharedStores,
+		identity.name,
+		provisionalSettingsSlug ?? identity.name,
+	);
 	const userStores = (user: string): ReturnType<SigrunHost["stores"]["user"]> => {
 		const scoped = stores.user(user);
 		return {
@@ -628,7 +653,11 @@ export function createSeamHost(
 			},
 		},
 		settingsDeclaration: () => declaration,
-		settingsIdentity: () => ({ provisional, factoryRead }),
+		settingsIdentity: () => ({
+			provisional,
+			settingsProvisional: provisionalSettingsSlug ?? provisional,
+			factoryRead,
+		}),
 		sealSettings: () => { sealed = true; },
 		bindSettingsNotices: (post) => { noticePost = post; },
 
@@ -653,7 +682,7 @@ export function createSeamHost(
 			// second host instance ever exists. The stores view re-points to the
 			// rekeyed slug the same way — same host object, corrected scope.
 			identity = nextIdentity;
-			stores = scopedExtensionStores(sharedStores, nextIdentity.name);
+			stores = scopedExtensionStores(sharedStores, nextIdentity.name, nextIdentity.name);
 			interactionKinds.clear();
 			for (const kind of nextKinds.interaction ?? []) interactionKinds.add(kind);
 			ambientKinds.clear();
