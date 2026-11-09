@@ -109,6 +109,7 @@ interface FormField {
 	readonly pattern?: string;
 	readonly options?: unknown;
 	readonly item?: unknown;
+	readonly shape?: "array" | "table";
 }
 
 /** A plain record (the tree-walk's node shape). */
@@ -544,13 +545,23 @@ export function settingsSurfaceFor(
 				value = Array.isArray(value)
 					? value.map(stripFrom)
 					: isRec(value)
-						? Object.fromEntries(Object.entries(value).map(([key, entry]) => {
-							const plain = stripFrom(entry);
-							return [key, isRec(plain) && Object.keys(plain).length === 1 && "value" in plain
-								? plain.value
-								: plain];
-						}))
+						? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, stripFrom(entry)]))
 						: value;
+				if (field.shape === "table" && isRec(value)) {
+					// The core store sub-merges table maps, so deleted rows must
+					// arrive as explicit nulls; an empty table clears the whole key.
+					const stored = readDotted(current, name);
+					if (Object.keys(value).length === 0) {
+						value = null;
+					} else if (isRec(stored)) {
+						value = Object.fromEntries([
+							...Object.keys(stored)
+								.filter((key) => !(key in (value as JsonObject)))
+								.map((key) => [key, null] as const),
+							...Object.entries(value),
+						]);
+					}
+				}
 			}
 			writeDotted(patch, name, value);
 		}

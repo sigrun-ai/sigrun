@@ -105,6 +105,29 @@ const tableField = {
 } as const;
 
 describe("entries field", () => {
+	test("scalar table rows render and submit their stored value", () => {
+		const field = {
+			type: "entries",
+			name: "thinking",
+			label: "Thinking",
+			shape: "table",
+			summary: ["value"],
+			item: [{ type: "choice", name: "value", label: "Level", options: [
+				{ id: "low", label: "low" }, { id: "high", label: "high" },
+			] }],
+		} as const;
+		const { dispatch, renderer } = harness([field], {
+			f: { thinking: { "acme/model": "low" } },
+		});
+		expect(textContent(renderer.toJSON())).toContain("low");
+		clickButton(renderer, "Edit entry acme/model");
+		clickButton(renderer, "Save");
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
+			values: { thinking: { "acme/model": { value: "low", $from: "acme/model" } } },
+		});
+	});
+
 	test("row summary shows summary fields and set/not set for secrets", () => {
 		const stored = harness([tableField], {
 			f: { servers: { alpha: { url: "https://alpha.example.invalid" } } },

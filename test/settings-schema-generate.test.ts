@@ -160,6 +160,7 @@ describe("generateForm", () => {
 		) as TextField;
 		expect(plain.label).toBe("plain");
 		expect(plain.placeholder).toBe("x");
+		expect(fieldNamed(childrenOf(objectSchema({ empty: { type: "string", default: "" } })), "empty").placeholder).toBe("");
 
 		// x-sigrun-apply lands on the field and in the apply map; default restart
 		const applied = generate(
@@ -280,13 +281,35 @@ describe("generateForm", () => {
 		expect(() => assertDrawable(schema)).not.toThrow();
 	});
 
-	it("scalar additionalProperties falls back instead of building an edgeless table", () => {
-		const schema = objectSchema({ headers: { type: "object", additionalProperties: { type: "string" } } });
-		const { value: generated, warnings } = captureWarnings(() => generate(schema));
-		expect(generated.fallbacks).toEqual(["/headers"]);
-		expect(warnings.some((w) => w.includes("/headers"))).toBe(true);
-		const children = generated.form.root.type === "form" ? generated.form.root.children : [];
-		expect(fieldNamed(children, "headers").type).toBe("longtext");
+	it("scalar additionalProperties draws a table with one synthetic value field", () => {
+		const schema = objectSchema({
+			headers: {
+				type: "object",
+				title: "Headers",
+				default: {},
+				additionalProperties: { type: "string", title: "Header value" },
+			},
+			modes: {
+				type: "object",
+				additionalProperties: { type: "string", enum: ["low", "high"] },
+			},
+		});
+		const generated = generate(schema);
+		expect(generated.fallbacks).toEqual([]);
+		const headers = fieldNamed(childrenOf(schema), "headers") as EntriesField;
+		expect(headers).toMatchObject({
+			type: "entries",
+			shape: "table",
+			item: [{ type: "text", name: "value", label: "Header value" }],
+			summary: ["value"],
+		});
+		expect(headers.placeholder).toBeUndefined();
+		const modes = fieldNamed(childrenOf(schema), "modes") as EntriesField;
+		expect(modes.item[0]).toMatchObject({
+			type: "choice",
+			name: "value",
+			options: [{ id: "low", label: "low" }, { id: "high", label: "high" }],
+		});
 	});
 
 	it("a scalar writeOnly table still draws as a secret table", () => {
@@ -570,6 +593,40 @@ describe("generateForm", () => {
 			}),
 		);
 		expect(generated.secrets).toEqual([{ pattern: "/auth/token" }]);
+	});
+
+	it("layout derives required, deletes undefined overrides, and records only top-level apply", () => {
+		const generated = generate(
+			{
+				type: "object",
+				properties: {
+					name: { type: "string", description: "" },
+					nested: {
+						type: "object",
+						required: ["needed"],
+						properties: {
+							needed: { type: "string", "x-sigrun-apply": "live" },
+							other: { type: "string" },
+						},
+					},
+				},
+				required: ["name"],
+			},
+			{
+				layout: [{
+					title: "Fields",
+					paths: ["/name", "/nested/needed", "/nested/other"],
+					overrides: { "/nested/other": { help: undefined } },
+				}],
+			},
+		);
+		const children = generated.form.root.type === "form" ? generated.form.root.children : [];
+		expect(fieldNamed(children, "name")).toMatchObject({ required: true });
+		expect(fieldNamed(children, "name").help).toBeUndefined();
+		expect(fieldNamed(children, "nested.needed").required).toBe(true);
+		expect(fieldNamed(children, "nested.other").required).toBeUndefined();
+		expect(fieldNamed(children, "nested.other")).not.toHaveProperty("help");
+		expect([...generated.apply]).toEqual([["name", "restart"]]);
 	});
 
 	it("schema required marks fields required", () => {

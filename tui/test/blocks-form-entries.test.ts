@@ -84,6 +84,28 @@ const arrayField: EntriesField = {
 };
 
 describe("entries and variant settings fields", () => {
+	test("scalar table rows render and submit their stored value", () => {
+		const field: EntriesField = {
+			type: "entries",
+			name: "thinking",
+			label: "Thinking",
+			shape: "table",
+			summary: ["value"],
+			item: [{ type: "choice", name: "value", label: "Level", options: [
+				{ id: "low", label: "low" }, { id: "high", label: "high" },
+			] }],
+		};
+		const { form, captured } = harness([field], {
+			settings: { thinking: { "acme/model": "low" } },
+		});
+		expect(form.render(100).join("\n")).toContain("low");
+		save(form);
+		expect(captured[0]?.payload).toEqual({
+			values: { thinking: { "acme/model": { value: "low", $from: "acme/model" } } },
+			rev: 0,
+		});
+	});
+
 	test("entries render summary rows", () => {
 		const { form } = harness([tableField], {
 			settings: { servers: { alpha: { url: "https://alpha.example.invalid" } } },

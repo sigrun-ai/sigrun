@@ -28,6 +28,7 @@
 
 import type { SettingsSectionDef } from "../extension.js";
 import { generatedCoreForm } from "./core-schema.js";
+import { applyOf } from "./registry.js";
 
 /** The reserved slug the core sections mount under (spec §13.4). */
 export const CORE_SECTIONS_SLUG = "core";
@@ -123,14 +124,14 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "defaultProvider.baseUrl",
 								label: "Default provider base URL",
 								help: "The env-driven OpenAI-compatible provider's endpoint (applied when OPENAI_BASE_URL is absent) — a change applies at restart",
-								apply: "restart",
+								apply: applyOf("defaultProvider.baseUrl"),
 							},
 							{
 								type: "number",
 								name: "server.providers.refreshIntervalMinutes",
 								label: "Model catalog refresh (minutes)",
 								help: "The provider catalog refresh cadence; a change re-arms the scheduler live",
-								apply: "live",
+								apply: applyOf("server.providers.refreshIntervalMinutes"),
 							},
 						],
 					},
@@ -165,7 +166,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "extensions",
 								label: "Extension list (raw JSON)",
 								help: "The unified install-and-load list (npm specifiers, bare names, file:/git sources, or {source, entry?, ref?, enabled?} objects) — applied at boot reconciliation, so a change applies at restart",
-								apply: "restart",
+								apply: applyOf("extensions"),
 								syntax: "code",
 								lang: "json",
 								rows: 12,
@@ -184,7 +185,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "builtinExtensions.codemode",
 								label: "Codemode",
 								help: "The built-in codemode extension (a disabled built-in never loads) — applies at restart",
-								apply: "restart",
+								apply: applyOf("builtinExtensions.codemode"),
 							},
 							{
 								type: "toggle",
@@ -193,7 +194,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "builtinExtensions.mcp",
 								label: "MCP",
 								help: "The built-in MCP extension — applies at restart",
-								apply: "restart",
+								apply: applyOf("builtinExtensions.mcp"),
 							},
 							{
 								type: "toggle",
@@ -202,7 +203,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "builtinExtensions.toolSearch",
 								label: "Tool search",
 								help: "The built-in tool-search extension — applies at restart",
-								apply: "restart",
+								apply: applyOf("builtinExtensions.toolSearch"),
 							},
 							{
 								type: "toggle",
@@ -211,7 +212,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "builtinExtensions.gateway",
 								label: "Gateway",
 								help: "The built-in channel gateway engine — applies at restart",
-								apply: "restart",
+								apply: applyOf("builtinExtensions.gateway"),
 							},
 							{
 								type: "toggle",
@@ -219,7 +220,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "builtinExtensions.oauth",
 								label: "OAuth login",
 								help: "The built-in OIDC/OAuth2 login extension — applies at restart",
-								apply: "restart",
+								apply: applyOf("builtinExtensions.oauth"),
 							},
 							{
 								type: "toggle",
@@ -228,7 +229,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								name: "builtinExtensions.curator",
 								label: "Curator",
 								help: "The built-in curator extension — applies at restart",
-								apply: "restart",
+								apply: applyOf("builtinExtensions.curator"),
 							},
 						],
 					},

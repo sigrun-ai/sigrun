@@ -83,7 +83,7 @@ function initialEntries(field: EntriesField, value: JsonValue | undefined): Json
 			key,
 			typeof entry === "object" && entry !== null && !Array.isArray(entry)
 				? { ...defaultEntry(field.item), ...(entry as JsonObject), $from: key }
-				: entry,
+				: { ...defaultEntry(field.item), value: entry, $from: key },
 		]),
 	);
 }

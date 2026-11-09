@@ -5,13 +5,19 @@
  */
 
 import {
+	DEFAULT_AUTH,
+	DEFAULT_BACKUP_STALE_AFTER_HOURS,
 	DEFAULT_COMPACTION,
+	DEFAULT_DECISION_TIMEOUT_MS,
 	DEFAULT_MAX_FILE_READ_BYTES,
 	DEFAULT_MAX_UPLOAD_BYTES,
 	DEFAULT_MEMORY_SEAM,
+	DEFAULT_PORT,
 	DEFAULT_PROVIDER_REFRESH_MINUTES,
 	DEFAULT_WEBUI_BUNDLE,
 } from "../config.js";
+import { DEFAULT_JOB_MAX_TURNS } from "../jobs/fire.js";
+import { SKILLS_SECTION_LIMIT_BYTES } from "../skills/index.js";
 import {
 	generateForm,
 	type GeneratedForm,
@@ -120,14 +126,9 @@ export const coreSchema: JsonSchema = {
 			{
 				type: "object",
 				additionalProperties: {
-					type: "object",
-					properties: {
-						value: {
-							type: "string",
-							title: "Thinking level",
-							enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
-						},
-					},
+					type: "string",
+					title: "Thinking level",
+					enum: ["off", "minimal", "low", "medium", "high", "xhigh", "max"],
 				},
 			},
 		),
@@ -140,11 +141,11 @@ export const coreSchema: JsonSchema = {
 			items: {},
 		}),
 		jobHistory: object({
-			runs: number("Runs kept per job", "", undefined, "live"),
-			revisions: number("Revisions kept per job", "", undefined, "live"),
+			runs: number("Runs kept per job", "", 50, "live"),
+			revisions: number("Revisions kept per job", "", 50, "live"),
 		}),
 		jobDefaults: object({
-			maxTurns: number("Default max turns per job run", "", undefined, "live"),
+			maxTurns: number("Default max turns per job run", "", DEFAULT_JOB_MAX_TURNS, "live"),
 		}),
 		defaultModel: string(
 			"Default model",
@@ -167,7 +168,7 @@ export const coreSchema: JsonSchema = {
 			sectionMaxBytes: number(
 				"Skills section size cap",
 				"The skills prompt section's byte cap (truncation notice included)",
-				undefined,
+				SKILLS_SECTION_LIMIT_BYTES,
 				"live",
 			),
 		}),
@@ -197,7 +198,7 @@ export const coreSchema: JsonSchema = {
 			port: number(
 				"Listen port",
 				"The listener binds at boot — a change applies at restart",
-				undefined,
+				DEFAULT_PORT,
 				"restart",
 				{ minimum: 1, maximum: 65535 },
 			),
@@ -221,9 +222,9 @@ export const coreSchema: JsonSchema = {
 			timezone: string("Jobs default timezone", "The IANA zone jobs without an explicit timezone schedule in"),
 			compaction: object({
 				enabled: toggle("Compaction enabled", "", DEFAULT_COMPACTION.enabled),
-				reserveTokens: number("Reserve tokens", "", undefined),
-				keepRecentTokens: number("Keep recent tokens", "", undefined),
-				backgroundTokens: number("Background tokens", "", undefined),
+				reserveTokens: number("Reserve tokens", "", DEFAULT_COMPACTION.reserveTokens),
+				keepRecentTokens: number("Keep recent tokens", "", DEFAULT_COMPACTION.keepRecentTokens),
+				backgroundTokens: number("Background tokens", "", DEFAULT_COMPACTION.backgroundTokens),
 				modelOverrides: property("Compaction model overrides", "Per-model compaction policy overrides", {}, "restart", {
 					type: "object",
 					additionalProperties: { type: "object" },
@@ -236,7 +237,7 @@ export const coreSchema: JsonSchema = {
 				queueMax: number("Event queue maximum", "Memory-seam event queue bound", DEFAULT_MEMORY_SEAM.queueMax),
 			}),
 			decisions: object({
-				timeoutMs: number("Decision timeout (ms)", "Per-call decision-provider timeout", 15000, "live"),
+				timeoutMs: number("Decision timeout (ms)", "Per-call decision-provider timeout", DEFAULT_DECISION_TIMEOUT_MS, "live"),
 			}),
 			providers: object({
 				refreshIntervalMinutes: number(
@@ -252,7 +253,7 @@ export const coreSchema: JsonSchema = {
 					type: "array",
 					items: { type: "string", enum: ["token", "proxy"] },
 				}),
-				sessionDays: number("Session lifetime (days)", "Browser-session lifetime", 30, "live"),
+				sessionDays: number("Session lifetime (days)", "Browser-session lifetime", DEFAULT_AUTH.sessionDays, "live"),
 				proxy: object({
 					trustedProxies: strings("Trusted proxies", "CIDR ranges trusted for forward authentication"),
 					secretHeader: string("Proxy secret header", "Header carrying the forward-auth shared secret"),
@@ -273,7 +274,7 @@ export const coreSchema: JsonSchema = {
 			supervised: toggle("Supervised", "Whether a supervisor restarts the process after an intentional exit", false),
 			backup: object({
 				path: string("Backup path", "Filesystem backup target"),
-				staleAfterHours: number("Backup stale after (hours)", "Age before the last-success marker reports degraded", 36),
+				staleAfterHours: number("Backup stale after (hours)", "Age before the last-success marker reports degraded", DEFAULT_BACKUP_STALE_AFTER_HOURS),
 				s3: object({
 					bucket: string("S3 bucket", "Object-storage backup bucket"),
 					prefix: string("S3 prefix", "Object-storage backup key prefix"),
@@ -289,7 +290,11 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 	general: [
 		{ title: "Queueing", paths: ["/steeringMode", "/followUpMode"] },
 		{ title: "Models", paths: ["/defaultModel", "/namingModel"] },
-		{ title: "Behaviour", paths: ["/skills/sectionMaxBytes", "/notifications/runSettled"] },
+		{
+			title: "Behaviour",
+			paths: ["/skills/sectionMaxBytes", "/notifications/runSettled"],
+			overrides: { "/skills/sectionMaxBytes": { placeholder: undefined } },
+		},
 	],
 	tools: [{
 		title: "Defaults",
@@ -299,7 +304,6 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 				type: "choice",
 				multi: true,
 				options: { $: "/toolRoster" },
-				placeholder: undefined,
 				item: undefined,
 			},
 		},
@@ -313,38 +317,35 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 			"/stream/timeoutMs",
 			"/stream/maxRetries",
 			"/stream/maxRetryDelayMs",
-		], overrides: {
-			"/retry/baseDelayMs": { help: undefined },
-			"/retry/maxAgentDelayMs": { help: undefined },
-			"/stream/timeoutMs": { help: undefined },
-			"/stream/maxRetries": { help: undefined },
-			"/stream/maxRetryDelayMs": { help: undefined },
-		} },
+		] },
 		{
 			title: "Model overrides",
 			paths: ["/perModelThinking"],
 			overrides: { "/perModelThinking": { keyLabel: "Model" } },
 		},
-		{ title: "Server", paths: ["/server/port", "/server/publicUrl", "/server/timezone"] },
+		{
+			title: "Server",
+			paths: ["/server/port", "/server/publicUrl", "/server/timezone"],
+			overrides: { "/server/port": { placeholder: undefined } },
+		},
 		{ title: "Compaction", paths: [
 			"/server/compaction/enabled",
 			"/server/compaction/reserveTokens",
 			"/server/compaction/keepRecentTokens",
 			"/server/compaction/backgroundTokens",
 		], overrides: {
-			"/server/compaction/enabled": { help: undefined },
-			"/server/compaction/reserveTokens": { help: undefined },
-			"/server/compaction/keepRecentTokens": { help: undefined },
-			"/server/compaction/backgroundTokens": { help: undefined },
+			"/server/compaction/reserveTokens": { placeholder: undefined },
+			"/server/compaction/keepRecentTokens": { placeholder: undefined },
+			"/server/compaction/backgroundTokens": { placeholder: undefined },
 		} },
 		{ title: "Job history retention", paths: [
 			"/jobHistory/runs",
 			"/jobHistory/revisions",
 			"/jobDefaults/maxTurns",
 		], overrides: {
-			"/jobHistory/runs": { help: undefined },
-			"/jobHistory/revisions": { help: undefined },
-			"/jobDefaults/maxTurns": { help: undefined },
+			"/jobHistory/runs": { placeholder: undefined },
+			"/jobHistory/revisions": { placeholder: undefined },
+			"/jobDefaults/maxTurns": { placeholder: undefined },
 		} },
 	],
 };

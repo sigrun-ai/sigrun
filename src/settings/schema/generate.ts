@@ -73,7 +73,8 @@ export interface GeneratedForm {
 export interface LayoutGroup {
 	readonly title: string;
 	readonly paths: readonly string[]; // layout = inclusion: properties not listed are not rendered
-	/** Core only: per-path field overrides merged over the generated field. */
+	/** Per-path overrides merged over the generated field. An explicitly
+	 *  undefined property deletes that generated property (e.g. a stale item). */
 	readonly overrides?: Readonly<Record<string, Readonly<Record<string, unknown>>>>;
 }
 
@@ -208,9 +209,11 @@ function baseProps(schema: JsonSchema, name: string, required: boolean): FieldBa
 		label: typeof schema.title === "string" ? schema.title : name.split(".").pop() ?? name,
 	};
 	if (required) base.required = true;
-	if (typeof schema.description === "string") base.help = schema.description;
+	if (typeof schema.description === "string" && schema.description !== "") base.help = schema.description;
 	if (schema[APPLY_KEYWORD] !== undefined) base.apply = applyOf(schema);
-	if (schema.default !== undefined) base.placeholder = String(schema.default);
+	if (schema.default !== undefined && typeof schema.default !== "object") {
+		base.placeholder = String(schema.default);
+	}
 	if (typeof schema.minLength === "number") base.minLength = schema.minLength;
 	if (typeof schema.maxLength === "number") base.maxLength = schema.maxLength;
 	if (typeof schema.pattern === "string") base.pattern = schema.pattern;
@@ -320,7 +323,15 @@ function propertyNode(
 						keyLabel: "Name",
 					};
 				}
-				const item = objectChildren({ ...ctx, namePrefix: "" }, value, pointerJoin(pointer, "*"));
+				const item = value.type === "object"
+					? objectChildren({ ...ctx, namePrefix: "" }, value, pointerJoin(pointer, "*"))
+					: [propertyNode(
+						{ ...ctx, namePrefix: "" },
+						"value",
+						pointerJoin(pointer, "*"),
+						value,
+						false,
+					)];
 				if (item.length === 0) {
 					// A table row with no field to draw is not drawable: the row
 					// would render edgeless, and the channel coerces a stored row to
@@ -480,28 +491,35 @@ export function generateForm(
 
 		// Inclusion: only the listed paths render, grouped by section. Core's
 		// layout also names leaves inside nested objects (server/port, etc.).
-		const included = new Map<string, JsonSchema>();
-		const include = (child: JsonSchema, pointer: string): void => {
-			included.set(pointer, child);
+		const included = new Map<string, { schema: JsonSchema; required: boolean }>();
+		const include = (child: JsonSchema, pointer: string, required: boolean): void => {
+			included.set(pointer, { schema: child, required });
+			const requiredChildren = new Set(
+				Array.isArray(child.required)
+				? child.required.filter((name): name is string => typeof name === "string")
+				: [],
+			);
 			for (const [childName, grandchild] of propertiesOf(schema, child)) {
-				include(grandchild, pointerJoin(pointer, childName));
+				include(grandchild, pointerJoin(pointer, childName), requiredChildren.has(childName));
 			}
 		};
-		for (const [name, child] of topLevel) include(child, pointerJoin("", name));
+		for (const [name, child] of topLevel) include(child, pointerJoin("", name), topRequired.has(name));
 		for (const group of opts.layout) {
 			const children: (Field | SectionBlock)[] = [];
 			for (const path of group.paths) {
-				const child = included.get(path);
-				if (!child) {
+				const includedProperty = included.get(path);
+				if (!includedProperty) {
 					console.warn(
 						`settings schema: layout path ${path} (section "${group.title}") is not a property of the schema; skipping it`,
 					);
 					continue;
 				}
+				const child = includedProperty.schema;
 				if (child.writeOnly === true) continue; // already under Credentials
 				const segments = path.split("/").filter((segment) => segment !== "");
 				const name = segments.map((segment) => segment.replace(/~1/g, "/").replace(/~0/g, "~")).join(".");
-				const node = propertyNode(ctx, name, path, child, false);
+				if (segments.length === 1) apply.set(name, applyOf(child));
+				const node = propertyNode(ctx, name, path, child, includedProperty.required);
 				const override = group.overrides?.[path];
 				if (node.type === "section" && node.title === undefined) {
 					// Untitled nested object: the layout group is its section.

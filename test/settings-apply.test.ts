@@ -46,7 +46,7 @@ import type { SettingsFile } from "@sigrun/shared/settings";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { coreProperty } from "../src/settings/core-schema.js";
-import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
+import { applyOf, CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 
@@ -188,22 +188,15 @@ type Paths<T> = T extends readonly unknown[]
 const _typeTie: readonly Paths<SettingsFile>[] = EXPECTED_KEYS;
 void _typeTie;
 
-/** The registry's shape: one entry per key with its apply rule. */
+/** The registry's hand-authored shape; apply belongs to the schema. */
 interface RegistryEntry {
 	readonly key: string;
-	readonly apply: "live" | "restart";
 	readonly section: string;
 	readonly reason: string;
 }
 
 describe("the core settings registry (spec §13.1)", () => {
-	const byKey = (): Map<string, { key: string; apply: string; section: string; reason: string }> =>
-		new Map(
-			CORE_SETTING_KEYS.map((entry) => [
-				entry.key,
-				entry as { key: string; apply: string; section: string; reason: string },
-			]),
-		);
+	const byKey = (): Map<string, RegistryEntry> => new Map(CORE_SETTING_KEYS.map((entry) => [entry.key, entry]));
 
 	test("every SettingsFile key has exactly one registry entry", () => {
 		const registryKeys: string[] = CORE_SETTING_KEYS.map(
@@ -223,7 +216,7 @@ describe("the core settings registry (spec §13.1)", () => {
 			for (const key of keys) {
 				const entry = map.get(key);
 				expect(entry, `registry entry for ${key}`).toBeDefined();
-				expect(entry?.apply, `${key} apply`).toBe(apply);
+				expect(applyOf(key), `${key} apply`).toBe(apply);
 				// The schema owns apply; the registry derives its classification.
 				expect(coreProperty(key)?.["x-sigrun-apply"], `${key} schema apply`).toBe(apply);
 				// Every entry carries a one-line reason (the audit's record).

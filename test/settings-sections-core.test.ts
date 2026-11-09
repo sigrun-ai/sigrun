@@ -38,7 +38,8 @@ import {
 	coreProperty,
 	coreSchema,
 } from "../src/settings/core-schema.js";
-import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
+import { snapshotRestartKeys } from "../src/settings/pending.js";
+import { applyOf, CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -214,9 +215,19 @@ describe("core settings sections (U4 Task 4)", () => {
 			expect(property?.title, entry.key).toEqual(expect.any(String));
 			expect(property?.description, entry.key).toEqual(expect.any(String));
 			expect(property).toHaveProperty("default");
-			expect(property?.["x-sigrun-apply"], entry.key).toBe(entry.apply);
+			expect(property?.["x-sigrun-apply"], entry.key).toMatch(/^(live|restart)$/);
+			expect(entry, entry.key).not.toHaveProperty("apply");
 		}
 		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "tools", "advanced"]);
+		const general = CORE_SETTINGS_SECTIONS.find((section) => section.id === "general");
+		const root = general?.form.root;
+		expect(root?.type === "form" ? root.children.map((child) => "id" in child ? child.id : undefined) : []).toEqual([
+			"core-general-queue",
+			"core-general-models",
+			"core-general-behaviour",
+		]);
+		expect(snapshotRestartKeys({ server: { port: 4000 } }).has("server.port")).toBe(true);
+		expect(snapshotRestartKeys({ namingModel: "acme/namer" }).has("namingModel")).toBe(false);
 	});
 
 	test("every core section's form validates against the settings placement", () => {
@@ -303,7 +314,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			for (const field of fields) {
 				const entry = registryByKey.get(field.name);
 				if (entry === undefined) continue; // not a registry key (none today)
-				expect(field.apply, `${id}.${field.name}`).toBe(entry.apply);
+				expect(field.apply, `${id}.${field.name}`).toBe(applyOf(field.name));
 			}
 		}
 		const accounts = CORE_SETTINGS_SECTIONS.find((section) => section.id === "accounts");
@@ -643,15 +654,38 @@ describe("core settings surfaces (U4 Task 4)", () => {
 				payload: {
 					rev,
 					values: {
-						perModelThinking: {
-							"acme/model": { value: "low", $from: "acme/model" },
-						},
+						perModelThinking: { "acme/model": "low" },
 					},
 				},
 			},
 		});
 		expect(save.body).toMatchObject({ ok: true });
 		expect(opened.settings.read().perModelThinking).toEqual({ "acme/model": "low" });
+
+		const reread = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		expect((reread.body as { data: JsonObject }).data.settings).toMatchObject({
+			perModelThinking: { "acme/model": "low" },
+		});
+		const deleted = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-thinking-table-delete",
+				params: {},
+				payload: {
+					rev: (reread.body as { rev: number }).rev,
+					values: { perModelThinking: {} },
+				},
+			},
+		});
+		expect(deleted.body).toMatchObject({ ok: true });
+		expect(opened.settings.read().perModelThinking).toBeUndefined();
 	});
 
 	test("the Tools section's data carries the tool roster (the defaultTools options)", async () => {
