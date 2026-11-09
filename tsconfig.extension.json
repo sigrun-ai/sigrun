@@ -7,7 +7,7 @@
 		"rootDir": "src",
 		"outDir": "dist"
 	},
-	"files": ["src/extension.ts", "src/blocks/index.ts"],
+	"files": ["src/extension.ts", "src/blocks/index.ts", "src/settings/schema/index.ts"],
 	"include": [],
 	"exclude": []
 }

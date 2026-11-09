@@ -15,12 +15,9 @@
  * The core coves keep their channels-native components:
  * - **Interface** binds client prefs ({@link PrefsState}) + the theme
  *   controls ({@link ThemeState}) — client state, never the server.
- * - **Providers** keeps the §7.6 credential flows
- *   ({@link ProvidersSection}).
- * - **Extensions** keeps the extension-list editor (raw JSON settings
- *   + write-only secrets per loaded extension) — an extension WITHOUT
- *   a declared section keeps its raw JSON editor here (the spec's
- *   Extensions → <name> → Advanced carry-over).
+ * - **Providers** is a compact readiness list linking to extension pages.
+ * - Every loaded extension has one page; declared shared/personal sections
+ *   stack there instead of colliding on their repeated section ids.
  *
  * The pending-restart callout (§13.2/§13.3) reads the General section's
  * `meta` block (`pendingRestart`, `supervised`): when the list is
@@ -40,7 +37,6 @@ import {
 import type { JsonObject } from "@sigrun/shared/blocks";
 import type {
 	ExtensionInfoWire,
-	ExtensionSecretWire,
 	MetaResponse,
 	SettingsSectionEntryWire,
 	SettingsSectionIndexEntryWire,
@@ -50,6 +46,7 @@ import { createExtTransport } from "../blocks/extTransport";
 import { SurfaceView } from "../blocks/SurfaceView";
 import type { ThemeMode, ThemeState } from "../theme/useTheme";
 import { AccountLinksSection } from "./AccountLinksSection";
+import { ExtensionPage } from "./ExtensionPage";
 import { ProvidersSection } from "./ProvidersSection";
 import { TokensSection } from "./TokensSection";
 import { type PrefKey, type PrefsState } from "./usePrefs";
@@ -98,6 +95,7 @@ export function visibleSettingsSections(
 ): readonly SettingsSectionEntryWire[] {
 	return sections.filter((section) => {
 		if (section.id === "providers" && admin === false) return false;
+		if (section.slug !== "core" && admin === false) return section.scope === "user" && section.admin !== true;
 		if (section.scope === "user" && section.admin === true && admin === false) return false;
 		return true;
 	});
@@ -203,16 +201,6 @@ export function SettingsPanel(props: {
 		};
 	}, [client]);
 
-	// The uncovered-extension slugs (an extension WITHOUT a declared
-	// section keeps its raw-JSON editor in the cove — the spec's
-	// carry-over): the cove's reachability, derived not fetched.
-	const coveredSlugs = useMemo(() => {
-		if (load.status !== "ready") return new Set<string>();
-		return new Set(
-			load.sections.filter((s) => s.slug !== "core").map((s) => s.slug),
-		);
-	}, [load]);
-
 	// The CONTROLLED section (0.4.0 Task 4): the route owns the open
 	// section — resolved here, never set directly. Resolution mirrors the
 	// old deep-link rule: a CORE section by id first, then any declared
@@ -233,17 +221,9 @@ export function SettingsPanel(props: {
 				setOpen({ kind: "section", entry: core });
 				return;
 			}
-			const any = visible.find((entry) => entry.id === section);
-			if (any !== undefined) {
-				setOpen({ kind: "section", entry: any });
-				return;
-			}
-			const uncovered =
-				extensions !== null && !coveredSlugs.has(section)
-					? extensions.find((entry) => entry.name === section)
-					: undefined;
-			if (uncovered !== undefined) {
-				setOpen({ kind: "extension", slug: uncovered.name });
+			const page = extensions?.find((entry) => entry.name === section);
+			if (page !== undefined && (admin !== false || visible.some((entry) => entry.page === page.name && entry.scope === "user"))) {
+				setOpen({ kind: "extension", slug: page.name });
 				return;
 			}
 		}
@@ -253,7 +233,7 @@ export function SettingsPanel(props: {
 		if (general !== undefined) {
 			setOpen({ kind: "section", entry: general });
 		}
-	}, [load, section, admin, extensions, coveredSlugs]);
+	}, [load, section, admin, extensions]);
 
 	const results = useMemo(
 		() => (load.status === "ready" ? filterSettingsIndex(load.index, query) : []),
@@ -274,7 +254,7 @@ export function SettingsPanel(props: {
 					: undefined;
 			if (entry === undefined) return;
 			setQuery("");
-			onSection(entry.id);
+			onSection(entry.page ?? entry.id);
 			// The surface loads async; the focus pass polls the body for
 			// the field element (a `[name="<key>"]` control) briefly.
 			if (hit.key !== undefined) {
@@ -311,6 +291,13 @@ export function SettingsPanel(props: {
 		// not pretend those controls are available.
 		return visibleSettingsSections(load.sections, admin);
 	}, [load, admin]);
+	const pageOwners = useMemo(
+		() => new Set((extensions ?? []).map((extension) => extension.name)),
+		[extensions],
+	);
+	const openExtension = open?.kind === "extension"
+		? extensions?.find((entry) => entry.name === open.slug)
+		: undefined;
 
 	return (
 		<div className="settings-page">
@@ -354,7 +341,7 @@ export function SettingsPanel(props: {
 				{load.status === "ready" && (
 					<div className="settings-layout">
 						<nav className="settings-nav" aria-label="settings sections">
-							{navSections.filter((section) => section.scope !== "user").map((section) => (
+							{navSections.filter((section) => section.slug === "core" && section.scope !== "user").map((section) => (
 								<button
 									key={`${section.slug}/${section.id}`}
 									type="button"
@@ -371,45 +358,25 @@ export function SettingsPanel(props: {
 									{section.title}
 								</button>
 							))}
-							{navSections.some((section) => section.scope === "user") && (
-								<div className="settings-nav-group" role="group" aria-label="My settings">
-									<div className="settings-nav-heading">My settings</div>
-									{navSections.filter((section) => section.scope === "user").map((section) => (
-										<button
-											key={`${section.slug}/${section.id}`}
-											type="button"
-											className="settings-nav-item"
-											data-active={
-												open?.kind === "section" &&
-												open.entry.slug === section.slug &&
-												open.entry.id === section.id
-													? ""
-													: undefined
-												}
-											onClick={() => onSection(section.id)}
-										>
-											{section.title}
-										</button>
-									))}
-								</div>
-							)}
-							{/* The extension-list cove (the raw-JSON editor): one row
-							    per loaded extension whose declared sections don't
-							    already cover it — the spec's "an extension without a
-							    section keeps its raw JSON editor". */}
-							<ExtensionCoveNav
+							<ExtensionPagesNav
 								extensions={extensions}
+								sections={navSections}
 								open={open}
-								coveredSlugs={coveredSlugs}
+								admin={admin !== false}
 								onOpen={onSection}
 							/>
 						</nav>
 						<div className="settings-section" ref={bodyRef}>
 							{open === null ? (
 								<p className="settings-note">select a section</p>
-							) : open.kind === "extension" ? (
-								<ExtensionCove client={client} slug={open.slug} />
-							) : (
+							) : open.kind === "extension" && openExtension !== undefined ? (
+								<ExtensionPage
+									client={client}
+									extension={openExtension}
+									sections={navSections.filter((entry) => entry.page === openExtension.name)}
+									admin={admin !== false}
+								/>
+							) : open.kind === "section" ? (
 								<SettingsSectionBody
 									key={`${open.entry.slug}/${open.entry.id}`}
 									client={client}
@@ -419,8 +386,10 @@ export function SettingsPanel(props: {
 									meta={meta}
 									onCoreMeta={setCoreMeta}
 									valuesRef={sectionDataRef}
+									pageOwners={pageOwners}
+									onOpenPage={onSection}
 								/>
-							)}
+							) : null}
 						</div>
 					</div>
 				)}
@@ -449,6 +418,37 @@ export function SettingsPanel(props: {
 	);
 }
 
+function ExtensionPagesNav(props: {
+	readonly extensions: readonly ExtensionInfoWire[] | null;
+	readonly sections: readonly SettingsSectionEntryWire[];
+	readonly open: OpenSection | null;
+	readonly admin: boolean;
+	readonly onOpen: (page: string) => void;
+}): React.ReactElement | null {
+	const { extensions, sections, open, admin, onOpen } = props;
+	if (extensions === null) return null;
+	const pages = new Set(sections.map((section) => section.page).filter((page): page is string => page !== undefined));
+	const listed = extensions.filter((extension) => admin || pages.has(extension.name));
+	if (listed.length === 0) return null;
+	return (
+		<div className="settings-nav-group" role="group" aria-label="Extensions">
+			<div className="settings-nav-heading">Extensions</div>
+			{listed.map((extension) => (
+				<button
+					key={extension.name}
+					type="button"
+					className="settings-nav-item settings-nav-extension"
+					data-ext={extension.name}
+					data-active={open?.kind === "extension" && open.slug === extension.name ? "" : undefined}
+					onClick={() => onOpen(extension.name)}
+				>
+					{extension.name}
+				</button>
+			))}
+		</div>
+	);
+}
+
 /** One section's body: the coves (Interface / Providers / Extensions)
  *  keep their channels-native components; every other section renders
  *  its surface. */
@@ -463,6 +463,8 @@ function SettingsSectionBody(props: {
 		readonly supervised: boolean;
 	}) => void;
 	readonly valuesRef: React.MutableRefObject<SectionValues>;
+	readonly pageOwners: ReadonlySet<string>;
+	readonly onOpenPage: (owner: string) => void;
 }): React.ReactElement {
 	const { entry, client, prefsState, theme, meta, onCoreMeta } = props;
 	// The Interface + Providers + Extensions coves never mount a surface.
@@ -470,10 +472,7 @@ function SettingsSectionBody(props: {
 		return <InterfaceCove prefsState={prefsState} theme={theme} />;
 	}
 	if (entry.slug === "core" && entry.id === "providers") {
-		return <ProvidersSection client={client} />;
-	}
-	if (entry.slug === "core" && entry.id === "extensions") {
-		return <ExtensionsCove client={client} />;
+		return <ProvidersSection client={client} pageOwners={props.pageOwners} onOpenPage={props.onOpenPage} />;
 	}
 	if (entry.slug === "core" && entry.id === "accounts") {
 		return <AccountLinksSection client={client} />;
@@ -729,385 +728,6 @@ function InterfaceCove(props: {
 				interface preferences are per-browser (stored locally — never sent
 				to the server)
 			</p>
-		</div>
-	);
-}
-
-// ─── The Extensions cove (W3 Task 7, spec §7.7 — the raw-JSON editor) ─────
-
-/** One extension's editor state (the settings textarea + the secret rows). */
-interface ExtensionDraft {
-	/** The settings object as raw JSON text (the textarea's value). */
-	settingsText: string;
-	/** The last listed secret keys, sources included. */
-	secrets: readonly ExtensionSecretWire[];
-	/** Write-only values per listed key (never pre-filled — the API never
-	 * returns values, so there is nothing to display). */
-	secretValues: Record<string, string>;
-	/** The add-a-new-secret row's key + write-only value. */
-	newKey: string;
-	newValue: string;
-	/** Per-extension note (save outcome / a server error message). */
-	note?: { readonly kind: "ok" | "error"; readonly message: string };
-}
-
-/** Serialize a settings object for the textarea (stable pretty-print). */
-function settingsToText(value: Record<string, unknown>): string {
-	const keys = Object.keys(value);
-	if (keys.length === 0) return "";
-	return JSON.stringify(value, null, 2);
-}
-
-/** Validate the raw settings JSON: empty ("{}") or a JSON object. */
-function parseSettingsText(
-	raw: string,
-): { ok: true; value: Record<string, unknown> } | { ok: false; message: string } {
-	const trimmed = raw.trim();
-	if (trimmed === "") return { ok: true, value: {} };
-	try {
-		const parsed: unknown = JSON.parse(trimmed);
-		if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-			return { ok: false, message: "settings must be a JSON object" };
-		}
-		return { ok: true, value: parsed as Record<string, unknown> };
-	} catch (error: unknown) {
-		return {
-			ok: false,
-			message: `invalid JSON: ${error instanceof Error ? error.message : String(error)}`,
-		};
-	}
-}
-
-/** The Extensions cove's nav rows: one per loaded extension whose
- *  declared sections don't already cover it (the raw-JSON editor's
- *  reachability — the spec's keep-reachable rule). */
-function ExtensionCoveNav(props: {
-	/** The panel's fetched extension list (one fetch serves the nav rows
-	 * AND the route resolve — the cove never fetches on its own). */
-	extensions: readonly ExtensionInfoWire[] | null;
-	readonly open: OpenSection | null;
-	readonly coveredSlugs: ReadonlySet<string>;
-	readonly onOpen: (slug: string) => void;
-}): React.ReactElement | null {
-	const { extensions, coveredSlugs, onOpen, open } = props;
-	if (extensions === null) return null;
-	// An extension WITH a declared section renders under its own nav
-	// rows; the cove covers the rest (the raw-JSON editor).
-	const uncovered = extensions.filter((entry) => !coveredSlugs.has(entry.name));
-	if (uncovered.length === 0) return null;
-	return (
-		<>
-			{uncovered.map((extension) => (
-				<button
-					key={extension.name}
-					type="button"
-					className="settings-nav-item settings-nav-extension"
-					data-ext={extension.name}
-					data-active={
-						open?.kind === "extension" && open.slug === extension.name
-							? ""
-							: undefined
-					}
-					onClick={() => onOpen(extension.name)}
-				>
-					{extension.name} (advanced)
-				</button>
-			))}
-		</>
-	);
-}
-
-/** One extension's raw-JSON editor (the spec §7.7 carry-over). */
-function ExtensionCove(props: {
-	readonly client: SigrunClient;
-	readonly slug: string;
-	/** The registry outcome (the name row's status + version). */
-	readonly status?: string;
-	readonly version?: string;
-}): React.ReactElement {
-	const { client, slug, status, version } = props;
-	const [draft, setDraft] = useState<ExtensionDraft | null>(null);
-	const [error, setError] = useState<string | null>(null);
-	const settingsTextarea = useRef<HTMLTextAreaElement>(null);
-	useEffect(() => {
-		let cancelled = false;
-		setDraft(null);
-		setError(null);
-		Promise.all([
-			client.getExtensionSettings(slug),
-			client.listExtensionSecrets(slug),
-		])
-			.then(([settingsResponse, secrets]) => {
-				if (cancelled) return;
-				setDraft({
-					settingsText: settingsToText(settingsResponse.settings),
-					secrets: secrets.secrets,
-					secretValues: {},
-					newKey: "",
-					newValue: "",
-				});
-			})
-			.catch((cause: unknown) => {
-				if (!cancelled) {
-					setError(cause instanceof Error ? cause.message : String(cause));
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [client, slug]);
-
-	useEffect(() => {
-		const element = settingsTextarea.current;
-		if (element === null) return;
-		element.style.height = "auto";
-		element.style.height = `${element.scrollHeight}px`;
-	}, [draft?.settingsText]);
-
-	const patchDraft = (patch: Partial<ExtensionDraft>): void => {
-		setDraft((prev) => (prev === null ? prev : { ...prev, ...patch }));
-	};
-
-	const saveSettings = async (): Promise<void> => {
-		if (draft === null) return;
-		const parsed = parseSettingsText(draft.settingsText);
-		if (!parsed.ok) {
-			patchDraft({ note: { kind: "error", message: parsed.message } });
-			return;
-		}
-		try {
-			await client.putExtensionSettings(slug, parsed.value);
-			patchDraft({ note: { kind: "ok", message: "saved" } });
-		} catch (cause: unknown) {
-			patchDraft({
-				note: {
-					kind: "error",
-					message: cause instanceof Error ? cause.message : String(cause),
-				},
-			});
-		}
-	};
-
-	const setSecret = async (key: string, value: string): Promise<void> => {
-		if (key === "" || value === "" || draft === null) return;
-		try {
-			const { secrets } = await client.putExtensionSecret(slug, key, value);
-			setDraft({
-				...draft,
-				secrets,
-				secretValues: { ...draft.secretValues, [key]: "" },
-				newKey: "",
-				newValue: "",
-				note: { kind: "ok", message: `secret ${key} set` },
-			});
-		} catch (cause: unknown) {
-			patchDraft({
-				note: {
-					kind: "error",
-					message: cause instanceof Error ? cause.message : String(cause),
-				},
-			});
-		}
-	};
-
-	const deleteSecret = async (key: string): Promise<void> => {
-		try {
-			const { secrets } = await client.deleteExtensionSecret(slug, key);
-			patchDraft({ secrets, note: { kind: "ok", message: `secret ${key} deleted` } });
-		} catch (cause: unknown) {
-			patchDraft({
-				note: {
-					kind: "error",
-					message: cause instanceof Error ? cause.message : String(cause),
-				},
-			});
-		}
-	};
-
-	if (error !== null) {
-		return (
-			<p className="settings-note" role="alert">
-				{error}
-			</p>
-		);
-	}
-	if (draft === null) {
-		return <p className="settings-note">loading…</p>;
-	}
-	return (
-		<div className="settings-body settings-ext-list">
-			<p className="settings-note">
-				settings are the extension's own JSON (read at factory time → applies
-				at restart); secrets list keys only — values are write-only and never
-				displayed
-			</p>
-			<fieldset className="settings-ext" data-ext={slug}>
-				<legend className="settings-ext-name">
-					{slug}
-					<span className="settings-ext-meta">
-						{status ?? ""}
-						{version === undefined ? "" : ` · v${version}`}
-					</span>
-				</legend>
-				<label className="settings-field">
-					<span className="settings-label">Settings (raw JSON)</span>
-					<textarea
-						ref={settingsTextarea}
-						className="settings-ext-settings"
-						rows={12}
-						spellCheck={false}
-						placeholder="{}"
-						value={draft.settingsText}
-						onChange={(event) =>
-							patchDraft({ settingsText: event.target.value })
-						}
-					/>
-					<div className="settings-ext-row">
-						<button
-							type="button"
-							className="settings-ext-save"
-							onClick={() => void saveSettings()}
-						>
-							Save settings
-						</button>
-						{draft.note !== undefined && (
-							<span
-								className="settings-note"
-								role={draft.note.kind === "ok" ? "status" : "alert"}
-							>
-								{draft.note.message}
-							</span>
-						)}
-					</div>
-				</label>
-				<div className="settings-field">
-					<span className="settings-label">Secrets</span>
-					{draft.secrets.length === 0 && (
-						<p className="settings-note">no secrets set</p>
-					)}
-					{draft.secrets.map((secret) => (
-						<div key={secret.key} className="settings-ext-row">
-							<span className="settings-ext-key">
-								{secret.key}{" "}
-								<span className="settings-ext-source">({secret.source})</span>
-							</span>
-							<input
-								type="password"
-								className="settings-ext-secret-value"
-								data-secret-key={secret.key}
-								placeholder="new value"
-								value={draft.secretValues[secret.key] ?? ""}
-								onChange={(event) =>
-									patchDraft({
-										secretValues: {
-											...draft.secretValues,
-											[secret.key]: event.target.value,
-										},
-									})
-								}
-							/>
-							<button
-								type="button"
-								className="settings-ext-secret-set"
-								data-secret-key={secret.key}
-								onClick={() =>
-									void setSecret(secret.key, draft.secretValues[secret.key] ?? "")
-								}
-							>
-								Set
-							</button>
-							<button
-								type="button"
-								className="settings-ext-secret-delete"
-								data-secret-key={secret.key}
-								onClick={() => void deleteSecret(secret.key)}
-							>
-								Delete
-							</button>
-						</div>
-					))}
-					<div className="settings-ext-row">
-						<input
-							type="text"
-							className="settings-ext-new-key"
-							placeholder="new key"
-							value={draft.newKey}
-							onChange={(event) => patchDraft({ newKey: event.target.value })}
-						/>
-						<input
-							type="password"
-							className="settings-ext-new-value"
-							placeholder="value"
-							value={draft.newValue}
-							onChange={(event) => patchDraft({ newValue: event.target.value })}
-						/>
-						<button
-							type="button"
-							className="settings-ext-secret-add"
-							onClick={() => void setSecret(draft.newKey, draft.newValue)}
-						>
-							Set
-						</button>
-					</div>
-				</div>
-			</fieldset>
-		</div>
-	);
-}
-
-/** The Extensions cove list (every loaded extension's editor — the
- *  section's own body; the nav's per-extension rows open the same
- *  editor scoped to one slug). */
-function ExtensionsCove(props: { readonly client: SigrunClient }): React.ReactElement {
-	const { client } = props;
-	const [extensions, setExtensions] = useState<readonly ExtensionInfoWire[] | null>(
-		null,
-	);
-	const [error, setError] = useState<string | null>(null);
-	useEffect(() => {
-		let cancelled = false;
-		client
-			.listExtensions()
-			.then((list) => {
-				if (!cancelled) setExtensions(list.extensions);
-			})
-			.catch((cause: unknown) => {
-				if (!cancelled) {
-					setError(cause instanceof Error ? cause.message : String(cause));
-				}
-			});
-		return () => {
-			cancelled = true;
-		};
-	}, [client]);
-	if (error !== null) {
-		return (
-			<p className="settings-note" role="alert">
-				{error}
-			</p>
-		);
-	}
-	if (extensions === null) {
-		return <p className="settings-note">loading extensions…</p>;
-	}
-	if (extensions.length === 0) {
-		return (
-			<div className="settings-body">
-				<p className="settings-note">no extensions are configured</p>
-			</div>
-		);
-	}
-	return (
-		<div className="settings-body">
-			{extensions.map((extension) => (
-				<ExtensionCove
-					key={extension.name}
-					client={client}
-					slug={extension.name}
-					status={extension.status}
-					version={extension.version}
-				/>
-			))}
 		</div>
 	);
 }

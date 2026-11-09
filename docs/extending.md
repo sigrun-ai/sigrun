@@ -51,10 +51,9 @@ story to guess.
 - **`auth.json` is provider credentials only.** Extension secrets
   never go there — they live in `secrets.json`, one top-level key per
   extension slug, contents arbitrary per extension.
-- **One settings file per extension** (`settings/<slug>.json`),
-  contents entirely your shape. There is no schema language and no
-  validation DSL: sigrun stores the object; validating it is the
-  extension's job.
+- **One settings file per extension** (`settings/<slug>.json`). Declare
+  its JSON Schema through `host.settings.declare` and use the returned
+  checked-read handle; `host.stores.settings` remains the raw file API.
 - **The data, state, and cache directories are free-form.** Sigrun
   mandates nothing about their contents — not file formats, not
   structure. The surface is "a directory that is yours."
@@ -121,6 +120,73 @@ same way).
   stay where they were; migrating them is the operator's move, never
   automatic.
 
+## Schema-declared settings
+
+Declare the settings schema **once, synchronously, at the top of the
+factory**. `declare` returns the checked-read handle immediately; it does
+no I/O. Calling it twice throws. Calling it after the factory returned
+throws `"settings.declare must be called during the factory"` (boot seals
+the host after loading). A malformed schema throws from the factory and
+quarantines the extension, naming the offending keyword.
+
+The contract is JSON Schema (2020-12). TypeBox is optional — it is a
+convenient way to get both the schema and its TypeScript type:
+
+```ts
+import { Type, type Static } from "typebox";
+import type { SigrunHost } from "@sigrun/sigrun/extension";
+
+const schema = Type.Object({
+  endpoint: Type.String({ default: "https://api.example.invalid" }),
+  interval: Type.Integer({ default: 60, "x-sigrun-apply": "live" }),
+  apiKey: Type.String({ writeOnly: true }),
+});
+type Settings = Static<typeof schema>;
+
+export default async function createAcme(host: SigrunHost) {
+  const settings = host.settings.declare<Settings>({ schema });
+  // Fresh on every call: schema-checked, defaults applied, secrets filled.
+  // Await this where the value is used (including inside the factory).
+  const current = await settings.get();
+  return { extension: /* ... */ };
+}
+```
+
+A factory-time read resolves the host's provisional, package-derived
+slug. If the final extension slug differs, the load fails naming both,
+rather than reading one file while the settings page writes another.
+Built-ins are pre-keyed on their known final slug **for settings and
+secrets only**; raw data/state/cache paths keep the package-derived
+provisional slug until the final rekey, so factory-captured durable paths
+stay stable. The host is passed only to factories with
+`factory.length > 0`: a zero-argument factory receives no host (a
+defaulted first argument still counts as length zero).
+
+`get()` reads `settings/<slug>.json` fresh each time. Defaults recurse
+through objects, entries and variants. `writeOnly` values come from the
+secrets store, never from the settings file. If a stored value is invalid,
+the smallest failing node with a default is replaced by it; an optional
+node without one is removed; an entry with neither is dropped. Each action
+is logged once per process and named in one `settings.invalid` notice per
+boot to the primary admin, with a link to the extension's settings page.
+The stored file is not rewritten by a read.
+
+For per-user settings, pass `userSchema` too and call
+`settings.user(user).get()`; it validates that user's
+`user-settings/<user>/<slug>.json` against `userSchema`. Calling `user()`
+without declaring `userSchema` throws. The ids `settings` and
+`user-settings` are reserved: a declaring extension may not also declare
+a view or panel with either id.
+
+`host.stores.settings.get()` and `host.stores.user(u).settings.get()`
+keep their original contract: the **raw** file, no schema checking,
+defaults or secret filling. New code should normally use the handle from
+`declare`. Returning the old `surfaces.settings` declaration now fails
+the load with `"surfaces.settings is replaced by host.settings.declare"`.
+
+TODO(Task 7): restore the generated-form `onSettingsChanged` documentation
+when the schema-backed save adapter lands.
+
 ## The stores handle
 
 Your package's default export is a factory; if it declares a first
@@ -144,6 +210,7 @@ export default function createAcmeTool(host: {
 		readonly secrets: {
 			get(key: string): Promise<string | undefined>;
 			set(key: string, value: string): Promise<void>;
+			delete(key: string): Promise<void>;
 		};
 		/** Your settings/<slug>.json (absent reads as {}). */
 		readonly settings: {
@@ -167,11 +234,9 @@ export default function createAcmeTool(host: {
 		(await secrets.get("api-key")) ??
 		fromEnv("SIGRUN_EXT_ACME_TOOL_API_KEY");
 
-	// settings: your file, your shape
-	const interval = async () => {
-		const stored = await settings.get();
-		return typeof stored.interval === "number" ? stored.interval : 60;
-	};
+	// The raw settings file (new code should usually declare a schema and
+	// use host.settings.declare(...).get() instead).
+	const stored = await settings.get();
 
 	// data/state: the ROOT is ensured at boot; your <slug> subdir is not
 	const persist = async (index: string) => {
@@ -2862,26 +2927,11 @@ export function imageForms(): Tree {
 }
 ```
 
-### Settings sections with apply
+### Settings apply classes
 
-A settings section is a static `settings`-placement tree — a root
-`form` bound to your settings object (`settings/<slug>.json`) —
-declared in the factory result's `surfaces.settings` (spec §13.3).
-Every field declares **`apply: "live" | "restart"`**:
-
-- `live` (the default for extension fields): the value is read where
-  it's used; saving takes effect with no restart.
-- `restart`: the value is read at boot. For CORE sections, saving
-  stores it and marks it pending — `GET /v1/settings` returns
-  `pendingRestart: string[]`, and the core settings surface shows a
-  `callout(tone: "warn")` listing them with a Restart button for
-  admins (when the server is supervised). For EXTENSION sections the
-  marker is not wired yet: the loader accepts `apply: "restart"`, the
-  value is stored and read at the next boot, but no pending marker or
-  warn callout is produced today.
-
-Mark a field `restart` when your factory reads the value at load;
-everything else stays `live`.
+Schema-declared fields carry **`x-sigrun-apply: "live" | "restart"`**.
+`live` is for values read where they are used; `restart` is for values a
+factory consumes at load. A restart value applies at the next boot.
 
 ### Worked example: a lanes board
 
@@ -2977,76 +3027,6 @@ The `move` handler receives `{itemId, from, to}` and answers
 channel's optimistic overlay holds the card where the user dropped it
 until your data catches up (spec §6.3). A read-only principal gets the
 same tree with `reorder` disabled by the channel.
-
-### Worked example: a settings section
-
-A section for an extension with one live field, one restart field, and
-a write-only secret (the S2 shape):
-
-```ts check
-import { choice, form, secret, section, text, tree } from "@sigrun/sigrun/blocks";
-import type { Tree } from "@sigrun/sigrun/blocks";
-
-export function settingsForm(): Tree {
-	return tree(
-		form({
-			id: "acme-settings",
-			// The section's surface data is {settings, secrets}; fields
-			// resolve under the settings object.
-			bind: "/settings",
-			mode: "submit",
-			submitLabel: "Save",
-			children: [
-				section({
-					title: "Sync",
-					children: [
-						choice({
-							name: "interval",
-							label: "Sync interval",
-							help: "Read where it is used — saving applies immediately.",
-							apply: "live",
-							options: [
-								{ id: "5m", label: "Every 5 minutes" },
-								{ id: "1h", label: "Hourly", recommended: true },
-							],
-						}),
-						text({
-							name: "endpoint",
-							label: "Endpoint URL",
-							kind: "url",
-							placeholder: "https://sync.example.invalid",
-							help: "Read at boot — a saved change applies at the next restart.",
-							apply: "restart",
-							required: true,
-						}),
-					],
-				}),
-				section({
-					title: "Credentials",
-					children: [
-						secret({
-							name: "apiKey",
-							label: "API key",
-							help: "Write-only; the field shows set (stored) / set (env) / not set.",
-						}),
-					],
-				}),
-			],
-		}),
-	);
-}
-```
-
-Saving validates every field, writes the settings object, then fires
-`settings.changed` (your `onSettingsChanged(keys)` runs after the write
-commits). Successful writes through either extension settings API publish
-through this same path. A per-user `/v1/me` write carries its caller so
-`onSettingsChanged(keys, user)` reconciles that user, and the committed
-settings are readable during reconciliation. Rejected writes publish
-nothing; repeated successful writes retain their normal notification
-semantics. The core `pendingRestart` marker described above does not
-cover extension fields yet — a saved `restart` value applies at the
-next boot.
 
 ### Worked example: a dashboard
 
@@ -3311,33 +3291,12 @@ The kernel boundary suite passed 19 unprivileged cases in a local run on
 this host (Linux, Landlock ABI 7); the hosted-CI run is pending. Do not
 treat service/worker isolation as kernel-verified from unit tests alone.
 
-### Per-user settings sections
+### Per-user settings
 
-A `SettingsSectionDef` can set `scope: "user"`. The section then reads and
-writes the calling user's per-user settings instead of the shared
-`settings/<slug>.json`. It is visible to every signed-in user unless
-`admin: true` is explicit; a principal with no directory user gets `400`.
-Omit `scope`, or use `"server"`, for deployment-wide shared configuration.
-
-```ts
-const section = {
-	id: "acme-personal",
-	title: "Acme (personal)",
-	scope: "user" as const,
-	admin: false,
-	form: {
-		v: 1,
-		root: {
-			type: "form",
-			id: "acme-personal-form",
-			bind: "/settings",
-			mode: "submit",
-			onSubmit: "save",
-			children: [{ type: "text", name: "nickname", label: "Nickname" }],
-		},
-	},
-};
-```
+Declare `userSchema` beside the shared schema and read
+`host.settings.declare(...).user(user).get()`. It applies the same
+checked-read rules to `user-settings/<user>/<slug>.json`. There is no
+per-user schema when `userSchema` is absent, and `user()` then throws.
 
 ### What `userDeleted` guarantees
 

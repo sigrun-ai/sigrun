@@ -28,6 +28,8 @@ import { SecretFieldView } from "./SecretField";
 import { FileFieldView } from "./FileField";
 import { ListFieldView } from "./ListField";
 import { DaterangeFieldView } from "./DaterangeField";
+import { EntriesFieldView } from "./EntriesField";
+import { VariantFieldView } from "./VariantField";
 import { watchLongtextHeight } from "./longtextHeight";
 
 /** What the owning form hands every field renderer. */
@@ -246,5 +248,9 @@ export function FieldView(props: FieldProps): ReactNode {
 			return <ListFieldView {...props} field={field} />;
 		case "daterange":
 			return <DaterangeFieldView {...props} field={field} />;
+		case "entries":
+			return <EntriesFieldView {...props} field={field} />;
+		case "variant":
+			return <VariantFieldView {...props} field={field} />;
 	}
 }

@@ -7,11 +7,20 @@
  * `~/.cache/sigrun`. Pinned per worker process to a fresh tmp dir,
  * BEFORE any test imports boot.
  *
- * Only the CACHE root needs the pin: state/config stay per-test (the
- * identity stores materialize lazily and the boot harnesses pass their
- * own SIGRUN_* env). Tests that pass an explicit SIGRUN_CACHE_DIR (e.g.
- * the onboarding suite) override this default through their own env
- * objects.
+ * The CONFIG root is pinned too (settings rework, Task 11 fix): the
+ * built-in MCP factory imports a legacy mcp.json into its scoped settings
+ * and secrets stores, so a default-builtins boot without an explicit
+ * config root would otherwise write into the developer's real
+ * ~/.config/sigrun. SIGRUN_MCP_CONFIG points at an absent file in the
+ * same tmp root; suites exercising the import override it per test.
+ * Tests with explicit SIGRUN_* env objects override these defaults.
+ *
+ * The DATA root is pinned as well (settings rework, Task 14): per-user
+ * surfaces (notice stores, curation history) resolve under
+ * `<dataDir>/users/<user>` (boot.ts userAreas), so a boot whose data
+ * root is unpinned writes into the developer's real
+ * ~/.local/share/sigrun — the same contamination class the config pin
+ * closed.
  */
 
 import { mkdtempSync } from "node:fs";
@@ -20,4 +29,10 @@ import { join } from "node:path";
 
 process.env.SIGRUN_CACHE_DIR = mkdtempSync(
 	join(tmpdir(), "sigrun-vitest-cache-"),
+);
+const configDir = mkdtempSync(join(tmpdir(), "sigrun-vitest-config-"));
+process.env.SIGRUN_CONFIG_DIR = configDir;
+process.env.SIGRUN_MCP_CONFIG = join(configDir, "no-legacy-mcp.json");
+process.env.SIGRUN_DATA_DIR = mkdtempSync(
+	join(tmpdir(), "sigrun-vitest-data-"),
 );

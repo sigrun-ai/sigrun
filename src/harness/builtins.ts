@@ -83,6 +83,8 @@ export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
 export interface ResolvedBuiltins {
 	/** The loader inputs for every built-in that loads this boot. */
 	readonly load: ResolvedExtensionInput[];
+	/** Configured inputs with replacement identities carried onto them. */
+	readonly configured: readonly ResolvedExtensionInput[];
 	/** The built-ins that did not load, with the reason. */
 	readonly skipped: {
 		readonly key: string;
@@ -145,7 +147,7 @@ function builtinEntry(specifier: string): ResolvedExtensionInput {
  * nothing derives (a nameless bare entry) — such an entry can never
  * replace a built-in.
  */
-function configuredPackageName(
+export function configuredPackageName(
 	entry: ResolvedExtensionInput,
 ): string | undefined {
 	const base = entry.entry ?? entry.name;
@@ -207,15 +209,19 @@ export function resolveBuiltins(
 	const toggles = settings.builtinExtensions;
 	const load: ResolvedExtensionInput[] = [];
 	const skipped: ResolvedBuiltins["skipped"][number][] = [];
-	// The configured package names, computed once (replacement matching):
-	// name → the display specifier the warning and `replacedBy` report.
+	// Resolve each configured package name ONCE (it can read the manifest).
+	// The replacement rule and the settings-slug carry share that read: a
+	// configured package replacing a built-in inherits the built-in's
+	// settings/secrets key from factory time, never a provisional split.
 	const configuredNames = new Map<string, string>();
-	for (const entry of configured) {
+	const configuredWithSlugs = configured.map((entry) => {
 		const name = configuredPackageName(entry);
 		if (name !== undefined && !configuredNames.has(name)) {
 			configuredNames.set(name, entry.name ?? entry.entry ?? name);
 		}
-	}
+		const builtin = BUILTIN_EXTENSIONS.find((candidate) => candidate.specifier === name);
+		return builtin === undefined ? entry : { ...entry, settingsSlug: builtin.slug };
+	});
 	for (const builtin of BUILTIN_EXTENSIONS) {
 		if (toggles?.[builtin.key] === false) {
 			console.info(
@@ -232,13 +238,17 @@ export function resolveBuiltins(
 			skipped.push({ key: builtin.key, reason: "replaced", by: replacement });
 			continue;
 		}
-		load.push(resolve(builtin.specifier, builtinEntry));
+		load.push({ ...resolve(builtin.specifier, builtinEntry), settingsSlug: builtin.slug });
 	}
 	// The test-seam extra entries (the boot's `extraBuiltins` option):
 	// resolved exactly like the real built-ins, appended after them,
 	// reported builtin.
 	for (const specifier of extra) {
-		load.push(resolve(specifier, builtinEntry));
+		const known = BUILTIN_EXTENSIONS.find((builtin) => builtin.specifier === specifier);
+		load.push({
+			...resolve(specifier, builtinEntry),
+			...(known === undefined ? {} : { settingsSlug: known.slug }),
+		});
 	}
-	return { load, skipped };
+	return { load, skipped, configured: configuredWithSlugs };
 }

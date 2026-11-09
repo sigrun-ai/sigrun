@@ -1,0 +1,7 @@
+{
+	"name": "@sigrun/ext-mcp",
+	"version": "0.0.0-fixture",
+	"private": true,
+	"type": "module",
+	"main": "index.js"
+}

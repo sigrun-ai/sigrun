@@ -28,6 +28,7 @@
  *   every authenticated principal.
  */
 
+import { Errors } from "typebox/schema";
 import { isSuperuser } from "../auth/principal.js";
 import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
 import type {
@@ -49,6 +50,13 @@ import {
 } from "../../settings/pending.js";
 import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
+import { applyDefaults } from "../../settings/schema/defaults.js";
+import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
+import {
+	secretMoves,
+	secretStatuses,
+	splitSecrets,
+} from "../../settings/schema/secrets.js";
 
 /** A user-scope surface requires a live directory user, exactly like /v1/me. */
 export class NamedUserRequiredError extends Error {
@@ -100,7 +108,8 @@ interface FormField {
 	readonly maxLength?: number;
 	readonly pattern?: string;
 	readonly options?: unknown;
-	readonly item?: unknown;
+	readonly item?: readonly { readonly type: string }[];
+	readonly shape?: "array" | "table";
 }
 
 /** A plain record (the tree-walk's node shape). */
@@ -523,6 +532,46 @@ export function settingsSurfaceFor(
 				}
 				continue;
 			}
+			if (field.type === "entries") {
+				// Entries carry the channel's saved-identity marker for secret
+				// moves; it is bookkeeping, never part of the settings file.
+				const stripFrom = (entry: unknown): JsonValue => {
+					// SAFETY: form submissions are JSON; entries are objects or
+					// scalar JSON values, and the marker is the only extra key.
+					if (!isRec(entry)) return entry as JsonValue;
+					const { $from: _from, ...plain } = entry;
+					return plain as JsonObject;
+				};
+				value = Array.isArray(value)
+					? value.map(stripFrom)
+					: isRec(value)
+						? Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+							const plain = stripFrom(entry);
+							// Scalar tables draw one synthetic `value` field; unwrap
+							// that channel row back to the stored scalar.
+							return [key, field.shape === "table" && field.item?.length === 1 &&
+								isRec(plain) && Object.hasOwn(plain, "value")
+								? plain.value
+								: plain];
+						}))
+						: value;
+				if (field.shape === "table" && isRec(value)) {
+					// The core store sub-merges table maps, so deleted rows must
+					// arrive as explicit nulls; an empty table clears the whole key.
+					const stored = readDotted(current, name);
+					if (Object.keys(value).length === 0) {
+						if (stored === undefined) continue;
+						value = null;
+					} else if (isRec(stored)) {
+						value = Object.fromEntries([
+							...Object.keys(stored)
+								.filter((key) => !(key in (value as JsonObject)))
+								.map((key) => [key, null] as const),
+							...Object.entries(value),
+						]);
+					}
+				}
+			}
 			writeDotted(patch, name, value);
 		}
 		const managedKeys = managedKeysTouched(patch, options.core.managed());
@@ -718,6 +767,285 @@ export function settingsSurfaceFor(
 					publishSettingsChanged({ extension: slug }, Object.keys(parsed.values), user);
 					return { ok: true };
 				});
+			},
+		},
+	};
+}
+
+/** The schema node governing one object property, or an array item. */
+function childSchema(node: unknown, key: string): JsonSchema | undefined {
+	if (!isRec(node)) return undefined;
+	if (isRec(node.properties) && isRec(node.properties[key])) return node.properties[key];
+	return isRec(node.additionalProperties) ? node.additionalProperties : undefined;
+}
+
+/**
+ * Convert the channel's entry packing to the settings file's JSON shape.
+ * A scalar table value (including writeOnly strings) packs `{value: ...}`;
+ * object-valued rows remain ordinary JSON. `$from` is retained for the
+ * secret walks and stripped for schema validation and persistence.
+ */
+function channelSubmissionToFile(
+	values: Record<string, unknown>,
+	schema: JsonSchema,
+): Record<string, unknown> {
+	const unpack = (value: unknown, node: unknown): JsonValue => {
+		if (!isRec(node)) return value as JsonValue;
+		// additionalProperties is the row schema: a non-object value is
+		// generated as the table's single `value` item and packs this way.
+		if (node.type !== "object" && isRec(value) && Object.hasOwn(value, "value")) {
+			return value.value as JsonValue;
+		}
+		if (Array.isArray(value)) return value.map((entry) => unpack(entry, node.items));
+		if (!isRec(value)) return value as JsonValue;
+		const result: JsonObject = {};
+		for (const [key, child] of Object.entries(value)) {
+			// The reserved root-table field's schema is a synthetic object
+			// wrapping additionalProperties; unpacking straight into the VALUE
+			// schema would leave each scalar row packed as {value}.
+			const property = key === "" && isRec(node.additionalProperties)
+				? { type: "object", additionalProperties: node.additionalProperties }
+				: childSchema(node, key);
+			result[key] = property === undefined ? child as JsonValue : unpack(child, property);
+		}
+		return result;
+	};
+	const unpacked = unpack(values, schema) as Record<string, unknown>;
+	// A root additionalProperties table binds at the reserved empty field
+	// name. Flatten its rows back to root keys before validation/persistence;
+	// known properties keep their own slots.
+	if (isRec(schema.additionalProperties) && Object.hasOwn(unpacked, "")) {
+		const table = unpacked[""];
+		delete unpacked[""];
+		if (isRec(table)) Object.assign(unpacked, table);
+	}
+	return unpacked;
+}
+
+function stripEntryMarkers(value: unknown): JsonValue {
+	if (Array.isArray(value)) return value.map(stripEntryMarkers);
+	if (!isRec(value)) return value as JsonValue;
+	const result: JsonObject = {};
+	for (const [key, child] of Object.entries(value)) {
+		if (key === "$from") continue;
+		result[key] = stripEntryMarkers(child);
+	}
+	return result;
+}
+
+function schemaError(
+	schema: JsonSchema,
+	values: Record<string, unknown>,
+): ActionResult | undefined {
+	// A writeOnly null is the channels' explicit-clear action. Omit the slot
+	// from validation so constraints on a present string never reject a clear;
+	// splitSecrets consumes the original null and deletes the store key.
+	const project = (value: unknown, node: unknown): JsonValue | undefined => {
+		if (!isRec(node)) return value as JsonValue;
+		if (node.writeOnly === true && value === null) return undefined;
+		if (Array.isArray(value)) return value.flatMap((entry) => {
+			const projected = project(entry, node.items);
+			return projected === undefined ? [] : [projected];
+		});
+		if (!isRec(value)) return value as JsonValue;
+		const result: JsonObject = {};
+		for (const [key, child] of Object.entries(value)) {
+			const property = childSchema(node, key);
+			if (property === undefined) {
+				result[key] = child as JsonValue;
+				continue;
+			}
+			const projected = project(child, property);
+			if (projected !== undefined) result[key] = projected;
+		}
+		return result;
+	};
+	const [valid, errors] = Errors(schema, project(values, schema));
+	if (valid) return undefined;
+	const first = errors.find(
+		(error) => error.keyword !== "oneOf" && error.keyword !== "anyOf",
+	) ?? errors[0];
+	return {
+		ok: false,
+		error: {
+			message: first?.message ?? "invalid settings",
+			field: first?.instancePath ?? "",
+		},
+	};
+}
+
+/** Fixed per-extension page sections, shared by mounting and the nav/index route. */
+export const EXTENSION_SETTINGS_SECTIONS = [
+	{
+		id: "settings",
+		title: "Settings",
+		icon: "key",
+		scope: "server",
+		admin: true,
+	},
+	{
+		id: "user-settings",
+		title: "Your settings",
+		icon: "key",
+		scope: "user",
+		admin: false,
+	},
+] as const satisfies readonly Omit<SettingsSectionDef, "form">[];
+
+/** The schema-backed extension section; core sections retain settingsSurfaceFor. */
+export function schemaSettingsSurfaceFor(
+	slug: string,
+	section: Omit<SettingsSectionDef, "form">,
+	schema: JsonSchema,
+	generated: GeneratedForm,
+	options: SettingsSurfaceOptions,
+): SurfaceDef<"settings"> {
+	const { stores, publishSettingsChanged, service } = options;
+	const userScope = section.scope === "user";
+	const namedUser = (principal: Principal): string => {
+		const user = principal.user;
+		if (user === undefined || stores.users.get(user) === undefined) {
+			throw new NamedUserRequiredError();
+		}
+		return user;
+	};
+	const accessFor = (principal: Principal): "write" | "none" => {
+		if (userScope) namedUser(principal);
+		if (!userScope) return isSuperuser(principal) || principal.admin ? "write" : "none";
+		return "write";
+	};
+	const properties = isRec(schema.properties) ? schema.properties : {};
+	const rootTable = isRec(schema.additionalProperties);
+	const readStored = async (principal: Principal) => {
+		const user = userScope ? namedUser(principal) : undefined;
+		return {
+			user,
+			userStores: user === undefined ? undefined : stores.userExtensionStores(slug, user),
+			stored: user === undefined
+				? await stores.settingsFor(slug).get()
+				: await stores.userExtensionStores(slug, user).settings.get(),
+		};
+	};
+	const setSecret = async (user: string | undefined, key: string, value: string) => {
+		if (user === undefined) await stores.setSecret(slug, key, value);
+		else await stores.userExtensionStores(slug, user).secrets.set(key, value);
+	};
+	const deleteSecret = async (user: string | undefined, key: string) => {
+		if (user === undefined) await stores.deleteSecret(slug, key);
+		else await stores.userExtensionStores(slug, user).secrets.delete(key);
+	};
+
+	return {
+		id: section.id,
+		title: section.title,
+		icon: section.icon ?? "key",
+		placement: "settings",
+		...(userScope
+			? {
+					instanceKey: (params: JsonObject, principal: Principal) =>
+						`${namedUser(principal)}\u0000${paramsInstanceKey(params)}`,
+				}
+			: {}),
+		sharedData: true,
+		render: async (ctx): Promise<SurfaceRenderResult> => {
+			const access = accessFor(ctx.principal);
+			if (access === "none") return { tree: generated.form, data: {}, access };
+			const { user, stored } = await readStored(ctx.principal);
+			const plain = splitSecrets(stored, generated.secrets).plain;
+			const settings = applyDefaults(schema, plain);
+			if (rootTable) {
+				// The root table's reserved empty-name field reads ONLY the
+				// additional-property keys; declared properties render through
+				// their own fields and must not become extra table rows.
+				settings[""] = Object.fromEntries(
+					Object.entries(settings).filter(([key]) => !Object.hasOwn(properties, key)),
+				) as JsonObject;
+			}
+			const statusList = user === undefined
+				? await stores.secretKeys(slug)
+				: (await stores.userSecretKeys(slug, user)).map((key) => ({ key, source: "stored" as const }));
+			const statuses = new Map(statusList.map((entry) => [entry.key, entry.source]));
+			const secretData = await secretStatuses(
+				stored,
+				generated.secrets,
+				async (key) => statuses.get(key),
+			);
+			return {
+				tree: generated.form,
+				data: {
+					settings: settings as JsonObject,
+					secrets: secretData as JsonObject,
+					unknownKeys: Object.keys(stored).filter(
+						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
+					),
+				},
+				access,
+			};
+		},
+		actions: {
+			save: async (ctx, payload): Promise<ActionResult> => {
+				const access = accessFor(ctx.principal);
+				if (access === "none") return { ok: false, error: { message: "surface_not_found" } };
+				const parsed = parseSavePayload(payload);
+				if (parsed === undefined) {
+					return { ok: false, error: { message: "save expects {rev, values}" } };
+				}
+				const rev = service.currentRev(slug, section.id, ctx.key);
+				if (parsed.rev !== rev) return { ok: false, error: { message: "changed by someone else" } };
+				const channelValues = channelSubmissionToFile(parsed.values, schema);
+				const validationValues = stripEntryMarkers(channelValues) as Record<string, unknown>;
+				const invalid = schemaError(schema, validationValues);
+				if (invalid !== undefined) return invalid;
+				const user = userScope ? namedUser(ctx.principal) : undefined;
+				return enqueueWrite(
+					user === undefined ? slug : `${slug}\u0000${user}`,
+					async (): Promise<ActionResult> => {
+						const userStores = user === undefined ? undefined : stores.userExtensionStores(slug, user);
+						const stored = userStores === undefined
+							? await stores.settingsFor(slug).get()
+							: await userStores.settings.get();
+						const split = splitSecrets(channelValues, generated.secrets);
+						const moves = secretMoves(stored, channelValues, generated.secrets);
+						for (const [key, value] of split.writes) await setSecret(user, key, value);
+						for (const key of split.deletes) await deleteSecret(user, key);
+						for (const [from, to] of moves.moves) {
+							const value = userStores === undefined
+								? (await stores.secrets.readSection(slug))[from]
+								: await userStores.secrets.get(from);
+							if (value !== undefined && value !== null) await setSecret(user, to, String(value));
+							await deleteSecret(user, from);
+						}
+						for (const key of moves.deletes) await deleteSecret(user, key);
+
+						const persisted = stripEntryMarkers(split.plain) as Record<string, unknown>;
+						const next: Record<string, unknown> = { ...stored };
+						if (rootTable) {
+							// Root additionalProperties is a wholesale table: remove
+							// rows the save omitted, then write the submitted rows.
+							for (const key of Object.keys(next)) {
+								if (!Object.hasOwn(properties, key) && !Object.hasOwn(persisted, key)) {
+									delete next[key];
+								}
+							}
+							for (const [key, value] of Object.entries(persisted)) {
+								if (!Object.hasOwn(properties, key)) next[key] = value;
+							}
+						}
+						for (const [name, property] of Object.entries(properties)) {
+							delete next[name];
+							if (!Object.hasOwn(persisted, name)) continue;
+							const value = persisted[name];
+							if (!Object.hasOwn(stored, name) && isRec(property) && property.default !== undefined) {
+								if (JSON.stringify(value) === JSON.stringify(property.default)) continue;
+							}
+							next[name] = value;
+						}
+						if (userStores === undefined) await stores.settingsFor(slug).set(next);
+						else await userStores.settings.set(next);
+						publishSettingsChanged({ extension: slug }, Object.keys(validationValues), user);
+						return { ok: true };
+					},
+				);
 			},
 		},
 	};

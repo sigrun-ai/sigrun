@@ -8,7 +8,7 @@
 
 import { describe, expect, test } from "vitest";
 import type { ToggleField } from "@sigrun/shared/blocks";
-import { initialValue } from "../src/blocks/form/values.js";
+import { defaultEntry, initialValue } from "../src/blocks/form/values.js";
 
 const toggle = (extra: Partial<ToggleField> = {}): ToggleField => ({
 	type: "toggle",
@@ -29,5 +29,14 @@ describe("initialValue toggle defaults", () => {
 	test("a stored value wins over the default", () => {
 		expect(initialValue(toggle({ default: true }), { enabled: false })).toBe(false);
 		expect(initialValue(toggle(), { enabled: true })).toBe(true);
+	});
+});
+
+describe("nested entry defaults", () => {
+	test("entry seeding reads a declared field default", () => {
+		const field = { type: "text", name: "url", label: "URL", default: "https://example.invalid" } as const;
+		expect(defaultEntry([field as unknown as import("@sigrun/shared/blocks").Field])).toEqual({
+			url: "https://example.invalid",
+		});
 	});
 });

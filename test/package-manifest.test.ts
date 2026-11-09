@@ -95,6 +95,7 @@ describe("package manifests (release-0.1 Global Constraints)", () => {
 			".",
 			"./blocks",
 			"./extension",
+			"./settings-schema",
 		]);
 		expect(root.repository).toEqual({
 			type: "github",

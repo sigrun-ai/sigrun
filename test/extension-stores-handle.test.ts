@@ -137,6 +137,21 @@ test("secrets and settings are scoped to the extension's slug, never a sibling's
 			"other-ext": { k: "foreign-value" },
 		});
 
+		// A shared scoped secret deletes (settings rework Task 10: the
+		// oauth legacy-key migration); a later get returns undefined and
+		// the sibling's section is untouched.
+		await host.stores.secrets.delete("k");
+		expect(await host.stores.secrets.get("k")).toBeUndefined();
+		const afterDelete = JSON.parse(
+			await readFile(join(base, "config", "secrets.json"), "utf8"),
+		);
+		expect(afterDelete).toEqual({
+			"acme-tool": {},
+			"other-ext": { k: "foreign-value" },
+		});
+		// Restore for the remainder of this test's assertions.
+		await host.stores.secrets.set("k", "own-value");
+
 		// settings: absent file reads as {}; set lands in this slug's
 		// settings/<slug>.json and round-trips.
 		expect(await host.stores.settings.get()).toEqual({});

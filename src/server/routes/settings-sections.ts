@@ -21,7 +21,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { Principal, SettingsSectionDef } from "../../extension.js";
+import type { Principal } from "../../extension.js";
 import { isSuperuser } from "../auth/principal.js";
 import type {
 	SettingsSectionsResponse,
@@ -35,6 +35,7 @@ import {
 } from "../../settings/core-sections.js";
 import { CORE_SETTING_KEYS } from "../../settings/registry.js";
 import type { ServerContext } from "../context.js";
+import { EXTENSION_SETTINGS_SECTIONS } from "../surfaces/settings-surfaces.js";
 
 /** One search-index row (the label search's hit shape) — the local name. */
 export type SettingsIndexEntry = SettingsSectionIndexEntry;
@@ -119,13 +120,22 @@ function coreKeyEntry(key: string): SettingsIndexEntry | undefined {
 	};
 }
 
-/** Build the section list + search index from the boot's bindings. */
+/** Build the section list + search index from the schema declarations. */
 export function buildSettingsSections(
-	extensionSections: readonly {
-		extension: string;
-		defs: readonly SettingsSectionDef[];
-	}[],
+	declarations: readonly import("../../harness/loader.js").ExtensionSettingsDeclaration[],
 ): SettingsSectionsResponse {
+	const extensionSections = declarations.map((binding) => ({
+		extension: binding.extension,
+		defs: EXTENSION_SETTINGS_SECTIONS.flatMap(
+			(section): (typeof section & { form: typeof binding.generated.form })[] => {
+				if (section.scope === "user") {
+					if (binding.generatedUser === undefined) return [];
+					return [{ ...section, form: binding.generatedUser.form }];
+				}
+				return [{ ...section, form: binding.generated.form }];
+			},
+		),
+	}));
 	const sections: SettingsSectionEntry[] = CORE_SETTINGS_SECTIONS.map((section) => ({
 		slug: "core",
 		id: section.id,
@@ -143,7 +153,8 @@ export function buildSettingsSections(
 				title: def.title,
 				icon: def.icon ?? "key",
 				...(def.scope === "user" ? { scope: "user" as const } : {}),
-				...(def.scope === "user" ? { admin: def.admin === true } : {}),
+				admin: def.admin,
+				page: binding.extension,
 			});
 		}
 	}
@@ -213,7 +224,7 @@ export function registerSettingsSectionsRoutes(
 	app.get(
 		"/v1/settings/sections",
 		async (request): Promise<SettingsSectionsResponse> => {
-			const response = buildSettingsSections(ctx.opened.extensionSettingsSections);
+			const response = buildSettingsSections(ctx.opened.extensionSettingsDeclarations);
 			const admin = isSuperuser(request.principal as Principal) || request.principal.admin;
 			const allowed = new Set(
 				response.sections

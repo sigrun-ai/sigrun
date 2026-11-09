@@ -35,7 +35,7 @@ test.afterAll(async () => {
 	await server.cleanup();
 });
 
-test("the Extensions section renders the loaded extension, edits settings, and sets a secret write-only", async ({
+test("an undeclared extension's page shows its status and read-only stored JSON", async ({
 	page,
 }) => {
 	await page.goto(server.url);
@@ -45,45 +45,22 @@ test("the Extensions section renders the loaded extension, edits settings, and s
 	const settings = page.locator(".settings-page");
 	await expect(settings).toBeVisible();
 
-	// The section exists in the nav and opens.
-	await settings.getByRole("button", { name: "Extensions" }).click();
+	// The loaded extension has one page in the Extensions group.
+	await settings.getByRole("button", { name: "acme-tool", exact: true }).click();
 
 	// One row per loaded extension: name + status + manifest version.
-	const row = settings.locator(".settings-ext[data-ext=acme-tool]");
+	const row = settings.locator("[data-extension-page=acme-tool]");
 	await expect(row).toBeVisible();
-	await expect(row.locator(".settings-ext-name")).toContainText("acme-tool");
-	await expect(row.locator(".settings-ext-name")).toContainText("v0.2.0");
+	await expect(row.locator(".settings-extension-header")).toContainText("acme-tool");
+	await expect(row.locator(".settings-extension-header")).toContainText("v0.2.0");
 
-	// The settings textarea round-trips through the server (PUT then GET).
-	const textarea = row.locator(".settings-ext-settings");
-	await textarea.fill('{"theme":"dark"}');
-	await row.getByRole("button", { name: /save settings/i }).click();
-	await expect(row.getByRole("status")).toContainText("saved");
+	// An undeclared extension has no generated form; Advanced carries its
+	// read-only stored JSON instead of the retired raw-JSON editor.
+	await row.getByText("Advanced", { exact: true }).click();
+	await expect(row).toContainText("This extension doesn't describe its settings.");
+	await expect(row.locator("pre")).toContainText("{}");
+	await expect(row.locator(".settings-ext-settings")).toHaveCount(0);
 
-	// The server holds the file: settings/acme-tool.json on disk. U4
-	// §13.2: the wire carries the object under `settings` plus the
-	// pending-restart slot (extension fields default live → []).
-	const settingsOnDisk = await page.evaluate(async () => {
-		const res = await fetch("/v1/extensions/acme-tool/settings");
-		return (await res.json()) as Record<string, unknown>;
-	});
-	expect(settingsOnDisk).toEqual({
-		settings: { theme: "dark" },
-		pendingRestart: [],
-	});
-
-	// The secret input is write-only (password, empty) and never echoes
-	// a value back; setting one lists the key + source only.
-	const keyRow = row.locator(".settings-ext-row", {
-		has: page.locator(".settings-ext-key"),
-	});
-	await row.locator(".settings-ext-new-key").fill("api-key");
-	await row.locator(".settings-ext-new-value").fill("s3cr3t-e2e");
-	await row.getByRole("button", { name: "Set" }).last().click();
-	await expect(row.locator(".settings-ext-key")).toContainText("api-key");
-	await expect(row.locator(".settings-ext-source")).toContainText("stored");
-	// The value never appears anywhere in the rendered section.
-	await expect(row).not.toContainText("s3cr3t-e2e");
 
 	// Visual evidence (gitignored webui/test-results/).
 	await mkdir("test-results", { recursive: true });

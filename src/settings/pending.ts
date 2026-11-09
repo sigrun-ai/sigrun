@@ -168,7 +168,7 @@ export function snapshotRestartKeys(
 ): SettingsBootSnapshot {
 	const snapshot = new Map<string, string>();
 	for (const entry of CORE_SETTING_KEYS) {
-		if (entry.apply !== "restart") continue;
+		if (applyOf(entry.key) !== "restart") continue;
 		snapshot.set(entry.key, canonicalAt(file, entry.key));
 	}
 	return snapshot;
@@ -184,7 +184,7 @@ export function pendingRestart(
 ): string[] {
 	const pending: string[] = [];
 	for (const entry of CORE_SETTING_KEYS) {
-		if (entry.apply !== "restart") continue;
+		if (applyOf(entry.key) !== "restart") continue;
 		if (canonicalAt(file, entry.key) !== snapshot.get(entry.key)) {
 			pending.push(entry.key);
 		}

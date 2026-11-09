@@ -119,6 +119,24 @@ function dataFor(name: string): JsonObject {
 		],
 		filter: { state: "open" },
 	};
+	if (name === "field-entries") {
+		return {
+			...base,
+			secrets: { "servers/alpha/token": "stored" },
+			values: {
+				servers: {
+					alpha: {
+						url: "https://alpha.example.invalid",
+						connection: { transport: "http", timeout: 30 },
+					},
+					beta: {
+						url: "https://beta.example.invalid",
+						connection: { transport: "stdio", command: "acme-server" },
+					},
+				},
+			},
+		};
+	}
 	if (name === "collection-calendar") {
 		return {
 			...base,

@@ -341,6 +341,87 @@ describe("toText charts", () => {
 	});
 });
 
+describe("toText settings fields", () => {
+	it("entries render one summary line per entry", () => {
+		const tree = treeOf({
+			type: "form",
+			id: "entries",
+			bind: "/settings",
+			mode: "submit",
+			children: [
+				{
+					type: "entries",
+					name: "servers",
+					label: "Servers",
+					shape: "array",
+					item: [
+						{ type: "text", name: "name", label: "Name" },
+						{ type: "text", name: "url", label: "URL" },
+					],
+					summary: ["name", "url"],
+				},
+				{
+					type: "entries",
+					name: "headers",
+					label: "Headers",
+					shape: "table",
+					item: [{ type: "text", name: "value", label: "Value" }],
+					summary: ["value", "description"],
+				},
+			],
+		} as unknown as Block);
+		const text = toText(tree, {
+			settings: {
+				servers: [
+					{ name: "acme", url: "https://acme.example.invalid", $from: "acme" },
+					{ name: "new" },
+				],
+				headers: { Accept: { value: "application/json", $from: "Accept" } },
+			},
+		}, W80);
+		expect(text).toBe([
+			"Servers:",
+			"  - acme — https://acme.example.invalid",
+			"  - new — ",
+			"",
+			"Headers:",
+			"  - Accept: application/json — ",
+		].join("\n"));
+		expect(text).not.toContain("$from");
+	});
+
+	it("a variant renders its chosen option's fields", () => {
+		const tree = treeOf({
+			type: "form",
+			id: "variant",
+			bind: "/settings",
+			mode: "submit",
+			children: [{
+				type: "variant",
+				name: "connection",
+				label: "Connection",
+				discriminator: "kind",
+				options: [
+					{ id: "stdio", label: "Standard I/O", children: [{ type: "text", name: "command", label: "Command" }] },
+					{
+						id: "http",
+						label: "HTTP",
+						children: [
+							{ type: "text", name: "url", label: "URL" },
+							{ type: "section", title: "Advanced", children: [{ type: "number", name: "timeout", label: "Timeout" }] },
+						],
+					},
+				],
+			}],
+		} as unknown as Block);
+		const text = toText(tree, {
+			settings: { kind: "http", command: "acme-server", url: "https://acme.example.invalid", timeout: 30 },
+		}, W80);
+		expect(text).toBe("URL: https://acme.example.invalid\n\n## Advanced\n\nTimeout: 30");
+		expect(text).not.toContain("Command:");
+	});
+});
+
 describe("toText unknown blocks", () => {
 	it("an unknown block type renders its fallback text", () => {
 		const tree = treeOf({ type: "carousel", id: "x", fallback: "a photo strip" } as unknown as Block);

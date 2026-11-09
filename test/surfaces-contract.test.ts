@@ -228,10 +228,7 @@ describe("surfaces contract (U3 Task 1)", () => {
 		).rejects.toThrow('surface "board" declaring refreshMs without data()');
 	});
 
-	test("a malformed surfaces.settings declaration quarantines naming the section (U4 Task 3)", () => {
-		// The contract owns the key now (readonly SettingsSectionDef[]); a
-		// malformed entry quarantines fail-loud, like every other surfaces
-		// member — the section's id names the problem.
+	test("surfaces.settings fails with the host.settings.declare replacement", () => {
 		return expect(
 			resolveExtension({
 				default: () => ({
@@ -247,7 +244,9 @@ describe("surfaces contract (U3 Task 1)", () => {
 					},
 				}),
 			}),
-		).rejects.toThrow('settings section "prefs"');
+		).rejects.toThrow(
+			"surfaces.settings is replaced by host.settings.declare (see docs/extending.md)",
+		);
 	});
 
 	test("a non-function action handler quarantines naming the action", () => {

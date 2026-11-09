@@ -25,11 +25,13 @@
 
 import type { Component } from "@earendil-works/pi-tui";
 import type {
+	EntriesField,
 	Field,
 	FormBlock,
 	JsonObject,
 	JsonValue,
 	SectionBlock,
+	VariantField,
 } from "@sigrun/shared/blocks";
 import { resolvePointer } from "@sigrun/shared/blocks";
 import { bindText, type BlockCtx } from "../context.js";
@@ -51,10 +53,27 @@ import {
 	FileFieldState,
 	fileStatusLine,
 	maskText,
+	nestedSecretStatusLine,
 	pickFile,
 	secretStatusLine,
 } from "./file.js";
 import { listAdd, listCanAdd, listCanRemove, listEntries, listLines, listMove, listRemove, listSet, ListFieldState } from "./list.js";
+import {
+	addEntry,
+	deleteConfirmLine,
+	duplicateEntry,
+	EntriesFieldState,
+	entriesCanAdd,
+	entriesCanRemove,
+	entriesHintLine,
+	entriesLines,
+	entryFormChildren,
+	entryRecords,
+	moveEntry,
+	packEntries,
+	type EntryRecord,
+} from "./entries.js";
+import { switchVariant, VariantFieldState, variantHintLine, variantLines, variantOption, variantSelected } from "./variant.js";
 import { collectFields, initialValue, validateField } from "./values.js";
 
 /** The live-mode debounce (spec §5.6: "every change is applied after
@@ -147,14 +166,22 @@ export class FormComponent implements Component {
 	readonly #choice = new Map<string, ChoiceState>();
 	readonly #list = new Map<string, ListFieldState>();
 	readonly #file = new Map<string, FileFieldState>();
+	readonly #entries = new Map<string, EntriesFieldState>();
+	readonly #variants = new Map<string, VariantFieldState>();
+	readonly #nested = new Map<string, FormComponent>();
+	readonly #nestedMode: boolean;
+	readonly #nestedSecretPath?: string;
+	#nestedActive: string | null = null;
 	#debounce: ReturnType<typeof setTimeout> | null = null;
 	/** The stepper's submitted flag (the review step locks after submit). */
 	#submitted = false;
 
-	constructor(block: FormBlock, ctx: BlockCtx, opts: { interaction?: boolean } = {}) {
+	constructor(block: FormBlock, ctx: BlockCtx, opts: { interaction?: boolean; nested?: boolean; secretPath?: string } = {}) {
 		this.#block = block;
 		this.#ctx = ctx;
 		this.#interaction = opts.interaction === true;
+		this.#nestedMode = opts.nested === true;
+		this.#nestedSecretPath = opts.secretPath;
 		this.#fields = collectFields(block);
 		const boundObject = this.#boundObject();
 		const init: JsonObject = {};
@@ -227,6 +254,64 @@ export class FormComponent implements Component {
 			this.#file.set(field.name, state);
 		}
 		return state;
+	}
+
+	#entriesState(field: EntriesField): EntriesFieldState {
+		let state = this.#entries.get(field.name);
+		if (state === undefined) {
+			state = new EntriesFieldState();
+			this.#entries.set(field.name, state);
+		}
+		return state;
+	}
+
+	#variantState(field: VariantField): VariantFieldState {
+		let state = this.#variants.get(field.name);
+		if (state === undefined) {
+			state = new VariantFieldState();
+			const selected = variantSelected(field, this.#values[field.name]);
+			const index = field.options.findIndex((option) => option.id === selected);
+			state.cursor = Math.max(0, index);
+			this.#variants.set(field.name, state);
+		}
+		return state;
+	}
+
+	/** Create/update the nested form for an entries row or variant option. */
+	#nestedForm(key: string, children: FormBlock["children"], value: JsonObject, secretPath?: string): FormComponent {
+		const nested = new FormComponent({
+			type: "form",
+			bind: "/nested",
+			mode: "submit",
+			children,
+		}, {
+			...this.#ctx,
+			data: { ...this.#ctx.data, nested: value },
+			dispatch: () => undefined,
+		}, { nested: true, secretPath });
+		this.#nested.set(key, nested);
+		return nested;
+	}
+
+	#entryForm(field: EntriesField, entry: EntryRecord): FormComponent {
+		const key = `${field.name}:${entry.id}`;
+		const existing = this.#nested.get(key);
+		if (existing !== undefined) return existing;
+		const value = field.shape === "table" ? { ...entry.value, $key: entry.key } : entry.value;
+		const identity = entry.value.$from;
+		const saved = typeof identity === "string" ? identity : field.shape === "table" ? entry.key : undefined;
+		const secretPath = saved === undefined ? undefined : `${field.name}/${saved}`;
+		return this.#nestedForm(key, entryFormChildren(field), value, secretPath);
+	}
+
+	#variantForm(field: VariantField): FormComponent {
+		const key = `variant:${field.name}`;
+		const existing = this.#nested.get(key);
+		if (existing !== undefined) return existing;
+		const value = this.#values[field.name];
+		const option = variantOption(field, value);
+		const object = typeof value === "object" && value !== null && !Array.isArray(value) ? value as JsonObject : {};
+		return this.#nestedForm(key, option?.children ?? [], object, `${this.#block.bind.replace(/^\//, "")}/${field.name}`);
 	}
 
 	/** Validate the form; returns true when every field passes. */
@@ -319,9 +404,13 @@ export class FormComponent implements Component {
 		return bindText(this.#block.submitLabel, this.#ctx) || "Submit";
 	}
 
+	get #hasSubmitRow(): boolean {
+		return this.#block.mode === "submit" && !this.#readOnly && !this.#nestedMode;
+	}
+
 	/** The total focusable rows: fields (+ a submit row for submit mode). */
 	#focusableCount(): number {
-		const submitRow = this.#block.mode === "submit" && !this.#readOnly ? 1 : 0;
+		const submitRow = this.#hasSubmitRow ? 1 : 0;
 		return this.#fields.length + submitRow;
 	}
 
@@ -358,7 +447,7 @@ export class FormComponent implements Component {
 			const focused = this.#fields[this.#focus] === field;
 			lines.push(...this.#renderField(field, width, focused));
 		});
-		if (this.#block.mode === "submit" && !this.#readOnly) {
+		if (this.#hasSubmitRow) {
 			const cursor = this.#focus === this.#fields.length ? "> " : "  ";
 			lines.push(truncate(`${cursor}[ ${this.#submitLabel} ]`, width));
 		}
@@ -459,7 +548,9 @@ export class FormComponent implements Component {
 					focused,
 				}).map((line) => (indent === "" ? line : `${indent}${line}`));
 			case "secret": {
-				const status = secretStatusLine(field, this.#block.bind, this.#ctx);
+				const status = this.#nestedMode
+					? nestedSecretStatusLine(this.#nestedSecretPath, field, this.#ctx)
+					: secretStatusLine(field, this.#block.bind, this.#ctx);
 				const state = this.#textState(field);
 				const masked = maskText(state.buffer.text, this.#ctx.unicode);
 				const editor = focused
@@ -474,6 +565,41 @@ export class FormComponent implements Component {
 				const status = fileStatusLine(state, width);
 				if (status !== undefined) lines.push(this.#ctx.theme.dim(status));
 				return lines;
+			}
+			case "entries": {
+				const state = this.#entriesState(field);
+				const entries = entryRecords(field, value, state);
+				if (state.cursor >= entries.length) state.cursor = Math.max(0, entries.length - 1);
+				const lines = entriesLines({ field, entries, state, focused, width, ctx: this.#ctx });
+				if (entries.length === 0) lines.push(focused ? "> (empty)" : "  (empty)");
+				if (focused) {
+					if (state.confirmDelete !== null) {
+						const key = entries.find((entry) => entry.id === state.confirmDelete)?.key ?? "";
+						lines.push(deleteConfirmLine(key, width));
+					} else if (state.open === null) {
+						lines.push(this.#ctx.theme.dim(entriesHintLine(field, entries, width)));
+					}
+				}
+				if (state.open !== null) {
+					const entry = entries.find((candidate) => candidate.id === state.open);
+					if (entry !== undefined) {
+						const key = `${field.name}:${entry.id}`;
+						const nested = this.#nested.get(key) ?? this.#entryForm(field, entry);
+						lines.push(...nested.render(Math.max(1, width - 4)).map((line) => `  ${line}`));
+					}
+				}
+				return lines.map((line) => (indent === "" ? line : `${indent}${line}`));
+			}
+			case "variant": {
+				const state = this.#variantState(field);
+				const lines = variantLines({ field, value, state, focused, width });
+				if (state.open) {
+					lines.push(this.#ctx.theme.dim(variantHintLine(width)));
+					const key = `variant:${field.name}`;
+					const nested = this.#nested.get(key) ?? this.#variantForm(field);
+					lines.push(...nested.render(Math.max(1, width - 4)).map((line) => `  ${line}`));
+				}
+				return lines.map((line) => (indent === "" ? line : `${indent}${line}`));
 			}
 			case "list": {
 				const state = this.#listState(field);
@@ -512,6 +638,10 @@ export class FormComponent implements Component {
 	/** Input handling (the host routes keys while the form has focus). */
 	handleInput(data: string): void {
 		if (this.#readOnly) return;
+		if (this.#nestedActive !== null) {
+			this.#inputNested(data);
+			return;
+		}
 		const sections = stepperSections(this.#block, this.#interaction);
 		if (sections !== null) {
 			this.#inputStepper(data, sections);
@@ -613,7 +743,7 @@ export class FormComponent implements Component {
 		// Up/Down move between fields EXCEPT when the focused field owns
 		// a vertical cursor (choice/list): their rows consume the arrows.
 		const ownsArrows =
-			focused !== undefined && (focused.type === "choice" || focused.type === "list");
+			focused !== undefined && (focused.type === "choice" || focused.type === "list" || focused.type === "entries" || focused.type === "variant");
 		if (data === "\x1b[A") {
 			if (ownsArrows) {
 				this.#inputField(focused, data);
@@ -638,6 +768,44 @@ export class FormComponent implements Component {
 		}
 		if (field.disabled === true) return;
 		this.#inputField(field, data);
+	}
+
+	/** Route a key to the active nested form before parent navigation/actions. */
+	#inputNested(data: string): void {
+		const active = this.#nestedActive;
+		if (active === null) return;
+		const field = this.#fields[this.#focus];
+		const nested = this.#nested.get(active);
+		if (field === undefined || nested === undefined) {
+			this.#nestedActive = null;
+			return;
+		}
+		if (data === "\x1b") {
+			this.#nestedActive = null;
+			if (field.type === "entries") this.#entriesState(field).open = null;
+			if (field.type === "variant") this.#variantState(field).open = false;
+			return;
+		}
+		nested.handleInput(data);
+		const changed = nested.values;
+		const value = this.#values[field.name];
+		if (field.type === "entries") {
+			const state = this.#entriesState(field);
+			const entries = entryRecords(field, value, state).map((entry) => {
+				if (entry.id !== state.open) return entry;
+				const next = { ...entry.value, ...changed };
+				delete next.$key;
+				state.ids.set(next, entry.id);
+				return {
+					...entry,
+					key: field.shape === "table" && typeof changed.$key === "string" ? changed.$key : entry.key,
+					value: next,
+				};
+			});
+			this.#change(field.name, packEntries(field, entries));
+		} else if (field.type === "variant") {
+			this.#change(field.name, { ...changed });
+		}
 	}
 
 	/** Route input to the focused field's editor. */
@@ -674,6 +842,103 @@ export class FormComponent implements Component {
 					if (state.other.input(data)) {
 						this.#change(field.name, choiceSetOther(field, value, state.other.text));
 					}
+				}
+				return;
+			}
+			case "entries": {
+				const state = this.#entriesState(field);
+				let entries = entryRecords(field, value, state);
+				if (state.confirmDelete !== null) {
+					if (data === "y" || data === "Y") {
+						entries = entries.filter((entry) => entry.id !== state.confirmDelete);
+						this.#change(field.name, packEntries(field, entries));
+						state.cursor = Math.max(0, Math.min(state.cursor, entries.length - 1));
+						state.confirmDelete = null;
+					} else if (data === "n" || data === "N" || data === "\x1b") {
+						state.confirmDelete = null;
+					}
+					return;
+				}
+				if (data === "\x1b[A" && state.cursor > 0) {
+					state.cursor -= 1;
+					return;
+				}
+				if (data === "\x1b[B" && state.cursor < Math.max(0, entries.length - 1)) {
+					state.cursor += 1;
+					return;
+				}
+				if (data === "\x1b") {
+					state.open = null;
+					return;
+				}
+				const selected = entries[state.cursor];
+				if (data === "\r" && selected !== undefined) {
+					state.open = selected.id;
+					this.#nestedActive = `${field.name}:${selected.id}`;
+					this.#entryForm(field, selected);
+					return;
+				}
+				if (data === "a" && entriesCanAdd(field, entries)) {
+					entries = addEntry(field, entries, state);
+					state.cursor = entries.length - 1;
+					this.#change(field.name, packEntries(field, entries));
+					const added = entries[state.cursor];
+					if (added !== undefined) this.#nestedActive = `${field.name}:${added.id}`;
+					return;
+				}
+				if (data === "d" && selected !== undefined && entriesCanAdd(field, entries)) {
+					entries = duplicateEntry(field, entries, state.cursor, state);
+					state.cursor += 1;
+					this.#change(field.name, packEntries(field, entries));
+					const copy = entries[state.cursor];
+					if (copy !== undefined) this.#nestedActive = `${field.name}:${copy.id}`;
+					return;
+				}
+				if (data === "x" && selected !== undefined && entriesCanRemove(field, entries)) {
+					state.confirmDelete = selected.id;
+					return;
+				}
+				if (field.shape === "array" && field.reorder === true) {
+					if (data === "K") {
+						this.#change(field.name, packEntries(field, moveEntry(entries, state.cursor, -1)));
+						state.cursor = Math.max(0, state.cursor - 1);
+						return;
+					}
+					if (data === "J") {
+						this.#change(field.name, packEntries(field, moveEntry(entries, state.cursor, 1)));
+						state.cursor = Math.min(entries.length - 1, state.cursor + 1);
+						return;
+					}
+				}
+				return;
+			}
+			case "variant": {
+				const state = this.#variantState(field);
+				if (data === "\x1b") {
+					state.open = false;
+					return;
+				}
+				if (data === "\x1b[A") {
+					state.cursor = Math.max(0, state.cursor - 1);
+					return;
+				}
+				if (data === "\x1b[B") {
+					state.cursor = Math.min(field.options.length - 1, state.cursor + 1);
+					return;
+				}
+				if (data === "\r" || data === " ") {
+					const option = field.options[state.cursor];
+					if (option === undefined) return;
+					const selected = variantOption(field, value);
+					if (selected?.id !== option.id) {
+						const next = switchVariant(field, option.id);
+						if (next !== undefined) this.#change(field.name, next);
+					}
+					state.open = true;
+					this.#nested.delete(`variant:${field.name}`);
+					this.#nestedActive = `variant:${field.name}`;
+					this.#variantForm(field);
+					return;
 				}
 				return;
 			}
@@ -815,8 +1080,17 @@ export class FormComponent implements Component {
 		return this.#values;
 	}
 
+
 	get focusIndex(): number {
 		return this.#focus;
+	}
+
+	/** Move focus to the enclosing form's submit row. */
+	focusSubmit(): void {
+		this.#nestedActive = null;
+		for (const field of this.#entries.values()) field.open = null;
+		for (const field of this.#variants.values()) field.open = false;
+		this.#focus = this.#fields.length;
 	}
 
 	/** Move focus to the field with this name (the settings view's

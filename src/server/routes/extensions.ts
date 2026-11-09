@@ -23,6 +23,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ServerContext } from "../context.js";
 import { BUILTIN_EXTENSIONS } from "../../harness/builtins.js";
+import { splitSecrets } from "../../settings/schema/secrets.js";
 import type {
 	ExtensionInfo,
 	ExtensionsResponse,
@@ -182,17 +183,12 @@ export function registerExtensionRoutes(
 			// settings file predating the write-only rule (or a hand edit)
 			// can carry one in the clear — the surface's read path strips
 			// it; the raw GET must too.
-			const declaredSecrets = new Set(
-				(opened.extensionSettingsSections.find(
-					(binding) => binding.extension === slug,
-				)?.defs ?? []).flatMap((def) =>
-					(def.secrets ?? []).map((secret) => secret.key),
-				),
+			const declaration = opened.extensionSettingsDeclarations.find(
+				(binding) => binding.extension === slug,
 			);
-			const settings: Record<string, unknown> = {};
-			for (const [key, value] of Object.entries(stored)) {
-				if (!declaredSecrets.has(key)) settings[key] = value;
-			}
+			const settings = declaration === undefined
+				? stored
+				: splitSecrets(stored, declaration.generated.secrets).plain;
 			return {
 				settings,
 				pendingRestart: [],

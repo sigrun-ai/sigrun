@@ -17,31 +17,17 @@
  *   a settings-object write). Their declarations still exist so the
  *   section LIST and the search index cover them; their forms are
  *   minimal and never rendered by the channels.
- * - **Extensions** is likewise cove-rendered: the extension-list editor
- *   (raw JSON + write-only secrets) is not a settings form. Its
- *   declaration covers the `extensions` install list key in the index.
- *
- * Every field declares its `apply` verbatim from the §13.1 registry
- * (`src/settings/registry.ts`) — the core settings test pins the two
- * against each other (a registry entry whose core section renders it
- * with a different apply fails the suite).
+ * General, Tools and Advanced generate from `core-schema.ts`; their
+ * fields' apply values come from the schema (the registry derives the
+ * same values). The remaining cove sections keep their declarations.
  */
 
 import type { SettingsSectionDef } from "../extension.js";
-import { CORE_SETTING_KEYS } from "./registry.js";
+import { generatedCoreForm } from "./core-schema.js";
+import { applyOf } from "./registry.js";
 
 /** The reserved slug the core sections mount under (spec §13.4). */
 export const CORE_SECTIONS_SLUG = "core";
-
-/** The registry entry for one key (throws when the registry lost it —
- *  the core-sections test's coverage pin makes that impossible). */
-function applyOf(key: string): "live" | "restart" {
-	const entry = CORE_SETTING_KEYS.find((candidate) => candidate.key === key);
-	if (entry === undefined) {
-		throw new Error(`core-sections: no registry entry for ${key}`);
-	}
-	return entry.apply;
-}
 
 /** Every section's id, in nav order (the sections route serves it). */
 export const CORE_SECTION_IDS = [
@@ -50,7 +36,6 @@ export const CORE_SECTION_IDS = [
 	"interface",
 	"advanced",
 	"providers",
-	"extensions",
 	"accounts",
 	"tokens",
 ] as const;
@@ -71,138 +56,13 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 		id: "general",
 		title: "General",
 		icon: "key",
-		form: {
-			v: 1,
-			root: {
-				type: "form",
-				id: "core-general-form",
-				bind: "/settings",
-				mode: "submit",
-				onSubmit: "save",
-				submitLabel: "Save",
-				children: [
-					{
-						type: "section",
-						id: "core-general-queue",
-						title: "Queueing",
-						children: [
-							{
-								type: "choice",
-								name: "steeringMode",
-								label: "Steering mode",
-								help: "How a message sent while a run is live steers it; empty = the pi-durable default (one-at-a-time)",
-								apply: applyOf("steeringMode"),
-								options: [
-									{ id: "one-at-a-time", label: "One at a time" },
-									{ id: "all", label: "All" },
-								],
-							},
-							{
-								type: "choice",
-								name: "followUpMode",
-								label: "Follow-up mode",
-								help: "How queued follow-ups deliver after a run settles; empty = the pi-durable default",
-								apply: applyOf("followUpMode"),
-								options: [
-									{ id: "one-at-a-time", label: "One at a time" },
-									{ id: "all", label: "All" },
-								],
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-general-models",
-						title: "Models",
-						children: [
-							{
-								type: "text",
-								name: "defaultModel",
-								label: "Default model",
-								help: "The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
-								apply: applyOf("defaultModel"),
-							},
-							{
-								type: "text",
-								name: "namingModel",
-								label: "Naming model",
-								help: "The model the conversation auto-namer completes through (provider/model-id); absent = the default model",
-								apply: applyOf("namingModel"),
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-general-behaviour",
-						title: "Behaviour",
-						children: [
-							{
-								type: "number",
-								name: "skills.sectionMaxBytes",
-								label: "Skills section size cap",
-								help: "The skills prompt section's byte cap (truncation notice included)",
-								apply: applyOf("skills.sectionMaxBytes"),
-							},
-							{
-								type: "text",
-								name: "notifications.runSettled",
-								label: "Run-settled notifications",
-								help: "When a settled run notifies (default: unwatched)",
-								apply: applyOf("notifications.runSettled"),
-							},
-						],
-					},
-				],
-			},
-		},
+		form: generatedCoreForm("general").form,
 	},
 	{
 		id: "tools",
 		title: "Tools",
 		icon: "edit",
-		form: {
-			v: 1,
-			root: {
-				type: "form",
-				id: "core-tools-form",
-				bind: "/settings",
-				mode: "submit",
-				onSubmit: "save",
-				submitLabel: "Save",
-				children: [
-					{
-						type: "section",
-						id: "core-tools-defaults",
-						title: "Defaults",
-						children: [
-							{
-								type: "choice",
-								name: "defaultTools",
-								label: "Tools offered to the model",
-								help: "Only the selected tools are offered to the model in new conversations; the others stay callable by other tools. Leave empty to offer every installed tool. Applies to conversations created after the change.",
-								apply: applyOf("defaultTools"),
-								multi: true,
-								// The roster is server data (the boot registry's tool
-								// names), bound from the core surface's data block — a
-								// literal list would drift from the installed tools.
-								options: { $: "/toolRoster" },
-							},
-							{
-								type: "toggle",
-								// Absent means ON (boot reads `?? true`): the channels
-								// initialize the untouched toggle ON and the save skips
-								// the key while it sits at the default.
-								default: true,
-								name: "autoEnableCodemode",
-								label: "Auto-enable codemode",
-								help: "When an enabled MCP server exposes codemode, keep the codemode tool (or tool_search) in new conversations' default set",
-								apply: applyOf("autoEnableCodemode"),
-							},
-						],
-					},
-				],
-			},
-		},
+		form: generatedCoreForm("tools").form,
 	},
 	{
 		id: "interface",
@@ -229,209 +89,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 		id: "advanced",
 		title: "Advanced",
 		icon: "more",
-		form: {
-			v: 1,
-			root: {
-				type: "form",
-				id: "core-advanced-form",
-				bind: "/settings",
-				mode: "submit",
-				onSubmit: "save",
-				submitLabel: "Save",
-				children: [
-					{
-						type: "section",
-						id: "core-advanced-resilience",
-						title: "Retries and streaming",
-						children: [
-							{
-								type: "toggle",
-								// Absent means ON (pi-durable's retry policy defaults on).
-								default: true,
-								name: "retry.enabled",
-								label: "Retry enabled",
-								help: "pi-durable's retry policy for failed requests",
-								apply: applyOf("retry.enabled"),
-							},
-							{
-								type: "number",
-								name: "retry.maxRetries",
-								label: "Max retries",
-								help: "pi-durable retry.maxRetries",
-								apply: applyOf("retry.maxRetries"),
-							},
-							{
-								type: "number",
-								name: "retry.baseDelayMs",
-								label: "Retry base delay (ms)",
-								apply: applyOf("retry.baseDelayMs"),
-							},
-							{
-								type: "number",
-								name: "retry.maxAgentDelayMs",
-								label: "Max agent delay (ms)",
-								apply: applyOf("retry.maxAgentDelayMs"),
-							},
-							{
-								type: "number",
-								name: "stream.timeoutMs",
-								label: "Stream timeout (ms)",
-								apply: applyOf("stream.timeoutMs"),
-							},
-							{
-								type: "number",
-								name: "stream.maxRetries",
-								label: "Stream max retries",
-								apply: applyOf("stream.maxRetries"),
-							},
-							{
-								type: "number",
-								name: "stream.maxRetryDelayMs",
-								label: "Stream max retry delay (ms)",
-								apply: applyOf("stream.maxRetryDelayMs"),
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-advanced-models",
-						title: "Model overrides",
-						children: [
-							{
-								type: "longtext",
-								name: "perModelThinking",
-								label: "Per-model thinking (raw JSON)",
-								help: 'A raw JSON object — "provider/modelId": thinking level (off, minimal, low, medium, high, xhigh, max); empty clears',
-								apply: applyOf("perModelThinking"),
-								syntax: "code",
-								lang: "json",
-								rows: 12,
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-advanced-server",
-						title: "Server",
-						children: [
-							{
-								type: "number",
-								name: "server.port",
-								label: "Listen port",
-								help: "The listener binds at boot — a change applies at restart",
-								apply: applyOf("server.port"),
-								min: 1,
-								max: 65535,
-							},
-							{
-								type: "text",
-								name: "server.publicUrl",
-								label: "Public URL",
-								help: "The deployment's absolute base URL (extension-route URLs and notification deep links)",
-								apply: applyOf("server.publicUrl"),
-							},
-							{
-								type: "text",
-								name: "server.timezone",
-								label: "Jobs default timezone",
-								help: "The IANA zone jobs without an explicit timezone schedule in",
-								apply: applyOf("server.timezone"),
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-advanced-compaction",
-						title: "Compaction",
-						children: [
-							{
-								type: "toggle",
-								// Absent means ON (the boot compaction policy defaults on).
-								default: true,
-								name: "server.compaction.enabled",
-								label: "Compaction enabled",
-								apply: applyOf("server.compaction.enabled"),
-							},
-							{
-								type: "number",
-								name: "server.compaction.reserveTokens",
-								label: "Reserve tokens",
-								apply: applyOf("server.compaction.reserveTokens"),
-							},
-							{
-								type: "number",
-								name: "server.compaction.keepRecentTokens",
-								label: "Keep recent tokens",
-								apply: applyOf("server.compaction.keepRecentTokens"),
-							},
-							{
-								type: "number",
-								name: "server.compaction.backgroundTokens",
-								label: "Background tokens",
-								apply: applyOf("server.compaction.backgroundTokens"),
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-advanced-embeddings",
-						title: "Embeddings",
-						children: [
-							{
-								type: "text",
-								name: "embeddingModel",
-								label: "Embedding model",
-								help: "The model every extension embeds with, as provider/model. Unset: embeddings are off.",
-								apply: applyOf("embeddingModel"),
-							},
-							{
-								type: "longtext",
-								name: "embeddings.localModels",
-								label: "Local embedding models (raw JSON)",
-								help: "Embedding models trusted to receive local-only content. A provider that reports a model as remote overrides this.",
-								apply: applyOf("embeddings.localModels"),
-								syntax: "code",
-								lang: "json",
-								rows: 6,
-							},
-							{
-								type: "number",
-								name: "server.embeddings.timeoutMs",
-								label: "Embedding timeout (ms)",
-								help: "Upper bound for one embedding call.",
-								apply: applyOf("server.embeddings.timeoutMs"),
-								min: 1,
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-advanced-history",
-						title: "Job history retention",
-						children: [
-							{
-								type: "number",
-								name: "jobHistory.runs",
-								label: "Runs kept per job",
-								apply: applyOf("jobHistory.runs"),
-							},
-							{
-								type: "number",
-								name: "jobHistory.revisions",
-								label: "Revisions kept per job",
-								apply: applyOf("jobHistory.revisions"),
-							},
-							{
-								type: "number",
-								name: "jobDefaults.maxTurns",
-								label: "Default max turns per job run",
-								apply: applyOf("jobDefaults.maxTurns"),
-							},
-						],
-					},
-				],
-			},
-		},
+		form: generatedCoreForm("advanced").form,
 	},
 	{
 		id: "providers",
@@ -469,104 +127,6 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 								label: "Model catalog refresh (minutes)",
 								help: "The provider catalog refresh cadence; a change re-arms the scheduler live",
 								apply: applyOf("server.providers.refreshIntervalMinutes"),
-							},
-						],
-					},
-				],
-			},
-		},
-	},
-	{
-		id: "extensions",
-		title: "Extensions",
-		icon: "add",
-		// The extension-list editor (per-extension raw JSON + write-only
-		// secrets) is the channels' cove; the form carries the core
-		// extension knobs (the install list + the built-in toggles).
-		form: {
-			v: 1,
-			root: {
-				type: "form",
-				id: "core-extensions-form",
-				bind: "/settings",
-				mode: "submit",
-				onSubmit: "save",
-				submitLabel: "Save",
-				children: [
-					{
-						type: "section",
-						id: "core-extensions-list",
-						title: "Installed extensions",
-						children: [
-							{
-								type: "longtext",
-								name: "extensions",
-								label: "Extension list (raw JSON)",
-								help: "The unified install-and-load list (npm specifiers, bare names, file:/git sources, or {source, entry?, ref?, enabled?} objects) — applied at boot reconciliation, so a change applies at restart",
-								apply: applyOf("extensions"),
-								syntax: "code",
-								lang: "json",
-								rows: 12,
-							},
-						],
-					},
-					{
-						type: "section",
-						id: "core-extensions-builtins",
-						title: "Built-in extensions",
-						children: [
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.codemode",
-								label: "Codemode",
-								help: "The built-in codemode extension (a disabled built-in never loads) — applies at restart",
-								apply: applyOf("builtinExtensions.codemode"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.mcp",
-								label: "MCP",
-								help: "The built-in MCP extension — applies at restart",
-								apply: applyOf("builtinExtensions.mcp"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.toolSearch",
-								label: "Tool search",
-								help: "The built-in tool-search extension — applies at restart",
-								apply: applyOf("builtinExtensions.toolSearch"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.gateway",
-								label: "Gateway",
-								help: "The built-in channel gateway engine — applies at restart",
-								apply: applyOf("builtinExtensions.gateway"),
-							},
-							{
-								type: "toggle",
-								default: true,
-								name: "builtinExtensions.oauth",
-								label: "OAuth login",
-								help: "The built-in OIDC/OAuth2 login extension — applies at restart",
-								apply: applyOf("builtinExtensions.oauth"),
-							},
-							{
-								type: "toggle",
-								// Absent means ON (the built-in set defaults enabled).
-								default: true,
-								name: "builtinExtensions.curator",
-								label: "Curator",
-								help: "The built-in curator extension — applies at restart",
-								apply: applyOf("builtinExtensions.curator"),
 							},
 						],
 					},

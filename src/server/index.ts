@@ -38,6 +38,7 @@ import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "./session-meta.js";
 import { NoticesService } from "../notices/service.js";
+import { drainNoticeWrites } from "../notices/store.js";
 import { visibleToUser } from "./visibility.js";
 import { buildCommandCatalog, SLASH_COMMANDS } from "./commands.js";
 import { effectiveMethods, type Env, type SigrunConfig } from "../config.js";
@@ -89,7 +90,11 @@ import type { FetchDeps } from "./images/fetch.js";
 import { registerImageRoutes } from "./routes/images.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
-import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
+import {
+	EXTENSION_SETTINGS_SECTIONS,
+	schemaSettingsSurfaceFor,
+	settingsSurfaceFor,
+} from "./surfaces/settings-surfaces.js";
 import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
@@ -293,6 +298,9 @@ export async function createServer(
 				: { actionTimeoutMs: options.noticeActionTimeoutMs }),
 		},
 	);
+	for (const host of opened.seamHosts.values()) {
+		host.bindSettingsNotices((slug, input) => noticesService.post(slug, input));
+	}
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};
@@ -351,6 +359,29 @@ export async function createServer(
 					service: surfacesService,
 				}),
 			),
+		})),
+	);
+	// Schema declarations mount at the reserved per-extension page sections.
+	surfacesService.attachSettingsSurfaces(
+		opened.extensionSettingsDeclarations.map((binding) => ({
+			extension: binding.extension,
+			defs: EXTENSION_SETTINGS_SECTIONS.flatMap((section) => {
+				const user = section.scope === "user";
+				const schema = user ? binding.decl.userSchema : binding.decl.schema;
+				const generated = user ? binding.generatedUser : binding.generated;
+				if (schema === undefined || generated === undefined) return [];
+				return [schemaSettingsSurfaceFor(
+					binding.extension,
+					section,
+					schema,
+					generated,
+					{
+						stores: opened.extensionStores,
+						publishSettingsChanged: opened.publishSettingsChanged,
+						service: surfacesService,
+					},
+				)];
+			}),
 		})),
 	);
 	// The core settings sections (U4 Task 4, spec §13.4): the same
@@ -605,6 +636,7 @@ export async function createServer(
 	// over one harness in tests) can detach a bound server cleanly.
 	app.addHook("onClose", async () => {
 		unsubscribeChatSurfaceChanged();
+		await drainNoticeWrites();
 	});
 
 	return app;

@@ -18,13 +18,15 @@
  * Refresh POSTs the bounded refresh.
  */
 
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { expect, test } from "@playwright/test";
 import { bootE2EServer } from "./harness.js";
 
 let server: Awaited<ReturnType<typeof bootE2EServer>>;
 
 test.beforeAll(async () => {
-	server = await bootE2EServer();
+	const fixture = fileURLToPath(new URL("../../test/fixtures/fixture-settings-extension-page/index.js", import.meta.url));
+	server = await bootE2EServer({ extensionSpecifiers: [pathToFileURL(fixture).href] });
 });
 
 test.afterAll(async ({ browser }) => {
@@ -142,7 +144,7 @@ test("a deployment-managed key renders locked", async ({ page }) => {
 	}
 });
 
-test("the Providers section lists readiness and saves a credential write-only", async ({
+test("the Providers section lists readiness and the credential routes stay write-only", async ({
 	page,
 }) => {
 	await page.goto(server.url);
@@ -160,27 +162,28 @@ test("the Providers section lists readiness and saves a credential write-only", 
 	await expect(row.locator(".settings-provider-status")).toBeVisible();
 	await expect(row).toContainText("2 models");
 
-	// Save: the key rides the real PUT (the server stores it under the
-	// magic "default" key — faux is the default model's provider) and the
-	// write-only field clears; the key never renders anywhere.
+	// The built-in faux contributor has no extension page, so this status
+	// row has no link. Its auth.json flow remains the same write-only API.
+	await expect(row.locator(".settings-provider-page-link")).toHaveCount(0);
+	await expect(row.locator(".settings-provider-key")).toHaveCount(0);
 	const key = "acme-test-key";
-	await row.locator(".settings-provider-key").fill(key);
-	await row.getByRole("button", { name: "Save" }).click();
-	await expect(row.locator(".settings-provider-key")).toHaveValue("");
+	await page.evaluate(async (apiKey) => {
+		const response = await fetch("/v1/providers/faux/credential", {
+			method: "PUT",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({ apiKey }),
+		});
+		if (!response.ok) throw new Error(`credential PUT ${response.status}`);
+	}, key);
+	expect(server.opened.auth.read().default?.apiKey).toBe(key);
 	await expect(row).not.toContainText(key);
-	await expect
-		.poll(() => server.opened.auth.read().default?.apiKey)
-		.toBe(key);
-
-	// Refresh: one bounded refresh of the named provider over the wire.
 	await row.getByRole("button", { name: "Refresh" }).click();
 	await expect(row.locator(".settings-provider-status")).toBeVisible();
-
-	// Clear: the DELETE removes the stored credential.
-	await row.getByRole("button", { name: "Clear" }).click();
-	await expect
-		.poll(() => server.opened.auth.read().default?.apiKey)
-		.toBeUndefined();
+	await page.evaluate(async () => {
+		const response = await fetch("/v1/providers/faux/credential", { method: "DELETE" });
+		if (!response.ok) throw new Error(`credential DELETE ${response.status}`);
+	});
+	expect(server.opened.auth.read().default?.apiKey).toBeUndefined();
 
 	// Zero page errors.
 	const errors: string[] = [];

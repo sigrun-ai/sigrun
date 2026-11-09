@@ -45,7 +45,8 @@ import type { JobSpec } from "@sigrun/shared/jobs";
 import type { SettingsFile } from "@sigrun/shared/settings";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
-import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
+import { coreProperty } from "../src/settings/core-schema.js";
+import { applyOf, CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { createServer } from "../src/server/index.js";
 import { seededIdentity } from "./helpers/identity.js";
 
@@ -190,22 +191,15 @@ type Paths<T> = T extends readonly unknown[]
 const _typeTie: readonly Paths<SettingsFile>[] = EXPECTED_KEYS;
 void _typeTie;
 
-/** The registry's shape: one entry per key with its apply rule. */
+/** The registry's hand-authored shape; apply belongs to the schema. */
 interface RegistryEntry {
 	readonly key: string;
-	readonly apply: "live" | "restart";
 	readonly section: string;
 	readonly reason: string;
 }
 
 describe("the core settings registry (spec §13.1)", () => {
-	const byKey = (): Map<string, { key: string; apply: string; section: string; reason: string }> =>
-		new Map(
-			CORE_SETTING_KEYS.map((entry) => [
-				entry.key,
-				entry as { key: string; apply: string; section: string; reason: string },
-			]),
-		);
+	const byKey = (): Map<string, RegistryEntry> => new Map(CORE_SETTING_KEYS.map((entry) => [entry.key, entry]));
 
 	test("the three keys are live", () => {
 		const map = byKey();
@@ -236,7 +230,9 @@ describe("the core settings registry (spec §13.1)", () => {
 			for (const key of keys) {
 				const entry = map.get(key);
 				expect(entry, `registry entry for ${key}`).toBeDefined();
-				expect(entry?.apply, `${key} apply`).toBe(apply);
+				expect(applyOf(key), `${key} apply`).toBe(apply);
+				// The schema owns apply; the registry derives its classification.
+				expect(coreProperty(key)?.["x-sigrun-apply"], `${key} schema apply`).toBe(apply);
 				// Every entry carries a one-line reason (the audit's record).
 				expect(
 					(entry?.reason.length ?? 0) > 0 && (entry?.section.length ?? 0) > 0,
@@ -736,6 +732,19 @@ describe("extension onSettingsChanged", () => {
 				headers: { "content-type": "application/json" },
 			});
 			expect(response.statusCode).toBe(200);
+			// The bus fan-out is deliberately fire-and-forget (boot's
+			// publishSettingsChanged does not await it — a settings write
+			// never blocks on extension handlers), so the recorder's entry
+			// lands asynchronously: poll briefly instead of racing.
+			let recorded: string[][] | undefined;
+			for (let attempt = 0; attempt < 40; attempt++) {
+				if (fixture.received.length > 0) {
+					recorded = fixture.received;
+					break;
+				}
+				await new Promise((resolve) => setTimeout(resolve, 25));
+			}
+			expect(recorded).toEqual([["threshold"]]);
 			expect(fixture.received).toEqual([["threshold"]]);
 			// The THROWING handler (the fixture's second extension) was
 			// logged, not propagated.

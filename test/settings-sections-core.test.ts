@@ -21,11 +21,10 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import type { JsonObject } from "@sigrun/shared/blocks";
+import type { EntriesField, JsonObject, Tree } from "@sigrun/shared/blocks";
 import { validateTree } from "../src/blocks/validate.js";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
@@ -34,12 +33,14 @@ import {
 	CORE_SECTION_IDS,
 	CORE_SETTINGS_SECTIONS,
 } from "../src/settings/core-sections.js";
-import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
+import {
+	CORE_LAYOUT,
+	coreProperty,
+	coreSchema,
+} from "../src/settings/core-schema.js";
+import { snapshotRestartKeys } from "../src/settings/pending.js";
+import { applyOf, CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { seededIdentity } from "./helpers/identity.js";
-
-const SECTION_SPECIFIER = pathToFileURL(
-	join(import.meta.dirname, "fixtures", "fixture-settings-section", "index.js"),
-).href;
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
@@ -74,7 +75,7 @@ async function bootServer(): Promise<TestServer> {
 	const identity = await seededIdentity(join(dir, "seed"), "alice");
 	const opened = await openHarness(config, {
 		identity,
-		extensionSpecifiers: [SECTION_SPECIFIER],
+		extensionSpecifiers: [],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: dir,
 	});
@@ -121,7 +122,114 @@ async function call(
 
 // ─── The declarations (pure, no server) ───────────────────────────────────
 
+/** The pre-Task-8 capture: generated forms must preserve this UI exactly. */
+const beforeForms = JSON.parse(
+	await readFile(
+		new URL("./fixtures/core-section-forms-before-task8.json", import.meta.url),
+		"utf8",
+	),
+) as Record<"general" | "tools" | "advanced", Tree>;
+
+/** Normalize ids and omit perModelThinking, whose table conversion is intended. */
+function normalizedForm(form: Tree): unknown {
+	const copy = structuredClone(form) as unknown as Record<string, unknown>;
+	const walk = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child);
+			return;
+		}
+		if (typeof node !== "object" || node === null) return;
+		const record = node as Record<string, unknown>;
+		delete record.id;
+		if (record.type === "form") record.submitLabel = "Save";
+		if (Array.isArray(record.children)) {
+			record.children = record.children.filter(
+				(child) => (child as { name?: string }).name !== "perModelThinking",
+			);
+		}
+		for (const child of Object.values(record)) walk(child);
+	};
+	walk(copy);
+	return copy;
+}
+
 describe("core settings sections (U4 Task 4)", () => {
+	test("generated core sections equal today's, apart from the thinking table", () => {
+		for (const id of ["general", "tools", "advanced"] as const) {
+			const section = CORE_SETTINGS_SECTIONS.find((candidate) => candidate.id === id);
+			expect(section).toBeDefined();
+			expect(normalizedForm(section!.form), id).toEqual(normalizedForm(beforeForms[id]));
+		}
+		const advanced = CORE_SETTINGS_SECTIONS.find((section) => section.id === "advanced");
+		const root = advanced?.form.root;
+		const group = root?.type === "form" ? root.children.find(
+			(child) => child.type === "section" && child.title === "Model overrides",
+		) : undefined;
+		const thinking = group?.type === "section"
+			? group.children.find((child) => "name" in child && child.name === "perModelThinking")
+			: undefined;
+		expect(thinking).toMatchObject({
+			type: "entries",
+			shape: "table",
+			name: "perModelThinking",
+			keyLabel: "Model",
+			summary: ["value"],
+			item: [{
+				type: "choice",
+				name: "value",
+				label: "Thinking level",
+				options: ["off", "minimal", "low", "medium", "high", "xhigh", "max"].map(
+					(level) => ({ id: level, label: level }),
+				),
+			}],
+		} satisfies Partial<EntriesField>);
+	});
+
+	test("defaultTools keeps the tool roster binding", () => {
+		const tools = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tools");
+		const json = JSON.stringify(tools?.form);
+		expect(json).toContain('"$":"/toolRoster"');
+	});
+
+	test("unlisted keys are not rendered", () => {
+		const json = JSON.stringify(
+			CORE_SETTINGS_SECTIONS.filter((section) =>
+				["general", "tools", "advanced"].includes(section.id),
+			),
+		);
+		for (const key of [
+			"jobs",
+			"decisionModel",
+			"decisions.tool",
+			"server.workspacePath",
+			"server.storagePath",
+			"server.compaction.modelOverrides",
+		]) expect(json).not.toContain(`"name":"${key}"`);
+	});
+
+	test("every registry key has a nested schema property with x-sigrun-apply", () => {
+		expect(coreSchema.type).toBe("object");
+		for (const entry of CORE_SETTING_KEYS) {
+			const property = coreProperty(entry.key);
+			expect(property, entry.key).toBeDefined();
+			expect(property?.title, entry.key).toEqual(expect.any(String));
+			expect(property?.description, entry.key).toEqual(expect.any(String));
+			expect(property).toHaveProperty("default");
+			expect(property?.["x-sigrun-apply"], entry.key).toMatch(/^(live|restart)$/);
+			expect(entry, entry.key).not.toHaveProperty("apply");
+		}
+		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "tools", "advanced"]);
+		const general = CORE_SETTINGS_SECTIONS.find((section) => section.id === "general");
+		const root = general?.form.root;
+		expect(root?.type === "form" ? root.children.map((child) => "id" in child ? child.id : undefined) : []).toEqual([
+			"core-general-queue",
+			"core-general-models",
+			"core-general-behaviour",
+		]);
+		expect(snapshotRestartKeys({ server: { port: 4000 } }).has("server.port")).toBe(true);
+		expect(snapshotRestartKeys({ namingModel: "acme/namer" }).has("namingModel")).toBe(false);
+	});
+
 	test("every core section's form validates against the settings placement", () => {
 		for (const section of CORE_SETTINGS_SECTIONS) {
 			const result = validateTree(section.form, {
@@ -154,7 +262,6 @@ describe("core settings sections (U4 Task 4)", () => {
 			"interface",
 			"advanced",
 			"providers",
-			"extensions",
 			"accounts",
 			"tokens",
 		]);
@@ -177,8 +284,10 @@ describe("core settings sections (U4 Task 4)", () => {
 			if (
 				typeof record.name === "string" &&
 				typeof record.type === "string" &&
-				!["section", "form", "page", "stack"].includes(record.type)
+				!["section", "form", "page", "stack"].includes(record.type) &&
+				record.type !== "entries"
 			) {
+				if (record.type === "choice" && record.name === "value") return;
 				out.push({
 					name: record.name,
 					apply: typeof record.apply === "string" ? record.apply : undefined,
@@ -204,7 +313,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			for (const field of fields) {
 				const entry = registryByKey.get(field.name);
 				if (entry === undefined) continue; // not a registry key (none today)
-				expect(field.apply, `${id}.${field.name}`).toBe(entry.apply);
+				expect(field.apply, `${id}.${field.name}`).toBe(applyOf(field.name));
 			}
 		}
 		const accounts = CORE_SETTINGS_SECTIONS.find((section) => section.id === "accounts");
@@ -391,6 +500,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 			token: aliceToken,
 		});
 		const rev = (render.body as { rev: number }).rev;
+		const applySpy = vi.spyOn(opened.settings, "apply");
 		const untouched = await call(app, {
 			method: "POST",
 			url: "/v1/ext/core/surfaces/advanced/actions",
@@ -409,7 +519,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 						"stream.timeoutMs": "",
 						"stream.maxRetries": "",
 						"stream.maxRetryDelayMs": "",
-						perModelThinking: "",
+						perModelThinking: {},
 						"server.port": "",
 						"server.publicUrl": "",
 						"server.timezone": "",
@@ -424,11 +534,13 @@ describe("core settings surfaces (U4 Task 4)", () => {
 			},
 		});
 		expect((untouched.body as { ok: boolean }).ok).toBe(true);
+		// Clearing an unset scalar table is a no-op, not a null write.
+		expect(applySpy).toHaveBeenCalledExactlyOnceWith({ server: { port: null } });
+		applySpy.mockRestore();
 		const file = opened.settings.read();
 		expect(file.retry?.enabled).toBeUndefined();
 		expect(file.server?.compaction?.enabled).toBeUndefined();
-		// The same rule on the other default-on toggles (Tools +
-		// Extensions sections).
+		// The same rule on the other default-on toggles (Tools).
 		const tools = await call(app, {
 			method: "GET",
 			url: "/v1/ext/core/surfaces/tools",
@@ -451,36 +563,6 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		});
 		expect((toolsSave.body as { ok: boolean }).ok).toBe(true);
 		expect(opened.settings.read().autoEnableCodemode).toBeUndefined();
-		const extensions = await call(app, {
-			method: "GET",
-			url: "/v1/ext/core/surfaces/extensions",
-			token: aliceToken,
-		});
-		const extRev = (extensions.body as { rev: number }).rev;
-		const extSave = await call(app, {
-			method: "POST",
-			url: "/v1/ext/core/surfaces/extensions/actions",
-			token: aliceToken,
-			payload: {
-				action: "save",
-				actionId: "core-default-on-extensions",
-				params: {},
-				payload: {
-					rev: extRev,
-					values: {
-						extensions: "",
-						"builtinExtensions.codemode": true,
-						"builtinExtensions.mcp": true,
-						"builtinExtensions.toolSearch": true,
-						"builtinExtensions.gateway": true,
-						"builtinExtensions.oauth": true,
-						"builtinExtensions.curator": true,
-					},
-				},
-			},
-		});
-		expect((extSave.body as { ok: boolean }).ok).toBe(true);
-		expect(opened.settings.read().builtinExtensions).toBeUndefined();
 
 		// Explicitly flipping the default-on toggle OFF writes the false.
 		const render2 = await call(app, {
@@ -523,6 +605,61 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		});
 		expect((backOn.body as { ok: boolean }).ok).toBe(true);
 		expect(opened.settings.read().retry?.enabled).toBe(true);
+	});
+
+	test("the per-model thinking table saves scalar levels without channel identity markers", async () => {
+		const { app, opened, aliceToken } = await server();
+		const render = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		const rev = (render.body as { rev: number }).rev;
+		const save = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-thinking-table",
+				params: {},
+				payload: {
+					rev,
+					values: {
+						perModelThinking: {
+							"acme/model": { value: "low", $from: "acme/model" },
+						},
+					},
+				},
+			},
+		});
+		expect(save.body).toMatchObject({ ok: true });
+		expect(opened.settings.read().perModelThinking).toEqual({ "acme/model": "low" });
+
+		const reread = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/advanced",
+			token: aliceToken,
+		});
+		expect((reread.body as { data: JsonObject }).data.settings).toMatchObject({
+			perModelThinking: { "acme/model": "low" },
+		});
+		const deleted = await call(app, {
+			method: "POST",
+			url: "/v1/ext/core/surfaces/advanced/actions",
+			token: aliceToken,
+			payload: {
+				action: "save",
+				actionId: "core-thinking-table-delete",
+				params: {},
+				payload: {
+					rev: (reread.body as { rev: number }).rev,
+					values: { perModelThinking: {} },
+				},
+			},
+		});
+		expect(deleted.body).toMatchObject({ ok: true });
+		expect(opened.settings.read().perModelThinking).toBeUndefined();
 	});
 
 	test("the Tools section's data carries the tool roster (the defaultTools options)", async () => {
@@ -679,30 +816,74 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		});
 		expect(result.status).toBe(200);
 		const body = result.body as {
-			sections: { slug: string; id: string; title: string; icon: string }[];
+			sections: {
+				slug: string;
+				id: string;
+				title: string;
+				icon: string;
+				page?: string;
+				admin?: boolean;
+				scope?: "user";
+			}[];
 		};
 		const core = body.sections.filter((s) => s.slug === "core");
 		expect(core.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
-		// The fixture's sections follow core (alphabetical by slug+id).
-		const extensions = body.sections.filter((s) => s.slug !== "core");
-		expect(extensions.map((s) => s.slug)).toEqual([
-			"acme-settings-section",
-			"acme-settings-section",
-			"acme-settings-section",
-			"acme-settings-section",
-			"acme-settings-section",
+		// Task 7's generated-section coverage against the declaring
+		// dev-linked built-ins: curator's shared then per-user pages,
+		// gateway's shared-only page (Task 13), oauth's shared-only page,
+		// then MCP's shared and per-user pages.
+		expect(body.sections.filter((s) => s.slug !== "core")).toEqual([
+			{
+				slug: "curator",
+				id: "settings",
+				page: "curator",
+				title: "Settings",
+				icon: "key",
+				admin: true,
+			},
+			{
+				slug: "curator",
+				id: "user-settings",
+				page: "curator",
+				title: "Your settings",
+				icon: "key",
+				scope: "user",
+				admin: false,
+			},
+			{
+				slug: "gateway",
+				id: "settings",
+				page: "gateway",
+				title: "Settings",
+				icon: "key",
+				admin: true,
+			},
+			{
+				slug: "oauth",
+				id: "settings",
+				page: "oauth",
+				title: "Settings",
+				icon: "key",
+				admin: true,
+			},
+			{
+				slug: "sigrun-mcp",
+				id: "settings",
+				page: "sigrun-mcp",
+				title: "Settings",
+				icon: "key",
+				admin: true,
+			},
+			{
+				slug: "sigrun-mcp",
+				id: "user-settings",
+				page: "sigrun-mcp",
+				title: "Your settings",
+				icon: "key",
+				scope: "user",
+				admin: false,
+			},
 		]);
-		expect(extensions.map((s) => s.id)).toEqual([
-			"connection",
-			"display",
-			"profile",
-			"dedup-profile",
-			"personal-admin",
-		]);
-		expect(extensions.find((s) => s.id === "profile")).toMatchObject({
-			scope: "user",
-			admin: false,
-		});
 	});
 
 	test("the search index covers every core key's label and help; 'naming' resolves to General's naming model", async () => {
@@ -754,7 +935,9 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			if (
 				typeof record.name === "string" &&
 				typeof record.type === "string" &&
-				!["section", "form", "page", "stack"].includes(record.type)
+				!["section", "form", "page", "stack"].includes(record.type) &&
+				record.type !== "entries" &&
+				!(record.type === "choice" && record.name === "value")
 			) {
 				out.push(record.name);
 			}
@@ -764,11 +947,12 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			const names: string[] = [];
 			walkNames(section.form, names);
 			for (const name of names) fieldSection.set(name, section.id);
+			if (names.includes("perModelThinking")) fieldSection.set("perModelThinking", section.id);
 		}
-		// Cove-rendered sections (Interface/Providers/Extensions — the
+		// Cove-rendered sections (Interface/Providers — the
 		// channels draw them natively) drop their core-key rows: a hit
 		// must land on a form field, and a cove has none.
-		const coveSections = new Set(["interface", "providers", "extensions"]);
+		const coveSections = new Set(["interface", "providers"]);
 		const coreRows = body.index.filter((entry) => entry.kind === "core-key");
 		for (const [key, sectionId] of fieldSection) {
 			const row = coreRows.find((entry) => entry.key === key);
@@ -791,11 +975,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		expect(coreRows.find((entry) => entry.key === "perModelThinking")?.sectionId).toBe("advanced");
 		expect(coreRows.find((entry) => entry.key === "server.port")?.sectionId).toBe("advanced");
 		expect(coreRows.find((entry) => entry.key === "defaultTools")?.sectionId).toBe("tools");
-		// Every row carries a label; extension fields index too.
-		const extRows = body.index.filter(
-			(entry) => entry.slug === "acme-settings-section",
-		);
-		expect(extRows.some((entry) => entry.label === "API URL")).toBe(true);
-		expect(extRows.some((entry) => entry.label === "Connection")).toBe(true);
+		// Every core row carries a label.
+		expect(coreRows.every((entry) => entry.label.length > 0)).toBe(true);
 	});
 });

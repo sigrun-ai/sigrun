@@ -552,6 +552,8 @@ export interface OpenedHarness {
 	 * nothing.
 	 */
 	readonly extensionSettingsSections: readonly ExtensionSettingsSectionBinding[];
+	/** Schema-declared settings and generated forms, in load order. */
+	readonly extensionSettingsDeclarations: readonly import("./loader.js").ExtensionSettingsDeclaration[];
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -1511,7 +1513,7 @@ export async function openHarness(
 			options.extraBuiltins ?? [],
 			options.builtinResolver,
 		)
-		: { load: [], skipped: [] };
+		: { load: [], skipped: [], configured: configuredInputs };
 	// The loader input: built-ins FIRST (pi parity — the replacement rule
 	// already removed any built-in a configured entry claims), marked
 	// `builtin: true` so their outcomes carry the flag to /v1/extensions,
@@ -1531,7 +1533,7 @@ export async function openHarness(
 							coreResolved: true,
 						}),
 					),
-					...configuredInputs,
+					...builtins.configured,
 				]
 			: configuredInputs;
 	// The seam host's lazy harness binding: factories run before
@@ -1625,6 +1627,7 @@ export async function openHarness(
 		gatewayEngine,
 		surfaces: surfaceBindings,
 		settingsSections: settingsSectionBindings,
+		settingsDeclarations: extensionSettingsDeclarations,
 		perUserSlugs: loadedPerUserSlugs,
 	} = await loadExtensions(
 		loaderInputs,
@@ -1634,7 +1637,7 @@ export async function openHarness(
 			// Curator A8 (P9): the wrap feed — the loader grows it with each
 			// validated target tool and wraps those tools at their install.
 			curationFeed,
-			hostContextFactory: (extensionName, kinds, priorHost) => {
+			hostContextFactory: (extensionName, kinds, priorHost, settingsSlug) => {
 				// Two-phase, revised for the provisional identity (provider
 				// plugins Task 9 P1): the loader's PRE-import call passes the
 				// slug derived from the load specifier (a factory-time settings
@@ -1656,8 +1659,8 @@ export async function openHarness(
 					}, userServices, {
 						publishedHooks: { current: publishedHooksSlot, ready: publishedHooksReady },
 						decisions: { current: decisionsSlot, ready: decisionsReady },
-					});
-				host.rekey({ name: extensionName }, kinds);
+					}, undefined, settingsSlug);
+				if (priorHost !== undefined) host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
 				// resolved: the PRE-import call must NOT file (its identity is
 				// provisional; a quarantined load would leak a placeholder
@@ -1676,6 +1679,9 @@ export async function openHarness(
 		},
 	);
 	perUserSlugs.push(...loadedPerUserSlugs);
+	// Loading is complete: declarations are now read under the final slug,
+	// and any later declare call is a factory-window violation.
+	for (const host of seamHosts.values()) host.sealSettings();
 	// Fail-fast vs wait (polish A1, spec §5.2): the caller declared a
 	// server WILL bind the host bridge — mark every loaded seam host so
 	// pre-bind calls keep the bounded wait instead of rejecting at once.
@@ -2676,6 +2682,7 @@ export async function openHarness(
 		noticeActionBindings,
 		extensionSurfaces: surfaceBindings,
 		extensionSettingsSections: settingsSectionBindings,
+		extensionSettingsDeclarations,
 		notifierBindings,
 		channelBindings,
 		gatewayEngine,

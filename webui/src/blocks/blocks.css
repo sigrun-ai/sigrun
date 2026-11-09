@@ -1346,6 +1346,20 @@
 .blk-secret { display: flex; gap: 0.5rem; align-items: center; }
 .blk-secret-status { font-size: 0.875em; color: var(--fg-dim, #888); }
 .blk-list-entry { display: flex; gap: 0.5rem; align-items: flex-start; }
+.blk-entries { display: flex; flex-direction: column; gap: 0.5rem; }
+.blk-entry { border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+.blk-entry-row { align-items: center; display: flex; flex-wrap: wrap; gap: 0.4rem; padding: 0.35rem 0.5rem; }
+.blk-field .blk-entry-summary {
+	align-items: baseline; background: none; border: 0; display: flex; flex: 1;
+	font-size: inherit; gap: 0.75rem; min-width: 12rem; padding: 0.25rem; text-align: start;
+}
+.blk-entry-key { flex: none; font-weight: 600; overflow-wrap: anywhere; }
+.blk-entry-summary > span:last-child { min-width: 0; overflow-wrap: anywhere; }
+.blk-entry-actions { display: flex; flex-wrap: wrap; gap: 0.3rem; }
+.blk-entry-form { border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 0.75rem; padding: 0.75rem; }
+.blk-entry-form + button { margin: 0 0.75rem 0.75rem; }
+.blk-variant, .blk-variant-children { display: flex; flex-direction: column; gap: 0.75rem; }
+.blk-variant > select { align-self: flex-start; width: auto; }
 .blk-daterange { display: flex; gap: 0.5rem; flex-wrap: wrap; }
 .blk-stepper-progress { font-size: 0.875em; color: var(--fg-dim, #888); }
 .blk-stepper-nav { display: flex; gap: 0.5rem; }

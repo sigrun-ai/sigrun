@@ -102,7 +102,7 @@ export const PLACEMENT_RULES: Readonly<Record<PlacementName, PlacementRule>> = {
 		blocks: ["section", ...CONTENT, "collection", "form"],
 		rootBlock: "form",
 		collectionDisplays: ["list", "table"],
-		fields: ALL_FIELDS.filter((f) => f !== "file"),
+		fields: [...ALL_FIELDS.filter((f) => f !== "file"), "entries", "variant"],
 	}),
 	// chat: everything but page; all fields but secret.
 	chat: rule({

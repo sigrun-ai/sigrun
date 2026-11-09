@@ -30,6 +30,7 @@ const SAMPLES: readonly string[] = [
 	"field-date",
 	"field-daterange",
 	"field-datetime",
+	"field-entries",
 	"field-file",
 	"field-list",
 	"field-longtext",

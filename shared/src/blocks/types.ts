@@ -598,6 +598,34 @@ export interface ListField extends FieldBase {
 	readonly max?: number;
 }
 
+export interface EntriesField extends FieldBase {
+	readonly type: "entries";
+	/** "array": value is an array of objects; "table": value is an object keyed by entry name. */
+	readonly shape: "array" | "table";
+	/** The fields of one entry; names are relative to the entry. */
+	readonly item: readonly (Field | SectionBlock)[];
+	/** Entry fields shown in the one-line row summary, in order. */
+	readonly summary: readonly string[];
+	/** array shape: the identity property (required when the item has secret fields). table shape: unused (the key is the identity). */
+	readonly key?: string;
+	/** table shape: the label of the key column ("Name"). */
+	readonly keyLabel?: string;
+	readonly reorder?: boolean; // array shape only
+	readonly min?: number;
+	readonly max?: number;
+}
+
+export interface VariantField extends FieldBase {
+	readonly type: "variant";
+	/** The discriminator property the choice writes (e.g. "transport"). */
+	readonly discriminator: string;
+	readonly options: readonly {
+		readonly id: string;
+		readonly label: string;
+		readonly children: readonly (Field | SectionBlock)[];
+	}[];
+}
+
 export type Field =
 	| TextField
 	| LongtextField
@@ -609,7 +637,9 @@ export type Field =
 	| DaterangeField
 	| SecretField
 	| FileField
-	| ListField;
+	| ListField
+	| EntriesField
+	| VariantField;
 
 export interface FormBlock extends BlockBase {
 	readonly type: "form";
