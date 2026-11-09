@@ -886,9 +886,11 @@ The contract:
   `auth.json[id].apiKey` (a LIVE read — a key written through
   `PUT /v1/providers/:id/credential` applies with no restart) wins over
   the ambient `credentialEnv` (an empty env string counts as unset).
-  Neither resolves to `not_configured` — the caller's result, decided
-  by core, never by your tracker. The magic `"default"` auth.json key
-  names the default CHAT provider and never applies to a decision id.
+  When your id IS the default model's provider, the magic `"default"`
+  auth.json key is read as well — that is where the route writes a Save
+  for that provider, so the two stay in step. Neither resolves to
+  `not_configured` — the caller's result, decided by core, never by your
+  tracker.
 - **Readiness** is the same three-state tracker the chat providers
   carry (`not_configured` | `degraded` | `ready`); seed it from
   credential presence. `GET /v1/providers` lists each decision provider
@@ -953,7 +955,9 @@ export default function acmeEmbeddings() {
   declaration does not say `local: false`. A provider whose endpoint can
   change should report remote endpoints as `local: false`.
 - **Credentials** resolve per call from `auth.json[id].apiKey`, then the
-  ambient `credentialEnv` (empty means unset). A missing key is passed as
+  ambient `credentialEnv` (empty means unset) — plus the magic `"default"`
+  key when the embedding provider's id IS the default model's provider
+  (where the route writes that provider's Save). A missing key is passed as
   `undefined` so keyless local endpoints work; a call is refused as
   `not_configured` only when the key is missing AND your readiness
   tracker reports `not_configured` (the decisions precedent: the tracker
