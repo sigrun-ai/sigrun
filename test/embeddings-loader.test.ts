@@ -156,6 +156,17 @@ test("each quarantine rule quarantines", async () => {
 			match: /dimensions/,
 		},
 		{
+			name: "a non-boolean local",
+			value: [
+				{
+					id: "acme-embed",
+					models: [{ id: "embed-1", dimensions: 3, local: "false" }],
+					embed: validEmbed,
+				},
+			],
+			match: /local.*boolean/,
+		},
+		{
 			name: "a non-positive maxBatch",
 			value: [
 				{

@@ -1220,7 +1220,7 @@ const EMBEDDING_CREDENTIAL_ENV = /^[A-Z][A-Z0-9_]*$/;
  * Per entry: a string `id` matching {@link EMBEDDING_PROVIDER_ID} (≤64
  * chars), at least one model whose ids match {@link EMBEDDING_MODEL_ID}
  * with no intra-provider duplicates, `dimensions` a positive integer,
- * `maxBatch` a positive integer when present, `embed` a function,
+ * `local` a boolean when present, `maxBatch` a positive integer when present, `embed` a function,
  * `readiness` absent or a function, and `credentialEnv` absent or a
  * NAME.
  */
@@ -1263,6 +1263,7 @@ function validateEmbeddingProviders(
 			const entry = model as {
 				id?: unknown;
 				dimensions?: unknown;
+				local?: unknown;
 				maxBatch?: unknown;
 			} | null;
 			const modelId = entry?.id;
@@ -1287,6 +1288,11 @@ function validateEmbeddingProviders(
 			) {
 				throw new Error(
 					`extension factory returned an embedding provider "${provider.id}" whose model "${modelId}" has an invalid dimensions ${JSON.stringify(entry?.dimensions)} (must be a positive integer)`,
+				);
+			}
+			if (entry.local !== undefined && typeof entry.local !== "boolean") {
+				throw new Error(
+					`extension factory returned an embedding provider "${provider.id}" whose model "${modelId}" has an invalid local ${JSON.stringify(entry.local)} (must be a boolean)`,
 				);
 			}
 			if (
