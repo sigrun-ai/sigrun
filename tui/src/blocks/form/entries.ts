@@ -105,8 +105,10 @@ export function addEntry(
 ): readonly EntryRecord[] {
 	state.nextId += 1;
 	const id = `new-${state.nextId}`;
+	const value = defaultEntry(field.item);
+	state.ids.set(value, id);
 	state.open = id;
-	return [...entries, { id, key: "", value: defaultEntry(field.item) }];
+	return [...entries, { id, key: "", value }];
 }
 
 export function duplicateEntry(
@@ -127,6 +129,7 @@ export function duplicateEntry(
 		key: field.shape === "table" ? `${original.key}-copy` : original.key,
 		value,
 	};
+	state.ids.set(value, id);
 	state.open = id;
 	return [...entries.slice(0, index + 1), copy, ...entries.slice(index + 1)];
 }

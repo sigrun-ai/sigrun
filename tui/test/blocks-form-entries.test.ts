@@ -149,7 +149,7 @@ describe("entries and variant settings fields", () => {
 			settings: { servers: { alpha: { url: "https://alpha.example.invalid" } } },
 		});
 		form.handleInput("x");
-		expect(form.render(100).join("\n")).toContain("y/N");
+		expect(form.render(100).join("\n")).toContain("Delete alpha? y/N");
 		expect(form.values.servers).toHaveProperty("alpha");
 		form.handleInput("n");
 		expect(form.render(100).join("\n")).not.toContain("y/N");
@@ -157,6 +157,33 @@ describe("entries and variant settings fields", () => {
 		form.handleInput("x");
 		form.handleInput("y");
 		expect(form.values.servers).toEqual({});
+	});
+
+	test("add opens the new entry and typing edits its nested key", () => {
+		const { form } = harness([tableField], { settings: {} });
+		form.handleInput("a");
+		expect(form.render(100).join("\n")).toContain("Server name");
+		for (const char of "acme") form.handleInput(char);
+		expect(form.values.servers).toEqual({
+			acme: { url: "", token: "" },
+		});
+	});
+
+	test("duplicate opens the copied entry", () => {
+		const { form } = harness([tableField], {
+			settings: { servers: { alpha: { url: "https://alpha.example.invalid" } } },
+		});
+		form.handleInput("d");
+		const rendered = form.render(100).join("\n");
+		expect(rendered).toContain("Server name");
+		expect(rendered).toContain("alpha-copy");
+	});
+
+	test("empty entries show the add hint", () => {
+		const { form } = harness([tableField], { settings: {} });
+		const rendered = form.render(100).join("\n");
+		expect(rendered).toContain("(empty)");
+		expect(rendered).toContain("a add");
 	});
 
 	test("nested secret status reads the saved entry identity", () => {
@@ -212,6 +239,24 @@ describe("entries and variant settings fields", () => {
 		save(form);
 		expect(captured).toHaveLength(0);
 		expect(form.render(100).join("\n")).toContain("Server name must be unique");
+	});
+
+	test("untouched variant keeps a non-first stored selection", () => {
+		const field: VariantField = {
+			type: "variant",
+			name: "connection",
+			label: "Connection",
+			discriminator: "transport",
+			options: [
+				{ id: "http", label: "HTTP", children: [{ type: "text", name: "url", label: "URL" }] },
+				{ id: "stdio", label: "Standard I/O", children: [{ type: "text", name: "command", label: "Command" }] },
+			],
+		};
+		const { form } = harness([field], {
+			settings: { connection: { transport: "stdio", command: "acme-run" } },
+		});
+		form.handleInput(ENTER);
+		expect(form.values.connection).toEqual({ transport: "stdio", command: "acme-run" });
 	});
 
 	test("variant swap", () => {

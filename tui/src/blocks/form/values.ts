@@ -54,7 +54,12 @@ export function nestedFields(children: readonly (Field | SectionBlock)[]): reado
 /** A fresh entry seeded from the item fields' defaults. */
 export function defaultEntry(children: readonly (Field | SectionBlock)[]): JsonObject {
 	const entry: JsonObject = {};
-	for (const child of nestedFields(children)) entry[child.name] = initialValue(child, {});
+	for (const child of nestedFields(children)) {
+		const declared = "default" in child
+			? (child as Field & { readonly default?: JsonValue }).default
+			: undefined;
+		entry[child.name] = declared ?? initialValue(child, {});
+	}
 	return entry;
 }
 
@@ -97,10 +102,6 @@ export function initialValue(field: Field, bound: Record<string, JsonValue>): Js
 	if (field.type === "entries") return initialEntries(field, value);
 	if (field.type === "variant") return initialVariant(field, value);
 	if (value !== undefined) return value;
-	if (field.type !== "toggle" && "default" in field) {
-		const declared = (field as Field & { readonly default?: JsonValue }).default;
-		if (declared !== undefined) return declared;
-	}
 	switch (field.type) {
 		case "toggle":
 			// §13.4 fix: a default-ON toggle initializes ON when the bound

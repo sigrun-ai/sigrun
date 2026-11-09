@@ -73,7 +73,7 @@ import {
 	packEntries,
 	type EntryRecord,
 } from "./entries.js";
-import { switchVariant, VariantFieldState, variantHintLine, variantLines, variantOption } from "./variant.js";
+import { switchVariant, VariantFieldState, variantHintLine, variantLines, variantOption, variantSelected } from "./variant.js";
 import { collectFields, initialValue, validateField } from "./values.js";
 
 /** The live-mode debounce (spec §5.6: "every change is applied after
@@ -269,6 +269,9 @@ export class FormComponent implements Component {
 		let state = this.#variants.get(field.name);
 		if (state === undefined) {
 			state = new VariantFieldState();
+			const selected = variantSelected(field, this.#values[field.name]);
+			const index = field.options.findIndex((option) => option.id === selected);
+			state.cursor = Math.max(0, index);
 			this.#variants.set(field.name, state);
 		}
 		return state;
@@ -568,9 +571,14 @@ export class FormComponent implements Component {
 				const entries = entryRecords(field, value, state);
 				if (state.cursor >= entries.length) state.cursor = Math.max(0, entries.length - 1);
 				const lines = entriesLines({ field, entries, state, focused, width, ctx: this.#ctx });
+				if (entries.length === 0) lines.push(focused ? "> (empty)" : "  (empty)");
 				if (focused) {
-					if (state.confirmDelete !== null) lines.push(deleteConfirmLine(state.confirmDelete, width));
-					else if (state.open !== null) lines.push(this.#ctx.theme.dim(entriesHintLine(field, entries, width)));
+					if (state.confirmDelete !== null) {
+						const key = entries.find((entry) => entry.id === state.confirmDelete)?.key ?? "";
+						lines.push(deleteConfirmLine(key, width));
+					} else if (state.open === null) {
+						lines.push(this.#ctx.theme.dim(entriesHintLine(field, entries, width)));
+					}
 				}
 				if (state.open !== null) {
 					const entry = entries.find((candidate) => candidate.id === state.open);
