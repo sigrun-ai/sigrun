@@ -375,6 +375,123 @@ describe("fixtures validate for their placements (spec §5.7)", () => {
 		expect(errs.some((e) => e.path === "root.display")).toBe(true);
 	});
 
+	it("settings placement accepts entries and variant", () => {
+		const tree = treeOf({
+			type: "form",
+			id: "settings-fields",
+			bind: "/settings",
+			mode: "submit",
+			children: [
+				{
+					type: "entries",
+					name: "servers",
+					label: "Servers",
+					shape: "array",
+					item: [{ type: "text", name: "name", label: "Name" }],
+					summary: ["name"],
+					key: "name",
+					reorder: true,
+				},
+				{
+					type: "variant",
+					name: "connection",
+					label: "Connection",
+					discriminator: "kind",
+					options: [
+						{
+							id: "remote",
+							label: "Remote",
+							children: [{ type: "text", name: "url", label: "URL" }],
+						},
+					],
+				},
+			],
+		} as unknown as Block);
+		const result = validateTree(tree, { placement: "settings" });
+		expect(result.ok, JSON.stringify(result)).toBe(true);
+	});
+
+	it("entries outside settings placement rejects", () => {
+		for (const type of ["entries", "variant"]) {
+			for (const placement of ALL_PLACEMENTS.filter((name) => name !== "settings")) {
+				expect(PLACEMENT_RULES[placement].fields.has(type), `${type} in ${placement}`).toBe(false);
+			}
+			const field = type === "entries"
+				? { type, name: "servers", label: "Servers", shape: "array", item: [], summary: [] }
+				: { type, name: "connection", label: "Connection", discriminator: "kind", options: [] };
+			const tree = treeOf({
+				type: "form",
+				id: "field-placement",
+				bind: "/values",
+				mode: "submit",
+				children: [field],
+			} as unknown as Block);
+			const errs = errorsOf(validateTree(tree, { placement: "chat" }));
+			expect(errs.some((error) => error.path === "root.children[0]" && error.message.includes(`${type} field is not allowed in chat`))).toBe(true);
+		}
+	});
+
+	it("entries item validates recursively (a bad nested field rejects naming its path)", () => {
+		const tree = treeOf({
+			type: "form",
+			id: "nested-entry",
+			bind: "/settings",
+			mode: "submit",
+			children: [{
+				type: "entries",
+				name: "servers",
+				label: "Servers",
+				shape: "array",
+				item: [{ type: "number", name: "port", label: "Port", min: "zero" }],
+				summary: ["port"],
+			}],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "settings" }));
+		expect(errs.some((error) => error.path === "root.children[0].item[0].min")).toBe(true);
+	});
+
+	it("variant option children validate recursively", () => {
+		const tree = treeOf({
+			type: "form",
+			id: "nested-variant",
+			bind: "/settings",
+			mode: "submit",
+			children: [{
+				type: "variant",
+				name: "connection",
+				label: "Connection",
+				discriminator: "kind",
+				options: [{
+					id: "remote",
+					label: "Remote",
+					children: [{ type: "number", name: "retries", label: "Retries", min: "zero" }],
+				}],
+			}],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "settings" }));
+		expect(errs.some((error) => error.path === "root.children[0].options[0].children[0].min")).toBe(true);
+	});
+
+	it("table entries reject reorder", () => {
+		const tree = treeOf({
+			type: "form",
+			id: "table-reorder",
+			bind: "/settings",
+			mode: "submit",
+			children: [{
+				type: "entries",
+				name: "servers",
+				label: "Servers",
+				shape: "table",
+				item: [],
+				summary: [],
+				reorder: true,
+			}],
+		} as unknown as Block);
+		const errs = errorsOf(validateTree(tree, { placement: "settings" }));
+		expect(errs.some((error) => error.path === "root.children[0].reorder")).toBe(true);
+	});
+
 	it("a settings form with a file field fails naming the field", () => {
 		const tree = treeOf({
 			type: "form",

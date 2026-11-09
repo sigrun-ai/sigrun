@@ -80,6 +80,8 @@ const FIELD_TYPES: ReadonlySet<string> = new Set([
 	"secret",
 	"file",
 	"list",
+	"entries",
+	"variant",
 ]);
 
 // ─── Small helpers ────────────────────────────────────────────────────────
@@ -897,6 +899,31 @@ function fieldLines(field: Field, path: string, ctx: Ctx): string[] {
 				lines.push(`  - ${text}`);
 			}
 			return lines;
+		}
+		case "entries": {
+			const entries: [string | undefined, JsonValue][] = field.shape === "table"
+				? isRecord(value) ? Object.entries(value) : []
+				: Array.isArray(value) ? value.map((entry) => [undefined, entry]) : [];
+			const lines = [labeled(label, "")];
+			for (const [key, entry] of entries) {
+				const summary = isRecord(entry)
+					? field.summary.map((name) => textOf(entry[name], ctx)).join(" — ")
+					: "";
+				lines.push(`  - ${key === undefined ? "" : `${key}: `}${summary}`);
+			}
+			return lines;
+		}
+		case "variant": {
+			const root = path.slice(0, -field.name.length - 1);
+			const selected = resolvePointer(ctx.data, `${root}/${field.discriminator}`);
+			const option = field.options.find((candidate) => candidate.id === selected);
+			if (option === undefined) return [];
+			return renderForm({
+				type: "form",
+				bind: root || "/",
+				mode: "submit",
+				children: option.children,
+			}, ctx);
 		}
 		case "date":
 		case "datetime":

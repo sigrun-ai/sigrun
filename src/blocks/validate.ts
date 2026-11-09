@@ -346,10 +346,41 @@ function checkField(ctx: WalkCtx, node: Rec, path: string): void {
 		checkHandler(ctx, joinPath(path, "onUpload"), node.onUpload, "onUpload");
 	}
 
-	// list fields recurse into one entry's field
+	if (type === "entries" && node.shape === "table" && node.reorder !== undefined) {
+		push(ctx, joinPath(path, "reorder"), "table entries do not support reorder");
+	}
+
+	// list fields recurse into one entry's field; entries and variant
+	// carry the same field/section children as a form.
 	if (type === "list" && isRec(node.item)) {
 		checkField(ctx, node.item, joinPath(path, "item"));
 	}
+	if (type === "entries" && Array.isArray(node.item)) {
+		checkFormChildren(ctx, node.item, joinPath(path, "item"));
+	}
+	if (type === "variant" && Array.isArray(node.options)) {
+		node.options.forEach((option, i) => {
+			if (!isRec(option) || !Array.isArray(option.children)) return;
+			checkFormChildren(
+				ctx,
+				option.children,
+				joinPath(joinPath(joinPath(path, "options"), String(i)), "children"),
+			);
+		});
+	}
+}
+
+/** Fields and nested sections, shared by forms, entries and variant options. */
+function checkFormChildren(ctx: WalkCtx, children: unknown[], path: string): void {
+	children.forEach((child, i) => {
+		if (!isRec(child)) return;
+		const childPath = joinPath(path, String(i));
+		if (typeof child.type === "string" && FIELD_VALIDATORS.has(child.type)) {
+			checkField(ctx, child, childPath);
+		} else {
+			checkBlock(ctx, child, childPath, false);
+		}
+	});
 }
 
 /** A card template (spec §5.5.1): relative bindings are legal throughout. */

@@ -620,6 +620,30 @@ const ListField = Type.Object({
 	reorder: Type.Optional(Type.Boolean()),
 });
 
+const EntriesField = Type.Object({
+	...FieldBase,
+	type: Type.Literal("entries"),
+	shape: Type.Unsafe({ type: "string", enum: ["array", "table"] }),
+	item: Type.Array(AnyObject),
+	summary: Type.Array(Type.String()),
+	key: Type.Optional(Type.String()),
+	keyLabel: Type.Optional(Type.String()),
+	reorder: Type.Optional(Type.Boolean()),
+});
+
+const VariantField = Type.Object({
+	...FieldBase,
+	type: Type.Literal("variant"),
+	discriminator: Type.String(),
+	options: Type.Array(
+		Type.Object({
+			id: Type.String(),
+			label: Type.String(),
+			children: Type.Array(AnyObject),
+		}),
+	),
+});
+
 const FormBlock = Type.Object({
 	...BlockBase,
 	type: Type.Literal("form"),
@@ -691,6 +715,8 @@ const FIELD_ENTRIES: readonly (readonly [string, ReturnType<typeof compileSelf>]
 	["secret", compileSelf(SecretField)],
 	["file", compileSelf(FileField)],
 	["list", compileSelf(ListField)],
+	["entries", compileSelf(EntriesField)],
+	["variant", compileSelf(VariantField)],
 ];
 
 /** One compiled validator per field type, keyed by its `type` literal. */

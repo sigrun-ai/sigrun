@@ -62,6 +62,7 @@ export type {
 	DatetimeField,
 	DetailsBlock,
 	DiffBlock,
+	EntriesField,
 	Field,
 	FieldBase,
 	FieldsBlock,
@@ -95,6 +96,7 @@ export type {
 	Tree,
 	TreeBlock,
 	TreeNode,
+	VariantField,
 	WidthCondition,
 } from "./types.js";
 
