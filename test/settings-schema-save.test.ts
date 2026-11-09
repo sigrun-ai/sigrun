@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, test } from "vitest";
+import { afterEach, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
@@ -374,6 +374,12 @@ test("a view named settings fails the load of a declaring extension", async () =
 		identity: await seededIdentity(join(dir, "seed"), "alice"),
 		extensions: [contributor], extensionSpecifiers: [specifier], settingsDir: dir, builtins: false,
 	});
+	// Boot starts per-user curation migration in the background. Wait for
+	// its marker-last write before cleanup; under full-suite load it can
+	// otherwise still be creating data/users/alice/curation while rm runs.
+	await vi.waitFor(async () => {
+		await readFile(join(dir, "data", "users", "alice", "curation", "history", "MIGRATED"));
+	}, { timeout: 5_000, interval: 10 });
 	cleanups.push(async () => {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });
@@ -399,6 +405,10 @@ test("a panel named user-settings fails the load of a declaring extension", asyn
 		identity: await seededIdentity(join(dir, "seed"), "alice"),
 		extensions: [contributor], extensionSpecifiers: [RESERVED_USER], settingsDir: dir, builtins: false,
 	});
+	// Same marker-last migration wait as the reserved-view test above.
+	await vi.waitFor(async () => {
+		await readFile(join(dir, "data", "users", "alice", "curation", "history", "MIGRATED"));
+	}, { timeout: 5_000, interval: 10 });
 	cleanups.push(async () => {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });

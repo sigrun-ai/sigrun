@@ -1504,7 +1504,7 @@ export async function openHarness(
 			options.extraBuiltins ?? [],
 			options.builtinResolver,
 		)
-		: { load: [], skipped: [] };
+		: { load: [], skipped: [], configured: configuredInputs };
 	// The loader input: built-ins FIRST (pi parity — the replacement rule
 	// already removed any built-in a configured entry claims), marked
 	// `builtin: true` so their outcomes carry the flag to /v1/extensions,
@@ -1524,7 +1524,7 @@ export async function openHarness(
 							coreResolved: true,
 						}),
 					),
-					...configuredInputs,
+					...builtins.configured,
 				]
 			: configuredInputs;
 	// The seam host's lazy harness binding: factories run before

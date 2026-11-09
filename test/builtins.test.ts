@@ -503,8 +503,9 @@ describe("default boot", () => {
 		)) as { servers?: Record<string, { transport?: string }> };
 		expect(stored.servers?.acme?.transport).toBe("command");
 
-		// The notice is post-open, never in the factory. Activation retries
-		// it if ready ran before createServer marked the bridge expected.
+		// LOAD-BEARING: this POST triggers conversationCreated, which retries
+		// the post-open notice if ready raced createServer's bridge setup.
+		// It is the notice-delivery trigger, not redundant conversation setup.
 		const created = await app.inject({
 			method: "POST",
 			url: "/v1/conversations",
@@ -523,14 +524,28 @@ describe("default boot", () => {
 		});
 	});
 
-	test("the real package loads as a configured entry without a factory-read slug mismatch", async () => {
-		const { opened } = await bootBuiltins({
+	test("a configured replacement inherits sigrun-mcp settings and publishes the imported registry", { timeout: 15_000 }, async () => {
+		const { opened, dir } = await bootBuiltins({
 			extensionSpecifiers: ["@sigrun/ext-mcp"],
-			settings: { builtinExtensions: { mcp: false } },
+			mcpServers: { acme: stubServer() },
 		});
 		const outcome = opened.extensionOutcomes.find((row) => row.name === "sigrun-mcp");
 		expect(outcome).toMatchObject({ status: "ok" });
 		expect(outcome?.builtin).toBeUndefined();
+		const stored = JSON.parse(readFileSync(
+			join(dir, "config", "settings", "sigrun-mcp.json"),
+			"utf8",
+		)) as { servers?: Record<string, unknown> };
+		expect(Object.keys(stored.servers ?? {})).toEqual(["acme"]);
+		const result = await opened.seamHosts.get("sigrun-mcp")?.publishedHooks.call(
+			"mcp.servers",
+			{},
+		);
+		expect(result).toMatchObject({ status: "ok", provider: "sigrun-mcp" });
+		if (result?.status !== "ok") throw new Error("mcp.servers did not resolve");
+		expect(result.value).toMatchObject({
+			servers: [{ name: "acme", enabled: true }],
+		});
 	});
 
 	test("the MCP section lists the fixture server (proves the built-in installed, not just resolved)", { timeout: 60_000 }, async () => {
