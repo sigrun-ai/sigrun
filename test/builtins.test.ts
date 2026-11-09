@@ -92,6 +92,8 @@ interface TestServer {
 	opened: OpenedHarness;
 	config: SigrunConfig;
 	faux: ReturnType<typeof fauxProvider>;
+	/** The hermetic boot root (extension settings live under config/). */
+	dir: string;
 }
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -130,6 +132,11 @@ async function bootBuiltins(options?: {
 		SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 		SIGRUN_AUTH: options?.multiUser === true ? "token" : "none",
 		SIGRUN_WORKSPACE_PATH: dir,
+		// Extension settings/secrets are file-backed scoped stores. Without
+		// this root the built-in MCP import reads/writes the developer's REAL
+		// ~/.config/sigrun, and an already-imported registry masks the
+		// clean-install boot path.
+		SIGRUN_CONFIG_DIR: join(dir, "config"),
 	};
 	if (options?.mcpServers !== undefined) {
 		const mcpPath = join(dir, "mcp.json");
@@ -195,7 +202,7 @@ async function bootBuiltins(options?: {
 		await rm(dir, { recursive: true, force: true });
 	};
 	cleanups.push(teardown);
-	return { app, opened, config, faux };
+	return { app, opened, config, faux, dir };
 }
 
 /** The stdio MCP server entry naming the in-repo stub. */
@@ -480,6 +487,50 @@ describe("default boot", () => {
 		).json();
 		const transcript = JSON.stringify(view.entries);
 		expect(transcript).toContain("hello, sigrun");
+	});
+
+	test("a clean config dir imports mcp.json without deadlocking and notices the primary admin", { timeout: 15_000 }, async () => {
+		const { app, opened, dir } = await bootBuiltins({
+			mcpServers: { acme: stubServer({ exposure: "direct" }) },
+		});
+		// No pre-existing settings/sigrun-mcp.json: this is the unmasked
+		// clean-install import path. The factory must finish well before the
+		// old 60-second bridge deadlock.
+		await waitForTool(opened, "acme/echo");
+		const stored = JSON.parse(readFileSync(
+			join(dir, "config", "settings", "sigrun-mcp.json"),
+			"utf8",
+		)) as { servers?: Record<string, { transport?: string }> };
+		expect(stored.servers?.acme?.transport).toBe("command");
+
+		// The notice is post-open, never in the factory. Activation retries
+		// it if ready ran before createServer marked the bridge expected.
+		const created = await app.inject({
+			method: "POST",
+			url: "/v1/conversations",
+			payload: {},
+			headers: { "content-type": "application/json", "x-sigrun-user": "tester" },
+		});
+		expect(created.statusCode).toBe(201);
+		await vi.waitFor(async () => {
+			const response = await app.inject({
+				method: "GET",
+				url: "/v1/notices",
+				headers: { "x-sigrun-user": "tester" },
+			});
+			const notices = (response.json() as { notices: { key?: string; user?: string }[] }).notices;
+			expect(notices.some((notice) => notice.key === "mcp.imported")).toBe(true);
+		});
+	});
+
+	test("the real package loads as a configured entry without a factory-read slug mismatch", async () => {
+		const { opened } = await bootBuiltins({
+			extensionSpecifiers: ["@sigrun/ext-mcp"],
+			settings: { builtinExtensions: { mcp: false } },
+		});
+		const outcome = opened.extensionOutcomes.find((row) => row.name === "sigrun-mcp");
+		expect(outcome).toMatchObject({ status: "ok" });
+		expect(outcome?.builtin).toBeUndefined();
 	});
 
 	test("the MCP section lists the fixture server (proves the built-in installed, not just resolved)", { timeout: 60_000 }, async () => {

@@ -72,14 +72,18 @@ async function captureLiveView(): Promise<ConversationView> {
 	const savedMcpConfig = process.env.SIGRUN_MCP_CONFIG;
 	process.env.SIGRUN_MCP_CONFIG = mcpPath;
 	try {
-		const config = loadConfig({
+		const env = {
 			SIGRUN_DEFAULT_MODEL: "faux/m",
 			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
 			SIGRUN_WORKSPACE_PATH: dir,
-		});
+			// The empty fixture imports into scoped settings; keep that write
+			// inside this capture's tmpdir, not the developer's config root.
+			SIGRUN_CONFIG_DIR: join(dir, "config"),
+		};
+		const config = loadConfig(env);
 		const opened = await openHarness(config, {
 			extensions: [contributor],
-			env: {},
+			env,
 		});
 		try {
 			const root = await opened.harness.root(BACKGROUND_CONTEXT, {
