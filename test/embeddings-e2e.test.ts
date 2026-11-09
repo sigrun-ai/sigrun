@@ -117,10 +117,10 @@ interface Rig {
 
 /**
  * One real boot: the package's built entry loaded as an extension, its
- * scoped settings pointing at the fake upstream, and `embeddingModel`
- * naming the model every `host.embeddings.embed` call resolves.
+ * scoped settings pointing at `baseUrl` (the fake upstream by default), and
+ * `embeddingModel` naming the model every embedding call resolves.
  */
-async function boot(): Promise<Rig> {
+async function boot(overrides: { baseUrl?: string } = {}): Promise<Rig> {
 	const fake = await fakeEmbeddingsServer();
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-embeddings-e2e-"));
 	const configDir = join(dir, "config");
@@ -151,7 +151,7 @@ async function boot(): Promise<Rig> {
 	await writeFile(
 		join(configDir, "settings", "provider-openai.json"),
 		JSON.stringify({
-			baseUrl: fake.baseUrl,
+			baseUrl: overrides.baseUrl ?? fake.baseUrl,
 			chat: { enabled: false },
 			decisions: { enabled: false },
 			// Core splits by maxBatch only; the provider splits further by
@@ -268,5 +268,65 @@ describe.skipIf(!AVAILABLE)("embeddings e2e: the shipped provider-openai package
 			}),
 		).toMatchObject({ ok: false, code: "not_local" });
 		expect(requests).toHaveLength(before + 1);
+	}, 120_000);
+
+	/**
+	 * The regression pin for the readiness deadlock: the provider's readiness
+	 * tracker cannot read `auth.json`, so on the DEFAULT public base URL it
+	 * reports `not_configured` until a call has presented a credential. Core
+	 * must therefore resolve the credential FIRST and only return
+	 * `not_configured` when there is none AND the tracker says so — otherwise
+	 * the first call is refused, the tracker never learns the key, and a keyed
+	 * default install is stuck forever.
+	 *
+	 * `fetch` is stubbed for the duration of the call (no network): the
+	 * provider must reach `https://api.openai.com/v1/embeddings` with the
+	 * resolved key and return real vectors, not a `not_configured` failure.
+	 */
+	test("a keyed install on the public base URL still embeds", async () => {
+		const { opened } = await boot({ baseUrl: "https://api.openai.com/v1" });
+		// The premise: the tracker reports not_configured before any call...
+		expect(opened.embeddings.providers()).toMatchObject([
+			{ id: "openai", status: "not_configured" },
+		]);
+		// ...and the credential exists (boot env), so core must still call.
+		const calls: { url: string; authorization: string | undefined; body: unknown }[] = [];
+		const originalFetch = globalThis.fetch;
+		globalThis.fetch = (async (input: string | URL | Request, init?: RequestInit) => {
+			calls.push({
+				url: String(input),
+				authorization: new Headers(init?.headers).get("authorization") ?? undefined,
+				body: typeof init?.body === "string" ? JSON.parse(init.body) : undefined,
+			});
+			const body = JSON.parse(String(init?.body)) as { readonly input: readonly string[] };
+			return new Response(JSON.stringify({
+				object: "list",
+				model: "text-embedding-3-small",
+				data: body.input.map((text, index) => ({
+					object: "embedding",
+					index,
+					embedding: new Array<number>(1536).fill(text.length / 100),
+				})),
+			}), { status: 200, headers: { "content-type": "application/json" } });
+		}) as typeof fetch;
+		try {
+			const result = await opened.embeddings.embed("e2e", ["alpha", "beta gamma"], {});
+			expect(result.ok).toBe(true);
+			if (!result.ok) throw new Error(`embed failed: ${result.code} ${result.message}`);
+			expect(result.model).toBe(`openai/${MODEL}`);
+			expect(result.vectors.map((vector) => vector.length)).toEqual([1536, 1536]);
+			expect(Number(result.vectors[0]![0])).toBeCloseTo("alpha".length / 100, 4);
+			expect(calls).toEqual([{
+				url: "https://api.openai.com/v1/embeddings",
+				authorization: `Bearer ${KEY}`,
+				body: { model: MODEL, input: ["alpha", "beta gamma"] },
+			}]);
+			// The call taught the tracker about the key: the display self-heals.
+			expect(opened.embeddings.providers()).toMatchObject([
+				{ id: "openai", status: "ready" },
+			]);
+		} finally {
+			globalThis.fetch = originalFetch;
+		}
 	}, 120_000);
 });
