@@ -206,7 +206,11 @@ function baseProps(schema: JsonSchema, name: string, required: boolean): FieldBa
 		pattern?: string;
 	} = {
 		name,
-		label: typeof schema.title === "string" ? schema.title : name.split(".").pop() ?? name,
+		label: typeof schema.title === "string" && schema.title !== ""
+			? schema.title
+			: name === ""
+				? "Entries"
+				: name.split(".").pop() ?? name,
 	};
 	if (required) base.required = true;
 	if (typeof schema.description === "string" && schema.description !== "") base.help = schema.description;
@@ -553,6 +557,10 @@ export function generateForm(
 	// earns the ordinary JSON-box fallback + warning (and assertDrawable
 	// rejects it) instead of silently disappearing.
 	if (isRecord(schema.additionalProperties)) {
+		// The declared apply marker rides along (a root toggle map marked
+		// live must render with its live callout — the final re-review's
+		// dropped-marker finding).
+		const apply = schema.additionalProperties[APPLY_KEYWORD];
 		const tableSchema: JsonSchema = {
 			type: "object",
 			additionalProperties: schema.additionalProperties,
@@ -561,6 +569,9 @@ export function generateForm(
 				: {}),
 			...(typeof schema.additionalProperties.description === "string"
 				? { description: schema.additionalProperties.description }
+				: {}),
+			...(apply === "live" || apply === "restart"
+				? { [APPLY_KEYWORD]: apply }
 				: {}),
 		};
 		rest.push(propertyNode(ctx, "", "", tableSchema, false));
