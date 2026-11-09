@@ -259,6 +259,17 @@ test("an explicit clear deletes the secret", async () => {
 	expect(Object.hasOwn(await file(rig), "token")).toBe(false);
 });
 
+test("a minLength-constrained secret clears successfully", async () => {
+	const rig = await boot({
+		settings: { constrainedToken: "leaked-placeholder" },
+		secrets: { constrainedToken: "synthetic-constrained-value" },
+	});
+	const result = await save(rig, { constrainedToken: null }, "clear-constrained-secret");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await secrets(rig)).toEqual({});
+	expect(Object.hasOwn(await file(rig), "constrainedToken")).toBe(false);
+});
+
 test("a value equal to its default is not pinned when absent before", async () => {
 	const rig = await boot();
 	const result = await save(rig, { interval: 60, enabled: true }, "defaults-absent");

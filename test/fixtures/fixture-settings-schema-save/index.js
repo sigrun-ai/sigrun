@@ -14,6 +14,7 @@ export default function fixture(host) {
 				enabled: { type: "boolean", default: true },
 				mode: { type: "string" },
 				token: { type: "string", writeOnly: true },
+				constrainedToken: { type: "string", minLength: 8, writeOnly: true },
 				servers: {
 					type: "object",
 					additionalProperties: {

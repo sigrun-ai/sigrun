@@ -35,6 +35,7 @@ import {
 } from "../../settings/core-sections.js";
 import { CORE_SETTING_KEYS } from "../../settings/registry.js";
 import type { ServerContext } from "../context.js";
+import { EXTENSION_SETTINGS_SECTIONS } from "../surfaces/settings-surfaces.js";
 
 /** One search-index row (the label search's hit shape) — the local name. */
 export type SettingsIndexEntry = SettingsSectionIndexEntry;
@@ -125,12 +126,15 @@ export function buildSettingsSections(
 ): SettingsSectionsResponse {
 	const extensionSections = declarations.map((binding) => ({
 		extension: binding.extension,
-		defs: [
-			{ id: "settings", title: "Settings", icon: "key" as const, form: binding.generated.form, admin: true },
-			...(binding.generatedUser === undefined ? [] : [{
-				id: "user-settings", title: "Your settings", icon: "key" as const, form: binding.generatedUser.form, scope: "user" as const, admin: false,
-			}]),
-		],
+		defs: EXTENSION_SETTINGS_SECTIONS.flatMap(
+			(section): (typeof section & { form: typeof binding.generated.form })[] => {
+				if (section.scope === "user") {
+					if (binding.generatedUser === undefined) return [];
+					return [{ ...section, form: binding.generatedUser.form }];
+				}
+				return [{ ...section, form: binding.generated.form }];
+			},
+		),
 	}));
 	const sections: SettingsSectionEntry[] = CORE_SETTINGS_SECTIONS.map((section) => ({
 		slug: "core",
@@ -149,7 +153,7 @@ export function buildSettingsSections(
 				title: def.title,
 				icon: def.icon ?? "key",
 				...(def.scope === "user" ? { scope: "user" as const } : {}),
-				admin: def.scope === "user" ? def.admin === true : true,
+				admin: def.admin,
 				page: binding.extension,
 			});
 		}
