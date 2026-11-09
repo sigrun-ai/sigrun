@@ -90,7 +90,7 @@ import type { FetchDeps } from "./images/fetch.js";
 import { registerImageRoutes } from "./routes/images.js";
 import type { HostEventWire } from "./events/types.js";
 import { SurfaceService } from "./surfaces/service.js";
-import { settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
+import { schemaSettingsSurfaceFor, settingsSurfaceFor } from "./surfaces/settings-surfaces.js";
 import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { registerUserRoutes } from "./routes/users.js";
 import {
@@ -356,6 +356,30 @@ export async function createServer(
 				}),
 			),
 		})),
+	);
+	// Schema declarations mount at the reserved per-extension page sections.
+	surfacesService.attachSettingsSurfaces(
+		opened.extensionSettingsDeclarations.flatMap((binding) => {
+			const defs = [
+				schemaSettingsSurfaceFor(binding.extension, {
+					id: "settings", title: "Settings", icon: "key", admin: true,
+				}, binding.decl.schema, binding.generated, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				}),
+			];
+			if (binding.generatedUser !== undefined && binding.decl.userSchema !== undefined) {
+				defs.push(schemaSettingsSurfaceFor(binding.extension, {
+					id: "user-settings", title: "Your settings", icon: "key", scope: "user", admin: false,
+				}, binding.decl.userSchema, binding.generatedUser, {
+					stores: opened.extensionStores,
+					publishSettingsChanged: opened.publishSettingsChanged,
+					service: surfacesService,
+				}));
+			}
+			return [{ extension: binding.extension, defs }];
+		}),
 	);
 	// The core settings sections (U4 Task 4, spec §13.4): the same
 	// renderer under the reserved `core` slug — core and extensions run

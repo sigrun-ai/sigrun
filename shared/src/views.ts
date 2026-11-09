@@ -948,6 +948,8 @@ export interface SettingsSectionEntry {
 	readonly id: string;
 	readonly title: string;
 	readonly icon: string;
+	/** Extension sections sharing this slug render on this one extension page. */
+	readonly page?: string;
 	/** Personal sections group under My settings and store caller-owned data. */
 	readonly scope?: "user";
 	/** Explicit admin gate (user sections are otherwise non-admin by default). */

@@ -21,7 +21,7 @@
  */
 
 import type { FastifyInstance } from "fastify";
-import type { Principal, SettingsSectionDef } from "../../extension.js";
+import type { Principal } from "../../extension.js";
 import { isSuperuser } from "../auth/principal.js";
 import type {
 	SettingsSectionsResponse,
@@ -119,13 +119,19 @@ function coreKeyEntry(key: string): SettingsIndexEntry | undefined {
 	};
 }
 
-/** Build the section list + search index from the boot's bindings. */
+/** Build the section list + search index from the schema declarations. */
 export function buildSettingsSections(
-	extensionSections: readonly {
-		extension: string;
-		defs: readonly SettingsSectionDef[];
-	}[],
+	declarations: readonly import("../../harness/loader.js").ExtensionSettingsDeclaration[],
 ): SettingsSectionsResponse {
+	const extensionSections = declarations.map((binding) => ({
+		extension: binding.extension,
+		defs: [
+			{ id: "settings", title: "Settings", icon: "key" as const, form: binding.generated.form, admin: true },
+			...(binding.generatedUser === undefined ? [] : [{
+				id: "user-settings", title: "Your settings", icon: "key" as const, form: binding.generatedUser.form, scope: "user" as const, admin: false,
+			}]),
+		],
+	}));
 	const sections: SettingsSectionEntry[] = CORE_SETTINGS_SECTIONS.map((section) => ({
 		slug: "core",
 		id: section.id,
@@ -143,7 +149,8 @@ export function buildSettingsSections(
 				title: def.title,
 				icon: def.icon ?? "key",
 				...(def.scope === "user" ? { scope: "user" as const } : {}),
-				...(def.scope === "user" ? { admin: def.admin === true } : {}),
+				admin: def.scope === "user" ? def.admin === true : true,
+				page: binding.extension,
 			});
 		}
 	}
@@ -213,7 +220,7 @@ export function registerSettingsSectionsRoutes(
 	app.get(
 		"/v1/settings/sections",
 		async (request): Promise<SettingsSectionsResponse> => {
-			const response = buildSettingsSections(ctx.opened.extensionSettingsSections);
+			const response = buildSettingsSections(ctx.opened.extensionSettingsDeclarations);
 			const admin = isSuperuser(request.principal as Principal) || request.principal.admin;
 			const allowed = new Set(
 				response.sections
