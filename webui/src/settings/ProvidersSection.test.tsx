@@ -40,8 +40,12 @@ function makeProvidersHarness(init?: {
 	}[];
 	/** Serve the credential PUT a 403 (a non-admin session). */
 	readonly putFails?: boolean;
+	/** Fail GET /v1/providers AFTER the initial load (a transient refetch
+	 *  failure following a successful credential write). */
+	readonly listFailsAfterLoad?: boolean;
 }) {
 	const calls: Call[] = [];
+	let providersLoaded = false;
 	// Rows are keyed by (provider, kind): one id can serve several kinds.
 	const rowKey = (provider: string, kind?: string): string =>
 		`${provider}\u0000${kind ?? "chat"}`;
@@ -90,6 +94,15 @@ function makeProvidersHarness(init?: {
 		} else if (input === "/v1/settings") {
 			body = settings;
 		} else if (input === "/v1/providers") {
+			if (init?.listFailsAfterLoad === true && providersLoaded) {
+				return Promise.resolve({
+					ok: false,
+					status: 500,
+					json: () => Promise.resolve({ error: "refetch exploded" }),
+					text: () => Promise.resolve(""),
+				});
+			}
+			providersLoaded = true;
 			body = { providers: [...entries.values()] };
 		} else if (
 			(m = input.match(/^\/v1\/providers\/([^/]+)\/credential$/)) !== null
@@ -106,10 +119,16 @@ function makeProvidersHarness(init?: {
 					models: 3,
 				});
 			}
-			// The response is the ONE preferred entry (chat, then decision,
-			// then embedding) — the client re-fetches the list for the rest.
+			// The response is the ONE preferred entry (core's routableEntry:
+			// chat, then decision, then embedding) — the client re-fetches
+			// the list for the rest.
+			const rows = [...entries.values()].filter(
+				(entry) => entry.provider === id,
+			);
 			body =
-				[...entries.values()].find((entry) => entry.provider === id) ?? {
+				rows.find((entry) => (entry.kind ?? "chat") === "chat") ??
+				rows.find((entry) => entry.kind === "decision") ??
+				rows.find((entry) => entry.kind === "embedding") ?? {
 					provider: id,
 					status: init2?.method === "PUT" ? "ready" : "not_configured",
 					models: 3,
@@ -119,7 +138,11 @@ function makeProvidersHarness(init?: {
 			init2?.method === "POST"
 		) {
 			const id = m[1] as string;
-			body = entries.get(id) ?? { provider: id, status: "ready", models: 0 };
+			// Refresh is CHAT-only: respond with the seeded CHAT row for the
+			// id (entries are keyed by the composite rowKey, not the bare id).
+			body = [...entries.values()].find(
+				(entry) => entry.provider === id && (entry.kind ?? "chat") === "chat",
+			) ?? { provider: id, status: "ready", models: 0 };
 		} else {
 			throw new Error(`unexpected fetch ${init2?.method ?? "GET"} ${input}`);
 		}
@@ -326,6 +349,58 @@ describe("SettingsPanel Providers section", () => {
 					call.method === "POST",
 			),
 		).toBe(true);
+		// The refresh response applied the SEEDED row (the harness returns
+		// the stored chat row — its status/models, not a synthesized
+		// fallback): after the DELETE the seeded acme2 row is
+		// not_configured with 3 models, so the row reflects exactly that.
+		expect(
+			row.findByProps({ className: "settings-provider-status" }).props[
+				"data-status"
+			],
+		).toBe("not_configured");
+		expect(row.findByProps({ className: "settings-provider-meta" }).children.join("")).toBe(
+			"3 models",
+		);
+	});
+
+	test("a successful save with a failed refetch still reports saved and clears the key", async () => {
+		const { client } = makeProvidersHarness({
+			providers: [
+				{ provider: "openai", kind: "chat", status: "not_configured", models: 0 },
+				{ provider: "openai", kind: "embedding", status: "not_configured", models: 2 },
+			],
+			listFailsAfterLoad: true,
+		});
+		const renderer = await renderPanel(client);
+		const row = providerRow(renderer, "openai", "embedding");
+		const input = row.findByProps({ className: "settings-provider-key" });
+		await act(async () => {
+			input.props.onChange({ target: { value: "openai-test-key" } });
+		});
+		await act(async () => {
+			await row.findByProps({ className: "settings-provider-save" }).props.onClick();
+		});
+		// The PUT landed, so the write is a SUCCESS even though the
+		// follow-up GET failed: ok note, cleared field, no error alert.
+		expect(row.findByProps({ role: "status" }).children.join("")).toBe("saved");
+		expect(row.findAllByProps({ role: "alert" })).toHaveLength(0);
+		expect(
+			row.findByProps({ className: "settings-provider-key" }).props.value,
+		).toBe("");
+		// The PUT response's own entry (core's preferred CHAT row) still
+		// drove that row's badge; the embedding row keeps its seeded state
+		// until the next successful load (the refetch failed).
+		expect(
+			providerRow(renderer, "openai", "chat")
+				.findByProps({ className: "settings-provider-status" })
+				.props["data-status"],
+		).toBe("ready");
+		expect(
+			row.findByProps({ className: "settings-provider-status" }).props[
+				"data-status"
+			],
+		).toBe("not_configured");
+		expect(textContent(renderer.toJSON())).not.toContain("openai-test-key");
 	});
 
 	test("three openai rows of different kinds render separately", async () => {

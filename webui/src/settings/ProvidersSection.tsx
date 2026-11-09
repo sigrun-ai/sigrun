@@ -92,10 +92,10 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 		);
 	};
 
-	/** Re-fetch the report after a credential write: the credential is
-	 *  shared per id, so EVERY row of that id must pick up the new state
-	 *  (the PUT/DELETE response is only the one preferred entry).
-	 *  Controller ruling: refresh-via-refetch, no core change. */
+	/** Re-fetch the report after a credential write (BEST-EFFORT): the
+	 *  credential is shared per id, so every row of the id should pick up
+	 *  the new state — but a failed refetch must NOT fail the write (the
+	 *  PUT/DELETE already landed; the response's entry was applied). */
 	const reloadProviders = async (): Promise<void> => {
 		const report = await client.listProviders();
 		setLoad((prev) =>
@@ -105,24 +105,24 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 		);
 	};
 
-	/** Patch one provider's draft (a shallow per-id merge). */
-	const patchDraft = (id: string, patch: Partial<ProviderDraft>): void => {
+	/** Patch one row's draft (a shallow merge keyed by the row's
+	 *  `${provider}\u0000${kind}` key). */
+	const patchDraft = (key: string, patch: Partial<ProviderDraft>): void => {
 		setDrafts((prev) => ({
 			...prev,
-			[id]: { ...{ key: "" }, ...prev[id], ...patch },
+			[key]: { ...{ key: "" }, ...prev[key], ...patch },
 		}));
 	};
 
 	/** Save the typed key (PUT, admin): the response's entry + a cleared
 	 *  field. The credential is shared per id, so after the write the
-	 *  report is re-fetched and EVERY row of the id picks up its state. */
+	 *  report is re-fetched (best-effort) so every row of the id updates;
+	 *  a failed refetch never fails the save. */
 	const save = async (providerId: string, key: string): Promise<void> => {
 		const draft = drafts[key];
 		if (draft === undefined || draft.key === "") return;
 		try {
 			applyEntry(await client.putProviderCredential(providerId, draft.key));
-			await reloadProviders();
-			patchDraft(key, { key: "", note: { kind: "ok", message: "saved" } });
 		} catch (error: unknown) {
 			// The typed key SURVIVES a failure (the operator retries); the
 			// field clears on success only.
@@ -132,16 +132,26 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 					message: error instanceof Error ? error.message : String(error),
 				},
 			});
+			return;
+		}
+		// The write landed: clear the field + report success BEFORE the
+		// best-effort refetch, so a refetch failure can't masquerade as a
+		// failed save (or keep the plaintext key in the input).
+		patchDraft(key, { key: "", note: { kind: "ok", message: "saved" } });
+		try {
+			await reloadProviders();
+		} catch {
+			// Best-effort: the entry from the PUT response is already applied;
+			// the next load/refresh reconciles the sibling rows.
 		}
 	};
 
 	/** Clear the credential (DELETE, admin) — the shared per-id one, so
-	 *  the report is re-fetched and every row of the id updates. */
+	 *  the report is re-fetched (best-effort) and every row of the id
+	 *  updates; a failed refetch never fails the clear. */
 	const clear = async (providerId: string, key: string): Promise<void> => {
 		try {
 			applyEntry(await client.deleteProviderCredential(providerId));
-			await reloadProviders();
-			patchDraft(key, { note: { kind: "ok", message: "cleared" } });
 		} catch (error: unknown) {
 			patchDraft(key, {
 				note: {
@@ -149,6 +159,13 @@ export function ProvidersSection(props: { readonly client: SigrunClient }) {
 					message: error instanceof Error ? error.message : String(error),
 				},
 			});
+			return;
+		}
+		patchDraft(key, { note: { kind: "ok", message: "cleared" } });
+		try {
+			await reloadProviders();
+		} catch {
+			// Best-effort: see save().
 		}
 	};
 
