@@ -122,11 +122,11 @@ function dataFor(name: string): JsonObject {
 	if (name === "field-entries") {
 		return {
 			...base,
+			secrets: { "servers/alpha/token": "stored" },
 			values: {
 				servers: {
 					alpha: {
 						url: "https://alpha.example.invalid",
-						token: "stored",
 						connection: { transport: "http", timeout: 30 },
 					},
 					beta: {

@@ -107,7 +107,8 @@ const tableField = {
 describe("entries field", () => {
 	test("row summary shows summary fields and set/not set for secrets", () => {
 		const stored = harness([tableField], {
-			f: { servers: { alpha: { url: "https://alpha.example.invalid", token: "stored" } } },
+			f: { servers: { alpha: { url: "https://alpha.example.invalid" } } },
+			secrets: { "servers/alpha/token": "stored" },
 		});
 		const summary = textContent(stored.renderer.toJSON());
 		expect(summary).toContain("alpha");
@@ -141,6 +142,52 @@ describe("entries field", () => {
 		clickButton(renderer, "Save");
 		expect(dispatch).not.toHaveBeenCalled();
 		expect(textContent(renderer.toJSON())).toContain("Server name is required");
+	});
+
+	test("two unnamed adds leave only the newest entry open", () => {
+		const { renderer } = harness([tableField], { f: {} });
+		clickButton(renderer, "+ Add");
+		clickButton(renderer, "+ Add");
+		expect(renderer.root.findAllByProps({ "aria-label": "URL" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "aria-label": "Server name" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "aria-expanded": true })).toHaveLength(1);
+	});
+
+	test("reordering an open array row keeps the same entry form open", () => {
+		const arrayField = {
+			type: "entries",
+			name: "servers",
+			label: "Servers",
+			shape: "array",
+			key: "name",
+			summary: ["name"],
+			reorder: true,
+			item: [{ type: "text", name: "name", label: "Name" }],
+		} as const;
+		const { dispatch, renderer } = harness([arrayField], {
+			f: { servers: [{ name: "alpha" }, { name: "beta" }] },
+		});
+		clickButton(renderer, "Edit entry alpha");
+		expect(inputByLabel(renderer, "Name").props.value).toBe("alpha");
+		const move = renderer.root.findAllByType("button").find(
+			(button) => button.props["aria-label"] === "move entry 1 down",
+		);
+		if (move === undefined) throw new Error("no move-down button");
+		act(() => {
+			move.props.onClick();
+		});
+		expect(inputByLabel(renderer, "Name").props.value).toBe("alpha");
+		changeInput(renderer, "Name", "alpha-renamed");
+		clickButton(renderer, "Save");
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
+			values: {
+				servers: [
+					{ $from: "beta", name: "beta" },
+					{ $from: "alpha", name: "alpha-renamed" },
+				],
+			},
+		});
 	});
 
 	test("duplicate in a table suffixes -copy and drops $from", () => {
@@ -197,7 +244,8 @@ describe("entries field", () => {
 
 	test("a secret field inside an entry clears with an explicit action (submits null), never by emptying the input", () => {
 		const { dispatch, renderer } = harness([tableField], {
-			f: { servers: { alpha: { url: "https://alpha.example.invalid", token: "stored" } } },
+			f: { servers: { alpha: { url: "https://alpha.example.invalid" } } },
+			secrets: { "servers/alpha/token": "stored" },
 		});
 		clickButton(renderer, "Edit entry alpha");
 		changeInput(renderer, "Token", "");

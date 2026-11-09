@@ -5,7 +5,7 @@
  * can distinguish a rename from a delete plus add.
  */
 
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import type {
 	EntriesField,
 	Field,
@@ -13,18 +13,42 @@ import type {
 	JsonValue,
 	SectionBlock,
 } from "@sigrun/shared/blocks";
-import { boundString, useSurfaceData } from "../context";
+import { boundString, useSurfaceData, type SurfaceDataCtx } from "../context";
 import { BlockView } from "../BlockView";
 import { FieldRow, FieldView, type FieldProps } from "./fields";
 import { defaultEntry, nestedFields } from "./values";
 
 interface EntryRecord {
+	/** Stable across value edits, reorder, and duplicate-key local states. */
 	readonly id: string;
 	readonly key: string;
 	readonly value: JsonObject;
 }
 
-function records(field: EntriesField, value: JsonValue): readonly EntryRecord[] {
+type IdRegistry = {
+	readonly ids: WeakMap<JsonObject, string>;
+	next: number;
+};
+
+function records(
+	field: EntriesField,
+	value: JsonValue,
+	registry: IdRegistry,
+): readonly EntryRecord[] {
+	const idFor = (entry: JsonObject): string => {
+		const existing = registry.ids.get(entry);
+		if (existing !== undefined) return existing;
+		registry.next += 1;
+		const id = `entry-${registry.next}`;
+		registry.ids.set(entry, id);
+		return id;
+	};
+	const record = (key: string, entry: JsonValue): EntryRecord => {
+		const object = typeof entry === "object" && entry !== null && !Array.isArray(entry)
+			? entry as JsonObject
+			: {};
+		return { id: idFor(object), key, value: object };
+	};
 	if (field.shape === "array") {
 		if (!Array.isArray(value)) return [];
 		return value.map((entry, index) => {
@@ -32,21 +56,11 @@ function records(field: EntriesField, value: JsonValue): readonly EntryRecord[] 
 				? entry as JsonObject
 				: {};
 			const identity = field.key === undefined ? undefined : object[field.key];
-			return {
-				id: String(index),
-				key: typeof identity === "string" ? identity : String(index + 1),
-				value: object,
-			};
+			return record(typeof identity === "string" ? identity : String(index + 1), object);
 		});
 	}
 	if (typeof value !== "object" || value === null || Array.isArray(value)) return [];
-	return Object.entries(value).map(([key, entry]) => ({
-		id: key,
-		key: displayKey(key),
-		value: typeof entry === "object" && entry !== null && !Array.isArray(entry)
-			? entry as JsonObject
-			: {},
-	}));
+	return Object.entries(value).map(([key, entry]) => record(displayKey(key), entry));
 }
 
 function pack(field: EntriesField, entries: readonly EntryRecord[]): JsonValue {
@@ -69,13 +83,27 @@ function displayKey(key: string): string {
 	return key.split("\0", 1)[0] ?? key;
 }
 
-function summaryText(field: EntriesField, entry: JsonObject): string {
+/** The saved entry identity; new and duplicated entries have none. */
+function savedIdentity(entry: EntryRecord): string | undefined {
+	return typeof entry.value.$from === "string" ? entry.value.$from : undefined;
+}
+
+function summaryText(
+	field: EntriesField,
+	entry: EntryRecord,
+	data: SurfaceDataCtx,
+): string {
 	return field.summary.map((name) => {
 		const item = nestedFields(field.item).find((candidate) => candidate.name === name);
 		if (item?.type === "secret") {
-			return entry[name] === "stored" || entry[name] === "env" ? "set" : "not set";
+			const identity = savedIdentity(entry);
+			const statuses = data.data.secrets;
+			const status = identity !== undefined && typeof statuses === "object" && statuses !== null && !Array.isArray(statuses)
+				? statuses[`${field.name}/${identity}/${name}`]
+				: undefined;
+			return status === "stored" || status === "env" ? "set" : "not set";
 		}
-		const value = entry[name];
+		const value = entry.value[name];
 		return value === undefined || value === null || value === "" ? "—" : String(value);
 	}).join(" · ");
 }
@@ -88,6 +116,7 @@ function EntryChildren(props: {
 	readonly onChange: (entry: JsonObject) => void;
 }): ReactNode {
 	const { field, entry } = props;
+	const data = useSurfaceData();
 	const keyField: Field = {
 		type: "text",
 		name: "$key",
@@ -103,7 +132,7 @@ function EntryChildren(props: {
 				if (child.type === "section") {
 					return (
 						<div className="blk blk-section" data-block="section" key={index}>
-							{child.title !== undefined && <h3 className="blk-section-title">{boundString(useSurfaceData(), child.title)}</h3>}
+							{child.title !== undefined && <h3 className="blk-section-title">{boundString(data, child.title)}</h3>}
 							{child.children.map((nested, nestedIndex) => (
 								"name" in nested ? (
 									<FieldView
@@ -146,17 +175,18 @@ function SecretClear(props: {
 	readonly disabled: boolean;
 	readonly onChange: (entry: JsonObject) => void;
 }): ReactNode {
+	const data = useSurfaceData();
 	return (
 		<>
 			{nestedFields(props.field.item).filter((field) => field.type === "secret").map((field) => (
 				<button
 					key={field.name}
 					type="button"
-					aria-label={`Clear ${boundString(useSurfaceData(), field.label)}`}
+					aria-label={`Clear ${boundString(data, field.label)}`}
 					disabled={props.disabled}
 					onClick={() => props.onChange({ ...props.entry.value, [field.name]: null })}
 				>
-					{`Clear ${boundString(useSurfaceData(), field.label)}`}
+					{`Clear ${boundString(data, field.label)}`}
 				</button>
 			))}
 		</>
@@ -165,35 +195,52 @@ function SecretClear(props: {
 
 export function EntriesFieldView(props: FieldProps<EntriesField>): ReactNode {
 	const { field } = props;
-	const entries = records(field, props.value);
+	const data = useSurfaceData();
+	const registry = useRef<IdRegistry>({ ids: new WeakMap(), next: 0 });
+	const entries = records(field, props.value, registry.current);
 	const [openId, setOpenId] = useState<string | null>(null);
 	const min = field.min ?? 0;
 	const max = field.max;
 	const canAdd = !props.disabled && (max === undefined || entries.length < max);
 	const canRemove = !props.disabled && entries.length > min;
 	const canReorder = !props.disabled && field.shape === "array" && field.reorder === true;
-	const write = (next: readonly EntryRecord[]): void => props.onChange(field.name, pack(field, next));
 	const writeEdit = (next: readonly EntryRecord[]): void => props.onChange(field.name, packForEdit(field, next));
-	const entryBind = (entry: EntryRecord): string | undefined => props.formBind === undefined
-		? undefined
-		: `${props.formBind}/${field.name}/${field.shape === "table" ? entry.id : entry.value.$from ?? entry.id}`;
+	const entryBind = (entry: EntryRecord): string | undefined => {
+		if (props.formBind === undefined) return undefined;
+		const identity = savedIdentity(entry) ?? `unsaved-${entry.id}`;
+		return `${props.formBind}/${field.name}/${identity}`;
+	};
 
 	const changeEntry = (index: number, value: JsonObject): void => {
-		const next = entries.map((entry, at) => at === index
-			? { ...entry, key: typeof value.$key === "string" ? value.$key : entry.key, value: Object.fromEntries(Object.entries(value).filter(([name]) => name !== "$key")) }
-			: entry);
+		const next = entries.map((entry, at) => {
+			if (at !== index) return entry;
+			const nextValue = Object.fromEntries(Object.entries(value).filter(([name]) => name !== "$key"));
+			// Preserve the row id when a controlled field replaces its object.
+			registry.current.ids.set(nextValue, entry.id);
+			return {
+				...entry,
+				key: typeof value.$key === "string" ? value.$key : entry.key,
+				value: nextValue,
+			};
+		});
 		writeEdit(next);
 	};
 	const duplicate = (index: number): void => {
 		const original = entries[index];
 		if (original === undefined) return;
 		const value = Object.fromEntries(Object.entries(original.value).filter(([name]) => name !== "$from"));
-		const copy = { ...original, id: `${original.id}-copy-${Date.now()}`, key: field.shape === "table" ? `${original.key}-copy` : original.key, value };
-		write([...entries.slice(0, index + 1), copy, ...entries.slice(index + 1)]);
+		registry.current.next += 1;
+		const copy: EntryRecord = {
+			id: `entry-${registry.current.next}`,
+			key: field.shape === "table" ? `${original.key}-copy` : original.key,
+			value,
+		};
+		registry.current.ids.set(value, copy.id);
+		writeEdit([...entries.slice(0, index + 1), copy, ...entries.slice(index + 1)]);
 		setOpenId(copy.id);
 	};
 	const remove = (index: number): void => {
-		write(entries.filter((_, at) => at !== index));
+		writeEdit(entries.filter((_, at) => at !== index));
 		setOpenId(null);
 	};
 	const move = (index: number, delta: number): void => {
@@ -202,18 +249,16 @@ export function EntriesFieldView(props: FieldProps<EntriesField>): ReactNode {
 		const next = [...entries];
 		const [entry] = next.splice(index, 1);
 		if (entry !== undefined) next.splice(target, 0, entry);
-		write(next);
+		writeEdit(next);
 	};
 	const add = (): void => {
-		const entry: EntryRecord = {
-			id: `new-${Date.now()}`,
-			key: "",
-			value: defaultEntry(field.item),
-		};
-		write([...entries, entry]);
+		const value = defaultEntry(field.item);
+		registry.current.next += 1;
+		const entry: EntryRecord = { id: `entry-${registry.current.next}`, key: "", value };
+		registry.current.ids.set(value, entry.id);
+		writeEdit([...entries, entry]);
 		setOpenId(entry.id);
 	};
-	const isOpen = (entry: EntryRecord): boolean => openId === entry.id || openId === entry.key || (entry.key === "" && openId?.startsWith("new-") === true);
 
 	return (
 		<FieldRow field={field} error={props.error}>
@@ -225,11 +270,11 @@ export function EntriesFieldView(props: FieldProps<EntriesField>): ReactNode {
 								type="button"
 								className="blk-entry-summary"
 								aria-label={`Edit entry ${entry.key}`}
-								aria-expanded={isOpen(entry)}
-								onClick={() => setOpenId(isOpen(entry) ? null : entry.id)}
+								aria-expanded={openId === entry.id}
+								onClick={() => setOpenId(openId === entry.id ? null : entry.id)}
 							>
 								<span className="blk-entry-key" dir="auto">{entry.key || "(new entry)"}</span>
-								<span dir="auto">{summaryText(field, entry.value)}</span>
+								<span dir="auto">{summaryText(field, entry, data)}</span>
 							</button>
 							<div className="blk-entry-actions">
 								{canReorder && (
@@ -242,7 +287,7 @@ export function EntriesFieldView(props: FieldProps<EntriesField>): ReactNode {
 								<button type="button" aria-label={`Delete entry ${entry.key}`} disabled={!canRemove} onClick={() => remove(index)}>Delete</button>
 							</div>
 						</div>
-						{isOpen(entry) && (
+						{openId === entry.id && (
 							<>
 								<EntryChildren field={field} entry={entry} disabled={props.disabled} formBind={entryBind(entry)} onChange={(value) => changeEntry(index, value)} />
 								<SecretClear field={field} entry={entry} disabled={props.disabled} onChange={(value) => changeEntry(index, value)} />
