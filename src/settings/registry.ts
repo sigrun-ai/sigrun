@@ -24,6 +24,8 @@
  */
 
 import { applyOf as schemaApplyOf } from "./schema/keywords.js";
+// This cycle is benign: core-schema's generateForm import does not call
+// registry.applyOf during module initialization; apply lookups run later.
 import { coreProperty } from "./core-schema.js";
 
 /** How one setting applies (spec §13.1). */

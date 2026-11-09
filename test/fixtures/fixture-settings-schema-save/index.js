@@ -13,6 +13,10 @@ export default function fixture(host) {
 				interval: { type: "integer", minimum: 1, default: 60 },
 				enabled: { type: "boolean", default: true },
 				mode: { type: "string" },
+				labels: {
+					type: "object",
+					additionalProperties: { type: "string", title: "Label" },
+				},
 				token: { type: "string", writeOnly: true },
 				constrainedToken: { type: "string", minLength: 8, writeOnly: true },
 				servers: {

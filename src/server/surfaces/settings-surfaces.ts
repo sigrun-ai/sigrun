@@ -108,7 +108,7 @@ interface FormField {
 	readonly maxLength?: number;
 	readonly pattern?: string;
 	readonly options?: unknown;
-	readonly item?: unknown;
+	readonly item?: readonly { readonly type: string }[];
 	readonly shape?: "array" | "table";
 }
 
@@ -545,13 +545,22 @@ export function settingsSurfaceFor(
 				value = Array.isArray(value)
 					? value.map(stripFrom)
 					: isRec(value)
-						? Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, stripFrom(entry)]))
+						? Object.fromEntries(Object.entries(value).map(([key, entry]) => {
+							const plain = stripFrom(entry);
+							// Scalar tables draw one synthetic `value` field; unwrap
+							// that channel row back to the stored scalar.
+							return [key, field.shape === "table" && field.item?.length === 1 &&
+								isRec(plain) && Object.hasOwn(plain, "value")
+								? plain.value
+								: plain];
+						}))
 						: value;
 				if (field.shape === "table" && isRec(value)) {
 					// The core store sub-merges table maps, so deleted rows must
 					// arrive as explicit nulls; an empty table clears the whole key.
 					const stored = readDotted(current, name);
 					if (Object.keys(value).length === 0) {
+						if (stored === undefined) continue;
 						value = null;
 					} else if (isRec(stored)) {
 						value = Object.fromEntries([
@@ -772,9 +781,9 @@ function childSchema(node: unknown, key: string): JsonSchema | undefined {
 
 /**
  * Convert the channel's entry packing to the settings file's JSON shape.
- * Only a table whose values are writeOnly strings packs `{value: ...}`;
- * all other entry properties remain ordinary JSON. `$from` is retained for
- * the secret walks and stripped for schema validation and persistence.
+ * A scalar table value (including writeOnly strings) packs `{value: ...}`;
+ * object-valued rows remain ordinary JSON. `$from` is retained for the
+ * secret walks and stripped for schema validation and persistence.
  */
 function channelSubmissionToFile(
 	values: Record<string, unknown>,
@@ -782,7 +791,9 @@ function channelSubmissionToFile(
 ): Record<string, unknown> {
 	const unpack = (value: unknown, node: unknown): JsonValue => {
 		if (!isRec(node)) return value as JsonValue;
-		if (node.writeOnly === true && isRec(value) && Object.hasOwn(value, "value")) {
+		// additionalProperties is the row schema: a non-object value is
+		// generated as the table's single `value` item and packs this way.
+		if (node.type !== "object" && isRec(value) && Object.hasOwn(value, "value")) {
 			return value.value as JsonValue;
 		}
 		if (Array.isArray(value)) return value.map((entry) => unpack(entry, node.items));

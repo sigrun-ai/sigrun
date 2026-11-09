@@ -170,6 +170,15 @@ test("unknown stored keys survive a schema save", async () => {
 	expect(changes).toEqual([{ keys: ["interval"], user: undefined }]);
 });
 
+test("a scalar table unwraps the channel's single value field", async () => {
+	const rig = await boot({ settings: { labels: { acme: "before" } } });
+	const result = await save(rig, {
+		labels: { acme: { value: "after", $from: "acme" } },
+	}, "scalar-table");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ labels: { acme: "after" } });
+});
+
 test("deleting a table entry removes it from the file", async () => {
 	const rig = await boot({
 		settings: {

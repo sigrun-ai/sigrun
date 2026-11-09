@@ -21,7 +21,7 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterAll, describe, expect, test } from "vitest";
+import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
 import type { EntriesField, JsonObject, Tree } from "@sigrun/shared/blocks";
@@ -501,6 +501,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 			token: aliceToken,
 		});
 		const rev = (render.body as { rev: number }).rev;
+		const applySpy = vi.spyOn(opened.settings, "apply");
 		const untouched = await call(app, {
 			method: "POST",
 			url: "/v1/ext/core/surfaces/advanced/actions",
@@ -534,6 +535,9 @@ describe("core settings surfaces (U4 Task 4)", () => {
 			},
 		});
 		expect((untouched.body as { ok: boolean }).ok).toBe(true);
+		// Clearing an unset scalar table is a no-op, not a null write.
+		expect(applySpy).toHaveBeenCalledExactlyOnceWith({ server: { port: null } });
+		applySpy.mockRestore();
 		const file = opened.settings.read();
 		expect(file.retry?.enabled).toBeUndefined();
 		expect(file.server?.compaction?.enabled).toBeUndefined();
@@ -654,7 +658,9 @@ describe("core settings surfaces (U4 Task 4)", () => {
 				payload: {
 					rev,
 					values: {
-						perModelThinking: { "acme/model": "low" },
+						perModelThinking: {
+							"acme/model": { value: "low", $from: "acme/model" },
+						},
 					},
 				},
 			},
