@@ -15,6 +15,12 @@
 name: family-checkout
 description: Check out the sigrun built-in extension sibling repos
 inputs:
+  refs:
+    description: >-
+      JSON object of repository names to refs. Empty defaults to each
+      repository's default branch; the quoted '{}' is never fromJSON('').
+    required: false
+    default: '{}'
   exclude:
     description: >-
       A sibling dir name to skip — an extension repo's own workflow
@@ -31,33 +37,40 @@ runs:
       with:
         repository: sigrun-ai/sigrun-ext-codemode
         path: sigrun-ext-codemode
+        ref: ${{ fromJSON(inputs.refs)['sigrun-ext-codemode'] || '' }}
     - if: ${{ inputs.exclude != 'sigrun-ext-curator' }}
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-curator
         path: sigrun-ext-curator
+        ref: ${{ fromJSON(inputs.refs)['sigrun-ext-curator'] || '' }}
     - if: ${{ inputs.exclude != 'sigrun-memory-markdown' }}
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-memory-markdown
         path: sigrun-memory-markdown
+        ref: ${{ fromJSON(inputs.refs)['sigrun-memory-markdown'] || '' }}
     - if: ${{ inputs.exclude != 'sigrun-ext-gateway' }}
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-gateway
         path: sigrun-ext-gateway
+        ref: ${{ fromJSON(inputs.refs)['sigrun-ext-gateway'] || '' }}
     - if: ${{ inputs.exclude != 'sigrun-ext-mcp' }}
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-mcp
         path: sigrun-ext-mcp
+        ref: ${{ fromJSON(inputs.refs)['sigrun-ext-mcp'] || '' }}
     - if: ${{ inputs.exclude != 'sigrun-ext-tool-search' }}
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-tool-search
         path: sigrun-ext-tool-search
+        ref: ${{ fromJSON(inputs.refs)['sigrun-ext-tool-search'] || '' }}
     - if: ${{ inputs.exclude != 'sigrun-ext-oauth' }}
       uses: actions/checkout@v5
       with:
         repository: sigrun-ai/sigrun-ext-oauth
         path: sigrun-ext-oauth
+        ref: ${{ fromJSON(inputs.refs)['sigrun-ext-oauth'] || '' }}

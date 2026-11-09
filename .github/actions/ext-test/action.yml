@@ -1,0 +1,166 @@
+name: ext-test
+description: Check out, build, test, and typecheck a sigrun-family extension
+inputs:
+  package-dir:
+    description: Directory holding the extension package (manifest, lock)
+    required: false
+    default: "."
+  needs-core:
+    description: Check out and build core plus the family siblings first
+    required: false
+    default: "false"
+  core-ref:
+    description: Test against core main or its latest release
+    required: false
+    default: main
+  repo:
+    description: Repository name used for the sibling-layout checkout
+    required: true
+  refs:
+    description: Pre-resolved JSON object of repository names to refs
+    required: false
+    default: ""
+  ref:
+    description: >-
+      The repo under test's ref: ext-release passes its tag/dry-run
+      expression; empty means the triggering SHA (ext-ci's behavior).
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    # Resolve only when the caller has not already done so. ext-release's
+    # guard resolves once and passes the same refs to test and publish.
+    - name: Check out the core-ref resolver
+      if: (inputs.needs-core == 'true' || inputs.refs != '') && inputs.refs == ''
+      uses: actions/checkout@v5
+      with:
+        repository: sigrun-ai/sigrun
+        ref: main
+        path: .sigrun-tools
+        sparse-checkout: scripts/
+    - name: Resolve the core and family refs
+      id: resolve
+      if: (inputs.needs-core == 'true' || inputs.refs != '') && inputs.refs == ''
+      shell: bash
+      run: |
+        set -euo pipefail
+        # The sparse scripts checkout has no dependencies; the resolver
+        # imports semver, so install it before Node resolves the import.
+        # Core's root manifest has file: sibling links that dangle here;
+        # remove it and its lockfile because this install only needs semver.
+        rm -f .sigrun-tools/package.json .sigrun-tools/package-lock.json
+        npm install --prefix .sigrun-tools --no-save semver@^7
+        refs="$(node .sigrun-tools/scripts/ci-core-ref.mjs '${{ inputs.core-ref }}')"
+        [ -n "$refs" ] || refs='{}'
+        {
+          echo 'refs<<EOF'
+          echo "$refs"
+          echo 'EOF'
+        } >> "$GITHUB_OUTPUT"
+    # A caller-provided object is authoritative, including main mode's {}.
+    # Checkout expressions fall back to inputs.refs, never fromJSON('').
+    # Built-ins and core move together. Let a batch of main pushes settle
+    # before fetching any sibling; PRs and release mode never wait.
+    - name: Wait for a main push batch to settle
+      if: (inputs.needs-core == 'true' || inputs.refs != '') && inputs.core-ref == 'main' && github.event_name == 'push'
+      shell: bash
+      run: sleep 180
+
+    # needs-core layout: file:../ specs resolve against the workspace root.
+    - uses: actions/checkout@v5
+      if: inputs.needs-core == 'true'
+      with:
+        repository: sigrun-ai/sigrun
+        ref: ${{ fromJSON(steps.resolve.outputs.refs || inputs.refs).sigrun || '' }}
+        path: sigrun
+    - name: Check out the built-in family siblings
+      if: inputs.needs-core == 'true'
+      uses: sigrun-ai/sigrun/.github/actions/family-checkout@main
+      with:
+        exclude: ${{ inputs.repo }}
+        refs: ${{ steps.resolve.outputs.refs || inputs.refs }}
+    # The code under test comes last so a family checkout cannot overwrite
+    # it. Empty ref preserves the triggering SHA; releases pass their tag.
+    - uses: actions/checkout@v5
+      if: inputs.needs-core == 'true'
+      with:
+        path: ${{ inputs.repo }}
+        ref: ${{ inputs.ref }}
+    - uses: actions/checkout@v5
+      if: inputs.needs-core != 'true'
+      with:
+        ref: ${{ inputs.ref }}
+    - uses: actions/setup-node@v5
+      with:
+        node-version: "22"
+    - name: Reject sibling links without the family layout
+      if: inputs.needs-core != 'true'
+      working-directory: ${{ inputs.package-dir }}
+      shell: bash
+      run: |
+        set -euo pipefail
+        if node -e '
+          const p = require("./package.json");
+          const deps = {
+            ...p.dependencies, ...p.devDependencies, ...p.optionalDependencies
+          };
+          process.exit(Object.values(deps).some(
+            v => typeof v === "string" && v.includes("file:../")
+          ) ? 0 : 1);
+        '; then
+          echo '::error::This package links ../ sibling repos (file:); set needs-core: true in .github/workflows/ci.yml and release.yml'
+          exit 1
+        fi
+    - name: Build core and the built-in siblings (file:-linked repos)
+      if: inputs.needs-core == 'true'
+      shell: bash
+      run: |
+        # Core plus every built-in sibling the file: links resolve into:
+        # the links point at the sibling CHECKOUTS, so their deps must be
+        # installed there too (pi-durable 1.5.0: ext-mcp's dist imports
+        # typebox at runtime, resolved from its own node_modules).
+        npm ci --prefix sigrun && (cd sigrun && npm run build)
+        for repo in sigrun-ext-codemode sigrun-ext-curator \
+          sigrun-ext-gateway sigrun-ext-mcp sigrun-ext-oauth \
+          sigrun-memory-markdown; do
+          if [ -d "$repo" ] && [ "$repo" != "${{ inputs.repo }}" ]; then
+            npm ci --prefix "$repo" >/dev/null 2>&1 || npm install --prefix "$repo" >/dev/null 2>&1 || true
+          fi
+        done
+    # WORKDIR: needs-core puts the package under the sibling layout
+    # (<repo>/<package-dir>); the plain lane stays at package-dir.
+    - name: Resolve the package working directory
+      id: workdir
+      shell: bash
+      env:
+        REPO: ${{ inputs.repo }}
+        PKGDIR: ${{ inputs.package-dir }}
+        NEEDS_CORE: ${{ inputs.needs-core }}
+      run: |
+        if [ "$NEEDS_CORE" = "true" ]; then
+          echo "dir=${REPO}/${PKGDIR}" >> "$GITHUB_OUTPUT"
+        else
+          echo "dir=${PKGDIR}" >> "$GITHUB_OUTPUT"
+        fi
+    - name: Install
+      working-directory: ${{ steps.workdir.outputs.dir }}
+      shell: bash
+      run: |
+        if ! npm ci; then
+          echo '::error::npm ci failed; if it reports the lockfile out of sync (EUSAGE), regenerate package-lock.json in the family layout (npm install next to ../sigrun) and commit it'
+          exit 1
+        fi
+    - name: Build
+      working-directory: ${{ steps.workdir.outputs.dir }}
+      shell: bash
+      run: npm run build
+    - name: Test
+      working-directory: ${{ steps.workdir.outputs.dir }}
+      shell: bash
+      run: npm test
+    - name: Typecheck
+      working-directory: ${{ steps.workdir.outputs.dir }}
+      shell: bash
+      run: npm run typecheck
