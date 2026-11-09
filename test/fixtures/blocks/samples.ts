@@ -79,6 +79,7 @@ const PLACEMENT_FILES: Readonly<Record<Placement, readonly string[]>> = {
 		"field-daterange",
 		"field-secret",
 		"field-list",
+		"field-entries",
 	],
 	chat: [
 		"stack",

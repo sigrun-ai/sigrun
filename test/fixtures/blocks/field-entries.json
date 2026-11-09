@@ -1,0 +1,34 @@
+{
+	"v": 1,
+	"root": {
+		"type": "form",
+		"id": "form-entries",
+		"bind": "/values",
+		"mode": "submit",
+		"children": [
+			{
+				"type": "entries",
+				"name": "servers",
+				"label": "Servers",
+				"help": "Configure named acme servers.",
+				"shape": "table",
+				"keyLabel": "Server name",
+				"summary": ["url", "token"],
+				"item": [
+					{ "type": "text", "name": "url", "label": "URL", "default": "https://example.invalid" },
+					{ "type": "secret", "name": "token", "label": "Token", "help": "Stored separately." },
+					{
+						"type": "variant",
+						"name": "connection",
+						"label": "Connection",
+						"discriminator": "transport",
+						"options": [
+							{ "id": "http", "label": "HTTP", "children": [{ "type": "number", "name": "timeout", "label": "Timeout" }] },
+							{ "id": "stdio", "label": "Standard I/O", "children": [{ "type": "text", "name": "command", "label": "Command" }] }
+						]
+					}
+				]
+			}
+		]
+	}
+}

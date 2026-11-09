@@ -266,6 +266,10 @@ exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-dat
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-datetime @160 1`] = `"At:"`;
 
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-entries @80 1`] = `"Servers:"`;
+
+exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-entries @160 1`] = `"Servers:"`;
+
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-file @80 1`] = `"Logo: not set"`;
 
 exports[`toText gallery snapshots (every fixture, widths 80 and 160) > field-file @160 1`] = `"Logo: not set"`;
