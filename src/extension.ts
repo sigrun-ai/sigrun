@@ -1340,6 +1340,27 @@ export interface SurfacesContribution {
 }
 
 // ---------------------------------------------------------------------------
+// Schema-declared settings
+// ---------------------------------------------------------------------------
+
+/** A JSON Schema (2020-12) document; use TypeBox or plain JSON to author it. */
+export type SettingsJsonSchema = Readonly<Record<string, unknown>>;
+
+/** The shared and optional per-user schemas one extension declares. */
+export interface SettingsDeclaration {
+	readonly schema: SettingsJsonSchema;
+	readonly userSchema?: SettingsJsonSchema;
+}
+
+/** The checked-read handle returned by `host.settings.declare`. */
+export interface DeclaredSettings<S, U> {
+	/** settings/<slug>.json: defaults applied and secrets filled, fresh per call. */
+	get(): Promise<S>;
+	/** One directory user's settings under userSchema (throws when none was declared). */
+	user(user: string): { get(): Promise<U> };
+}
+
+// ---------------------------------------------------------------------------
 // The host
 // ---------------------------------------------------------------------------
 
@@ -1394,6 +1415,17 @@ export interface SigrunHost {
 	/** Connect to one declared per-user service; core owns its process lifecycle. */
 	readonly services: {
 		connect(name: string, user: string, ctx: HandlerContext): Promise<ServiceHandle>;
+	};
+
+	/**
+	 * Declare your settings schemas ONCE, at the top of the factory, then
+	 * read checked settings with defaults applied and secrets filled in.
+	 * Calling after the factory returned throws.
+	 */
+	readonly settings: {
+		declare<S = Record<string, unknown>, U = Record<string, unknown>>(
+			decl: SettingsDeclaration,
+		): DeclaredSettings<S, U>;
 	};
 
 	/** The scoped extension-stores handle (your secrets/settings sections + raw data/cache/state paths). */

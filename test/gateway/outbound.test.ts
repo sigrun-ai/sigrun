@@ -202,7 +202,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 			const bindingsPath = join(
 				boot.dir,
 				"state",
-				"ext-gateway",
+				"gateway",
 				"gateway",
 				"bindings.json",
 			);
@@ -241,7 +241,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 		// into the engine's ledger BEFORE this boot.
 		const storesDir = await mkdtemp(join(tmpdir(), "sigrun-gw-restart-"));
 		try {
-			const stateDir = join(storesDir, "state", "ext-gateway", "gateway");
+			const stateDir = join(storesDir, "state", "gateway", "gateway");
 			await mkdir(stateDir, { recursive: true });
 			const ledgerFile = join(stateDir, "ledger.json");
 			const entry = {
@@ -326,7 +326,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 				const bindingsPath = join(
 					storesDir,
 					"state",
-					"ext-gateway",
+					"gateway",
 					"gateway",
 					"bindings.json",
 				);
@@ -369,7 +369,7 @@ describe("gateway outbound e2e (Task 5)", () => {
 				const bindingsPath = join(
 					storesDir,
 					"state",
-					"ext-gateway",
+					"gateway",
 					"gateway",
 					"bindings.json",
 				);

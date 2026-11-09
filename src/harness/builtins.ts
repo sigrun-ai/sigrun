@@ -232,13 +232,17 @@ export function resolveBuiltins(
 			skipped.push({ key: builtin.key, reason: "replaced", by: replacement });
 			continue;
 		}
-		load.push(resolve(builtin.specifier, builtinEntry));
+		load.push({ ...resolve(builtin.specifier, builtinEntry), settingsSlug: builtin.slug });
 	}
 	// The test-seam extra entries (the boot's `extraBuiltins` option):
 	// resolved exactly like the real built-ins, appended after them,
 	// reported builtin.
 	for (const specifier of extra) {
-		load.push(resolve(specifier, builtinEntry));
+		const known = BUILTIN_EXTENSIONS.find((builtin) => builtin.specifier === specifier);
+		load.push({
+			...resolve(specifier, builtinEntry),
+			...(known === undefined ? {} : { settingsSlug: known.slug }),
+		});
 	}
 	return { load, skipped };
 }

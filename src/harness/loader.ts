@@ -111,6 +111,7 @@ import { ICON_NAMES } from "@sigrun/shared/blocks";
 import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import { validateTree } from "../blocks/validate.js";
+import { generateForm } from "../settings/schema/generate.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContributor } from "./providers/index.js";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -384,6 +385,14 @@ export interface ExtensionCurationBinding {
 	readonly targets: readonly CurationTarget[];
 }
 
+/** One extension's schema declaration and its generated settings forms. */
+export interface ExtensionSettingsDeclaration {
+	readonly extension: string;
+	readonly decl: import("../extension.js").SettingsDeclaration;
+	readonly generated: import("../settings/schema/generate.js").GeneratedForm;
+	readonly generatedUser?: import("../settings/schema/generate.js").GeneratedForm;
+}
+
 /** One validated login provider, attributed with its core-qualified id. */
 export interface LoginProviderBinding {
 	readonly provider: string;
@@ -547,6 +556,8 @@ export interface LoadedExtensions {
 	 * contribute none.
 	 */
 	readonly settingsSections: readonly ExtensionSettingsSectionBinding[];
+	/** Schema declarations made through host.settings.declare, in load order. */
+	readonly settingsDeclarations: readonly ExtensionSettingsDeclaration[];
 	/**
 	 * Webui-bundle contributions from factory results (build-and-webui
 	 * Task 6), one entry per contributed bundle across every loaded
@@ -1328,155 +1339,6 @@ const ICON_NAME_SET: ReadonlySet<string> = new Set(ICON_NAMES);
 const MIN_REFRESH_MS = 5000;
 
 /**
- * The `settings` placement's field-name walk (UI-blocks U4 Task 3):
- * every field of a settings form must be a TOP-LEVEL key of the
- * extension's settings object (spec §13.3 — the form binds to
- * `settings/<slug>.json`; a dotted or nested name would write a shape
- * the verbatim settings routes cannot show).
- */
-function* walkFormFields(root: unknown): Generator<{ name?: unknown; item?: unknown }> {
-	const stack: unknown[] = [root];
-	while (stack.length > 0) {
-		const node = stack.pop();
-		if (Array.isArray(node)) {
-			stack.push(...node);
-			continue;
-		}
-		if (typeof node !== "object" || node === null) continue;
-		const record = node as Record<string, unknown>;
-		for (const key of ["children", "fields", "root", "main", "sidebar", "detail"]) {
-			if (record[key] !== undefined) stack.push(record[key]);
-		}
-		if (record.block !== undefined) stack.push(record.block);
-		if (record.item !== undefined) stack.push(record.item);
-		if (typeof record.name === "string" && typeof record.type === "string") {
-			yield record as { name?: unknown; item?: unknown };
-		}
-	}
-}
-
-/**
- * Validate a factory result's `surfaces.settings` list (UI-blocks U4
- * Task 3, spec §13.3). Each entry: non-empty string `id`, `title`,
- * `icon` (optional, in the closed set), `form` a Tree validating
- * against the `settings` placement with a root `form` block, every
- * field name a TOP-LEVEL key (no dots), optional `secrets` entries
- * `{key, label, help?}`, and `admin` a boolean when present. The
- * `save` handler name is core-owned (the adapter's), so `onSubmit`
- * names outside `{save, submit}` are rejected (an extension thinking
- * it owns its save handler would silently never fire).
- */
-function validateSettingsSections(
-	value: unknown,
-): readonly SettingsSectionDef[] | undefined {
-	if (value === undefined) return undefined;
-	if (!Array.isArray(value)) {
-		throw new Error(
-			"extension factory returned a surfaces.settings field that is not an array",
-		);
-	}
-	const defs: SettingsSectionDef[] = [];
-	const seen = new Set<string>();
-	for (const entry of value) {
-		const def = entry as
-			| {
-					id?: unknown;
-					title?: unknown;
-					icon?: unknown;
-					form?: unknown;
-					secrets?: unknown;
-					admin?: unknown;
-					scope?: unknown;
-				  }
-			| null;
-		if (typeof def?.id !== "string" || def.id.length === 0) {
-			throw new Error(
-				"extension factory returned a settings section whose id is missing or not a non-empty string",
-			);
-		}
-		if (seen.has(def.id)) {
-			throw new Error(
-				`extension factory returned a duplicate settings section id "${def.id}"`,
-			);
-		}
-		seen.add(def.id);
-		if (typeof def?.title !== "string" || def.title.length === 0) {
-			throw new Error(
-				`extension factory returned a settings section "${def.id}" whose title is missing or not a non-empty string`,
-			);
-		}
-		if (
-			def?.icon !== undefined &&
-			(typeof def.icon !== "string" || !ICON_NAME_SET.has(def.icon))
-		) {
-			throw new Error(
-				`extension factory returned a settings section "${def.id}" with unknown icon "${String(def?.icon)}"`,
-			);
-		}
-		if (def?.admin !== undefined && typeof def.admin !== "boolean") {
-			throw new Error(
-				`extension factory returned a settings section "${def.id}" whose admin is not a boolean`,
-			);
-		}
-		if (def?.scope !== undefined && def.scope !== "server" && def.scope !== "user") {
-			throw new Error(
-				`extension factory returned a settings section "${def.id}" whose scope is not "server" or "user"`,
-			);
-		}
-		if (def?.secrets !== undefined) {
-			if (!Array.isArray(def.secrets)) {
-				throw new Error(
-					`extension factory returned a settings section "${def.id}" whose secrets is not an array`,
-				);
-			}
-			for (const secret of def.secrets) {
-				const entry2 = secret as { key?: unknown; label?: unknown; help?: unknown } | null;
-				if (typeof entry2?.key !== "string" || entry2.key.length === 0) {
-					throw new Error(
-						`extension factory returned a settings section "${def.id}" whose secrets entry is missing a key`,
-					);
-				}
-				if (typeof entry2?.label !== "string" || entry2.label.length === 0) {
-					throw new Error(
-						`extension factory returned a settings section "${def.id}" whose secrets entry "${String(entry2?.key)}" is missing a label`,
-					);
-				}
-				if (entry2?.help !== undefined && typeof entry2.help !== "string") {
-					throw new Error(
-						`extension factory returned a settings section "${def.id}" whose secrets entry "${entry2.key}" carries a non-string help`,
-					);
-				}
-			}
-		}
-		if (typeof def?.form !== "object" || def.form === null) {
-			throw new Error(
-				`extension factory returned a settings section "${def.id}" whose form is missing or not a Tree`,
-			);
-		}
-		const validation = validateTree(def.form, {
-			placement: "settings",
-			handlers: new Set(["save", "submit"]),
-		});
-		if (!validation.ok) {
-			throw new Error(
-				`extension factory returned a settings section "${def.id}" whose form is invalid: ` +
-					validation.errors.map((err) => `${err.path}: ${err.message}`).join("; "),
-			);
-		}
-		for (const field of walkFormFields(validation.tree.root)) {
-			if (typeof field.name !== "string" || field.name.length === 0) continue;
-			if (field.name.includes(".") || field.name.includes("/")) {
-				throw new Error(
-					`extension factory returned a settings section "${def.id}" whose field "${field.name}" is not a top-level settings key (no dots or slashes)`,
-				);
-			}
-		}
-		defs.push(entry as SettingsSectionDef);
-	}
-	return defs;
-}
-
-/**
  * Validate a factory result's `surfaces` declaration (UI-blocks U3
  * Task 1, spec §7.1/§15). Absent → undefined (no surfaces). Present
  * but malformed → throw with ONE message per problem; the loader
@@ -1508,14 +1370,14 @@ function validateSurfaces(
 			"extension factory returned a surfaces field that is not an object",
 		);
 	}
-	// §13.3 settings sections (UI-blocks U4 Task 3): validated with the
-	// settings placement; a malformed list quarantines like every other
-	// malformed surfaces member.
-	const settings = validateSettingsSections(
-		(value as Record<string, unknown>).settings,
-	);
+	if ((value as Record<string, unknown>).settings !== undefined) {
+		throw new Error(
+			"surfaces.settings is replaced by host.settings.declare (see docs/extending.md)",
+		);
+	}
+	const settings = undefined;
 	const defs: SurfaceDef<"view" | "panel">[] = [];
-	const seen = new Set<string>(settings?.map((def) => def.id) ?? []);
+	const seen = new Set<string>();
 	for (const list of ["views", "panels"] as const) {
 		const entries = (value as Record<string, unknown>)[list];
 		if (entries === undefined) continue;
@@ -2811,6 +2673,13 @@ export interface ResolvedExtensionInput {
 	 */
 	readonly coreResolved?: boolean;
 	/**
+	 * Built-ins only: the declared slug the package resolves to, known before
+	 * import so factory-time checked reads use the final settings file even
+	 * when the package name and extension slug differ (@sigrun/ext-mcp →
+	 * sigrun-mcp).
+	 */
+	readonly settingsSlug?: string;
+	/**
 	 * The package's own DIRECTORY (Task 2): built-in resolution anchors
 	 * the loader's manifest version read at the package ROOT, not the
 	 * entry's directory (an entry in `dist/` would otherwise read no
@@ -2935,7 +2804,7 @@ options: LoadExtensionsOptions = {},
 const entries = specifiers.map((spec) =>
 typeof spec === "string"
 ? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined, builtin: undefined as boolean | undefined, coreResolved: undefined as boolean | undefined, packageDir: undefined as string | undefined }
-: { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir },
+: { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir, settingsSlug: spec.settingsSlug },
 );
 const outcomes: ExtensionOutcome[] = [];
 const perUserSlugs: string[] = [];
@@ -2990,6 +2859,7 @@ let gatewayEngine: ExtensionGatewayBinding | undefined;
 const surfaceBindings: ExtensionSurfaceBinding[] = [];
 // Settings sections (U4 Task 3, spec §13.3): validated, slug-attributed.
 const settingsSectionBindings: ExtensionSettingsSectionBinding[] = [];
+const settingsDeclarations: ExtensionSettingsDeclaration[] = [];
 // Skill roots (W5 Task 4, spec §9.4): every skill dir a loaded package
 // contributed — skills-only resolutions, entry-bearing packages' manifest
 // skills, and factory-result `skills` fields — in load order, attributed
@@ -3013,7 +2883,7 @@ const curationToolOwners = new Map<string, string>();
 // commands and bundles). Checked BEFORE `registry.install` so a colliding
 // extension leaves no registry entry, no slug claim, and no binding.
 const channelIds = new Map<string, string>();
-for (const { name: label, entry, skills, builtin, coreResolved, packageDir } of entries) {
+for (const { name: label, entry, skills, builtin, coreResolved, packageDir, settingsSlug } of entries) {
 const display = label ?? entry ?? "skills-only";
 let quarantineSlug = slugifyName(label ?? entry ?? "");
 				try {
@@ -3121,7 +2991,8 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 			// factory time only when the plugin name matches its package name).
 			let host: unknown;
 			if (options.hostContextFactory !== undefined) {
-				host = options.hostContextFactory(provisionalSlugFor(loaded), {});
+				const provisional = settingsSlug ?? provisionalSlugFor(loaded);
+			host = options.hostContextFactory(provisional, {});
 			}
 			const resolved = await resolveExtension(module, host);
 			if (resolved === undefined) {
@@ -3236,6 +3107,31 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 				// ever created — a rebuilt instance would orphan every inbound
 				// handler the factory registered on the host it captured.
 				if (options.hostContextFactory !== undefined) {
+					const declaredSettings = (
+						host as {
+							settingsDeclaration?: () => import("../extension.js").SettingsDeclaration | undefined;
+							settingsIdentity?: () => { readonly provisional: string; readonly factoryRead: boolean };
+						}
+					).settingsDeclaration?.();
+					if (declaredSettings !== undefined) {
+						const settingsIdentity = (
+							host as { settingsIdentity?: () => { readonly provisional: string; readonly factoryRead: boolean } }
+						).settingsIdentity?.();
+						const provisional = settingsIdentity?.provisional;
+						if (settingsIdentity?.factoryRead === true && provisional !== slug) {
+							throw new Error(
+								`settings.declare slug mismatch: factory read used "${String(provisional)}", final slug is "${slug}"`,
+							);
+						}
+						const reserved = resolved.surfaces?.find(
+							(surface) => surface.id === "settings" || surface.id === "user-settings",
+						)?.id;
+						if (reserved !== undefined) {
+							throw new Error(
+								`extension "${slug}" declares reserved settings surface id "${reserved}"`,
+							);
+						}
+					}
 					const kinds: DeclaredKinds = {
 						...(resolved.interactionKinds === undefined
 						? {}
@@ -3513,6 +3409,21 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 					...(declaredAssets === undefined ? {} : { assetsDir: declaredAssets }),
 				});
 			}
+			const declaredSettings = (
+				host as { settingsDeclaration?: () => import("../extension.js").SettingsDeclaration | undefined } | undefined
+			)?.settingsDeclaration?.();
+			if (declaredSettings !== undefined) {
+				const generated = generateForm(declaredSettings.schema, { idPrefix: slug });
+				const generatedUser = declaredSettings.userSchema === undefined
+					? undefined
+					: generateForm(declaredSettings.userSchema, { idPrefix: `${slug}-user` });
+				settingsDeclarations.push({
+					extension: slug,
+					decl: declaredSettings,
+					generated,
+					...(generatedUser === undefined ? {} : { generatedUser }),
+				});
+			}
 			if (resolved.settingsSections !== undefined) {
 				settingsSectionBindings.push({
 					extension: slug,
@@ -3608,5 +3519,6 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 		gatewayEngine,
 		surfaces: surfaceBindings,
 		settingsSections: settingsSectionBindings,
+		settingsDeclarations,
 	};
 }

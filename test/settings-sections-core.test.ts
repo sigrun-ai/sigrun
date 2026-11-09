@@ -21,7 +21,6 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { pathToFileURL } from "node:url";
 import { afterAll, describe, expect, test } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
@@ -36,10 +35,6 @@ import {
 } from "../src/settings/core-sections.js";
 import { CORE_SETTING_KEYS } from "../src/settings/registry.js";
 import { seededIdentity } from "./helpers/identity.js";
-
-const SECTION_SPECIFIER = pathToFileURL(
-	join(import.meta.dirname, "fixtures", "fixture-settings-section", "index.js"),
-).href;
 
 const cleanups: Array<() => Promise<void>> = [];
 afterAll(async () => {
@@ -74,7 +69,7 @@ async function bootServer(): Promise<TestServer> {
 	const identity = await seededIdentity(join(dir, "seed"), "alice");
 	const opened = await openHarness(config, {
 		identity,
-		extensionSpecifiers: [SECTION_SPECIFIER],
+		extensionSpecifiers: [],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: dir,
 	});
@@ -683,26 +678,9 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		};
 		const core = body.sections.filter((s) => s.slug === "core");
 		expect(core.map((s) => s.id)).toEqual([...CORE_SECTION_IDS]);
-		// The fixture's sections follow core (alphabetical by slug+id).
-		const extensions = body.sections.filter((s) => s.slug !== "core");
-		expect(extensions.map((s) => s.slug)).toEqual([
-			"acme-settings-section",
-			"acme-settings-section",
-			"acme-settings-section",
-			"acme-settings-section",
-			"acme-settings-section",
-		]);
-		expect(extensions.map((s) => s.id)).toEqual([
-			"connection",
-			"display",
-			"profile",
-			"dedup-profile",
-			"personal-admin",
-		]);
-		expect(extensions.find((s) => s.id === "profile")).toMatchObject({
-			scope: "user",
-			admin: false,
-		});
+		// Old extension surfaces.settings declarations are rejected; Task 7
+		// replaces their generated-section coverage.
+		expect(body.sections.filter((s) => s.slug !== "core")).toEqual([]);
 	});
 
 	test("the search index covers every core key's label and help; 'naming' resolves to General's naming model", async () => {
@@ -791,11 +769,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		expect(coreRows.find((entry) => entry.key === "perModelThinking")?.sectionId).toBe("advanced");
 		expect(coreRows.find((entry) => entry.key === "server.port")?.sectionId).toBe("advanced");
 		expect(coreRows.find((entry) => entry.key === "defaultTools")?.sectionId).toBe("tools");
-		// Every row carries a label; extension fields index too.
-		const extRows = body.index.filter(
-			(entry) => entry.slug === "acme-settings-section",
-		);
-		expect(extRows.some((entry) => entry.label === "API URL")).toBe(true);
-		expect(extRows.some((entry) => entry.label === "Connection")).toBe(true);
+		// Every core row carries a label.
+		expect(coreRows.every((entry) => entry.label.length > 0)).toBe(true);
 	});
 });

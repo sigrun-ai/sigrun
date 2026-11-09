@@ -543,6 +543,8 @@ export interface OpenedHarness {
 	 * nothing.
 	 */
 	readonly extensionSettingsSections: readonly ExtensionSettingsSectionBinding[];
+	/** Schema-declared settings and generated forms, in load order. */
+	readonly extensionSettingsDeclarations: readonly import("./loader.js").ExtensionSettingsDeclaration[];
 	/**
 	 * Skill directories contributed by loaded packages (core hardening W5
 	 * Task 4, spec §9.4): the loader's `skillRoots` collection — one
@@ -1603,6 +1605,7 @@ export async function openHarness(
 		gatewayEngine,
 		surfaces: surfaceBindings,
 		settingsSections: settingsSectionBindings,
+		settingsDeclarations: extensionSettingsDeclarations,
 		perUserSlugs: loadedPerUserSlugs,
 	} = await loadExtensions(
 		loaderInputs,
@@ -1654,6 +1657,9 @@ export async function openHarness(
 		},
 	);
 	perUserSlugs.push(...loadedPerUserSlugs);
+	// Loading is complete: declarations are now read under the final slug,
+	// and any later declare call is a factory-window violation.
+	for (const host of seamHosts.values()) host.sealSettings();
 	// Fail-fast vs wait (polish A1, spec §5.2): the caller declared a
 	// server WILL bind the host bridge — mark every loaded seam host so
 	// pre-bind calls keep the bounded wait instead of rejecting at once.
@@ -2606,6 +2612,7 @@ export async function openHarness(
 		noticeActionBindings,
 		extensionSurfaces: surfaceBindings,
 		extensionSettingsSections: settingsSectionBindings,
+		extensionSettingsDeclarations,
 		notifierBindings,
 		channelBindings,
 		gatewayEngine,

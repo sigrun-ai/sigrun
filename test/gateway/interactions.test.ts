@@ -111,7 +111,7 @@ async function waitPrompt(boot: GatewayBoot, chatId = "100000001"): Promise<Outb
 	// Sending precedes receipt persistence by a microtask. Stage 8 needs
 	// the durable ref, not merely the platform-visible prompt.
 	await boot.waitFor(async () => {
-		const text = await readFile(join(boot.dir, "state", "ext-gateway", "gateway", "prompts.json") as PathLike, "utf8").catch(() => "{}");
+		const text = await readFile(join(boot.dir, "state", "gateway", "gateway", "prompts.json") as PathLike, "utf8").catch(() => "{}");
 		const state = JSON.parse(text) as {
 			prompts?: { ref?: { chat?: { chatId?: string }; messageId?: string } }[];
 		};

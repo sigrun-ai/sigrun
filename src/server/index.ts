@@ -293,6 +293,9 @@ export async function createServer(
 				: { actionTimeoutMs: options.noticeActionTimeoutMs }),
 		},
 	);
+	for (const host of opened.seamHosts.values()) {
+		host.bindSettingsNotices((slug, input) => noticesService.post(slug, input));
+	}
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};

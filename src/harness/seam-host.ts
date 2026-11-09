@@ -29,7 +29,15 @@ import type {
 	DecisionResult,
 } from "@sigrun/shared/decisions";
 import type { HostBridge } from "../server/host-bridge.js";
-import type { SigrunHost } from "../extension.js";
+import type {
+	DeclaredSettings,
+	SettingsDeclaration,
+	SigrunHost,
+} from "../extension.js";
+import { checkSchema, generateForm } from "../settings/schema/generate.js";
+import { checkStoredSettings } from "../settings/schema/defaults.js";
+import { fillSecrets } from "../settings/schema/secrets.js";
+import { primaryAdmin } from "./identity/primary-admin.js";
 import type { Tree } from "@sigrun/shared/blocks";
 import {
 	AmbientDoc,
@@ -95,6 +103,14 @@ export interface SeamHost {
 	 * first `paths.cache` access, never at boot.
 	 */
 	readonly stores: ExtensionStores;
+	/** Schema declaration and checked reads (settings rework Task 6). */
+	readonly settings: SigrunHost["settings"];
+	/** Boot reads the recorded declaration under the final slug. */
+	settingsDeclaration(): SettingsDeclaration | undefined;
+	/** The pre-import identity used by a factory-time checked read. */
+	settingsIdentity(): { readonly provisional: string; readonly factoryRead: boolean };
+	/** Boot seals declaration once extension loading has completed. */
+	sealSettings(): void;
 	/** Multi-user M2: per-user publication, gated by the factory declaration. */
 	readonly tools: SigrunHost["tools"];
 	readonly services: SigrunHost["services"];
@@ -274,6 +290,10 @@ export interface SeamHost {
 	 * {@link HostBridgeUnavailableError}. Idempotent.
 	 */
 	expectBridge(): void;
+	/** The server's notices service binds after open, before checked reads. */
+	bindSettingsNotices(
+		post: (slug: string, input: import("@sigrun/shared/notices").UserNoticeInput) => Promise<unknown>,
+	): void;
 }
 
 /**
@@ -388,8 +408,111 @@ export function createSeamHost(
 			readonly ready: Promise<unknown>;
 		};
 	},
+	settingsNotice?: (
+		slug: string,
+		input: import("@sigrun/shared/notices").UserNoticeInput,
+	) => Promise<unknown>,
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
+	const provisional = identity.name;
+	let declaration: SettingsDeclaration | undefined;
+	let factoryRead = false;
+	let sealed = false;
+	let invalidNoticePosted = false;
+	let noticePost = settingsNotice;
+	const warnedPaths = new Set<string>();
+	const declaredSettings = <S, U>(decl: SettingsDeclaration): DeclaredSettings<S, U> => {
+		const read = async (
+			schema: SettingsDeclaration["schema"],
+			stored: Record<string, unknown>,
+			secrets: ExtensionStores["secrets"],
+		): Promise<Record<string, unknown>> => {
+			const checked = checkStoredSettings(schema, stored);
+			for (const repair of checked.repairs) {
+				if (!warnedPaths.has(repair.path)) {
+					warnedPaths.add(repair.path);
+					console.warn(
+						`settings: ${identity.name}${repair.path}: ${repair.message}; ${repair.action}`,
+					);
+				}
+			}
+			if (checked.repairs.length > 0 && !invalidNoticePosted) {
+				invalidNoticePosted = true;
+				const user = primaryAdmin(sharedStores.users.list())?.user;
+				if (user !== undefined && noticePost !== undefined) {
+					try {
+						await noticePost(identity.name, {
+							user,
+							key: "settings.invalid",
+							title: `${identity.name}: invalid stored settings`,
+							body: checked.repairs.map((repair) =>
+								`${identity.name}${repair.path}: ${repair.action} (${repair.message})`,
+							).join("\n"),
+							actions: [{
+								id: "open-settings",
+								label: "Open settings",
+								kind: "navigate",
+								target: { settings: identity.name },
+							}],
+						});
+					} catch (error) {
+						console.warn(`settings: ${identity.name}: could not post invalid-settings notice: ${String(error)}`);
+					}
+				}
+			}
+			const generated = generateForm(schema, { idPrefix: identity.name });
+			const withPlaceholders = structuredClone(checked.value);
+			for (const secret of generated.secrets) {
+				const parts = secret.pattern.slice(1).split("/").map((part) =>
+					part.replace(/~1/g, "/").replace(/~0/g, "~"),
+				);
+				const walk = (node: unknown, at: number): void => {
+					if (node === null || typeof node !== "object") return;
+					const part = parts[at];
+					if (part === undefined) return;
+					if (part === "*") {
+						const children = Array.isArray(node) ? node : Object.values(node);
+						for (const child of children) walk(child, at + 1);
+						return;
+					}
+					const record = node as Record<string, unknown>;
+					if (at === parts.length - 1) {
+						if (record[part] === undefined) record[part] = "";
+					} else if (record[part] !== undefined) walk(record[part], at + 1);
+				};
+				walk(withPlaceholders, 0);
+			}
+			return fillSecrets(
+				withPlaceholders,
+				generated.secrets,
+				(key) => secrets.get(key),
+			);
+		};
+		return {
+			get: async () => {
+				if (!sealed) factoryRead = true;
+				return (await read(
+				decl.schema,
+				await stores.settings.get(),
+					stores.secrets,
+				)) as S;
+			},
+			user: (user: string) => ({
+				get: async () => {
+					if (!sealed) factoryRead = true;
+					if (decl.userSchema === undefined) {
+						throw new Error(`settings.userSchema is not declared by ${identity.name}`);
+					}
+					const scoped = stores.user(user);
+					return (await read(
+						decl.userSchema,
+						await scoped.settings.get(),
+						scoped.secrets,
+					)) as U;
+				},
+			}),
+		};
+	};
 	const ambientKinds = new Set(kinds.ambient ?? []);
 	// The scoped stores view, keyed on the CURRENT identity — the same
 	// closed-over `let` pattern as `identity` itself: rekey re-points it
@@ -489,6 +612,25 @@ export function createSeamHost(
 		get stores() {
 			return { ...stores, user: userStores };
 		},
+		settings: {
+			declare<S = Record<string, unknown>, U = Record<string, unknown>>(
+				decl: SettingsDeclaration,
+			): DeclaredSettings<S, U> {
+				if (sealed) throw new Error("settings.declare must be called during the factory");
+				if (declaration !== undefined) throw new Error("settings.declare may only be called once");
+				for (const schema of [decl.schema, decl.userSchema]) {
+					if (schema === undefined) continue;
+					const checked = checkSchema(schema);
+					if (!checked.ok) throw new Error(checked.error);
+				}
+				declaration = decl;
+				return declaredSettings<S, U>(decl);
+			},
+		},
+		settingsDeclaration: () => declaration,
+		settingsIdentity: () => ({ provisional, factoryRead }),
+		sealSettings: () => { sealed = true; },
+		bindSettingsNotices: (post) => { noticePost = post; },
 
 		tools: {
 			setUserTools(user, tools) {
