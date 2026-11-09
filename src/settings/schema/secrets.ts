@@ -59,8 +59,14 @@ import type { SecretPath } from "./generate.js";
 
 /** One concrete secret slot found while walking a settings object. */
 interface SecretSlot {
-	/** The store key, or undefined when the entry has no stable identity. */
+	/**
+	 * The store key, or undefined when the entry has no stable identity.
+	 * Only the STORE sees this spelling — an entry key may itself contain
+	 * `/`, so nothing may recover the levels by splitting it.
+	 */
 	readonly key: string | undefined;
+	/** The same key as its segments, which is what the walks compare. */
+	readonly segments: readonly string[] | undefined;
 	/** The container holding the value (a table entry object or an array). */
 	readonly parent: Record<string, unknown> | unknown[];
 	/** The property name or array index of the value in `parent`. */
@@ -129,9 +135,15 @@ function renderedIdentity(key: string | undefined): Identity {
 	return (entry) => stringAt(entry, key);
 }
 
-/** Join a resolved prefix into a store key; an unresolved prefix stays undefined. */
-function joinKey(prefix: readonly string[] | undefined): string | undefined {
-	return prefix === undefined ? undefined : prefix.join("/");
+/** A resolved concrete key: its segments, plus the joined store spelling. */
+interface ConcreteKey {
+	readonly segments: readonly string[];
+	readonly key: string;
+}
+
+/** A resolved prefix, or undefined when an entry has no identity. */
+function concrete(prefix: readonly string[] | undefined): ConcreteKey | undefined {
+	return prefix === undefined ? undefined : { segments: prefix, key: prefix.join("/") };
 }
 
 /** The indexes of a pattern's identity segments (`*`). */
@@ -165,7 +177,7 @@ function walk(
 			const id = isRecord(entry) ? identity(entry) : undefined;
 			const next = prefix === undefined || id === undefined ? undefined : [...prefix, id];
 			if (last) {
-				visit({ key: joinKey(next), parent: container, leaf: index, value: entry, keepName: false });
+				visit(slot(next, container, index, entry, false));
 			} else {
 				walk(entry, segments, at + 1, next, identity, visit);
 			}
@@ -176,13 +188,7 @@ function walk(
 	if (segment !== "*") {
 		const next = prefix === undefined ? undefined : [...prefix, segment];
 		if (last) {
-			visit({
-				key: joinKey(next),
-				parent: container,
-				leaf: segment,
-				value: container[segment],
-				keepName: false,
-			});
+			visit(slot(next, container, segment, container[segment], false));
 			return;
 		}
 		if (!Object.hasOwn(container, segment)) return;
@@ -190,13 +196,37 @@ function walk(
 		return;
 	}
 	for (const [name, child] of Object.entries(container)) {
-		const next = prefix === undefined ? undefined : [...prefix, name];
+		// A table entry is stored under the key it was LOADED under (its
+		// `$from` marker on a submission), exactly like an array entry's
+		// identity — the name the row now renders under is the FILE's
+		// business, and `secretMoves` carries the secret to it afterwards.
+		const id = (isRecord(child) ? identity(child) : undefined) ?? name;
+		const next = prefix === undefined ? undefined : [...prefix, id];
 		if (last) {
-			visit({ key: joinKey(next), parent: container, leaf: name, value: child, keepName: true });
+			visit(slot(next, container, name, child, true));
 		} else {
 			walk(child, segments, at + 1, next, identity, visit);
 		}
 	}
+}
+
+/** One visited slot, from a resolved prefix and the position it was found at. */
+function slot(
+	prefix: readonly string[] | undefined,
+	parent: Record<string, unknown> | unknown[],
+	leaf: string | number,
+	value: unknown,
+	keepName: boolean,
+): SecretSlot {
+	const resolved = concrete(prefix);
+	return {
+		key: resolved?.key,
+		segments: resolved?.segments,
+		parent,
+		leaf,
+		value,
+		keepName,
+	};
 }
 
 /** Every secret slot of `settings`, in pattern order. */
@@ -255,17 +285,25 @@ export function splitSecrets(
 }
 
 /**
- * The entries at one identity level of a pattern, as
- * loaded-key → rendered-key prefix pairs. A table entry renders under
- * its own name; an array entry under its identity property's value.
+ * The entries at one identity level of a pattern, as loaded-segments →
+ * rendered-segments pairs. A table entry renders under its own name; an
+ * array entry under its identity property's value.
+ *
+ * Prefixes are compared SEGMENT-WISE, never as joined strings: an entry
+ * key or array identity may itself contain `/`, so splitting a store key
+ * would invent a level and miss the entry (a spurious delete, and the
+ * secret silently lost).
  */
 function entryPrefixes(
 	object: Record<string, unknown>,
 	segments: readonly string[],
 	level: number,
 	identityFor: Identity,
-): Map<string, string> {
-	const pairs = new Map<string, string>();
+): Map<string, readonly string[]> {
+	const pairs = new Map<string, readonly string[]>();
+	const record = (loaded: readonly string[], rendered: readonly string[]): void => {
+		pairs.set(JSON.stringify(loaded), rendered);
+	};
 	const descend = (
 		container: unknown,
 		at: number,
@@ -279,14 +317,14 @@ function entryPrefixes(
 					const renderedId = identityFor(entry);
 					if (renderedId === undefined) continue;
 					const loadedId = stringAt(entry, "$from") ?? renderedId;
-					pairs.set([...loaded, loadedId].join("/"), [...rendered, renderedId].join("/"));
+					record([...loaded, loadedId], [...rendered, renderedId]);
 				}
 				return;
 			}
 			if (!isRecord(container)) return;
 			for (const [name, entry] of Object.entries(container)) {
 				const loadedId = (isRecord(entry) ? stringAt(entry, "$from") : undefined) ?? name;
-				pairs.set([...loaded, loadedId].join("/"), [...rendered, name].join("/"));
+				record([...loaded, loadedId], [...rendered, name]);
 			}
 			return;
 		}
@@ -339,31 +377,31 @@ export function secretMoves(
 		// A named slot has no entry identity, so nothing can move or drop.
 		if (levels.length === 0) continue;
 		const render = renderedIdentity(secret.key);
-		const storedKeys = keysOf(slotsOf(stored, [secret], () => render));
-		if (storedKeys.length === 0) continue;
+		const storedSlots = slotsOf(stored, [secret], () => render);
+		if (storedSlots.length === 0) continue;
 		// One loaded→rendered map per identity level, so a key can be
 		// followed through nested renames.
 		const submittedAt = levels.map((level) => entryPrefixes(submitted, segments, level, render));
-		for (const key of storedKeys) {
-			// `parts` starts as the stored key and is rewritten one identity
-			// level at a time into the key the submission now names.
-			let parts = key.split("/");
+		for (const storedSlot of storedSlots) {
+			if (storedSlot.segments === undefined || storedSlot.key === undefined) continue;
+			// `parts` starts as the stored key's SEGMENTS and is rewritten one
+			// identity level at a time into the segments the submission names.
+			let parts: readonly string[] = storedSlot.segments;
 			let alive = true;
 			for (const [index, level] of levels.entries()) {
-				const prefix = parts.slice(0, level + 1).join("/");
-				const rendered = submittedAt[index]?.get(prefix);
+				const rendered = submittedAt[index]?.get(JSON.stringify(parts.slice(0, level + 1)));
 				if (rendered === undefined) {
 					alive = false;
 					break;
 				}
-				parts = [...rendered.split("/"), ...parts.slice(level + 1)];
+				parts = [...rendered, ...parts.slice(level + 1)];
 			}
 			if (!alive) {
-				deletes.add(key);
+				deletes.add(storedSlot.key);
 				continue;
 			}
 			const next = parts.join("/");
-			if (next !== key) moves.set(key, next);
+			if (next !== storedSlot.key) moves.set(storedSlot.key, next);
 		}
 	}
 	return { moves, deletes: [...deletes] };

@@ -69,8 +69,38 @@ describe("splitSecrets", () => {
 		expect(wire.writes.size).toBe(0);
 	});
 
-	it("empty secret submission is unchanged, not a delete", () => {
-		// An untouched write-only field submits "" — that is "unchanged".
+	it("a renamed table entry writes its secret to the loaded key", () => {
+		// Rename acme → acme-2 AND rotate the header in one save. Under the
+		// documented order (writes, then moves) a write addressed to the NEW
+		// name would be overwritten by the move copying the OLD stored value
+		// on top of it, so the write must address the key the entry was
+		// LOADED under.
+		const { writes, plain } = splitSecrets(
+			{
+				servers: {
+					"acme-2": { $from: "acme", headers: { Authorization: "rotated" } },
+				},
+			},
+			SECRETS,
+		);
+		expect([...writes]).toEqual([["servers/acme/headers/Authorization", "rotated"]]);
+
+		// A new entry (no `$from`) keys on its rendered name.
+		const fresh = splitSecrets(
+			{ servers: { fresh: { headers: { Authorization: "new" } } } },
+			SECRETS,
+		);
+		expect([...fresh.writes]).toEqual([["servers/fresh/headers/Authorization", "new"]]);
+
+		// The plain object still carries the row under its SUBMITTED name, with
+		// its `$from` intact (stripping it is the save path's step): the rename
+		// is the file's business, not the secret walk's.
+		expect(plain).toEqual({
+			servers: { "acme-2": { $from: "acme", headers: { Authorization: "" } } },
+		});
+	});
+
+	it("empty secret submission is unchanged, not a delete", () => {		// An untouched write-only field submits "" — that is "unchanged".
 		const emptied = splitSecrets(
 			{ token: "", servers: { acme: { headers: { Authorization: "" } } } },
 			SECRETS,
@@ -161,6 +191,43 @@ describe("secretMoves", () => {
 				nested,
 			).moves,
 		]).toEqual([["servers/acme/backends/east/token", "servers/acme-2/backends/east-1/token"]]);
+	});
+
+	it("an identity containing a slash is not split into extra levels", () => {
+		// Store keys are joined with "/", so a table key or array identity may
+		// itself contain one. Reconstructing an entry's identity prefix by
+		// splitting the joined key would invent a level and miss the entry —
+		// a spurious delete, and silent loss of the secret.
+		const stored = { servers: { "acme/mcp": { headers: { Authorization: "Bearer x" } } } };
+		const unchanged = secretMoves(
+			stored,
+			{ servers: { "acme/mcp": { $from: "acme/mcp", headers: { Authorization: "" } } } },
+			SECRETS,
+		);
+		expect([...unchanged.moves]).toEqual([]);
+		expect(unchanged.deletes).toEqual([]);
+
+		// A rename still moves (never deletes) that entry's secret.
+		const renamed = secretMoves(
+			stored,
+			{ servers: { "acme-mcp": { $from: "acme/mcp", headers: { Authorization: "" } } } },
+			SECRETS,
+		);
+		expect([...renamed.moves]).toEqual([
+			["servers/acme/mcp/headers/Authorization", "servers/acme-mcp/headers/Authorization"],
+		]);
+		expect(renamed.deletes).toEqual([]);
+
+		// An array identity containing a slash behaves the same way.
+		const arraySecrets = [{ pattern: "/providers/*/clientSecret", key: "id" }];
+		const arrayStored = { providers: [{ id: "acme/mcp", clientSecret: "" }] };
+		expect([
+			...secretMoves(
+				arrayStored,
+				{ providers: [{ id: "acme-mcp", $from: "acme/mcp", clientSecret: "" }] },
+				arraySecrets,
+			).moves,
+		]).toEqual([["providers/acme/mcp/clientSecret", "providers/acme-mcp/clientSecret"]]);
 	});
 
 	it("removed table entry yields deletes for its secrets", () => {

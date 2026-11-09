@@ -613,10 +613,21 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 	if (schema.type === "array") {
 		if (isRecord(schema.items)) {
 			const item = deref(root, schema.items);
-			if (itemHasSecrets(root, item) && !keyOf(item)) {
-				return fail(
-					`array items containing writeOnly fields must declare ${KEY_KEYWORD} (a stable entry identity)`,
-				);
+			if (itemHasSecrets(root, item)) {
+				const key = keyOf(item);
+				if (!key) {
+					return fail(
+						`array items containing writeOnly fields must declare ${KEY_KEYWORD} (a stable entry identity)`,
+					);
+				}
+				// The identity must be READABLE: a key naming a missing or
+				// non-string property yields no identity at save time, so its
+				// secrets can never be keyed. Reject at declare time instead of
+				// dropping the values silently.
+				const keySchema = propertiesOf(root, item).find(([name]) => name === key)?.[1];
+				if (keySchema === undefined || keySchema.type !== "string") {
+					return fail(`${KEY_KEYWORD} "${key}" must name a string-typed property`);
+				}
 			}
 			const result = checkNode(root, schema.items, pointerJoin(pointer, "*"));
 			if (!result.ok) return result;

@@ -642,6 +642,38 @@ describe("checkSchema", () => {
 		expect(keyed.ok).toBe(true);
 	});
 
+	it("rejects an x-sigrun-key property that is not a string", () => {
+		// A key property that is absent, optional or non-string would make the
+		// identity silently unreadable at save time (the entry simply gets no
+		// secret key), so the schema is rejected at declare time instead.
+		const withKey = (name: unknown) =>
+			checkSchema(
+				objectSchema({
+					servers: {
+						type: "array",
+						items: {
+							type: "object",
+							"x-sigrun-key": "name",
+							required: ["name"],
+							properties: {
+								name,
+								token: { type: "string", writeOnly: true },
+							},
+						},
+					},
+				}),
+			);
+		expect(withKey({ type: "string" }).ok).toBe(true);
+		for (const bad of [{ type: "number" }, { type: "integer" }, { type: "boolean" }, {}]) {
+			const result = withKey(bad);
+			expect(result.ok).toBe(false);
+			if (!result.ok) {
+				expect(result.error).toContain("x-sigrun-key");
+				expect(result.error).toContain("string");
+			}
+		}
+	});
+
 	it("rejects a non-object root", () => {
 		expect(checkSchema({ type: "string" }).ok).toBe(false);
 		expect(checkSchema(null).ok).toBe(false);
