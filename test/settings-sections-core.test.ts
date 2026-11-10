@@ -288,6 +288,10 @@ describe("core settings sections (U4 Task 4)", () => {
 				record.type !== "entries"
 			) {
 				if (record.type === "choice" && record.name === "value") return;
+				// A scalar list's synthetic item row inherits the wrapping
+				// field's apply (the drawn rows share it; the item schema's
+				// keyword feeds validation, not the form).
+				if (record.name === "item" && record.type !== "secret") return;
 				out.push({
 					name: record.name,
 					apply: typeof record.apply === "string" ? record.apply : undefined,
@@ -937,7 +941,8 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				typeof record.type === "string" &&
 				!["section", "form", "page", "stack"].includes(record.type) &&
 				record.type !== "entries" &&
-				!(record.type === "choice" && record.name === "value")
+				!(record.type === "choice" && record.name === "value") &&
+				!(record.name === "item")
 			) {
 				out.push(record.name);
 			}
