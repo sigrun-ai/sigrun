@@ -1,3 +1,7 @@
+## [0.13.0] - 2026-11-09
+
+- Version-locked bump with the 0.13.0 core line; the settings rework's TUI additions: `entries` and `variant` field rendering (rows that open in place, add/duplicate/delete with confirm, reorder) in settings forms.
+
 ## [0.12.0] - 2026-11-09
 
 - Version-locked bump with the 0.12.0 core line (no TUI changes).

@@ -1,3 +1,7 @@
+## [0.13.0] - 2026-11-09
+
+- Version-locked bump with the 0.13.0 core line; new `@sigrun/shared/embeddings` carried forward, plus the settings-rework additions: the `entries`/`variant` form field types (spec §5.6) and `SettingsSectionEntry.page`.
+
 ## [0.12.0] - 2026-11-09
 
 - Version-locked bump with the 0.12.0 core line; new `@sigrun/shared/embeddings` subpath (the `EmbeddingResult` type) and the three embedding settings keys.
