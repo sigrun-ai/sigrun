@@ -314,7 +314,7 @@ export const coreSchema: JsonSchema = {
 export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly LayoutGroup[]> = {
 	general: [
 		{ title: "Queueing", paths: ["/steeringMode", "/followUpMode"] },
-		{ title: "Models", paths: ["/defaultModel", "/namingModel"] },
+		{ title: "Models", paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"] },
 		{
 			title: "Behaviour",
 			paths: ["/skills/sectionMaxBytes", "/notifications/runSettled"],
@@ -364,7 +364,6 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 			"/server/compaction/backgroundTokens": { placeholder: undefined },
 		} },
 		{ title: "Embeddings", paths: [
-			"/embeddingModel",
 			"/embeddings/localModels",
 			"/server/embeddings/timeoutMs",
 		] },

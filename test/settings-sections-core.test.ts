@@ -130,7 +130,10 @@ const beforeForms = JSON.parse(
 	),
 ) as Record<"general" | "tools" | "advanced", Tree>;
 
-/** Normalize ids and omit perModelThinking, whose table conversion is intended. */
+/** Normalize ids and omit perModelThinking (its table conversion is intended)
+ * plus the Models-group additions the fixture predates (decisionModel and
+ * embeddingModel joined Models; the fixture's Embeddings group also carried
+ * embeddingModel, which now lives in Models). */
 function normalizedForm(form: Tree): unknown {
 	const copy = structuredClone(form) as unknown as Record<string, unknown>;
 	const walk = (node: unknown): void => {
@@ -145,6 +148,15 @@ function normalizedForm(form: Tree): unknown {
 		if (Array.isArray(record.children)) {
 			record.children = record.children.filter(
 				(child) => (child as { name?: string }).name !== "perModelThinking",
+			);
+		}
+		if (record.type === "section" && (record.title === "Models" || record.title === "Embeddings")) {
+			const children = record.children as unknown[];
+			record.children = children.filter(
+				(child) => {
+					const name = (child as { name?: string }).name;
+					return name !== "decisionModel" && name !== "embeddingModel";
+				},
 			);
 		}
 		for (const child of Object.values(record)) walk(child);
@@ -199,7 +211,6 @@ describe("core settings sections (U4 Task 4)", () => {
 		);
 		for (const key of [
 			"jobs",
-			"decisionModel",
 			"decisions.tool",
 			"server.workspacePath",
 			"server.storagePath",

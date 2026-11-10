@@ -6,12 +6,14 @@ import type { AuthCheckProviderWire, SigrunClient } from "../api";
 export function ProviderCredential(props: {
 	readonly client: SigrunClient;
 	readonly provider: AuthCheckProviderWire;
-	readonly onChange?: (provider: AuthCheckProviderWire) => void;
+	/** Signalled after every successful write; the parent re-fetches
+	 * (the write changes every row sharing the id, not just the
+	 * PUT's preferred row). */
+	onChange?: () => void;
 }): React.ReactElement {
 	const { client, provider, onChange } = props;
 	const [key, setKey] = useState("");
 	const [note, setNote] = useState<{ kind: "ok" | "error"; message: string }>();
-	const apply = (next: AuthCheckProviderWire): void => onChange?.(next);
 	const error = (cause: unknown): void => setNote({
 		kind: "error",
 		message: cause instanceof Error ? cause.message : String(cause),
@@ -19,19 +21,24 @@ export function ProviderCredential(props: {
 	const save = async (): Promise<void> => {
 		if (key === "") return;
 		try {
-			apply(await client.putProviderCredential(provider.provider, key));
+			await client.putProviderCredential(provider.provider, key);
+			onChange?.();
 			setKey("");
 			setNote({ kind: "ok", message: "saved" });
 		} catch (cause: unknown) { error(cause); }
 	};
 	const clear = async (): Promise<void> => {
 		try {
-			apply(await client.deleteProviderCredential(provider.provider));
+			await client.deleteProviderCredential(provider.provider);
+			onChange?.();
 			setNote({ kind: "ok", message: "cleared" });
 		} catch (cause: unknown) { error(cause); }
 	};
 	const refresh = async (): Promise<void> => {
-		try { apply(await client.refreshProvider(provider.provider)); }
+		try {
+			await client.refreshProvider(provider.provider);
+			onChange?.();
+		}
 		catch (cause: unknown) { error(cause); }
 	};
 	return (

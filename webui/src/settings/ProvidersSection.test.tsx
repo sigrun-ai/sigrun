@@ -101,7 +101,12 @@ function makeProvidersHarness(init?: {
 			const id = m[1] as string;
 			// PUT → ready with a live catalog; DELETE → not_configured (the
 			// tracker re-seeds on the refresh).
+			// The wire always carries owner; keep it across the write so the
+			// page's owner filter still matches after the re-fetch the
+			// save triggers (one credential per id, every same-id row
+			// refreshes).
 			entries.set(id, {
+				...(entries.get(id) ?? { provider: id }),
 				provider: id,
 				status: init2?.method === "PUT" ? "ready" : "not_configured",
 				models: 3,

@@ -52,6 +52,19 @@ export function ExtensionPage(props: {
 	const [stored, setStored] = useState<Record<string, unknown>>({});
 	const [unknownKeys, setUnknownKeys] = useState<readonly string[]>([]);
 	const [loadError, setLoadError] = useState<string>();
+	/** A credential write changes every row sharing the written id (one
+	 * credential per id, however many kinds declare it), so the editor's
+	 * refresh re-fetches the whole provider list and replaces this page's
+	 * rows — not just the single preferred row the PUT responds with. */
+	const refreshProviders = useCallback((): void => {
+		client.listProviders()
+			.then((response) => {
+				setProviders(response.providers.filter((provider) => provider.owner === extension.name));
+			})
+			.catch(() => {
+				/* The write landed; the next page load reconciles. */
+			});
+	}, [client, extension.name]);
 	const shared = sections.find((section) => section.id === "settings");
 	const personal = sections.find((section) => section.id === "user-settings");
 	const handleData = useCallback((data: JsonObject): void => {
@@ -107,7 +120,7 @@ export function ExtensionPage(props: {
 							key={provider.provider}
 							client={client}
 							provider={provider}
-							onChange={(next) => setProviders((current) => current.map((row) => row.provider === next.provider ? next : row))}
+							onChange={() => refreshProviders()}
 						/>
 					))}
 				</section>
