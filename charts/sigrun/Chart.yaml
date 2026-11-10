@@ -14,8 +14,8 @@ type: application
 #            core version), and re-derived from package.json at the tagged
 #            commit by the release workflow — not checked against
 #            `version` (they are deliberately independent).
-version: 0.13.0
-appVersion: "0.13.0"
+version: 0.13.1
+appVersion: "0.13.1"
 keywords:
   - assistant
   - agent

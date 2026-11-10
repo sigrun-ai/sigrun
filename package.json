@@ -1,6 +1,6 @@
 {
 	"name": "@sigrun/sigrun",
-	"version": "0.13.0",
+	"version": "0.13.1",
 	"description": "Self-hosted, multi-user personal-assistant server",
 	"type": "module",
 	"exports": {
@@ -54,7 +54,7 @@
 		"@sigrun/ext-mcp": "file:../sigrun-ext-mcp",
 		"@sigrun/ext-tool-search": "file:../sigrun-ext-tool-search",
 		"@sigrun/oauth": "file:../sigrun-ext-oauth",
-		"@sigrun/shared": "0.13.0",
+		"@sigrun/shared": "0.13.1",
 		"croner": "^10.0.1",
 		"fastify": "^5.12.7",
 		"semver": "^7.8.5",
@@ -68,7 +68,7 @@
 	"optionalDependencies": {
 		"@sigrun/sandbox-linux-arm64": "file:./sandbox/npm/linux-arm64",
 		"@sigrun/sandbox-linux-x64": "file:./sandbox/npm/linux-x64",
-		"@sigrun/tui": "0.13.0"
+		"@sigrun/tui": "0.13.1"
 	},
 	"devDependencies": {
 		"@sigrun/memory-markdown": "file:../sigrun-memory-markdown",
