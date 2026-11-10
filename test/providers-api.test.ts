@@ -468,6 +468,49 @@ describe("the Providers-page credential reaches the non-chat registries", () => 
 // GET /v1/providers: model counts + owners
 // ---------------------------------------------------------------------------
 
+describe("credential-aware readiness display", () => {
+	test("a stored credential renders a not_configured tracker as ready (the tracker only learns from calls)", async () => {
+		resetGatedEmbeddingProvider();
+		// The shape where the route writes the magic "default" key: the
+		// embedding/decision/chat provider id IS the default model's provider.
+		const rig = await bootServer("acme-gated/m1", [GATED_EMBEDDING_PROVIDER], {
+			chatProviderId: "acme-gated",
+		});
+		// Premise: before any save, the row honestly reads not_configured.
+		const before = (await listProviders(rig.app, rig.adminToken)).find(
+			(candidate) => candidate.provider === "acme-gated" && candidate.kind === "embedding",
+		);
+		expect(before).toMatchObject({ status: "not_configured" });
+		// The Save: the key lands under "default" (the id IS the default
+		// chat provider), and the re-fetch must NOT still claim
+		// not_configured — the stored key is positive evidence.
+		const put = await call(rig.app, {
+			method: "PUT",
+			url: "/v1/providers/acme-gated/credential",
+			token: rig.adminToken,
+			payload: { apiKey: "display-probe-key" },
+		});
+		expect(put.status).toBe(200);
+		const after = (await listProviders(rig.app, rig.adminToken)).find(
+			(candidate) => candidate.provider === "acme-gated" && candidate.kind === "embedding",
+		);
+		expect(after).toMatchObject({ status: "ready" });
+		expect(after?.detail).toBe("credential saved; the first call verifies it");
+		// A tracker that has already degraded (a failed call) is NOT
+		// overridden — the failure is live information.
+		const cleared = await call(rig.app, {
+			method: "DELETE",
+			url: "/v1/providers/acme-gated/credential",
+			token: rig.adminToken,
+		});
+		expect(cleared.status).toBe(200);
+		const postClear = (await listProviders(rig.app, rig.adminToken)).find(
+			(candidate) => candidate.provider === "acme-gated" && candidate.kind === "embedding",
+		);
+		expect(postClear).toMatchObject({ status: "not_configured" });
+	});
+});
+
 describe("GET /v1/providers entries (models + owner)", () => {
 	test("a tracker provider carries its catalog count and owning contributor; the degenerate provider carries neither owner nor keys", async () => {
 		const { app, adminToken } = await bootServer("openai/gpt-test");

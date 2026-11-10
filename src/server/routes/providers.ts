@@ -26,6 +26,7 @@ import type { ServerContext } from "../context.js";
 import { listModels, providerAuthStatus } from "../helpers.js";
 import type {
 	AuthCheckProvider,
+	AuthStatus,
 	AuthCheckResponse,
 	ModelsResponse,
 	ProvidersResponse,
@@ -116,19 +117,42 @@ function providerReadinessReport(
 	// `/v1/providers` + deprecated-`/v1/auth/check` body plus the W3 Task 6
 	// enrichment (`models`, `owner`).
 	const producersByName = producersIndex(opened);
+	// A stored credential (the id's own auth.json entry, or the magic
+	// "default" entry the credential route writes for the default chat
+	// provider's id) is POSITIVE evidence a provider is configured — a
+	// readiness tracker that has not seen a call yet cannot know it. Rows
+	// whose tracker still says not_configured while a key IS stored render
+	// honestly: ready, with a note that the first call confirms it (the
+	// tracker flips on its own evidence at the first authenticated call).
+	const hasStoredCredential = (id: string): boolean => {
+		const file = opened.auth.read();
+		return file[id]?.apiKey !== undefined
+			|| (id === opened.defaultModel.provider
+					&& file[DEFAULT_AUTH_KEY]?.apiKey !== undefined);
+	};
+	const credentialAware = <T extends { readonly provider: string; readonly status: AuthStatus; readonly detail?: string }>(
+		entry: T,
+	): T => {
+		if (entry.status !== "not_configured" || !hasStoredCredential(entry.provider)) return entry;
+		return {
+			...entry,
+			status: "ready",
+			detail: "credential saved; the first call verifies it",
+		};
+	};
 	const providers: AuthCheckProvider[] = [];
 	for (const { id: providerId } of opened.models.getProviders()) {
-		providers.push(readinessEntry(opened, providerId, producersByName));
+		providers.push(credentialAware(readinessEntry(opened, providerId, producersByName)));
 	}
 	// Warden Task 7: decision providers append as their own entries
 	// (`kind: "decision"`, the model ids listed) — a decision provider
 	// whose id collides with a chat provider stays SEPARATE (distinct
 	// kinds, never merged).
 	for (const decision of opened.decisions.providers()) {
-		providers.push(decisionEntry(decision));
+		providers.push(credentialAware(decisionEntry(decision)));
 	}
 	for (const embedding of opened.embeddings.providers()) {
-		providers.push(embeddingEntry(embedding));
+		providers.push(credentialAware(embeddingEntry(embedding)));
 	}
 	return { providers };
 }

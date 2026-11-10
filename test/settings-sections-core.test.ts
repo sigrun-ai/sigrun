@@ -150,7 +150,26 @@ function normalizedForm(form: Tree): unknown {
 				(child) => (child as { name?: string }).name !== "perModelThinking",
 			);
 		}
-		if (record.type === "section" && (record.title === "Models" || record.title === "Embeddings")) {
+		// The fixture predates the Models-group moves AND the model-picker
+		// overrides: normalize the four fields back to the plain text
+		// fields the fixture froze (drop decisionModel/embeddingModel,
+		// restore defaultModel/namingModel to generated text fields).
+		if (record.type === "section" && record.title === "Models") {
+			const children = record.children as unknown[];
+			record.children = children.flatMap((child) => {
+				const name = (child as { name?: string }).name;
+				if (name === "decisionModel" || name === "embeddingModel") return [];
+				if (name === "defaultModel" || name === "namingModel") {
+					const field = { ...(child as Record<string, unknown>) };
+					field.type = "text";
+					delete field.options;
+					delete field.allowOther;
+					return [field];
+				}
+				return [child];
+			});
+		}
+		if (record.type === "section" && record.title === "Embeddings") {
 			const children = record.children as unknown[];
 			record.children = children.filter(
 				(child) => {
@@ -419,6 +438,28 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		expect((after.body as { data: JsonObject }).data.settings).toMatchObject({
 			namingModel: "acme/namer-1",
 		});
+	});
+
+	test("the General surface carries the model roster the Models pickers bind", async () => {
+		const { app, aliceToken } = await server();
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/general",
+			token: aliceToken,
+		});
+		expect(result.status).toBe(200);
+		const data = (result.body as { data: JsonObject }).data;
+		const roster = data.modelRoster as Record<string, unknown>;
+		// The three bindings the Models group's pickers resolve against —
+		// arrays of {id, label} rows, server-computed from the served
+		// catalog and the decision/embedding registries (both empty on
+		// this rig's default boot; default lists the served chat models).
+		expect(Array.isArray(roster.default)).toBe(true);
+		expect(Array.isArray(roster.decision)).toBe(true);
+		expect(Array.isArray(roster.embedding)).toBe(true);
+		for (const row of roster.default as { id: string }[]) {
+			expect(row.id).toMatch(/^[^\/]+\/[^\/]+$/);
+		}
 	});
 
 	test("a restart key's save lands it in pendingRestart", async () => {

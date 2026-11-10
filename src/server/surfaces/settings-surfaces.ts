@@ -366,6 +366,10 @@ export interface SettingsSurfaceOptions {
 		readonly bootSnapshot: SettingsBootSnapshot;
 		readonly env: Readonly<Record<string, string | undefined>>;
 		readonly toolRoster: readonly string[];
+		/** The Models group's picker options (the `/modelRoster/*` bindings):
+		 * `default` the served chat catalog, `decision`/`embedding` the
+		 * decision/embedding registries' provider-qualified model ids. */
+		readonly modelRoster: Readonly<Record<"default" | "decision" | "embedding", readonly { id: string; label: string }[]>>;
 		/** Deployment-managed top-level keys, read fresh per render/save. */
 		readonly managed: () => readonly string[];
 	};
@@ -461,6 +465,15 @@ export function settingsSurfaceFor(
 			// checkbox list). The binding's shape is ChoiceOption[]
 			// (`{id, label}` rows, spec §5.6).
 			toolRoster: options.core.toolRoster.map((name) => ({ id: name, label: name })),
+			// The Models group's picker bindings (`/modelRoster/default`,
+			// `/modelRoster/decision`, `/modelRoster/embedding`) — served
+			// per render, so a provider refresh between loads is picked up
+			// without a settings change.
+			modelRoster: {
+				default: [...options.core.modelRoster.default],
+				decision: [...options.core.modelRoster.decision],
+				embedding: [...options.core.modelRoster.embedding],
+			} satisfies JsonObject,
 		};
 	};
 

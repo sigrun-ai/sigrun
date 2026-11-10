@@ -314,7 +314,38 @@ export const coreSchema: JsonSchema = {
 export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly LayoutGroup[]> = {
 	general: [
 		{ title: "Queueing", paths: ["/steeringMode", "/followUpMode"] },
-		{ title: "Models", paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"] },
+		{ title: "Models", paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"],
+			overrides: {
+				// Model pickers, not free text: options bind the served catalog
+				// (the surface feeds `/modelRoster` per field — chat models for
+				// defaultModel/namingModel, decision models for decisionModel,
+				// embedding models for embeddingModel), with `allowOther` so a
+				// not-yet-served id stays enterable (the value is provider/model).
+				"/defaultModel": {
+					type: "choice",
+					options: { $: "/modelRoster/default" },
+					allowOther: { label: "Other model id (provider/model)" },
+				placeholder: undefined,
+				},
+				"/namingModel": {
+					type: "choice",
+					options: { $: "/modelRoster/default" },
+					allowOther: { label: "Other model id (provider/model)" },
+				placeholder: undefined,
+				},
+				"/decisionModel": {
+					type: "choice",
+					options: { $: "/modelRoster/decision" },
+					allowOther: { label: "Other model id (provider/model)" },
+				placeholder: undefined,
+				},
+				"/embeddingModel": {
+					type: "choice",
+					options: { $: "/modelRoster/embedding" },
+					allowOther: { label: "Other model id (provider/model)" },
+				placeholder: undefined,
+				},
+			} },
 		{
 			title: "Behaviour",
 			paths: ["/skills/sectionMaxBytes", "/notifications/runSettled"],

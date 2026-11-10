@@ -405,13 +405,34 @@ export async function createServer(
 					// registry's tool names, deduped — the roster the
 					// checkbox list edits against).
 					toolRoster: [
-						...new Set(
-							opened.registry
-								.snapshot()
-								.tools()
-								.map((entry) => entry.tool.name),
-						),
-					],
+							...new Set(
+								opened.registry
+									.snapshot()
+									.tools()
+									.map((entry) => entry.tool.name),
+								),
+						],
+					// The Models group's picker options (`/modelRoster/*` bindings),
+					// from the SERVED catalog: chat rows for defaultModel/namingModel,
+					// the decision registry's model ids for decisionModel, and the
+					// embedding registry's model ids for embeddingModel. A provider
+					// whose models are missing here appears via the field's
+					// allowOther instead (e.g. a not-yet-refreshed catalog).
+					modelRoster: {
+							default: listModels(opened).map((model) => ({ id: model.id, label: model.name ?? model.id })),
+							decision: opened.decisions.providers().flatMap((provider) =>
+								provider.models.map((model) => ({
+									id: `${provider.id}/${model}`,
+									label: `${provider.id}/${model}`,
+								})),
+							),
+							embedding: opened.embeddings.providers().flatMap((provider) =>
+								provider.models.map((model) => ({
+									id: `${provider.id}/${model}`,
+									label: `${provider.id}/${model}`,
+								})),
+							),
+						},
 					managed: opened.managedSettings,
 				},
 				}),
