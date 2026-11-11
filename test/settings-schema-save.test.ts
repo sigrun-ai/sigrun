@@ -487,6 +487,17 @@ test("a blank secret still means unchanged", async () => {
 	expect(await secrets(rig)).toEqual({ token: "synthetic-top-level-value" });
 });
 
+test("a blank constrained secret saves other valid values without changing the secret", async () => {
+	const rig = await boot({
+		settings: { interval: 30 },
+		secrets: { constrainedToken: "synthetic-constrained-value" },
+	});
+	const result = await save(rig, { constrainedToken: "", interval: 45 }, "blank-constrained-secret");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ interval: 45 });
+	expect(await secrets(rig)).toEqual({ constrainedToken: "synthetic-constrained-value" });
+});
+
 test("clearing a value still publishes its key", async () => {
 	const rig = await boot({ settings: { endpoint: "https://a.example.invalid" } });
 	await save(rig, { endpoint: "" }, "blank-notifies");

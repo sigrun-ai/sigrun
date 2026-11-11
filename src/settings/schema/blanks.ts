@@ -15,11 +15,7 @@
 
 import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
 import type { JsonSchema } from "./keywords.js";
-import { deref } from "./keywords.js";
-
-function isRec(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
+import { deref, isRecord as isRec } from "./keywords.js";
 
 export function dropBlankOptionalStrings(
 	values: Record<string, unknown>,

@@ -891,12 +891,13 @@ function schemaError(
 	schema: JsonSchema,
 	values: Record<string, unknown>,
 ): ActionResult | undefined {
-	// A writeOnly null is the channels' explicit-clear action. Omit the slot
-	// from validation so constraints on a present string never reject a clear;
-	// splitSecrets consumes the original null and deletes the store key.
+	// A writeOnly null is the channels' explicit-clear action; a blank
+	// string means unchanged. Omit both from validation so constraints on
+	// a present string never reject either no-op. splitSecrets consumes
+	// the original values to delete a cleared key or preserve a blank one.
 	const project = (value: unknown, node: unknown): JsonValue | undefined => {
 		if (!isRec(node)) return value as JsonValue;
-		if (node.writeOnly === true && value === null) return undefined;
+		if (node.writeOnly === true && (value === null || value === "")) return undefined;
 		if (Array.isArray(value)) return value.flatMap((entry) => {
 			const projected = project(entry, node.items);
 			return projected === undefined ? [] : [projected];
