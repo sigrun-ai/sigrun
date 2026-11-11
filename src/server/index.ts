@@ -426,26 +426,26 @@ export async function createServer(
 					service: surfacesService,
 					...(section.id === "models" ? { renderTree: withoutEmptyModelKind } : {}),
 					core: {
-					settings: opened.settings,
-					bootSnapshot: opened.settingsBootSnapshot,
-					env,
-					// The Tools section's default-tools options (the boot
-					// registry's tool names, deduped — the roster the
-					// checkbox list edits against).
-					toolRoster: [
+						settings: opened.settings,
+						bootSnapshot: opened.settingsBootSnapshot,
+						env,
+						// The Tools section's default-tools options (the boot
+						// registry's tool names, deduped — the roster the
+						// checkbox list edits against).
+						toolRoster: [
 							...new Set(
 								opened.registry
 									.snapshot()
 									.tools()
 									.map((entry) => entry.tool.name),
-								),
+							),
 						],
-					modelRoster: () => buildModelRoster(
-						opened,
-						opened.locality,
-						(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
-					),
-					defaultModel: `${opened.defaultModel.provider}/${opened.defaultModel.modelId}`,
+						modelRoster: () => buildModelRoster(
+							opened,
+							opened.locality,
+							(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+						),
+						defaultModel: `${opened.defaultModel.provider}/${opened.defaultModel.modelId}`,
 						managed: opened.managedSettings,
 					},
 				}),

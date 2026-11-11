@@ -44,14 +44,29 @@ function record(value: JsonValue | undefined): JsonObject | undefined {
 	return typeof value === "object" && value !== null && !Array.isArray(value) ? value : undefined;
 }
 
-function liveRows(data: JsonObject, kind: ModelKindId, bareRoster?: ModelRoster): number {
-	if (bareRoster !== undefined) return bareRoster[kind].length;
-	// Use the fresh roster before considering the field's stored value.
-	// ChoiceOption[] is a validated transport value, so only its length is read.
-	// SAFETY: modelsData serializes the same ModelRoster into this field
-	// before calling this optional projection; this is that known contract.
-	const rosters = data.modelRoster as unknown as ModelRoster | undefined;
-	return rosters?.[kind]?.length ?? 0;
+function liveRows(data: JsonObject, kind: ModelKindId): number {
+	// Live rows, not the served+stored projection. Preferences mode
+	// consumers retain the payload's plain {chat,decision,embedding} rosters.
+	return asLiveModelCounts(data.modelLiveCounts)[kind] ?? 0;
+}
+
+/** Live per-kind registry rows are read fresh by the core adapter. */
+export function liveModelCounts(opened: OpenedHarness): Readonly<Record<ModelKindId, number>> {
+	return {
+		chat: opened.models.getModels().length,
+		decision: opened.decisions.providers().reduce((n, p) => n + p.models.length, 0),
+		embedding: opened.embeddings.providers().reduce((n, p) => n + p.models.length, 0),
+	};
+}
+
+/** Typed read of the same transport record, avoiding a payload-wide cast. */
+function asLiveModelCounts(value: JsonValue | undefined): Readonly<Record<ModelKindId, number>> {
+	const obj = record(value);
+	return {
+		chat: typeof obj?.chat === "number" ? obj.chat : 0,
+		decision: typeof obj?.decision === "number" ? obj.decision : 0,
+		embedding: typeof obj?.embedding === "number" ? obj.embedding : 0,
+	};
 }
 
 /** Omit an empty kind, but never an unserved STORED value. The utility field

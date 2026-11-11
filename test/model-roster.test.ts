@@ -143,6 +143,18 @@ test("a kind with no models and no stored value is omitted", () => {
 	expect(section.form.root.type).toBe("form");
 });
 
+test("an empty live kind never draws a sibling field without its own stored value", () => {
+	const section = CORE_SETTINGS_SECTIONS.find((candidate) => candidate.id === "models");
+	if (section === undefined) throw new Error("missing Models section");
+	const rendered = withoutEmptyModelKind(section.form, {
+		settings: { namingModel: "acme/utility-gone" },
+		modelRoster: { chat: [{ id: "acme/default-gone", label: "acme/default-gone (not currently served)" }], decision: [], embedding: [] },
+	});
+	if (rendered.root.type !== "form") throw new Error("missing form");
+	expect(JSON.stringify(rendered)).toContain('"name":"namingModel"');
+	expect(JSON.stringify(rendered)).not.toContain('"name":"defaultModel"');
+});
+
 test("withUnserved only appends a stored value absent from the roster", () => {
 	const served = [{ id: "acme/chat-1", label: "acme/chat-1 · Acme Provider" }];
 	expect(withUnserved(served, undefined)).toEqual(served);

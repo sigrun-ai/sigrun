@@ -397,10 +397,15 @@ function modelsData(roster: ModelRoster, values: {
 	readonly embeddingModel?: string;
 }, systemDefault: string): JsonObject {
 	const projected = systemModelRosterData(roster, values);
-	const data: JsonObject = { modelRoster: {}, modelDefaults: {} };
+	const data: JsonObject = {modelRoster: {}, modelDefaults: {}, modelLiveCounts: {}};
 	const target = data.modelRoster as JsonObject;
 	for (const kind of ["chat", "decision", "embedding"] as const) {
-		target[kind] = projected[kind].map((row) => ({ id: row.id, label: String(row.label) }));
+		target[kind] = projected[kind].map((row) => ({
+			id: row.id,
+			label: typeof row.label === "string" ? row.label : row.label.$,
+		}));
+		const live = data.modelLiveCounts as JsonObject;
+		live[kind] = roster[kind].length;
 	}
 	const modelDefaults = data.modelDefaults as JsonObject;
 	modelDefaults.chat = `System default (${systemDefault})`;
