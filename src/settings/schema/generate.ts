@@ -682,7 +682,7 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 		if (schema[OVERRIDABLE_KEYWORD] !== true) {
 			return fail(`${OVERRIDABLE_KEYWORD} must be true`);
 		}
-		if (schema.type === "object" || schema.type === "array") {
+		if (schema.type === "object" || schema.type === "array" || isRecord(schema.properties)) {
 			return fail(`${OVERRIDABLE_KEYWORD} is valid only on leaf properties (not object/array)`);
 		}
 	}

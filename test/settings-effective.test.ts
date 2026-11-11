@@ -119,6 +119,7 @@ describe("overridesSchema", () => {
 
 	it("overridesSchema rejects extra keys", async () => {
 		const { checkStoredSettings } = await import("../src/settings/schema/defaults.js");
+		const { Errors } = await import("typebox/schema");
 		const schema = objectSchema({
 			defaultModel: { type: "string", [OVERRIDABLE_KEYWORD]: true },
 			namingModel: { type: "string" },
@@ -139,7 +140,10 @@ describe("overridesSchema", () => {
 		const nestedResult = overridesSchema(nested);
 		const outer = (nestedResult.properties as Record<string, unknown>).outer as Record<string, unknown>;
 		expect(outer.additionalProperties).toBe(false);
-		// Actually validate a payload with an extra key — it must be rejected
+		// TypeBox Errors rejects a payload naming an extra key
+		const [valid] = Errors(result, { namingModel: "acme/hack" });
+		expect(valid).toBe(false);
+		// checkStoredSettings repairs it away
 		const validated = checkStoredSettings(result, { namingModel: "acme/hack" });
 		expect(validated.repairs.length).toBeGreaterThan(0);
 		expect(validated.value).not.toHaveProperty("namingModel");

@@ -44,7 +44,7 @@ export function overridableKeys(schema: JsonSchema): readonly string[] {
 
 /** Derive the user-facing overrides schema from the full core schema. */
 export function overridesSchema(schema: JsonSchema): JsonSchema {
-	function walk(node: JsonSchema): JsonSchema | undefined {
+	function walk(node: JsonSchema, root: JsonSchema): JsonSchema | undefined {
 		// Leaf with the marker → strip default, keep the rest
 		if (node[OVERRIDABLE_KEYWORD] === true) {
 			const { default: _default, [OVERRIDABLE_KEYWORD]: _marker, ...rest } = node;
@@ -53,8 +53,8 @@ export function overridesSchema(schema: JsonSchema): JsonSchema {
 		// Object with properties → recurse
 		if (node.type === "object" || isRecord(node.properties)) {
 			const result: Record<string, unknown> = {};
-			for (const [name, child] of propertiesOf(node, node)) {
-				const filtered = walk(child);
+			for (const [name, child] of propertiesOf(root, node)) {
+				const filtered = walk(child, root);
 				if (filtered !== undefined) result[name] = filtered;
 			}
 			if (Object.keys(result).length === 0) return undefined;
@@ -68,7 +68,7 @@ export function overridesSchema(schema: JsonSchema): JsonSchema {
 		return undefined;
 	}
 
-	const root = walk(schema);
+	const root = walk(schema, schema);
 	return root ?? { type: "object", properties: {}, additionalProperties: false };
 }
 
@@ -109,7 +109,9 @@ export function createEffectiveSettings(deps: EffectiveSettingsDeps): EffectiveS
 			const resolved = resolveUser(user);
 			if (resolved !== undefined && marked.has(key)) {
 				const stored = await deps.overrides(resolved);
-				if (stored[key] !== undefined) return stored[key];
+				const override = stored[key];
+				// Blank strings are unset (parity with plan 1's blank-strip rule)
+				if (override !== undefined && override !== "") return override;
 			}
 			return deps.system(key);
 		},
