@@ -61,7 +61,7 @@ import {
 } from "@sigrun/shared/themes";
 import { realpathSync } from "node:fs";
 import { pathToFileURL } from "node:url";
-import { AUTH_FAILURE_MESSAGE, authFailureMessage, SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
+import { authFailureMessage, isAuthFailureMessage, SigrunClient, SigrunApiError, type FetchLike } from "./api.js";
 import { watchEvents } from "./sse.js";
 import { createStandardKeymap } from "./keymaps/standard.js";
 import { createVimKeymap } from "./keymaps/vim.js";
@@ -171,7 +171,7 @@ export function createStreamHealthNotices(notify: (message: string) => void): {
 	return {
 		onError(message) {
 			if (authFailed) return;
-			if (message === AUTH_FAILURE_MESSAGE) {
+			if (isAuthFailureMessage(message)) {
 				authFailed = true;
 				notify(message);
 				return;

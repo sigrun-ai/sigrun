@@ -13,7 +13,11 @@
 import { describe, expect, test } from "vitest";
 import type { SurfaceTransport, Tree } from "@sigrun/shared/blocks";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
-import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "../src/api.js";
+import {
+	AUTH_FAILURE_MESSAGE,
+	FRONT_AUTH_FAILURE_MESSAGE,
+	type ConversationViewWire,
+} from "../src/api.js";
 
 function view(id: number, entries: unknown[]): ConversationViewWire {
 	return {
@@ -111,6 +115,16 @@ describe("ConversationPane auth notices (polish task 12)", () => {
 		const lines = pane.render(80).join("\n");
 		expect(lines).toContain(AUTH_PREFIX);
 		expect(lines).not.toContain("conv-1 error");
+	});
+
+	test("the front-auth notice dedupes and survives clearNotices too", () => {
+		const prefix = FRONT_AUTH_FAILURE_MESSAGE.slice(0, 40);
+		const pane = new ConversationPane();
+		pane.showError(FRONT_AUTH_FAILURE_MESSAGE);
+		pane.showNotice(FRONT_AUTH_FAILURE_MESSAGE);
+		pane.clearNotices();
+		const lines = pane.render(80).join("\n");
+		expect(lines.split(prefix).length - 1).toBe(1);
 	});
 
 	test("showNotice and showError dedupe only the AUTH_FAILURE string", () => {

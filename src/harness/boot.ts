@@ -1028,6 +1028,24 @@ export async function openHarness(
 			"isolation with proxy authentication requires server.auth.proxy.secretHeader; configure a shared-secret header or disable isolation",
 		);
 	}
+	// The half-configured shared secret: a secretHeader with no secret makes
+	// the pipeline skip the secret check, so any peer in trustedProxies could
+	// vouch for any user from the identity headers alone — while the guard
+	// above (and the admission guard) read the header as "secured". Refuse
+	// to serve instead of running open. Enforced here (server boot), not in
+	// loadConfig, so CLI subcommands run from a shell without the server's
+	// env still work.
+	if (
+		methods.includes("proxy") &&
+		config.auth.proxy.secretHeader !== undefined &&
+		config.auth.proxy.secret === undefined
+	) {
+		throw new Error(
+			"server.auth.proxy.secretHeader is set but SIGRUN_PROXY_SECRET is empty — " +
+				"without the shared secret any peer in trustedProxies could vouch for any user; " +
+				"set SIGRUN_PROXY_SECRET or remove secretHeader",
+		);
+	}
 	identity.users.configureAdmission({
 		firstWorkspace: config.workspace.path,
 		admit: createAdmissionGuard({

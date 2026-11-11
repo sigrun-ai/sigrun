@@ -22,6 +22,7 @@ import type {
 	SurfaceTransport,
 } from "@sigrun/shared/blocks";
 import { SigrunApiError } from "../api.js";
+import { clientHeaders } from "../client-headers.js";
 
 export interface ChatTransportOptions {
 	readonly conversationId: number;
@@ -52,13 +53,11 @@ export function createChatTransport(
 	const baseUrl = options.baseUrl.replace(/\/+$/, "");
 	const listeners = new Set<(event: SurfaceChangedEvent) => void>();
 	const headers = (): Record<string, string> => ({
-		accept: "application/json",
-		...(options.user === undefined || options.user.trim() === ""
-			? {}
-			: { "x-sigrun-user": options.user.trim() }),
-		...(options.token === undefined || options.token.trim() === ""
-			? {}
-			: { authorization: `Bearer ${options.token.trim()}` }),
+		...clientHeaders({
+			accept: "application/json",
+			...(options.user === undefined ? {} : { user: options.user }),
+			...(options.token === undefined ? {} : { token: options.token }),
+		}),
 	});
 
 	const get = async <T>(path: string): Promise<T> => {

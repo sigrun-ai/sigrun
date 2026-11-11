@@ -18,6 +18,7 @@
  */
 
 import type { CommandRunResponse, CommandsResponse } from "@sigrun/shared/commands";
+import { clientHeaders } from "./client-headers.js";
 import type {
 	NoticeActionResponse,
 	NoticesResponse,
@@ -137,11 +138,12 @@ export class SigrunApiError extends Error {
 
 /**
  * The user-facing name of an auth failure (Task 5): a 401
- * {@link SigrunApiError} maps to {@link AUTH_FAILURE_MESSAGE} — the one
- * string that tells the operator WHAT is wrong and WHERE to fix it (the
- * token is missing, expired, or revoked; a new one is minted in the
- * webui's Settings → API tokens section). Anything else (a different
- * status, a non-api error) maps to `undefined`: the caller keeps its
+ * {@link SigrunApiError} maps by its body ({@link authFailureForBody}) —
+ * sigrun's own 401 to {@link AUTH_FAILURE_MESSAGE} (the token is missing,
+ * expired, or revoked; a new one is minted in the webui's Settings → API
+ * tokens section), anything else to {@link FRONT_AUTH_FAILURE_MESSAGE}
+ * (a proxy in front of sigrun rejected the request). A different status
+ * or a non-api error maps to `undefined`: the caller keeps its
  * generic error path. Shared by the startup exit (`tuiStartupMessage`),
  * the pane's error lines (`describeCommandError`), and the SSE
  * reconnect policy (a 401 never retries — a credential cannot recover
@@ -150,10 +152,50 @@ export class SigrunApiError extends Error {
 export const AUTH_FAILURE_MESSAGE =
 	"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens";
 
+/**
+ * The 401 that never reached sigrun: a forward-auth proxy (or any gateway
+ * in front of the server) answered first, so the token was never checked.
+ * Telling the operator to mint a new token would send them the wrong way.
+ */
+export const FRONT_AUTH_FAILURE_MESSAGE =
+	"authentication failed (401) before the request reached sigrun: a proxy or forward-auth in front of the server rejected it — connect through a route without forward auth";
+
+/**
+ * Name a 401 by its body: sigrun's own 401s are JSON objects whose
+ * `error` is one of sigrun's 401 codes ({@link SIGRUN_401_CODES});
+ * anything else (HTML, empty, unparseable → `undefined`, or a gateway's
+ * own JSON) came from something in front of sigrun.
+ */
+export function authFailureForBody(body: unknown): string {
+	const code =
+		typeof body === "object" && body !== null && !Array.isArray(body)
+			? (body as { error?: unknown }).error
+			: undefined;
+	return typeof code === "string" && SIGRUN_401_CODES.has(code)
+		? AUTH_FAILURE_MESSAGE
+		: FRONT_AUTH_FAILURE_MESSAGE;
+}
+
+/**
+ * Every `error` code sigrun answers a 401 with (`unauthenticated` from the
+ * auth pipeline and login routes, `invalid_token` from the auth routes).
+ * A new server-side 401 code must be added here, or the TUI reports it as
+ * a proxy rejection.
+ */
+const SIGRUN_401_CODES: ReadonlySet<string> = new Set([
+	"unauthenticated",
+	"invalid_token",
+]);
+
+/** True for either auth-failure message (both are terminal, process-wide). */
+export function isAuthFailureMessage(text: string): boolean {
+	return text === AUTH_FAILURE_MESSAGE || text === FRONT_AUTH_FAILURE_MESSAGE;
+}
+
 /** @see {@link AUTH_FAILURE_MESSAGE} */
 export function authFailureMessage(error: unknown): string | undefined {
 	if (error instanceof SigrunApiError && error.status === 401) {
-		return AUTH_FAILURE_MESSAGE;
+		return authFailureForBody(error.body);
 	}
 	return undefined;
 }
@@ -241,13 +283,11 @@ export class SigrunClient {
 		const token = options.token?.trim();
 		this.#token = token === "" ? undefined : token;
 		this.#user = user === "" ? undefined : user;
-		this.#headers = {
+		this.#headers = clientHeaders({
 			accept: "application/json",
-			...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
-			...(token === undefined || token === ""
-				? {}
-				: { authorization: `Bearer ${token}` }),
-		};
+			...(user === undefined ? {} : { user }),
+			...(token === undefined ? {} : { token }),
+		});
 	}
 
 	async #get<T>(path: string): Promise<T> {

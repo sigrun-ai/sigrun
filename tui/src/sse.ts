@@ -30,8 +30,9 @@
  * transport.
  */
 
-import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "./api.js";
+import { authFailureForBody, type ConversationViewWire } from "./api.js";
 import { applyDelta, type ViewDelta } from "@sigrun/shared/view-delta";
+import { clientHeaders } from "./client-headers.js";
 import type { HostEventWire } from "@sigrun/shared/views";
 
 export interface WatchHandlers {
@@ -159,15 +160,11 @@ export function watchConversation(
 	const maxMs = options.reconnectMaxMs ?? 4_000;
 	/** Give up after this many consecutive failed reconnects. */
 	const maxAttempts = 10;
-	const user = options.user?.trim();
-	const token = options.token?.trim();
-	const headers: Record<string, string> = {
+	const headers = clientHeaders({
 		accept: "text/event-stream",
-		...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
-		...(token === undefined || token === ""
-			? {}
-			: { authorization: `Bearer ${token}` }),
-	};
+		...(options.user === undefined ? {} : { user: options.user }),
+		...(options.token === undefined ? {} : { token: options.token }),
+	});
 	const url = `${options.baseUrl}/v1/conversations/${conversationId}/stream`;
 
 	let closed = false;
@@ -228,7 +225,9 @@ export function watchConversation(
 			// reconnecting — surface the auth-failure string ONCE and stop
 			// (never a silent retry ladder against a revoked token).
 			if (response.status === 401) {
-				handlers.onError?.(AUTH_FAILURE_MESSAGE);
+				const body: unknown = await response.json().catch(() => undefined);
+				if (closed) return;
+				handlers.onError?.(authFailureForBody(body));
 				return;
 			}
 			handlers.onError?.(
@@ -376,15 +375,11 @@ export function watchEvents(
 	const baseMs = options.reconnectBaseMs ?? 250;
 	const maxMs = options.reconnectMaxMs ?? 4_000;
 	const maxAttempts = 10;
-	const user = options.user?.trim();
-	const token = options.token?.trim();
-	const headers: Record<string, string> = {
+	const headers = clientHeaders({
 		accept: "text/event-stream",
-		...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
-		...(token === undefined || token === ""
-			? {}
-			: { authorization: `Bearer ${token}` }),
-	};
+		...(options.user === undefined ? {} : { user: options.user }),
+		...(options.token === undefined ? {} : { token: options.token }),
+	});
 	const url = `${options.baseUrl}/v1/events`;
 
 	let closed = false;
@@ -433,7 +428,9 @@ export function watchEvents(
 			// A 401 (Task 5) is terminal — same rule as the conversation
 			// stream: the auth-failure string ONCE, never a retry ladder.
 			if (response.status === 401) {
-				handlers.onError?.(AUTH_FAILURE_MESSAGE);
+				const body: unknown = await response.json().catch(() => undefined);
+				if (closed) return;
+				handlers.onError?.(authFailureForBody(body));
 				return;
 			}
 			handlers.onError?.(
