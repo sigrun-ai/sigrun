@@ -80,6 +80,13 @@ resolved via `siblingRepo`) use the sibling's committed `dist/` — rebuild it
 - **Verification before completion**: run `npm test` + `npm run typecheck`
   before claiming done; the webui adds `build:webui` when its source moved,
   the tui adds its workspace test + typecheck when `tui/` moved.
+- **Live API checks**: use the admin token in `.env` (`SIGRUN_TOKEN`, read
+  with `SIGRUN_TOKEN=$(awk -F= '/^SIGRUN_TOKEN/{print $2}' .env)` and fed to
+  the server over stdin, never argv). Do NOT mint a token per probe with
+  `sigrun token create` — the store accumulates one record per call and
+  nothing prunes them, so a verification spree leaves a pile of live
+  credentials behind. If a check genuinely needs its own token, revoke it
+  (`sigrun token revoke <id>`) in the same breath.
 - **Private artifacts**: never commit real hostnames, tokens, or session
   transcripts. `docs/private.md` and `.env` stay untracked by design.
 - Tests own their literals: fixtures use synthetic hosts (`.example`,
