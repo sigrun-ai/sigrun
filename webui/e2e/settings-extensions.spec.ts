@@ -17,6 +17,7 @@ import { expect, test } from "@playwright/test";
 import { bootE2EServer } from "./harness.js";
 
 let server: Awaited<ReturnType<typeof bootE2EServer>>;
+const storedSettings = { acmeSetting: "stored-value" };
 
 test.beforeAll(async () => {
 	// The stores fixture: an arity-1 factory that captures its host; the
@@ -29,6 +30,15 @@ test.beforeAll(async () => {
 			join(fixtureDir, "..", "e2e-extensions", "acme-ext", "index.js"),
 		],
 	});
+	// An extension with no declarations earns its admin settings page from
+	// a non-empty stored settings file (the harness's hermetic config dir).
+	const extensionSettingsDir = join(server.workspaceDir, "config", "settings");
+	await mkdir(extensionSettingsDir, { recursive: true });
+	await writeFile(
+		join(extensionSettingsDir, "acme-tool.json"),
+		JSON.stringify(storedSettings),
+		"utf8",
+	);
 });
 
 test.afterAll(async () => {
@@ -58,7 +68,7 @@ test("an undeclared extension's page shows its status and read-only stored JSON"
 	// read-only stored JSON instead of the retired raw-JSON editor.
 	await row.getByText("Advanced", { exact: true }).click();
 	await expect(row).toContainText("This extension doesn't describe its settings.");
-	await expect(row.locator("pre")).toContainText("{}");
+	await expect(row.locator("pre")).toContainText(JSON.stringify(storedSettings, null, 2));
 	await expect(row.locator(".settings-ext-settings")).toHaveCount(0);
 
 
