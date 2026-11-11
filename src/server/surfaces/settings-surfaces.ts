@@ -361,6 +361,22 @@ export interface SettingsSurfaceOptions {
 	 * calls to modelRoster are fresh on each core Models render. */
 	readonly renderTree?: (tree: Tree, data: JsonObject) => Tree;
 	/**
+	 * The per-caller user resolver (settings split Plan 2 Task 5): replaces
+	 * the default `namedUser` at every user-resolution site of
+	 * `schemaSettingsSurfaceFor` (accessFor, readStored, the instanceKey
+	 * closure, the save). Return `undefined` for "no user" — the surface
+	 * then answers `named_user_required`. The My-Models surface resolves
+	 * the userless superuser to the PRIMARY ADMIN; other surfaces keep
+	 * the default (the principal's own live directory user).
+	 */
+	readonly resolveUser?: (principal: Principal) => string | undefined;
+	/**
+	 * Extra render data merged over the schema surface's data (Task 5:
+	 * My Models' default-first `/modelRoster/<kind>` payloads). `user` is
+	 * the RESOLVED caller (the primary admin for a userless superuser).
+	 */
+	readonly extraData?: (user: string | undefined) => Promise<JsonObject>;
+	/**
 	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
 	 * `slug === "core"` — the core sections read/write the core
 	 * SettingsStore (dotted field names land at their nested paths,
@@ -958,14 +974,28 @@ function schemaError(
 	};
 	const [valid, errors] = Errors(schema, project(values, schema));
 	if (valid) return undefined;
-	const first = errors.find(
+	// additionalProperties: false (Task 4's overridesSchema sets it at every
+	// object level) reports instancePath "" — name the OFFENDING KEY from
+	// the error's params so the save's error.field identifies it. Only a
+	// root `false` opts in: a table's additionalProperties SCHEMA also
+	// emits the keyword, and its more specific leaf error must win.
+	const additionalError = schema.additionalProperties === false
+		? errors.find((error) => error.keyword === "additionalProperties")
+		: undefined;
+	const first = additionalError ?? errors.find(
 		(error) => error.keyword !== "oneOf" && error.keyword !== "anyOf",
 	) ?? errors[0];
+	const additional = additionalError === undefined
+		? undefined
+		: (additionalError.params as { additionalProperties?: unknown }).additionalProperties;
+	const field = Array.isArray(additional) && typeof additional[0] === "string"
+		? additional[0]
+		: first?.instancePath ?? "";
 	return {
 		ok: false,
 		error: {
 			message: first?.message ?? "invalid settings",
-			field: first?.instancePath ?? "",
+			field,
 		},
 	};
 }
@@ -1021,11 +1051,13 @@ export function schemaSettingsSurfaceFor(
 	const { stores, publishSettingsChanged, service } = options;
 	const userScope = section.scope === "user";
 	const namedUser = (principal: Principal): string => {
-		const user = principal.user;
-		if (user === undefined || stores.users.get(user) === undefined) {
+		const resolved = options.resolveUser === undefined
+			? principal.user
+			: options.resolveUser(principal);
+		if (resolved === undefined || stores.users.get(resolved) === undefined) {
 			throw new NamedUserRequiredError();
 		}
-		return user;
+		return resolved;
 	};
 	const accessFor = (principal: Principal): "write" | "none" => {
 		if (userScope) namedUser(principal);
@@ -1097,6 +1129,7 @@ export function schemaSettingsSurfaceFor(
 					unknownKeys: Object.keys(stored).filter(
 						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
 					),
+					...(options.extraData === undefined ? {} : await options.extraData(user)),
 				},
 				access,
 			};
@@ -1167,7 +1200,9 @@ export function schemaSettingsSurfaceFor(
 						}
 						if (userStores === undefined) await stores.settingsFor(slug).set(next);
 						else await userStores.settings.set(next);
-						publishSettingsChanged({ extension: slug }, submittedKeys, user);
+						// Core-slug saves touch CORE keys: publish server-scoped (no
+						// extension's user service is poked) with the user attached.
+						publishSettingsChanged(slug === "core" ? "server" : { extension: slug }, submittedKeys, user);
 						return { ok: true };
 					},
 				);

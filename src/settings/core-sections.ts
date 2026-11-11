@@ -24,7 +24,7 @@
  */
 
 import type { SettingsSectionDef } from "../extension.js";
-import { generatedCoreForm } from "./core-schema.js";
+import { generatedCoreForm, generatedMyModelsForm } from "./core-schema.js";
 import { applyOf } from "./registry.js";
 
 /** The reserved slug the core sections mount under (spec §13.4). */
@@ -33,6 +33,7 @@ export const CORE_SECTIONS_SLUG = "core";
 /** The My-settings / System-settings group a core section belongs to. */
 export const CORE_SECTION_GROUP: Readonly<Record<string, "mine" | "system">> = {
 	interface: "mine",
+	"my-models": "mine",
 	accounts: "mine",
 	tokens: "mine",
 	general: "system",
@@ -83,6 +84,19 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 				children: [],
 			},
 		},
+	},
+	{
+		id: "my-models",
+		title: "Models",
+		icon: "key",
+		// Per-user model overrides (settings split Plan 2 Task 5): a
+		// USER-scope schema surface over overridesSchema(coreSchema),
+		// mounted separately in src/server/index.ts — the declarative
+		// core-settings mount below skips it (its store is the caller's
+		// user-settings/<user>/core.json, never the system file).
+		scope: "user",
+		admin: false,
+		form: generatedMyModelsForm().form,
 	},
 	{
 		id: "advanced",

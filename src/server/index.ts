@@ -53,7 +53,7 @@ import { createJobsView } from "./core-views/jobs.js";
 import { createSkillsView } from "./core-views/skills.js";
 import { learnedSkillsDir } from "../curation/paths.js";
 import { primaryAdmin } from "../harness/identity/primary-admin.js";
-import { isSuperuser } from "./auth/principal.js";
+import { isSuperuser, type Principal } from "./auth/principal.js";
 import { accessPrincipalOf } from "./auth/access-principal.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
@@ -89,6 +89,7 @@ import { loadOrCreateKey, signUrl } from "./images/sign.js";
 import {
 	buildModelRoster,
 	withoutEmptyModelKind,
+	withUnserved,
 } from "./model-roster.js";
 import { ImageCache } from "./images/cache.js";
 import type { FetchDeps } from "./images/fetch.js";
@@ -101,6 +102,10 @@ import {
 	settingsSurfaceFor,
 } from "./surfaces/settings-surfaces.js";
 import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
+import { coreSchema, generatedMyModelsForm } from "../settings/core-schema.js";
+import { overridesSchema } from "../settings/effective.js";
+import { MODEL_KINDS } from "../settings/model-kinds.js";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -418,7 +423,7 @@ export async function createServer(
 	surfacesService.attachSettingsSurfaces([
 		{
 			extension: "core",
-			defs: CORE_SETTINGS_SECTIONS.map((section) =>
+			defs: CORE_SETTINGS_SECTIONS.filter((section) => section.id !== "my-models").map((section) =>
 				settingsSurfaceFor("core", section, {
 					env,
 					stores: opened.extensionStores,
@@ -452,6 +457,65 @@ export async function createServer(
 			),
 		},
 	]);
+	// My settings → Models (settings split Plan 2 Task 5): the per-user
+	// model overrides — a USER-scope schema surface over
+	// `overridesSchema(coreSchema)` under the reserved core slug. Saves
+	// write `user-settings/<user>/core.json` (never the system file) and
+	// publish server-scoped with the resolved user. The resolver replaces
+	// the default namedUser at all four sites: a userless superuser edits
+	// the PRIMARY ADMIN's overrides; an empty directory resolves to NO
+	// user (the section is unlisted and the surface answers
+	// named_user_required).
+	const myModelsSection = CORE_SETTINGS_SECTIONS.find((section) => section.id === "my-models");
+	if (myModelsSection !== undefined) {
+		const myModelsUser = (principal: Principal): string | undefined =>
+			principal.user ??
+			(isSuperuser(principal) ? primaryAdmin(opened.identity.users.list())?.user : undefined);
+		surfacesService.attachSettingsSurfaces([
+			{
+				extension: "core",
+				defs: [schemaSettingsSurfaceFor(
+					"core",
+					myModelsSection,
+					overridesSchema(coreSchema),
+					generatedMyModelsForm(),
+					{
+						env,
+						stores: opened.extensionStores,
+						publishSettingsChanged: opened.publishSettingsChanged,
+						service: surfacesService,
+						resolveUser: myModelsUser,
+						extraData: async (user) => {
+							const roster = buildModelRoster(
+								opened,
+								opened.locality,
+								(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+							);
+							const stored = user === undefined
+								? {}
+								: await opened.extensionStores.userExtensionStores("core", user).settings.get();
+							const modelRoster: JsonObject = {};
+							for (const kind of MODEL_KINDS) {
+								const effective = await opened.effective.value(kind.settingKey, undefined);
+								const system = typeof effective === "string" && effective !== "" ? effective : undefined;
+								const storedValue = typeof stored[kind.settingKey] === "string"
+									? stored[kind.settingKey] as string
+									: undefined;
+								modelRoster[kind.kind] = [
+									{ id: "", label: `System default (${system ?? "none"})` },
+									...withUnserved(roster[kind.kind], storedValue).map((row) => ({
+										id: row.id,
+										label: typeof row.label === "string" ? row.label : row.label.$,
+									})),
+								];
+							}
+							return { modelRoster };
+						},
+					},
+				)],
+			},
+		]);
+	}
 	// The core-owned views (tabs+skills Tasks 4/5/12): the reserved `core`
 	// slug's `SurfaceDef<"view">` list — the built-in Jobs view (Task 5)
 	// and the built-in Skills view (Task 12). The jobs view shares the

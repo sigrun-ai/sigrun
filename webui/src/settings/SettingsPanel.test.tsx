@@ -185,6 +185,27 @@ function makeHarness(init?: {
 				json: () => Promise.resolve(result),
 				text: () => Promise.resolve(JSON.stringify(result)),
 			});
+		} else if (input === "/v1/ext/core/surfaces/my-models" && init2?.method !== "POST") {
+			body = {
+				tree: {
+					v: 1,
+					root: {
+						type: "form",
+						id: "core-my-models-form",
+						bind: "/settings",
+						mode: "submit",
+						onSubmit: "save",
+						submitLabel: "Save",
+						children: [],
+					},
+				},
+				data: { settings: {} },
+				rev: 0,
+				treeRev: 0,
+				access: "write",
+			};
+		} else if (input.startsWith("/v1/ext/core/surfaces/my-models/data")) {
+			body = { rev: 0, treeRev: 0, data: { settings: {} } };
 		} else if (input === "/v1/extensions") {
 			body = { extensions: ext?.list ?? [] };
 		} else if ((m = input.match(/^\/v1\/extensions\/([^/]+)\/settings$/)) !== null) {
@@ -380,6 +401,34 @@ async function openSection(
 }
 
 describe("SettingsPanel", () => {
+	test("My settings shows Models for a named user", async () => {
+		// The server lists core/my-models (group mine) when the caller
+		// resolves to a user; the panel draws it as an ordinary surface
+		// section under My settings.
+		const sections = [
+			{ slug: "core", id: "my-models", title: "Models", icon: "key", group: "mine" as const },
+			...SECTIONS,
+		];
+		const harness = makeHarness({
+			sectionsResponse: { sections, index: [...INDEX] },
+		});
+		const { renderer } = await renderPanelWithPrefs(harness.client, { admin: false, section: "my-models" });
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		// The My settings group lists Models; no System settings for a non-admin.
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("My settings");
+		expect(text).not.toContain("System settings");
+		const nav = renderer.root.findAllByType("button").filter(
+			(node) => node.props.className === "settings-nav-item",
+		);
+		expect(nav.map((node) => node.props.children)).toContain("Models");
+		// The my-models surface body mounted (the section's data attribute).
+		expect(renderer.root.findAllByProps({ "data-settings-section": "my-models" })).toHaveLength(1);
+		expect(harness.calls.some((call) => call.input.includes("surfaces/my-models"))).toBe(true);
+	});
+
 	test("initial selection and navigation share the same non-admin visible section set", () => {
 		// A known non-admin sees only the My-settings sections.
 		expect(visibleSettingsSections(SECTIONS, false)).toEqual(

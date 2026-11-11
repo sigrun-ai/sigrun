@@ -25,6 +25,7 @@ import {
 	type JsonSchema,
 	type LayoutGroup,
 } from "./schema/index.js";
+import { overridesSchema } from "./effective.js";
 
 const property = (
 	title: string,
@@ -445,6 +446,30 @@ export function coreProperty(key: string): JsonSchema | undefined {
 		node = child as JsonSchema;
 	}
 	return node;
+}
+
+/**
+ * My settings → Models (settings split Plan 2 Task 5): the per-user
+ * overrides form over `overridesSchema(coreSchema)` — exactly the three
+ * overridable keys, each a dropdown bound to its kind's roster (the
+ * surface's `extraData` supplies the default-first options).
+ */
+export function generatedMyModelsForm(): GeneratedForm {
+	const overrides: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+		"/defaultModel": { ...MODEL_FIELD_OVERRIDES["/defaultModel"], placeholder: undefined },
+		"/decisionModel": MODEL_FIELD_OVERRIDES["/decisionModel"],
+		"/embeddingModel": MODEL_FIELD_OVERRIDES["/embeddingModel"],
+	};
+	return generateForm(overridesSchema(coreSchema), {
+		idPrefix: "core-my-models",
+		layout: [
+			{
+				title: "Models",
+				paths: ["/defaultModel", "/decisionModel", "/embeddingModel"],
+				overrides,
+			},
+		],
+	});
 }
 
 /** Generate one core section with the section ids the channels already use. */

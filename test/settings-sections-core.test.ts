@@ -365,6 +365,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			"general",
 			"models",
 			"interface",
+			"my-models",
 			"advanced",
 			"providers",
 			"accounts",
@@ -1047,12 +1048,14 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		];
 		const built = buildSettingsSections([], new Map(), withInsert);
 		for (const section of withInsert) {
+			// Models appears twice (System Models + My Models share the
+			// title) — the row must exist for THIS section id.
 			expect(
-				built.index.find(
-					(row) => row.slug === "core" && row.kind === "section" && row.label === section.title,
-				)?.sectionId,
-				`title row for '${section.title}'`,
-			).toBe(section.id);
+				built.index.some(
+					(row) => row.slug === "core" && row.kind === "section" && row.label === section.title && row.sectionId === section.id,
+				),
+				`title row for '${section.title}' (${section.id})`,
+			).toBe(true);
 		}
 		// Verify that the search index's sectionId for each core section title
 		// matches the actual section id (not an off-by-one from a stale id list).
@@ -1072,10 +1075,12 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 			);
 			expect(sectionEntry, `section ${section.id} is in the payload`).toBeDefined();
 			// The title-row index entry for this section carries the same sectionId.
+			// Models appears twice (System Models and My Models share the
+			// title) — match on sectionId AND label, not the first title hit.
 			const indexRow = body.index.find(
-				(e) => e.slug === "core" && e.kind === "section" && e.label === section.title,
+				(e) => e.slug === "core" && e.kind === "section" && e.label === section.title && e.sectionId === section.id,
 			);
-			expect(indexRow?.sectionId, `index row for '${section.title}' matches section id`).toBe(section.id);
+			expect(indexRow, `index row for '${section.title}' (${section.id}) exists`).toBeDefined();
 		}
 	});
 
@@ -1222,7 +1227,12 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		for (const section of CORE_SETTINGS_SECTIONS) {
 			const names: string[] = [];
 			walkNames(section.form, names);
-			for (const name of names) fieldSection.set(name, section.id);
+			// A key rendered in TWO sections (defaultModel et al. render in
+			// System Models AND My Models) indexes under the FIRST — the
+			// index's own first-match walk (coreFieldEntry) agrees.
+			for (const name of names) {
+				if (!fieldSection.has(name)) fieldSection.set(name, section.id);
+			}
 			if (names.includes("perModelThinking")) fieldSection.set("perModelThinking", section.id);
 		}
 		// Cove-rendered sections (Interface/Providers — the

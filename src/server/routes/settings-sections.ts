@@ -36,6 +36,7 @@ import {
 import { CORE_SETTING_KEYS } from "../../settings/registry.js";
 import type { ServerContext } from "../context.js";
 import { EXTENSION_SETTINGS_SECTIONS } from "../surfaces/settings-surfaces.js";
+import { primaryAdmin } from "../../harness/identity/primary-admin.js";
 
 /** One search-index row (the label search's hit shape) — the local name. */
 export type SettingsIndexEntry = SettingsSectionIndexEntry;
@@ -241,11 +242,24 @@ export function registerSettingsSectionsRoutes(
 				new Map(ctx.opened.extensionOutcomes.map((outcome) => [outcome.name, outcome.title])),
 			);
 			const admin = isSuperuser(request.principal as Principal) || request.principal.admin;
+			// My settings → Models (Task 5) lists only when the caller
+			// resolves to a LIVE directory user: the principal's own user,
+			// or the PRIMARY ADMIN for a userless superuser. An empty
+			// directory (or a service token's non-directory default user)
+			// resolves to nobody — the section and its index rows drop out.
+			const candidate = request.principal.user ??
+				(isSuperuser(request.principal as Principal)
+					? primaryAdmin(ctx.opened.identity.users.list())?.user
+					: undefined);
+			const resolvedUser = candidate !== undefined && ctx.opened.identity.users.get(candidate) !== undefined
+				? candidate
+				: undefined;
 			const allowed = new Set(
 				response.sections
 					.filter((section) => {
 						// System-group sections are admin-only.
 						if (section.group === "system" && !admin) return false;
+						if (section.slug === "core" && section.id === "my-models" && resolvedUser === undefined) return false;
 						if (section.scope !== "user" || section.admin !== true || admin) return true;
 						return false;
 					})
