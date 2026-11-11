@@ -181,7 +181,13 @@ function normalizedForm(form: Tree): unknown {
 			record.children = children.filter(
 				(child) => {
 					const name = (child as { name?: string }).name;
-					return name !== "decisionModel" && name !== "embeddingModel";
+					// Settings split Plan 2 Task 2: the deprecated list moved out
+					// of the form entirely; the timeout is the whole group.
+					return (
+						name !== "decisionModel" &&
+						name !== "embeddingModel" &&
+						name !== "embeddings.localModels"
+					);
 				},
 			);
 		}

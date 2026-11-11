@@ -75,6 +75,7 @@ import { registerNoticeRoutes } from "./routes/notices.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
+import { noticeLocalityMigration } from "./locality-migration.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerSettingsSectionsRoutes } from "./routes/settings-sections.js";
 import { registerStreamRoutes } from "./routes/stream.js";
@@ -302,6 +303,11 @@ export async function createServer(
 	for (const host of opened.seamHosts.values()) {
 		host.bindSettingsNotices((slug, input) => noticesService.post(slug, input));
 	}
+	// Settings split Plan 2 Task 2: migration ran in openHarness so headless
+	// boots migrate too; the NOTICE needs this server's notices service.
+	// Owned by core, keyed for idempotent replace; an empty directory
+	// (UserNoticeInput.user is required) logs one line instead.
+	await noticeLocalityMigration({ opened, notices: noticesService });
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};

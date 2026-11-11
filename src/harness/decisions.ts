@@ -28,6 +28,7 @@ import type {
 	ProviderReadiness,
 } from "../extension.js";
 import type { SettingsFile } from "./settings.js";
+import type { Locality } from "./locality.js";
 
 // A strict-JSON value schema. `Type.Unknown()` leaves a node unchecked;
 // depth/self-reference aren't expressible without a recursive builder the
@@ -311,9 +312,19 @@ export interface DecisionRegistry {
 	evaluate(
 		caller: string,
 		request: unknown,
-		opts: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+		opts: {
+			model?: string;
+			confidentiality?: "normal" | "local-only";
+			signal?: AbortSignal;
+			timeoutMs?: number;
+		},
 	): Promise<DecisionResult>;
-	list(): readonly { model: string; provider: string; status: ProviderReadiness["status"] }[];
+	list(): readonly {
+		model: string;
+		provider: string;
+		local: boolean;
+		status: ProviderReadiness["status"];
+	}[];
 	providers(): readonly {
 		id: string;
 		label?: string;
@@ -362,6 +373,10 @@ export function buildDecisionRegistry(
 		credential(id: string, env: string | undefined): string | undefined;
 		/** The live settings (decisionModel, server.decisions.timeoutMs). */
 		readSettings(): SettingsFile;
+		/** The one locality switch (settings split Plan 2 Task 2): the
+		 * admin trust is per provider extension, applied per evaluate and
+		 * per list row. */
+		locality: Locality;
 		/**
 		 * The configured timeout — the default AND cap for one evaluate
 		 * call (env over file over the built-in default).
@@ -434,7 +449,12 @@ export function buildDecisionRegistry(
 	async function evaluate(
 		caller: string,
 		request: unknown,
-		opts: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+		opts: {
+			model?: string;
+			confidentiality?: "normal" | "local-only";
+			signal?: AbortSignal;
+			timeoutMs?: number;
+		},
 	): Promise<DecisionResult> {
 		// 1. Resolve the model: opts.model, else the live decisionModel
 		//    setting, else the first model of the first-registered provider.
@@ -448,6 +468,19 @@ export function buildDecisionRegistry(
 			return spec !== undefined
 				? { ok: false, code: "unknown_model", error: `unknown decision model "${spec}"` }
 				: { ok: false, code: "no_model", error: "no decision provider is registered" };
+		}
+
+		// 1b. Confidentiality fails closed BEFORE credentials — the
+		// not_local arm never resolves a credential nor calls a provider.
+		if (
+			opts.confidentiality === "local-only" &&
+			!deps.locality.isLocalExtension(resolved.entry.declaration.extension)
+		) {
+			return {
+				ok: false,
+				code: "not_local",
+				error: `decision model "${resolved.full}" is not approved for local-only input`,
+			};
 		}
 
 		// 2. Validate the request against the model's declared limits.
@@ -547,12 +580,18 @@ export function buildDecisionRegistry(
 	return {
 		evaluate,
 		list() {
-			const out: { model: string; provider: string; status: ProviderReadiness["status"] }[] = [];
+			const out: {
+				model: string;
+				provider: string;
+				local: boolean;
+				status: ProviderReadiness["status"];
+			}[] = [];
 			for (const entry of entries.values()) {
 				const contribution = entry.declaration.contribution;
 				const status = readiness(contribution);
+				const local = deps.locality.isLocalExtension(entry.declaration.extension);
 				for (const model of contribution.models) {
-					out.push({ model: `${contribution.id}/${model.id}`, provider: contribution.id, status });
+					out.push({ model: `${contribution.id}/${model.id}`, provider: contribution.id, local, status });
 				}
 			}
 			return out;

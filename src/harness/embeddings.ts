@@ -17,6 +17,7 @@ import type {
 } from "../extension.js";
 import type { EmbeddingResult } from "@sigrun/shared/embeddings";
 import type { EmbeddingDeclaration } from "./loader.js";
+import type { Locality } from "./locality.js";
 
 export type { EmbeddingResult } from "@sigrun/shared/embeddings";
 
@@ -93,8 +94,12 @@ function safeFailureMessage(
 export function buildEmbeddingRegistry(
 	declarations: readonly EmbeddingDeclaration[],
 	deps: {
-		/** The live default, admin-local model list, and per-call timeout cap. */
-		settings(): { embeddingModel?: string; localModels: readonly string[]; timeoutCapMs: number };
+		/** The live default and per-call timeout cap (locality is its own seam). */
+		settings(): { embeddingModel?: string; timeoutCapMs: number };
+		/** Settings split Plan 2 Task 2: locality is ONE switch per provider
+		 * extension, applied per embed and per list row; the model's own
+		 * `local: false` veto still wins. */
+		locality: Locality;
 		/** auth.json[id].apiKey, else the process env `credentialEnv` ("" = unset). */
 		credential(providerId: string, credentialEnv?: string): Promise<string | undefined>;
 		warn(message: string): void;
@@ -126,6 +131,10 @@ export function buildEmbeddingRegistry(
 			models: new Map(declaration.contribution.models.map((model) => [model.id, model])),
 		});
 	}
+
+	const localityOf = (resolved: { entry: Entry; model: EmbeddingModelInfo }): boolean =>
+		deps.locality.isLocalExtension(resolved.entry.declaration.extension) &&
+		resolved.model.local !== false;
 
 	function resolveModel(spec: string | undefined): { entry: Entry; model: EmbeddingModelInfo; full: string } | undefined {
 		if (spec === undefined) return undefined;
@@ -170,7 +179,7 @@ export function buildEmbeddingRegistry(
 		// 2. Confidentiality fails closed before credentials or provider calls.
 		// The gate also precedes the empty-input success: no confidential call
 		//    succeeds against a non-local model, even with no texts to send.
-		const local = settings.localModels.includes(resolved.full) && resolved.model.local !== false;
+		const local = localityOf(resolved);
 		if (opts.confidentiality === "local-only" && !local) {
 			return {
 				ok: false,
@@ -323,7 +332,7 @@ export function buildEmbeddingRegistry(
 						model: qualified,
 						provider: contribution.id,
 						dimensions: model.dimensions,
-						local: settings.localModels.includes(qualified) && model.local !== false,
+						local: localityOf({ entry, model }),
 						default: qualified === configuredDefault,
 						status,
 					});

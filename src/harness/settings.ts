@@ -145,6 +145,7 @@ const SETTING_KEYS = [
 	"namingModel",
 	"decisionModel",
 	"embeddingModel",
+	"localProviders",
 	"embeddings",
 	"decisions",
 	"defaultProvider",
@@ -507,6 +508,21 @@ function validate(value: Record<string, unknown>): void {
 				"must have a non-empty provider and model id",
 			);
 		}
+	}
+	// The one locality switch: provider extension slugs (plus "core"),
+	// mirroring the retired embeddings.localModels validator.
+	if (
+		value.localProviders !== undefined &&
+		value.localProviders !== null &&
+		(!Array.isArray(value.localProviders) ||
+			value.localProviders.some(
+				(slug) => typeof slug !== "string" || slug.trim() === "",
+			))
+	) {
+		throw new SettingsValidationError(
+			"localProviders",
+			"must be an array of non-empty provider extension slugs",
+		);
 	}
 	if (value.embeddings !== undefined) {
 		const embeddings = asRecord(value.embeddings);

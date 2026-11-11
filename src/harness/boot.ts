@@ -81,6 +81,11 @@ import {
 	buildEmbeddingRegistry,
 	type EmbeddingRegistry,
 } from "./embeddings.js";
+import { createLocality, type Locality } from "./locality.js";
+import {
+	migrateLocalModels,
+	type LocalityMigrationResult,
+} from "../server/locality-migration.js";
 import {
 	buildDecisionEvaluateTool,
 	createDecisionsExtension,
@@ -402,6 +407,10 @@ export interface OpenedHarness {
 	 * surface; settings and credentials resolve per call.
 	 */
 	readonly embeddings: EmbeddingRegistry;
+	/** The one live locality answer (settings split Plan 2 Task 2). */
+	readonly locality: Locality;
+	/** The boot migration's result; createServer posts the one notice. */
+	readonly localityMigration: LocalityMigrationResult;
 	/**
 	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
 	 * restart key's stored value at boot, taken once after the settings
@@ -1598,6 +1607,22 @@ export async function openHarness(
 	const decisionsSlot: {
 		registry: DecisionRegistry | undefined;
 	} = { registry: undefined };
+	// Settings split Plan 2 Task 2: the ONE locality answer, live per call
+	// on every kind — chat models resolve through the collector's ownership
+	// map (last-registered wins), env-driven ids fall to the "core"
+	// pseudo-slug, and the non-chat registries answer for their own ids.
+	// The deferred slot mirrors the decision-registry one above: seam
+	// hosts and factory-time gate calls resolve through the live slot.
+	// `locality` (the OpenedHarness field below) is the LIVE ref itself.
+	let localitySlot: Locality | undefined;
+	const localityRef: Locality = {
+		isLocalExtension(slug: string): boolean {
+			return localitySlot?.isLocalExtension(slug) ?? false;
+		},
+		isLocalModel(kind: "chat" | "decision" | "embedding", model: string): boolean {
+			return localitySlot?.isLocalModel(kind, model) ?? false;
+		},
+	};
 	// The default model's provider id, as the credential readers below need
 	// it: `PUT /v1/providers/:id/credential` redirects a Save for THAT id to
 	// the magic `"default"` auth.json key, so the readers must look there
@@ -1677,6 +1702,7 @@ export async function openHarness(
 					}, userServices, {
 						publishedHooks: { current: publishedHooksSlot, ready: publishedHooksReady },
 						decisions: { current: decisionsSlot, ready: decisionsReady },
+						locality: localityRef,
 					}, undefined, settingsSlug);
 				if (priorHost !== undefined) host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
@@ -1748,7 +1774,31 @@ export async function openHarness(
 	// Save the UI reports as succeeded would stay invisible here. The
 	// settings read is live too: `decisionModel` and
 	// `server.decisions.timeoutMs` apply without a restart.
+	// Settings split Task 2 order: the slot is declared before the
+	// resolver's owner closures so they can reference either registry.
+	let embeddingsSlot: EmbeddingRegistry | undefined;
+	const ownerOfLocal = (
+		kind: "chat" | "decision" | "embedding",
+		providerId: string,
+		modelId?: string,
+	): string | undefined => {
+		if (kind === "chat") {
+			// Live, not a boot snapshot: a refresh can add a model without
+			// rebooting, and an unserved id is never local.
+			if (modelId === undefined || models.getModel(providerId, modelId) === undefined) {
+				return undefined;
+			}
+			return providerOwnership.get(providerId) ?? "core";
+		}
+		const registry = kind === "decision" ? decisionsSlot.registry : embeddingsSlot;
+		return registry?.providers().find((row) => row.id === providerId)?.extension;
+	};
+	localitySlot = createLocality({
+		localProviders: () => settingsStore.read().localProviders ?? [],
+		ownerOf: ownerOfLocal,
+	});
 	decisionsSlot.registry = buildDecisionRegistry(decisionProviderDeclarations, {
+		locality: localityRef,
 		credential: (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
@@ -1771,7 +1821,8 @@ export async function openHarness(
 		now: () => Date.now(),
 		warn: (message) => console.warn(message),
 	});
-	// The embedding registry reads live settings on every call. Credentials
+	// The embedding registry reads live settings on every call (locality
+	// now comes from the one resolver, not a per-model list). Credentials
 	// are local auth.json reads over the ambient env, as for decisions —
 	// including the same magic-`"default"` fallback for the default model's
 	// provider id (the key `PUT /v1/providers/:id/credential` writes there).
@@ -1780,14 +1831,13 @@ export async function openHarness(
 			const settings = settingsStore.read();
 			return {
 				embeddingModel: settings.embeddingModel,
-				localModels: settings.embeddings?.localModels ?? [],
 				timeoutCapMs: settings.server?.embeddings?.timeoutMs ?? 30_000,
 			};
 		},
+		locality: localityRef,
 		credential: async (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
-			// The route's `"default"` write, for the id it applies to.
 			if (id === defaultChatProviderId) {
 				const fromDefault = authStore.read()[DEFAULT_AUTH_KEY]?.apiKey;
 				if (fromDefault !== undefined) return fromDefault;
@@ -1798,6 +1848,7 @@ export async function openHarness(
 		},
 		warn: (message) => console.warn(message),
 	});
+	embeddingsSlot = embeddings;
 	decisionRegistryReady();
 	// Warden Task 7: the late fill — swap the placeholder extension for
 	// the tool-bearing one when any decision model exists at boot.
@@ -1942,6 +1993,25 @@ export async function openHarness(
 			baseUrl: config.defaultProviderBaseUrl,
 			modelsStore,
 			declaredProviderIds,
+		},
+	);
+
+	// One-shot migration: the registry exists, so unknown models are
+	// dropped by the owner lookup. Headless boots migrate HERE too; the
+	// notice waits for createServer's notices service.
+	const localityMigration = migrateLocalModels(
+		settingsStore,
+		(model) => {
+			const slash = model.indexOf("/");
+			if (slash <= 0) return undefined;
+			const providerId = model.slice(0, slash);
+			const modelId = model.slice(slash + 1);
+			const provider = embeddings.providers().find((row) => row.id === providerId);
+			// Unknown models never migrate. The per-model local:false veto
+			// is intentionally NOT the gate: the admin explicitly listed
+			// this model, so its extension's admin intent moves; the veto
+			// still controls the serve-time refusal afterwards.
+			return provider?.models.includes(modelId) ? provider.extension : undefined;
 		},
 	);
 	// The jobs core extension (jobs Task 3, spec §8.1 "The executor"):
@@ -2685,6 +2755,8 @@ export async function openHarness(
 		settings: settingsStore,
 		decisions: decisionsSlot.registry as DecisionRegistry,
 		embeddings,
+		locality: localityRef,
+		localityMigration,
 		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,

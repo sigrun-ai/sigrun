@@ -1869,6 +1869,13 @@ export interface SigrunHost {
 	readonly models: {
 		list(): Promise<readonly ModelEntry[]>;
 		/**
+		 * Settings split Plan 2 Task 2: whether the chat model's OWNING
+		 * provider extension has the admin locality switch on (the
+		 * `"core"` pseudo-slug answers for the env-driven provider).
+		 * Live on every call; an unserved model is never local.
+		 */
+		isLocal(model: string): boolean;
+		/**
 		 * Run ONE one-shot completion and return its concatenated text
 		 * parts (non-text parts skipped) plus the `provider/id` of the
 		 * model actually used. Model resolution: `input.model` wins;
@@ -1899,10 +1906,20 @@ export interface SigrunHost {
 	readonly decisions: {
 		evaluate(
 			request: DecisionRequest,
-			opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+			opts?: {
+				model?: string;
+				confidentiality?: "normal" | "local-only";
+				signal?: AbortSignal;
+				timeoutMs?: number;
+			},
 		): Promise<DecisionResult>;
-		/** Every decision model, with its provider's readiness status. */
-		list(): Promise<readonly { model: string; provider: string; status: ProviderReadiness["status"] }[]>;
+		/** Every decision model, its locality and readiness. */
+		list(): Promise<readonly {
+			model: string;
+			provider: string;
+			local: boolean;
+			status: ProviderReadiness["status"];
+		}[]>;
 	};
 
 	/**

@@ -10,6 +10,7 @@ import type {
 	EmbeddingResponse,
 } from "../src/extension.js";
 import { buildEmbeddingRegistry } from "../src/harness/embeddings.js";
+import { createLocality } from "../src/harness/locality.js";
 import type { EmbeddingDeclaration } from "../src/harness/loader.js";
 
 const CREDENTIAL = "acme-embedding-secret";
@@ -31,7 +32,7 @@ interface Fixture {
 function makeFixture(overrides: {
 	contribution?: Partial<EmbeddingProviderContribution>;
 	embed?: (call: Call) => Promise<EmbeddingResponse>;
-	settings?: { embeddingModel?: string; localModels?: readonly string[]; timeoutCapMs?: number };
+	settings?: { embeddingModel?: string; localProviders?: readonly string[]; timeoutCapMs?: number };
 	credential?: (providerId: string, credentialEnv?: string) => Promise<string | undefined>;
 	secondContribution?: EmbeddingProviderContribution;
 } = {}): Fixture {
@@ -65,15 +66,20 @@ function makeFixture(overrides: {
 	}
 	const settings = {
 		embeddingModel: "acme-embed/embed-1",
-		localModels: [],
+		localProviders: [] as readonly string[],
 		timeoutCapMs: 1_000,
 		...overrides.settings,
 	};
+	const locality = createLocality({
+		localProviders: () => settings.localProviders,
+		ownerOf: () => "acme-one",
+	});
 	return {
 		calls,
 		warnings,
 		registry: buildEmbeddingRegistry(declarations, {
 			settings: () => settings,
+			locality,
 			credential: overrides.credential ?? (async () => CREDENTIAL),
 			warn: (message) => warnings.push(message),
 		}),
@@ -97,7 +103,7 @@ describe("buildEmbeddingRegistry", () => {
 		expect(fixture.calls).toHaveLength(0);
 	});
 
-	it("local-only to an unlisted model is not_local without calling the provider", async () => {
+	it("local-only embedding refused unless its extension is local", async () => {
 		const fixture = makeFixture({ contribution: { models: [{ id: "embed-1", dimensions: 2, local: true }] } });
 		const result = await fixture.registry.embed("acme-recall", [INPUT], {
 			confidentiality: "local-only",
@@ -106,10 +112,10 @@ describe("buildEmbeddingRegistry", () => {
 		expect(fixture.calls).toHaveLength(0);
 	});
 
-	it("provider local:false vetoes the admin list", async () => {
+	it("the embedding local:false veto still wins", async () => {
 		const fixture = makeFixture({
 			contribution: { models: [{ id: "embed-1", dimensions: 2, local: false }] },
-			settings: { localModels: ["acme-embed/embed-1"] },
+			settings: { localProviders: ["acme-one"] },
 		});
 		const result = await fixture.registry.embed("acme-recall", [INPUT], {
 			confidentiality: "local-only",
@@ -118,9 +124,9 @@ describe("buildEmbeddingRegistry", () => {
 		expect(fixture.calls).toHaveLength(0);
 	});
 
-	it("listed local model accepts local-only", async () => {
+	it("a local extension's model accepts local-only", async () => {
 		const fixture = makeFixture({
-			settings: { localModels: ["acme-embed/embed-1"] },
+			settings: { localProviders: ["acme-one"] },
 		});
 		const result = await fixture.registry.embed("acme-recall", [INPUT], {
 			confidentiality: "local-only",
@@ -173,7 +179,7 @@ describe("buildEmbeddingRegistry", () => {
 			},
 			settings: {
 				embeddingModel: "acme-embed/embed-2",
-				localModels: ["acme-embed/embed-1", "acme-embed/embed-2"],
+				localProviders: ["acme-one"],
 			},
 		});
 		expect(fixture.registry.list()).toEqual([
@@ -185,7 +191,7 @@ describe("buildEmbeddingRegistry", () => {
 		]);
 	});
 
-	it("list requires both the admin list and provider local allowance", () => {
+	it("list shows the extension switch and the model veto independently", () => {
 		const fixture = makeFixture({
 			contribution: {
 				models: [
@@ -193,9 +199,11 @@ describe("buildEmbeddingRegistry", () => {
 					{ id: "embed-2", dimensions: 3, local: false },
 				],
 			},
-			settings: { localModels: ["acme-embed/embed-2"] },
+			settings: { localProviders: ["acme-one"] },
 		});
-		expect(fixture.registry.list().map((row) => row.local)).toEqual([false, false]);
+		// One extension switch covers BOTH id-less rows; local:false owns
+		// the second row, so [true, false] under the switch.
+		expect(fixture.registry.list().map((row) => row.local)).toEqual([true, false]);
 	});
 
 	it("batches above maxBatch keep order", async () => {

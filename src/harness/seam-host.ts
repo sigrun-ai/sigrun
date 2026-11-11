@@ -431,6 +431,7 @@ export function createSeamHost(
 			};
 			readonly ready: Promise<unknown>;
 		};
+		readonly locality?: import("./locality.js").Locality;
 	},
 	settingsNotice?: (
 		slug: string,
@@ -439,6 +440,7 @@ export function createSeamHost(
 	provisionalSettingsSlug?: string,
 ): SeamHost {
 	const interactionKinds = new Set(kinds.interaction ?? []);
+	const locality = options?.locality;
 	const provisional = identity.name;
 	let declaration: SettingsDeclaration | undefined;
 	let factoryRead = false;
@@ -1219,6 +1221,9 @@ export function createSeamHost(
 		},
 		// Gateway C4b: straight delegation (the bridge owns both bodies).
 		models: {
+			isLocal(model: string): boolean {
+				return locality?.isLocalModel("chat", model) ?? false;
+			},
 			async list() {
 				return (await hostBridge("models.list")).models.list();
 			},
@@ -1234,7 +1239,12 @@ export function createSeamHost(
 		decisions: {
 			async evaluate(
 				request: DecisionRequest,
-				opts: { model?: string; signal?: AbortSignal; timeoutMs?: number } = {},
+				opts: {
+					model?: string;
+					confidentiality?: "normal" | "local-only";
+					signal?: AbortSignal;
+					timeoutMs?: number;
+				} = {},
 			): Promise<DecisionResult> {
 				const bridge = await hostBridge("decisions.evaluate");
 				if (bridge.decisions === undefined) {

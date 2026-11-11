@@ -167,13 +167,22 @@ export const coreSchema: JsonSchema = {
 			"",
 			"live",
 		),
+		localProviders: {
+			type: "array",
+			items: { type: "string", minLength: 1 },
+			title: "Local provider extensions",
+			description:
+				"Provider extensions trusted to receive local-only content. Includes chat, decision and embedding models. The pseudo-slug core covers the env-driven provider. Live.",
+			default: [],
+			"x-sigrun-apply": "live",
+		},
 		embeddings: object({
 			localModels: {
 				type: "array",
 				items: { type: "string", minLength: 1 },
-				title: "Local embedding models",
+				title: "Local embedding models (deprecated)",
 				description:
-					"Embedding models trusted to receive local-only content. A provider that reports a model as remote overrides this.",
+					"Deprecated: migrated to localProviders. Per-model embedding locality moved to the per-provider-extension switch.",
 				default: [],
 				"x-sigrun-apply": "live",
 			},
@@ -399,7 +408,6 @@ export const CORE_LAYOUT: Record<"general" | "advanced", readonly LayoutGroup[]>
 			"/server/compaction/backgroundTokens": { placeholder: undefined },
 		} },
 		{ title: "Embeddings", paths: [
-			"/embeddings/localModels",
 			"/server/embeddings/timeoutMs",
 		] },
 		{ title: "Job history retention", paths: [

@@ -181,9 +181,9 @@ describe("GET /v1/providers and the /v1/auth/check alias (Task 6)", () => {
 		// Task 6 enrichment: `models` (the catalog count) + `owner` (the
 		// owning contributor; absent for the env-degenerate provider).
 		expect(body.providers).toEqual([
-			{ provider: "acme", status: "ready", models: 1, owner: "ext-acme" },
-			{ provider: "acme2", status: "not_ready", models: 1, owner: "ext-acme" },
-			{ provider: "openai", status: "ready", models: 1 },
+			{ provider: "acme", status: "ready", models: 1, owner: "ext-acme", local: false },
+			{ provider: "acme2", status: "not_ready", models: 1, owner: "ext-acme", local: false },
+			{ provider: "openai", status: "ready", models: 1, local: false },
 		]);
 		// The alias serves the identical body.
 		const alias = await app.inject({ method: "GET", url: "/v1/auth/check" });
@@ -244,6 +244,7 @@ describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 			status: "not_configured",
 			models: 0,
 			owner: "ext-acme",
+			local: false,
 			detail: "no credential resolved",
 		});
 	});
@@ -272,6 +273,7 @@ describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 			status: "degraded",
 			models: 1,
 			owner: "ext-acme",
+			local: false,
 			detail: "last refresh failed: 401 unauthorized",
 		});
 		// Live tracker state, not a boot snapshot: flip to ready, re-GET.
@@ -282,6 +284,7 @@ describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 			status: "ready",
 			models: 1,
 			owner: "ext-acme",
+			local: false,
 		});
 	});
 
@@ -302,6 +305,7 @@ describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 			status: "ready",
 			models: 1,
 			owner: "ext-acme",
+			local: false,
 		});
 	});
 
@@ -316,7 +320,7 @@ describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 		});
 		const ready = await getAuthCheck(configured.app);
 		expect(ready.providers).toEqual([
-			{ provider: "openai", status: "ready", models: 1 },
+			{ provider: "openai", status: "ready", models: 1, local: false },
 		]);
 
 		const bare = await bootServer({
@@ -326,7 +330,7 @@ describe("GET /v1/auth/check three-state readiness (Task 6)", () => {
 		});
 		const notReady = await getAuthCheck(bare.app);
 		expect(notReady.providers).toEqual([
-			{ provider: "openai", status: "not_ready", models: 1 },
+			{ provider: "openai", status: "not_ready", models: 1, local: false },
 		]);
 	});
 });

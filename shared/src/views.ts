@@ -785,6 +785,13 @@ export interface AuthCheckProvider {
 	readonly modelIds?: readonly string[];
 	/** The owning contributor's name; absent for the env-degenerate provider. */
 	readonly owner?: string;
+	/**
+	 * Settings split Plan 2 Task 2: the provider extension's admin locality
+	 * switch (env-degenerate rows answer through the `"core"` pseudo-slug).
+	 * Per MODEL for embedding rows the model.local === false veto still
+	 * wins; this row is the extension-level switch only.
+	 */
+	readonly local?: boolean;
 	readonly detail?: string;
 }
 

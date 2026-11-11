@@ -97,6 +97,7 @@ export type DecisionResult =
 				| "invalid_request"
 				| "over_limits"
 				| "not_configured"
+				| "not_local"
 				| "timeout"
 				| "aborted"
 				| "failed"

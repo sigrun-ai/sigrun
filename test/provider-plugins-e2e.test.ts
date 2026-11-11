@@ -401,6 +401,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					status: "not_configured",
 					models: 0,
 					owner: `provider-${provider}`,
+					local: false,
 				});
 			}
 		},
@@ -463,24 +464,28 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				status: "ready",
 				models: 2,
 				owner: "provider-bifrost",
+				local: false,
 			});
 			expect(readiness.get("ollama")).toEqual({
 				provider: "ollama",
 				status: "ready",
 				models: 2,
 				owner: "provider-ollama",
+				local: false,
 			});
 			expect(readiness.get("opencode")).toEqual({
 				provider: "opencode",
 				status: "ready",
 				models: 1,
 				owner: "provider-opencode",
+				local: false,
 			});
 			expect(readiness.get("pareto")).toEqual({
 				provider: "pareto",
 				status: "ready",
 				models: 2,
 				owner: "provider-pareto",
+				local: false,
 			});
 			// The refresh persisted every catalog (the phase-C precondition).
 			for (const provider of ["bifrost", "ollama", "opencode", "pareto"]) {
@@ -562,6 +567,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					status: "ready",
 					models: 1,
 					owner: "provider-pareto",
+					local: false,
 				});
 			} finally {
 				await moved.close();

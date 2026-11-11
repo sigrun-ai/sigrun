@@ -95,7 +95,12 @@ export interface HostBridge {
 		evaluate(
 			slug: string,
 			request: DecisionRequest,
-			opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+			opts?: {
+				model?: string;
+				confidentiality?: "normal" | "local-only";
+				signal?: AbortSignal;
+				timeoutMs?: number;
+			},
 		): Promise<DecisionResult>;
 		list(): ReturnType<SigrunHost["decisions"]["list"]>;
 	};
@@ -456,6 +461,9 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			},
 		},
 		models: {
+			isLocal(model: string): boolean {
+				return opened.locality.isLocalModel("chat", model);
+			},
 			async list() {
 				return listModels(opened);
 			},

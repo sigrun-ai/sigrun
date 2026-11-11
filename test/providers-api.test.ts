@@ -517,11 +517,13 @@ describe("GET /v1/providers entries (models + owner)", () => {
 		const entries = await listProviders(app, adminToken);
 		expect(entries).toEqual([
 			// The fixture: unconfigured at boot → three-state vocabulary +
-			// count 0 (empty baseline) + the contributor that owns it.
-			{ provider: "acme", status: "not_configured", models: 0, owner: "ext-acme" },
+			// count 0 (empty baseline) + the contributor that owns it, and
+			// the admin-local switch off until an admin toggles it.
+			{ provider: "acme", status: "not_configured", models: 0, owner: "ext-acme", local: false },
 			// The env-degenerate default provider: exactly its one pinned
-			// model, no owning contributor, legacy not_ready (no key).
-			{ provider: "openai", status: "not_ready", models: 1 },
+			// model, no owning contributor, legacy not_ready (no key), the
+			// `core` pseudo-slug's locality off.
+			{ provider: "openai", status: "not_ready", models: 1, local: false },
 		]);
 		// The deprecated alias serves the identical (enriched) body.
 		const alias = await call(app, {
@@ -562,6 +564,7 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
 		});
 		// No restart happened — the SAME opened handle's tracker flipped
 		// because the auth bridge re-read auth.json on the refresh.
@@ -571,6 +574,7 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
 		});
 		// auth.json holds the key under the PROVIDER id (acme is not the
 		// default model's provider here — the default is the degenerate
@@ -602,6 +606,7 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
 		});
 	});
 
@@ -620,6 +625,7 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
 		});
 		// The write landed under "default" (spec §7.6: the precedence fix
 		// makes it the winning key for the default model's provider), NOT
@@ -672,6 +678,7 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "not_configured",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
 		});
 		// The entry is gone (the catalog holds its last-known rows).
 		expect(opened.auth.read()).toEqual({});

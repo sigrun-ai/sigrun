@@ -166,7 +166,12 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 	{
 		key: "embeddings.localModels",
 		section: "advanced",
-		reason: "read per embedding locality check and model listing (src/harness/embeddings.ts)",
+		reason: "deprecated: migrated to localProviders by the openHarness locality migration (src/server/locality-migration.ts)",
+	},
+	{
+		key: "localProviders",
+		section: "providers",
+		reason: "read live per locality check through the one locality resolver (src/harness/locality.ts)",
 	},
 	{
 		key: "decisions.tool",
