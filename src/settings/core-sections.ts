@@ -36,6 +36,7 @@ export const CORE_SECTION_GROUP: Readonly<Record<string, "mine" | "system">> = {
 	accounts: "mine",
 	tokens: "mine",
 	general: "system",
+	models: "system",
 	advanced: "system",
 	providers: "system",
 };
@@ -55,6 +56,12 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 		title: "General",
 		icon: "key",
 		form: generatedCoreForm("general").form,
+	},
+	{
+		id: "models",
+		title: "Models",
+		icon: "key",
+		form: generatedCoreForm("models").form,
 	},
 	{
 		id: "interface",

@@ -86,6 +86,10 @@ import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import { subscribeChatSurfaceChanged } from "../harness/blocks/tools.js";
 import { loadOrCreateKey, signUrl } from "./images/sign.js";
+import {
+	buildModelRoster,
+	withoutEmptyModelKind,
+} from "./model-roster.js";
 import { ImageCache } from "./images/cache.js";
 import type { FetchDeps } from "./images/fetch.js";
 import { registerImageRoutes } from "./routes/images.js";
@@ -420,7 +424,8 @@ export async function createServer(
 					stores: opened.extensionStores,
 					publishSettingsChanged: opened.publishSettingsChanged,
 					service: surfacesService,
-				core: {
+					...(section.id === "models" ? { renderTree: withoutEmptyModelKind } : {}),
+					core: {
 					settings: opened.settings,
 					bootSnapshot: opened.settingsBootSnapshot,
 					env,
@@ -435,29 +440,14 @@ export async function createServer(
 									.map((entry) => entry.tool.name),
 								),
 						],
-					// The Models group's picker options (`/modelRoster/*` bindings),
-					// from the SERVED catalog: chat rows for defaultModel/namingModel,
-					// the decision registry's model ids for decisionModel, and the
-					// embedding registry's model ids for embeddingModel. A provider
-					// whose models are missing here appears via the field's
-					// allowOther instead (e.g. a not-yet-refreshed catalog).
-					modelRoster: {
-							default: listModels(opened).map((model) => ({ id: model.id, label: model.name ?? model.id })),
-							decision: opened.decisions.providers().flatMap((provider) =>
-								provider.models.map((model) => ({
-									id: `${provider.id}/${model}`,
-									label: `${provider.id}/${model}`,
-								})),
-							),
-							embedding: opened.embeddings.providers().flatMap((provider) =>
-								provider.models.map((model) => ({
-									id: `${provider.id}/${model}`,
-									label: `${provider.id}/${model}`,
-								})),
-							),
-						},
-					managed: opened.managedSettings,
-				},
+					modelRoster: () => buildModelRoster(
+						opened,
+						opened.locality,
+						(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+					),
+					defaultModel: `${opened.defaultModel.provider}/${opened.defaultModel.modelId}`,
+						managed: opened.managedSettings,
+					},
 				}),
 			),
 		},

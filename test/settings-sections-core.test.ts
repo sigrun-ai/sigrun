@@ -24,7 +24,7 @@ import { join } from "node:path";
 import { afterAll, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { FastifyInstance } from "fastify";
-import type { EntriesField, JsonObject, Tree } from "@sigrun/shared/blocks";
+import type { ChoiceField, EntriesField, JsonObject, Tree } from "@sigrun/shared/blocks";
 import { validateTree } from "../src/blocks/validate.js";
 import { loadConfig } from "../src/config.js";
 import { buildSettingsSections } from "../src/server/routes/settings-sections.js";
@@ -41,6 +41,7 @@ import {
 } from "../src/settings/core-schema.js";
 import { snapshotRestartKeys } from "../src/settings/pending.js";
 import { applyOf, CORE_SETTING_KEYS } from "../src/settings/registry.js";
+import { MODEL_KINDS } from "../src/settings/model-kinds.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 const cleanups: Array<() => Promise<void>> = [];
@@ -131,10 +132,12 @@ const beforeForms = JSON.parse(
 	),
 ) as Record<"general" | "tools" | "advanced", Tree>;
 
-/** Normalize ids and omit perModelThinking (its table conversion is intended)
- * plus the Models-group additions the fixture predates (decisionModel and
- * embeddingModel joined Models; the fixture's Embeddings group also carried
- * embeddingModel, which now lives in Models). */
+/** Normalize ids and omit perModelThinking (its table conversion is intended).
+ * General's Models group is excluded from the before/after comparison in both
+ * directions: the review guard structurally compares General's remaining
+ * fields, while the dedicated Models assertions below supply the new section's
+ * independently written expectations. Never infer those expectations from the
+ * generated tree. */
 function normalizedForm(form: Tree): unknown {
 	const copy = structuredClone(form) as unknown as Record<string, unknown>;
 	const walk = (node: unknown): void => {
@@ -148,33 +151,16 @@ function normalizedForm(form: Tree): unknown {
 		if (record.type === "form") record.submitLabel = "Save";
 		if (Array.isArray(record.children)) {
 			record.children = record.children.filter(
-				(child) => (child as { name?: string }).name !== "perModelThinking",
+				(child) => {
+					const entry = child as { name?: string; type?: string; title?: string };
+					return entry.name !== "perModelThinking" &&
+						!(entry.type === "section" && entry.title === "Models");
+				},
 			);
 		}
 		// The Queueing group was renamed Conversations (plan 2 Task 1).
 		if (record.type === "section" && record.title === "Conversations") {
 				record.title = "Queueing";
-		}
-		// The fixture predates the Models-group moves AND the model-picker
-		// overrides: normalize the four fields back to the plain text
-		// fields the fixture froze (drop decisionModel/embeddingModel,
-		// restore defaultModel/namingModel to generated text fields, and
-		// omit the dropdown presentation the model pickers now declare).
-		if (record.type === "section" && record.title === "Models") {
-			const children = record.children as unknown[];
-			record.children = children.flatMap((child) => {
-				const name = (child as { name?: string }).name;
-				if (name === "decisionModel" || name === "embeddingModel") return [];
-				if (name === "defaultModel" || name === "namingModel") {
-					const field = { ...(child as Record<string, unknown>) };
-					field.type = "text";
-					delete field.options;
-					delete field.allowOther;
-					delete field.presentation;
-					return [field];
-				}
-				return [child];
-			});
 		}
 		if (record.type === "section" && record.title === "Embeddings") {
 			const children = record.children as unknown[];
@@ -184,7 +170,6 @@ function normalizedForm(form: Tree): unknown {
 					// Settings split Plan 2 Task 2: the deprecated list moved out
 					// of the form entirely; the timeout is the whole group.
 					return (
-						name !== "decisionModel" &&
 						name !== "embeddingModel" &&
 						name !== "embeddings.localModels"
 					);
@@ -240,20 +225,64 @@ describe("core settings sections (U4 Task 4)", () => {
 		} satisfies Partial<EntriesField>);
 	});
 
-	test("model pickers are dropdowns", () => {
+	test("System Models draws one dropdown per served kind plus the utility model", () => {
+		expect(MODEL_KINDS).toEqual([
+			{ kind: "chat", settingKey: "defaultModel", title: "Chat model" },
+			{ kind: "decision", settingKey: "decisionModel", title: "Decision model" },
+			{ kind: "embedding", settingKey: "embeddingModel", title: "Embedding model" },
+		]);
+		const models = CORE_SETTINGS_SECTIONS.find((section) => section.id === "models");
+		expect(models?.form.root.type).toBe("form");
+		if (models?.form.root.type !== "form") throw new Error("models form root missing");
+		const fields = models.form.root.children.flatMap((child) =>
+			child.type === "section" && child.title === "Models" ? child.children : [],
+		).filter((child): child is ChoiceField => child.type === "choice");
+		expect(CORE_LAYOUT.models).toBeDefined();
+		expect(CORE_LAYOUT.general?.some((group) => group.title === "Models")).toBe(false);
+		expect(models?.form.root.children.some(
+			(child) => child.type === "section" && child.title === "Models",
+		)).toBe(true);
+		const expected = [
+			["defaultModel", "Chat model", "The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart", "restart"],
+			["namingModel", "Utility model", "Names conversations and builds skill cards. Absent: the default chat model.", "live"],
+			["decisionModel", "Decision model", "Default model for decision-provider evaluations", "live"],
+			["embeddingModel", "Embedding model", "The model every extension embeds with, as provider/model. Unset: embeddings are off.", "live"],
+		] as const;
+		expect(fields.map((field) => field.name)).toEqual(expected.map(([name]) => name));
+		for (const [name, label, help, apply] of expected) {
+			const kind = name === "decisionModel" ? "decision"
+				: name === "embeddingModel" ? "embedding"
+					: "chat";
+			// The full relevant field shape is the guard: removing a field, losing
+			// its dropdown override, or dropping its roster binding/label/help
+			// cannot be normalized green by the old before-fixture comparison.
+			expect(fields.find((field) => field.name === name), name).toMatchObject({
+				type: "choice",
+				presentation: "dropdown",
+				label,
+				help,
+				apply,
+				options: { $: `/modelRoster/${kind}` },
+				allowOther: { label: "Other model id (provider/model)" },
+			});
+		}
+	});
+
+	test("General no longer has model fields", () => {
 		const general = CORE_SETTINGS_SECTIONS.find((section) => section.id === "general");
 		const root = general?.form.root;
-		const models = root?.type === "form"
-			? root.children.find(
-				(child) => child.type === "section" && child.title === "Models",
-			)
-			: undefined;
-		const fields = models?.type === "section" ? models.children : [];
+		if (root?.type !== "form") throw new Error("general form root missing");
+		expect(root.children.map((child) => child.type === "section" ? child.title : undefined)).toEqual([
+			"Conversations",
+			"Behaviour",
+		]);
 		for (const name of ["defaultModel", "namingModel", "decisionModel", "embeddingModel"]) {
 			expect(
-				fields.find((field) => "name" in field && field.name === name),
+				root.children.some((group) => group.type === "section" && group.children.some(
+					(field) => "name" in field && field.name === name,
+				)),
 				name,
-			).toMatchObject({ type: "choice", presentation: "dropdown" });
+			).toBe(false);
 		}
 	});
 
@@ -293,12 +322,11 @@ describe("core settings sections (U4 Task 4)", () => {
 			expect(property?.["x-sigrun-apply"], entry.key).toMatch(/^(live|restart)$/);
 			expect(entry, entry.key).not.toHaveProperty("apply");
 		}
-		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "advanced"]);
+		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "models", "advanced"]);
 		const general = CORE_SETTINGS_SECTIONS.find((section) => section.id === "general");
 		const root = general?.form.root;
 		expect(root?.type === "form" ? root.children.map((child) => "id" in child ? child.id : undefined) : []).toEqual([
 			"core-general-queue",
-			"core-general-models",
 			"core-general-behaviour",
 		]);
 		expect(snapshotRestartKeys({ server: { port: 4000 } }).has("server.port")).toBe(true);
@@ -335,6 +363,7 @@ describe("core settings sections (U4 Task 4)", () => {
 	test("the section ids are the plan's list, in nav order", () => {
 		expect([...CORE_SECTION_IDS]).toEqual([
 			"general",
+			"models",
 			"interface",
 			"advanced",
 			"providers",
@@ -409,7 +438,7 @@ describe("core settings sections (U4 Task 4)", () => {
 
 		// The searchable keys render somewhere (the index's core-key
 		// rows).
-		expect(fieldsBySection.get("general")?.some((f) => f.name === "namingModel")).toBe(true);
+		expect(fieldsBySection.get("models")?.some((f) => f.name === "namingModel")).toBe(true);
 		expect(fieldsBySection.get("advanced")?.some((f) => f.name === "server.port")).toBe(true);
 		expect(fieldsBySection.get("advanced")?.some((f) => f.name === "defaultTools")).toBe(true);
 		// NO unregistry'd field renders (a field with no §13.1 entry would
@@ -456,13 +485,13 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		const { app, opened, aliceToken } = await server();
 		const render = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		const rev = (render.body as { rev: number }).rev;
 		const save = await call(app, {
 			method: "POST",
-			url: "/v1/ext/core/surfaces/general/actions",
+			url: "/v1/ext/core/surfaces/models/actions",
 			token: aliceToken,
 			payload: {
 				action: "save",
@@ -477,34 +506,36 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		// namingModel is LIVE (§13.1): no pending restart.
 		const after = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		const meta = (after.body as { data: JsonObject }).data.meta as JsonObject;
 		expect(meta.pendingRestart).toEqual([]);
-		expect((after.body as { data: JsonObject }).data.settings).toMatchObject({
+		const modelRead = await call(app, {
+			method: "GET",
+			url: "/v1/ext/core/surfaces/models",
+			token: aliceToken,
+		});
+		expect((modelRead.body as { data: JsonObject }).data.settings).toMatchObject({
 			namingModel: "acme/namer-1",
 		});
 	});
 
-	test("the General surface carries the model roster the Models pickers bind", async () => {
+	test("the Models surface carries a live per-kind model roster", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		expect(result.status).toBe(200);
 		const data = (result.body as { data: JsonObject }).data;
 		const roster = data.modelRoster as Record<string, unknown>;
-		// The three bindings the Models group's pickers resolve against —
-		// arrays of {id, label} rows, server-computed from the served
-		// catalog and the decision/embedding registries (both empty on
-		// this rig's default boot; default lists the served chat models).
-		expect(Array.isArray(roster.default)).toBe(true);
-		expect(Array.isArray(roster.decision)).toBe(true);
-		expect(Array.isArray(roster.embedding)).toBe(true);
-		for (const row of roster.default as { id: string }[]) {
+		for (const kind of ["chat", "decision", "embedding"] as const) {
+			expect(Array.isArray(roster[kind])).toBe(true);
+		}
+		expect(data.modelRoster).not.toHaveProperty("default");
+		for (const row of roster.chat as { id: string }[]) {
 			expect(row.id).toMatch(/^[^\/]+\/[^\/]+$/);
 		}
 	});
@@ -542,14 +573,14 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		const { app, opened, aliceToken } = await server();
 		const render = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		const rev = (render.body as { rev: number }).rev;
 		// Set a value first (so the clear is observable).
 		const set = await call(app, {
 			method: "POST",
-			url: "/v1/ext/core/surfaces/general/actions",
+			url: "/v1/ext/core/surfaces/models/actions",
 			token: aliceToken,
 			payload: {
 				action: "save",
@@ -565,13 +596,13 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		// store's delete-key merge.
 		const after = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		const rev2 = (after.body as { rev: number }).rev;
 		const clear = await call(app, {
 			method: "POST",
-			url: "/v1/ext/core/surfaces/general/actions",
+			url: "/v1/ext/core/surfaces/models/actions",
 			token: aliceToken,
 			payload: {
 				action: "save",
@@ -585,7 +616,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		// And the read-back reflects the clear (no stale value).
 		const reread = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		const settings = (reread.body as { data: JsonObject }).data.settings as JsonObject;
@@ -788,14 +819,14 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		expect(json).not.toContain('"options":[]');
 	});
 
-	test("the General section render marks a deployment-managed field disabled", async () => {
+	test("the Models section render marks a deployment-managed field disabled", async () => {
 		const { app, aliceToken, configDir } = await server();
 		const managedPath = join(configDir, "managed-settings.json");
 		await writeFile(managedPath, '["defaultModel"]', "utf8");
 		try {
 			const result = await call(app, {
 				method: "GET",
-				url: "/v1/ext/core/surfaces/general",
+				url: "/v1/ext/core/surfaces/models",
 				token: aliceToken,
 			});
 			expect(result.status).toBe(200);
@@ -832,14 +863,14 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		try {
 			const render = await call(app, {
 				method: "GET",
-				url: "/v1/ext/core/surfaces/general",
+				url: "/v1/ext/core/surfaces/models",
 				token: aliceToken,
 			});
 			const rev = (render.body as { rev: number }).rev;
 			const before = await readFile(opened.settings.path, "utf8");
 			const save = await call(app, {
 				method: "POST",
-				url: "/v1/ext/core/surfaces/general/actions",
+				url: "/v1/ext/core/surfaces/models/actions",
 				token: aliceToken,
 				payload: {
 					action: "save",
@@ -871,13 +902,13 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		const { app, opened, aliceToken } = await server();
 		const render = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/general",
+			url: "/v1/ext/core/surfaces/models",
 			token: aliceToken,
 		});
 		const rev = (render.body as { rev: number }).rev;
 		const first = await call(app, {
 			method: "POST",
-			url: "/v1/ext/core/surfaces/general/actions",
+			url: "/v1/ext/core/surfaces/models/actions",
 			token: aliceToken,
 			payload: {
 				action: "save",
@@ -890,7 +921,7 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		// A second save against the SAME (now stale) rev rejects.
 		const stale = await call(app, {
 			method: "POST",
-			url: "/v1/ext/core/surfaces/general/actions",
+			url: "/v1/ext/core/surfaces/models/actions",
 			token: aliceToken,
 			payload: {
 				action: "save",
@@ -1141,7 +1172,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		]);
 	});
 
-	test("the search index covers every core key's label and help; 'naming' resolves to General's naming model", async () => {
+	test("the search index covers every core key's label and help; 'utility' resolves to Models' utility model", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {
 			method: "GET",
@@ -1158,21 +1189,10 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				key?: string;
 			}[];
 		};
-		// Searching "naming" (case-insensitive, over label + help) hits
-		// General's naming-model row.
-		const hits = body.index.filter(
-			(entry) =>
-				entry.label.toLowerCase().includes("naming") ||
-				(entry.help ?? "").toLowerCase().includes("naming"),
-		);
-		expect(
-			hits.some(
-				(entry) =>
-					entry.slug === "core" &&
-					entry.sectionId === "general" &&
-					entry.key === "namingModel",
-			),
-		).toBe(true);
+		expect(body.index.some(
+			(entry) => entry.slug === "core" && entry.sectionId === "models" &&
+				entry.key === "namingModel" && entry.label === "Utility model",
+		)).toBe(true);
 		// Every field CORE_SETTINGS_SECTIONS renders indexes under the
 		// section it renders IN (the walk is the section source — the
 		// registry's `section` metadata drifts: retry/stream say

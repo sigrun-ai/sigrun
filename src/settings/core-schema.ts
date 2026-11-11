@@ -1,7 +1,8 @@
 /**
  * Core's settings.json schema and the three schema-generated sections.
  * Every registry leaf is present, including file/API-only settings; layout
- * inclusion decides which of them the General, Tools and Advanced forms draw.
+ * inclusion decides which of them General, Models and Advanced draw. Models'
+ * four overrides explicitly retain their dropdown + allowOther presentation.
  */
 
 import {
@@ -148,12 +149,12 @@ export const coreSchema: JsonSchema = {
 			maxTurns: number("Default max turns per job run", "", DEFAULT_JOB_MAX_TURNS, "live"),
 		}),
 		defaultModel: string(
-			"Default model",
+			"Chat model",
 			"The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
 		),
 		namingModel: string(
-			"Naming model",
-			"The model the conversation auto-namer completes through (provider/model-id); absent = the default model",
+			"Utility model",
+			"Names conversations and builds skill cards. Absent: the default chat model.",
 			undefined,
 			"live",
 		),
@@ -320,49 +321,51 @@ export const coreSchema: JsonSchema = {
 };
 
 /** Core's field grouping; unlisted schema properties remain file/API-only. */
-export const CORE_LAYOUT: Record<"general" | "advanced", readonly LayoutGroup[]> = {
+const MODEL_FIELD_OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+	"/defaultModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/chat" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: { $: "/modelDefaults/chat" },
+	},
+	"/namingModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/chat" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: undefined,
+	},
+	"/decisionModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/decision" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: undefined,
+	},
+	"/embeddingModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/embedding" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: undefined,
+	},
+};
+
+export const CORE_LAYOUT: Record<"general" | "models" | "advanced", readonly LayoutGroup[]> = {
 	general: [
 		{ title: "Conversations", paths: ["/steeringMode", "/followUpMode"] },
-		{ title: "Models", paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"],
-			overrides: {
-				// Model pickers, not free text: options bind the served catalog
-				// (the surface feeds `/modelRoster` per field — chat models for
-				// defaultModel/namingModel, decision models for decisionModel,
-				// embedding models for embeddingModel), with `allowOther` so a
-				// not-yet-served id stays enterable (the value is provider/model).
-				"/defaultModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/default" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-				"/namingModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/default" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-				"/decisionModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/decision" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-				"/embeddingModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/embedding" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-			} },
 		{
 			title: "Behaviour",
 			paths: ["/skills/sectionMaxBytes", "/notifications/runSettled"],
 			overrides: { "/skills/sectionMaxBytes": { placeholder: undefined } },
+		},
+	],
+	models: [
+		{
+			title: "Models",
+			paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"],
+			overrides: MODEL_FIELD_OVERRIDES,
 		},
 	],
 	advanced: [

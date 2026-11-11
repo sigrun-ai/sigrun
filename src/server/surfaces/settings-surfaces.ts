@@ -30,7 +30,7 @@
 
 import { Errors } from "typebox/schema";
 import { isSuperuser } from "../auth/principal.js";
-import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
+import type { JsonObject, JsonValue, Tree } from "@sigrun/shared/blocks";
 import type {
 	ActionResult,
 	Principal,
@@ -52,6 +52,8 @@ import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
 import { applyDefaults } from "../../settings/schema/defaults.js";
 import { dropBlankOptionalStrings } from "../../settings/schema/blanks.js";
+import type { ModelRoster } from "../../settings/model-kinds.js";
+import { systemModelRosterData } from "../model-roster.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -355,6 +357,9 @@ export interface SettingsSurfaceOptions {
 	) => void;
 	/** The surface service (the rev read the save's optimistic check needs). */
 	readonly service: SurfaceService;
+	/** Optional render-only projection. Declared fields still accept saves;
+	 * calls to modelRoster are fresh on each core Models render. */
+	readonly renderTree?: (tree: Tree, data: JsonObject) => Tree;
 	/**
 	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
 	 * `slug === "core"` — the core sections read/write the core
@@ -369,13 +374,37 @@ export interface SettingsSurfaceOptions {
 		readonly bootSnapshot: SettingsBootSnapshot;
 		readonly env: Readonly<Record<string, string | undefined>>;
 		readonly toolRoster: readonly string[];
-		/** The Models group's picker options (the `/modelRoster/*` bindings):
-		 * `default` the served chat catalog, `decision`/`embedding` the
-		 * decision/embedding registries' provider-qualified model ids. */
-		readonly modelRoster: Readonly<Record<"default" | "decision" | "embedding", readonly { id: string; label: string }[]>>;
+		/** Live per-kind picker options for `/modelRoster/chat|decision|embedding`. */
+		readonly modelRoster: () => ModelRoster;
+		/** The env-resolved boot default model, never the raw file value. */
+		readonly defaultModel: string;
 		/** Deployment-managed top-level keys, read fresh per render/save. */
 		readonly managed: () => readonly string[];
 	};
+}
+
+/**
+ * Project live rosters into data-bindable records. ChoiceOption's
+ * `label: Bindable<string>` proves these exact literals are strings,
+ * so no record-to-record cast is needed. The auxiliary systemDefault
+ * binding displays the env-resolved default; it does not recast pending
+ * restart semantics or the persisted defaultModel value.
+ */
+function modelsData(roster: ModelRoster, values: {
+	readonly defaultModel?: string;
+	readonly namingModel?: string;
+	readonly decisionModel?: string;
+	readonly embeddingModel?: string;
+}, systemDefault: string): JsonObject {
+	const projected = systemModelRosterData(roster, values);
+	const data: JsonObject = { modelRoster: {}, modelDefaults: {} };
+	const target = data.modelRoster as JsonObject;
+	for (const kind of ["chat", "decision", "embedding"] as const) {
+		target[kind] = projected[kind].map((row) => ({ id: row.id, label: String(row.label) }));
+	}
+	const modelDefaults = data.modelDefaults as JsonObject;
+	modelDefaults.chat = `System default (${systemDefault})`;
+	return data;
 }
 
 /**
@@ -468,15 +497,20 @@ export function settingsSurfaceFor(
 			// checkbox list). The binding's shape is ChoiceOption[]
 			// (`{id, label}` rows, spec §5.6).
 			toolRoster: options.core.toolRoster.map((name) => ({ id: name, label: name })),
-			// The Models group's picker bindings (`/modelRoster/default`,
-			// `/modelRoster/decision`, `/modelRoster/embedding`) — served
-			// per render, so a provider refresh between loads is picked up
-			// without a settings change.
-			modelRoster: {
-				default: [...options.core.modelRoster.default],
-				decision: [...options.core.modelRoster.decision],
-				embedding: [...options.core.modelRoster.embedding],
-			} satisfies JsonObject,
+			// Computed on this call: a provider refresh never needs a server
+			// restart. General no longer draws these bindings.
+			...(section.id === "models"
+				? modelsData(
+						options.core.modelRoster(),
+						{
+							defaultModel: readDotted(file, "defaultModel") as string | undefined,
+							namingModel: readDotted(file, "namingModel") as string | undefined,
+							decisionModel: readDotted(file, "decisionModel") as string | undefined,
+							embeddingModel: readDotted(file, "embeddingModel") as string | undefined,
+						},
+						options.core.defaultModel,
+					)
+				: {}),
 		};
 	};
 
@@ -677,16 +711,16 @@ export function settingsSurfaceFor(
 		sharedData: true,
 		render: async (ctx): Promise<SurfaceRenderResult> => {
 			const access = accessFor(ctx.principal);
-			return {
-				tree: core === undefined ? form : markManagedFields(form, core.managed()),
-				data:
-					access === "none"
-						? {}
-						: core === undefined
-							? await readData(ctx.principal)
-							: readCoreData(),
-				access,
-			};
+			const data: JsonObject = access === "none"
+				? {}
+				: core === undefined
+					? await readData(ctx.principal)
+					: readCoreData();
+			let tree = core === undefined ? form : markManagedFields(form, core.managed());
+			if (options.renderTree !== undefined) {
+				tree = options.renderTree(tree, data);
+			}
+			return { tree, data, access };
 		},
 		actions: {
 			save: async (ctx, payload): Promise<ActionResult> => {
