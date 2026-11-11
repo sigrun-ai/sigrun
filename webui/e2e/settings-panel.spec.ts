@@ -26,7 +26,12 @@ let server: Awaited<ReturnType<typeof bootE2EServer>>;
 
 test.beforeAll(async () => {
 	const fixture = fileURLToPath(new URL("../../test/fixtures/fixture-settings-extension-page/index.js", import.meta.url));
-	server = await bootE2EServer({ extensionSpecifiers: [pathToFileURL(fixture).href] });
+	server = await bootE2EServer({
+		extensionSpecifiers: [pathToFileURL(fixture).href],
+		// The callout test saves the utility model; the default harness
+		// disables auto-naming to protect scripted response queues.
+		autoNaming: true,
+	});
 });
 
 test.afterAll(async ({ browser }) => {
@@ -46,8 +51,10 @@ test("gear opens the settings page; edit + save persists", async ({ page }) => {
 	await expect(page.locator(".composer-slot")).toHaveCount(0);
 	await expect(page).toHaveURL(/#\/settings$/);
 
-	// The page reflects the served settings (the steering-mode choice,
-	// a radiogroup under the sections renderer — General opens first).
+	// The bare route opens Interface (the first My-settings section);
+	// steering lives under General's Conversations group (System settings).
+	await settings.getByRole("button", { name: "General", exact: true }).click();
+	await expect(settings.getByRole("heading", { name: "Conversations" })).toBeVisible();
 	const steering = settings.getByRole("radiogroup", { name: "Steering mode" });
 	await expect(steering).toBeVisible();
 
@@ -66,13 +73,17 @@ test("gear opens the settings page; edit + save persists", async ({ page }) => {
 		})
 		.toBe("all");
 
-	// Navigating away and back shows the persisted value.
+	// General adds a section history entry: walk back through it to the
+	// conversation, then reopen General to check the persisted value.
+	await page.goBack();
+	await expect(page).toHaveURL(/#\/settings$/);
 	await page.goBack();
 	await expect(page.locator(".settings-page")).toHaveCount(0);
 	await page.getByRole("button", { name: "settings" }).click();
+	const reopened = page.locator(".settings-page");
+	await reopened.getByRole("button", { name: "General", exact: true }).click();
 	await expect(
-		page
-			.locator(".settings-page")
+		reopened
 			.getByRole("radiogroup", { name: "Steering mode" })
 			.getByRole("radio", { name: "All" }),
 	).toBeChecked();
@@ -135,8 +146,11 @@ test("a deployment-managed key renders locked", async ({ page }) => {
 		await page.getByRole("button", { name: "settings" }).click();
 		const settings = page.locator(".settings-page");
 		await expect(settings).toBeVisible();
-		await settings.getByRole("button", { name: "General" }).click();
-		const input = settings.getByRole("textbox", { name: "Default model" });
+		await settings
+			.getByRole("group", { name: "System settings", exact: true })
+			.getByRole("button", { name: "Models", exact: true })
+			.click();
+		const input = settings.getByRole("combobox", { name: "Chat model", exact: true });
 		await expect(input).toBeDisabled();
 		await expect(settings).toContainText("Managed by deployment");
 	} finally {
@@ -206,17 +220,19 @@ test("the settings callout: the naming-model save needs no restart; the port sav
 	const settings = page.locator(".settings-page");
 	await expect(settings).toBeVisible();
 
-	// General is the nav's first section (core first).
-	await settings.getByRole("button", { name: "General" }).click();
-
-	// namingModel is a live key: the save applies with no callout. The
-	// save rides the surface actions route (the panel's ONE renderer);
-	// the settings file reflects it via the surface save.
-	const naming = settings.getByRole("textbox", { name: /naming model/i });
+	// Models is a system section; its Utility model is a live key: the
+	// save applies with no callout. The save rides the surface actions
+	// route (the panel's ONE renderer); the settings file reflects it via
+	// the surface save.
+	await settings
+		.getByRole("group", { name: "System settings", exact: true })
+		.getByRole("button", { name: "Models", exact: true })
+		.click();
+	const naming = settings.getByRole("combobox", { name: "Utility model", exact: true });
 	await expect(naming).toBeVisible();
-	await naming.fill("faux/m-renamed");
+	await naming.selectOption({ label: "faux/m2 · ext-faux" });
 	const saved = page.waitForResponse((response) =>
-		response.url().includes("/v1/ext/core/surfaces/general/actions") &&
+		response.url().includes("/v1/ext/core/surfaces/models/actions") &&
 		response.request().method() === "POST",
 	);
 	await settings.getByRole("button", { name: /^save$/i }).click();
@@ -230,7 +246,7 @@ test("the settings callout: the naming-model save needs no restart; the port sav
 			});
 			return res.namingModel;
 		})
-		.toBe("faux/m-renamed");
+		.toBe("faux/m2");
 	await expect(settings.locator(".settings-restart-callout")).toHaveCount(0);
 
 	// server.port is a restart key (Advanced's Server group): the save
@@ -348,7 +364,7 @@ test("the palette outline clears its label", async ({ page }) => {
 // at a readable width on a desktop viewport.
 test("a settings form's Save is content-width and its fields cap their width", async ({ page }) => {
 	await page.setViewportSize({ width: 1440, height: 900 });
-	await page.goto(`${server.url}/#/settings/general`);
+	await page.goto(`${server.url}/#/settings/models`);
 	const settings = page.locator(".settings-page");
 	const save = settings.getByRole("button", { name: /^save$/i });
 	await expect(save).toBeVisible();

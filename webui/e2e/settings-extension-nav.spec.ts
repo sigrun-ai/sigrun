@@ -23,15 +23,23 @@ test("switching extension pages through the nav saves the new page's own values"
 		if (!response.ok) throw new Error(`login ${response.status}`);
 	}, login.token);
 	await page.goto(server.url);
-	await page.goto(`${server.url}/#/settings/sigrun-mcp`);
+	await page.goto(`${server.url}/#/settings/my:sigrun-mcp`);
+	const mcpPage = page.locator("[data-extension-page=sigrun-mcp]");
 	await expect(
-		page.locator("[data-extension-page=sigrun-mcp] [data-extension-part='user-settings'] .blk-form"),
+		mcpPage.locator("[data-extension-part='user-settings'] .blk-form"),
 	).toBeVisible();
+	await expect(page).toHaveURL(/#\/settings\/my:sigrun-mcp$/);
 
-	// Switch to the curator extension page via the nav.
-	await page.locator(".settings-nav-extension[data-ext=curator]").click();
+	// Switch to the curator extension's personal page via My-settings nav.
+	const personalNav = page.getByRole("group", { name: "My settings", exact: true });
+	await personalNav.locator(".settings-nav-extension[data-ext=curator]").click();
 	const curatorPage = page.locator("[data-extension-page=curator]");
+	await expect(page).toHaveURL(/#\/settings\/my(?::|%3A)curator$/);
 	await expect(curatorPage).toBeVisible();
+	await expect(curatorPage.locator("[data-extension-part='user-settings']")).toBeVisible();
+	await expect(curatorPage.locator("[data-extension-part='settings']")).toHaveCount(0);
+	await expect(curatorPage.locator("[data-name='paused'] input")).not.toBeChecked();
+	await expect(curatorPage.locator("[data-name='idleModel'] input")).toHaveValue("");
 	await curatorPage.locator("[data-name='paused'] input").check();
 	// The idleModel field has minLength 1; fill it so the save isn't blocked.
 	await curatorPage.locator("[data-name='idleModel'] input").fill("faux/m");
@@ -46,13 +54,14 @@ test("switching extension pages through the nav saves the new page's own values"
 	const body = (await userSettingsResponse.json()) as { data?: { settings?: { paused?: boolean } } };
 	expect(body.data?.settings?.paused).toBe(true);
 
-	// Switch back to sigrun-mcp and save that page's user-settings form.
-	await page.locator(".settings-nav-extension[data-ext=sigrun-mcp]").click();
+	// Switch back to sigrun-mcp and save its freshly loaded personal form.
+	await personalNav.locator(".settings-nav-extension[data-ext=sigrun-mcp]").click();
+	await expect(page).toHaveURL(/#\/settings\/my(?::|%3A)sigrun-mcp$/);
 	await expect(
-		page.locator("[data-extension-page=sigrun-mcp] [data-extension-part='user-settings'] .blk-form"),
+		mcpPage.locator("[data-extension-part='user-settings'] .blk-form"),
 	).toBeVisible();
-	await page
-		.locator("[data-extension-page=sigrun-mcp] [data-extension-part='user-settings']")
+	await mcpPage
+		.locator("[data-extension-part='user-settings']")
 		.getByRole("button", { name: "Save" })
 		.click();
 	await expect(page.locator(".blk-field-error")).toHaveCount(0);
