@@ -314,6 +314,7 @@ export interface DecisionRegistry {
 		request: unknown,
 		opts: {
 			model?: string;
+			user?: string;
 			confidentiality?: "normal" | "local-only";
 			signal?: AbortSignal;
 			timeoutMs?: number;
@@ -373,6 +374,8 @@ export function buildDecisionRegistry(
 		credential(id: string, env: string | undefined): string | undefined;
 		/** The live settings (decisionModel, server.decisions.timeoutMs). */
 		readSettings(): SettingsFile;
+		/** The acting user's effective decision model (override over system). */
+		effectiveModel?(user: string | undefined): Promise<string | undefined>;
 		/** The one locality switch (settings split Plan 2 Task 2): the
 		 * admin trust is per provider extension, applied per evaluate and
 		 * per list row. */
@@ -451,15 +454,18 @@ export function buildDecisionRegistry(
 		request: unknown,
 		opts: {
 			model?: string;
+			user?: string;
 			confidentiality?: "normal" | "local-only";
 			signal?: AbortSignal;
 			timeoutMs?: number;
 		},
 	): Promise<DecisionResult> {
-		// 1. Resolve the model: opts.model, else the live decisionModel
-		//    setting, else the first model of the first-registered provider.
+		// 1. Resolve the model: opts.model, else the acting user's
+		//    effective decisionModel, else the first model of the first provider.
 		const settings = deps.readSettings() as SettingsFile & { decisionModel?: string };
-		const spec = opts.model ?? settings.decisionModel;
+		const spec = opts.model ?? (deps.effectiveModel === undefined
+			? settings.decisionModel
+			: await deps.effectiveModel(opts.user));
 		if (spec === undefined && entries.size === 0) {
 			return { ok: false, code: "no_model", error: "no decision provider is registered" };
 		}

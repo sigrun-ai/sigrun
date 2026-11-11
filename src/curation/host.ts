@@ -66,6 +66,8 @@ export interface CurationHostDeps {
 	};
 	/** The boot default model (digest runs' fallback). */
 	readonly defaultModel: { readonly provider: string; readonly modelId: string };
+	/** The acting owner's effective default (Task 6; optional on hand-built tests). */
+	readonly defaultModelFor?: (user: string | undefined) => Promise<{ readonly provider: string; readonly modelId: string }>;
 	/**
 	 * The loaded extensions' interactive tool names (ask-user Task 3,
 	 * spec §6), threaded into every run producer the host drives. Absent
@@ -166,7 +168,7 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 				reviewId: `digest-${Date.now()}-${Math.floor(Math.random() * 1e6)}`,
 				input,
 			},
-			deps.defaultModel,
+			await (deps.defaultModelFor?.(user) ?? Promise.resolve(deps.defaultModel)),
 			deps.defaultAgent,
 		);
 	};
@@ -355,7 +357,7 @@ export function createCurationHost(deps: CurationHostDeps): SigrunCurationHost {
 				},
 				user,
 				opts,
-				deps.defaultModel,
+				await (deps.defaultModelFor?.(user) ?? Promise.resolve(deps.defaultModel)),
 				deps.defaultAgent,
 			);
 		},

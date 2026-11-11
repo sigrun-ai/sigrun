@@ -288,7 +288,7 @@ export function registerConversationRoutes(
 			const conversation = await opened.harness.createConversation(
 				{
 					ownership: { kind: "ownerless" },
-					agent: storeAgentChange(opened, opened.defaultModel),
+					agent: storeAgentChange(opened, await opened.defaultModelFor(request.principal.user)),
 				},
 				BACKGROUND_CONTEXT,
 			);

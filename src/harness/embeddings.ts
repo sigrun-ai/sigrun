@@ -27,13 +27,14 @@ export interface EmbeddingRegistry {
 		texts: readonly string[],
 		opts: {
 			model?: string;
+			user?: string;
 			confidentiality?: "normal" | "local-only";
 			signal?: AbortSignal;
 			timeoutMs?: number;
 		},
 	): Promise<EmbeddingResult>;
 	/** `default` marks the row `embeddingModel` resolves to (at most one). */
-	list(): readonly {
+	list(defaultModel?: string): readonly {
 		model: string;
 		provider: string;
 		dimensions: number;
@@ -100,6 +101,8 @@ export function buildEmbeddingRegistry(
 		 * extension, applied per embed and per list row; the model's own
 		 * `local: false` veto still wins. */
 		locality: Locality;
+		/** The acting user's effective embedding model (override over system). */
+		effectiveModel?(user: string | undefined): Promise<string | undefined>;
 		/** auth.json[id].apiKey, else the process env `credentialEnv` ("" = unset). */
 		credential(providerId: string, credentialEnv?: string): Promise<string | undefined>;
 		warn(message: string): void;
@@ -153,6 +156,7 @@ export function buildEmbeddingRegistry(
 		texts: readonly string[],
 		opts: {
 			model?: string;
+			user?: string;
 			confidentiality?: "normal" | "local-only";
 			signal?: AbortSignal;
 			timeoutMs?: number;
@@ -166,7 +170,9 @@ export function buildEmbeddingRegistry(
 		}
 
 		// 1. Model resolution is deliberately first: there is no silent default.
-		const spec = opts.model ?? settings.embeddingModel;
+		const spec = opts.model ?? (deps.effectiveModel === undefined
+			? settings.embeddingModel
+			: await deps.effectiveModel(opts.user));
 		const resolved = resolveModel(spec);
 		if (!resolved) {
 			return {
@@ -307,14 +313,14 @@ export function buildEmbeddingRegistry(
 
 	return {
 		embed,
-		list() {
+		list(defaultModel?: string) {
 			let settings: ReturnType<typeof deps.settings>;
 			try {
 				settings = deps.settings();
 			} catch {
 				return [];
 			}
-			const configuredDefault = settings.embeddingModel;
+			const configuredDefault = defaultModel ?? settings.embeddingModel;
 			const out: {
 				model: string;
 				provider: string;

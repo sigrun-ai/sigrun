@@ -70,6 +70,7 @@ function makeFixture(overrides: {
 	credential?: (id: string, env: string | undefined) => string | undefined;
 	settings?: Partial<SettingsFile & { decisionModel?: string }>;
 	evaluateImpl?: Fixture["evaluateImpl"];
+	effectiveModel?: (user: string | undefined) => Promise<string | undefined>;
 	now?: () => number;
 	timeoutCapMs?: number;
 } = {}): Fixture {
@@ -106,6 +107,9 @@ function makeFixture(overrides: {
 			ownerOf: (kind, providerId) =>
 				kind === "decision" && providerId === "acme-judge" ? "acme-ext" : undefined,
 		}),
+		...(overrides.effectiveModel === undefined
+			? {}
+			: { effectiveModel: overrides.effectiveModel }),
 		timeoutCapMs: overrides.timeoutCapMs ?? 15_000,
 		now: overrides.now ?? Date.now,
 		warn: (message) => warnings.push(message),
@@ -142,6 +146,21 @@ describe("decision locality (settings split Plan 2 Task 2)", () => {
 		expect(local.registry.list()).toEqual([
 			{ model: "acme-judge/judge-1", provider: "acme-judge", local: true, status: expect.any(String) },
 		]);
+	});
+});
+
+describe("per-user decision defaults (settings split Plan 2 Task 6)", () => {
+	it("evaluate with user picks the user's decision override", async () => {
+		const fixture = makeFixture({
+			contribution: { models: [{ id: "judge-1" }, { id: "judge-2" }] },
+			settings: { decisionModel: "acme-judge/judge-1" },
+			effectiveModel: async (user) =>
+				user === "bob" ? "acme-judge/judge-2" : "acme-judge/judge-1",
+		});
+		const result = await fixture.registry.evaluate("acme-notes", validRequest(), { user: "bob" });
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.model).toBe("acme-judge/judge-2");
+		expect(fixture.calls[0]?.ctx.model).toBe("judge-2");
 	});
 });
 

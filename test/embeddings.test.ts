@@ -34,6 +34,7 @@ function makeFixture(overrides: {
 	embed?: (call: Call) => Promise<EmbeddingResponse>;
 	settings?: { embeddingModel?: string; localProviders?: readonly string[]; timeoutCapMs?: number };
 	credential?: (providerId: string, credentialEnv?: string) => Promise<string | undefined>;
+	effectiveModel?: (user: string | undefined) => Promise<string | undefined>;
 	secondContribution?: EmbeddingProviderContribution;
 } = {}): Fixture {
 	const calls: Call[] = [];
@@ -81,12 +82,50 @@ function makeFixture(overrides: {
 			settings: () => settings,
 			locality,
 			credential: overrides.credential ?? (async () => CREDENTIAL),
+			...(overrides.effectiveModel === undefined
+				? {}
+				: { effectiveModel: overrides.effectiveModel }),
 			warn: (message) => warnings.push(message),
 		}),
 	};
 }
 
 describe("buildEmbeddingRegistry", () => {
+	it("embed with user picks the user's embedding override", async () => {
+		const fixture = makeFixture({
+			contribution: {
+				models: [
+					{ id: "embed-1", dimensions: 2 },
+					{ id: "embed-2", dimensions: 2 },
+				],
+			},
+			effectiveModel: async (user) =>
+				user === "bob" ? "acme-embed/embed-2" : "acme-embed/embed-1",
+		});
+		const result = await fixture.registry.embed("acme-recall", [INPUT], { user: "bob" });
+		if (!result.ok) throw new Error(JSON.stringify(result));
+		expect(result.model).toBe("acme-embed/embed-2");
+		expect(fixture.calls[0]?.model).toBe("embed-2");
+	});
+
+	it("embedding list default flag follows the user", async () => {
+		const effectiveModel = async (user: string | undefined): Promise<string | undefined> =>
+			user === "bob" ? "acme-embed/embed-2" : "acme-embed/embed-1";
+		const fixture = makeFixture({
+			contribution: {
+				models: [
+					{ id: "embed-1", dimensions: 2 },
+					{ id: "embed-2", dimensions: 3 },
+				],
+			},
+			effectiveModel,
+		});
+		const defaultModel = await effectiveModel("bob");
+		expect(fixture.registry.list(defaultModel).filter((row) => row.default).map((row) => row.model)).toEqual([
+			"acme-embed/embed-2",
+		]);
+	});
+
 	it("no setting and no model is no_model", async () => {
 		const fixture = makeFixture({ settings: { embeddingModel: undefined } });
 		const result = await fixture.registry.embed("acme-recall", [INPUT], {});

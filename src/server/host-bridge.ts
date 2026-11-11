@@ -97,6 +97,7 @@ export interface HostBridge {
 			request: DecisionRequest,
 			opts?: {
 				model?: string;
+				user?: string;
 				confidentiality?: "normal" | "local-only";
 				signal?: AbortSignal;
 				timeoutMs?: number;
@@ -110,12 +111,13 @@ export interface HostBridge {
 			texts: readonly string[],
 			opts?: {
 				model?: string;
+				user?: string;
 				confidentiality?: "normal" | "local-only";
 				signal?: AbortSignal;
 				timeoutMs?: number;
 			},
 		): Promise<EmbeddingResult>;
-		list(): Awaited<ReturnType<SigrunHost["embeddings"]["list"]>>;
+		list(opts?: { user?: string }): ReturnType<SigrunHost["embeddings"]["list"]>;
 	};
 	/** The extension-notify server side; the seam host supplies its slug. */
 	readonly notify: (
@@ -456,8 +458,8 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 			async embed(slug, texts, opts = {}) {
 				return opened.embeddings.embed(slug, texts, opts);
 			},
-			list() {
-				return opened.embeddings.list();
+			async list(opts = {}) {
+				return opened.embeddings.list(await opened.effective.value("embeddingModel", opts.user) as string | undefined);
 			},
 		},
 		models: {

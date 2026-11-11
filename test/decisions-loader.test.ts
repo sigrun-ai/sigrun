@@ -141,6 +141,21 @@ test("a contributor-only result with decisionProviders loads, and host.decisions
 	expect(result.answers.q).toMatchObject({ type: "noul", noul: 0.5 });
 });
 
+test("host.decisions.evaluate uses the requested user's decision override", async () => {
+	resets();
+	const rig = await boot([PROVIDER, CALLER], {
+		env: { TYPESAFE_API_KEY: "acme-env-key" },
+	});
+	await rig.opened.extensionStores.userExtensionStores("core", "tester").settings.set({
+		decisionModel: "acme-judge/judge-2",
+	});
+	const result = await callFromCaller(request(), { user: "tester" });
+	expect(result.ok).toBe(true);
+	if (!result.ok) throw new Error(JSON.stringify(result));
+	expect(result.model).toBe("acme-judge/judge-2");
+	expect(providerCalls.at(-1)?.model).toBe("judge-2");
+});
+
 test("the provider sees caller = the calling extension's slug", async () => {
 	resets();
 	await boot([PROVIDER, CALLER], { env: { TYPESAFE_API_KEY: "acme-env-key" } });

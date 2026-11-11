@@ -22,7 +22,7 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { DECISION_TIMEOUT_ENV, effectiveMethods, type Env, type SigrunConfig } from "../config.js";
+import { DECISION_TIMEOUT_ENV, effectiveMethods, parseModelSpec, type Env, type SigrunConfig } from "../config.js";
 import { requiresProxyVouch } from "../server/auth/proxy-only.js";
 import { wireActivity } from "./activity.js";
 import {
@@ -288,6 +288,8 @@ export interface OpenedHarness {
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
 	readonly defaultModel: ModelRef;
+	/** The acting user's served default, with a one-warning-per-value fallback. */
+	readonly defaultModelFor: (user: string | undefined) => Promise<ModelRef>;
 	/**
 	 * The union of every loaded extension's validated `interactiveTools`
 	 * (ask-user Task 3, spec §6): the tool names core hides in every
@@ -1817,6 +1819,7 @@ export async function openHarness(
 				: env[credentialEnv]?.trim() || undefined;
 		},
 		readSettings: () => settingsStore.read(),
+		effectiveModel: async (user) => await effective.value("decisionModel", user) as string | undefined,
 		timeoutCapMs: config.decisions.timeoutMs,
 		// The env tier of the timeout knob: env always wins over a live
 		// file edit (the config's env-over-file precedence, per call).
@@ -1840,6 +1843,7 @@ export async function openHarness(
 			};
 		},
 		locality: localityRef,
+		effectiveModel: async (user) => await effective.value("embeddingModel", user) as string | undefined,
 		credential: async (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
@@ -2001,6 +2005,42 @@ export async function openHarness(
 		},
 	);
 
+	// One effective-settings resolver for every per-user model read. The
+	// env-resolved boot default remains the system value for defaultModel.
+	const effective = createEffectiveSettings({
+		schema: coreSchema,
+		system: (key: string) => {
+			if (key === "defaultModel") return `${defaultModel.provider}/${defaultModel.modelId}`;
+			return (settingsStore.read() as Record<string, unknown>)[key];
+		},
+		overrides: async (user: string) => {
+			const stores = userExtensionStores(roots, identity.users, "core", user);
+			return stores.settings.get();
+		},
+		directory: () => identity.users.list(),
+	});
+	// Invalid overrides never prevent a conversation from running. Each bad
+	// value warns once per boot; later reads still fall back to the system model.
+	const warnedDefaultOverrides = new Set<string>();
+	const defaultModelFor = async (user: string | undefined): Promise<ModelRef> => {
+		if (user === undefined) return defaultModel;
+		const resolved = await effective.value("defaultModel", user);
+		if (typeof resolved !== "string" || resolved === `${defaultModel.provider}/${defaultModel.modelId}`) {
+			return defaultModel;
+		}
+		try {
+			const candidate = parseModelSpec(resolved, "user defaultModel override");
+			if (models.getModel(candidate.provider, candidate.modelId) !== undefined) return candidate;
+		} catch {
+			// The one warning below covers parse and served-catalog failures alike.
+		}
+		if (!warnedDefaultOverrides.has(resolved)) {
+			warnedDefaultOverrides.add(resolved);
+			console.warn(`user defaultModel override "${resolved}" is invalid or not currently served; using system default`);
+		}
+		return defaultModel;
+	};
+
 	// One-shot migration: the registry exists, so unknown models are
 	// dropped by the owner lookup. Headless boots migrate HERE too; the
 	// notice waits for createServer's notices service.
@@ -2040,6 +2080,7 @@ export async function openHarness(
 		registry,
 		models,
 		defaultModel,
+		defaultModelFor,
 		now: () => clockNow().getTime(),
 		defaultTz: config.timezone,
 		// Task 2c: job prompts expand `/skill:name` and template commands
@@ -2416,6 +2457,7 @@ export async function openHarness(
 		storage,
 		curation,
 		defaultModel,
+		defaultModelFor,
 		interactiveTools: new Set(loadedInteractiveTools),
 		stores: curationOf,
 		skillsOptions: {
@@ -2742,6 +2784,7 @@ export async function openHarness(
 		reports,
 		jobRunTotals: () => jobRunTotals,
 		defaultModel,
+		defaultModelFor,
 		interactiveTools: new Set(loadedInteractiveTools),
 		providerCollisions: sink.collisions,
 		webuiBundles,
@@ -2761,18 +2804,7 @@ export async function openHarness(
 		decisions: decisionsSlot.registry as DecisionRegistry,
 		embeddings,
 		locality: localityRef,
-		effective: createEffectiveSettings({
-			schema: coreSchema,
-			system: (key: string) => {
-				if (key === "defaultModel") return `${defaultModel.provider}/${defaultModel.modelId}`;
-				return (settingsStore.read() as Record<string, unknown>)[key];
-			},
-			overrides: async (user: string) => {
-				const stores = userExtensionStores(roots, identity.users, "core", user);
-				return stores.settings.get();
-			},
-			directory: () => identity.users.list(),
-		}),
+		effective,
 		localityMigration,
 		extensionStores: sharedStores,
 		packagesDir,

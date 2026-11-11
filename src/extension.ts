@@ -1901,13 +1901,15 @@ export interface SigrunHost {
 	 * `evaluate` NEVER throws; failures arrive as the `ok: false` half of
 	 * {@link DecisionResult}. Model resolution: `opts.model` wins; else
 	 * the live `decisionModel` setting; else the first model of the
-	 * first-registered decision provider.
+	 * first-registered decision provider. `opts.user` selects that user's
+	 * `decisionModel` override before the system value.
 	 */
 	readonly decisions: {
 		evaluate(
 			request: DecisionRequest,
 			opts?: {
 				model?: string;
+				user?: string;
 				confidentiality?: "normal" | "local-only";
 				signal?: AbortSignal;
 				timeoutMs?: number;
@@ -1926,25 +1928,27 @@ export interface SigrunHost {
 	 * Embedding providers: vectorize texts through the configured model.
 	 * `embed` NEVER throws; failures use {@link EmbeddingResult}. Model
 	 * resolution: `opts.model` wins; else the live `embeddingModel`
-	 * setting. There is no silent default when neither is configured.
+	 * setting; `opts.user` selects that user's override before the system
+	 * value. There is no silent default when neither is configured.
 	 */
 	readonly embeddings: {
 		embed(
 			texts: readonly string[],
 			opts?: {
 				model?: string;
+				user?: string;
 				confidentiality?: "normal" | "local-only";
 				signal?: AbortSignal;
 				timeoutMs?: number;
 			},
 		): Promise<EmbeddingResult>;
 		/** Every embedding model, its locality and readiness. */
-		list(): Promise<readonly {
+		list(opts?: { user?: string }): Promise<readonly {
 			model: string;
 			provider: string;
 			dimensions: number;
 			local: boolean;
-			/** True on the one row the `embeddingModel` setting resolves to. */
+			/** True on the one row the acting user's effective `embeddingModel` resolves to. */
 			default: boolean;
 			status: ProviderReadiness["status"];
 		}[]>;

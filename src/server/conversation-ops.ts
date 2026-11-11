@@ -336,15 +336,15 @@ export async function createConversationOp(
 		{
 			ownership: { kind: "ownerless" },
 			// A conversation with no agent model cannot generate (no_model):
-			// server-created conversations start on the boot default model,
-			// like the root conversation, and carry the store's
+			// server-created conversations start on their owner's effective
+			// default model (falling back to the system default), and carry the store's
 			// defaultTools/perModelThinking — re-read per create, so PATCHes
 			// reach new conversations without a restart. The C4 `agent`
 			// selection rides alongside: `extensions`/`tools` pin the stored
 			// filters by name while the store's `modelTools` narrowing still
 			// applies (both come from storeAgentChange + the spread).
 			agent: {
-				...storeAgentChange(opened, opened.defaultModel),
+				...storeAgentChange(opened, await opened.defaultModelFor(input.owner)),
 				...(selection?.extensions === undefined
 					? {}
 					: { extensions: selection.extensions }),
@@ -1227,8 +1227,8 @@ export async function forkOp(
 			throw new ConversationOpError({ error: "invalid_field", field: "at" });
 		}
 	}
-	// The fork inherits the parent's agent model — read the resolved
-	// agent, fall back to the boot default like create.
+	// The fork inherits the parent's stored agent model; only a parent
+	// without one falls back to the fork owner's effective default.
 	const agent = await conversation.agent(BACKGROUND_CONTEXT);
 	const inheritedSelection = (
 		await opened.harness.snapshot(AgentDoc, conversation.id, BACKGROUND_CONTEXT)
@@ -1253,7 +1253,7 @@ export async function forkOp(
 		{
 			ownership: { kind: "ownerless" },
 			agent: {
-				model: agent.model ?? opened.defaultModel,
+				model: agent.model ?? await opened.defaultModelFor(opts.owner),
 				...(inheritedExtensions === undefined
 					? {}
 					: { extensions: inheritedExtensions }),

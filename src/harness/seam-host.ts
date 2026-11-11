@@ -1241,6 +1241,7 @@ export function createSeamHost(
 				request: DecisionRequest,
 				opts: {
 					model?: string;
+					user?: string;
 					confidentiality?: "normal" | "local-only";
 					signal?: AbortSignal;
 					timeoutMs?: number;
@@ -1266,10 +1267,10 @@ export function createSeamHost(
 				}
 				return bridge.embeddings.embed(identity.name, texts, opts);
 			},
-			async list() {
+			async list(opts = {}) {
 				const bridge = await hostBridge("embeddings.list");
 				if (bridge.embeddings === undefined) return [];
-				return bridge.embeddings.list();
+				return bridge.embeddings.list(opts);
 			},
 		},
 		commands: {

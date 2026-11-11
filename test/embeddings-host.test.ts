@@ -81,6 +81,21 @@ test("host.embeddings.embed reaches the registry with the caller slug", async ()
 	]);
 });
 
+test("host.embeddings user options reach embed and list", async () => {
+	resetEmbeddingCaller();
+	const rig = await boot([PROVIDER, CALLER], { embeddingModel: "acme-embed/embed-1" });
+	await rig.opened.extensionStores.userExtensionStores("core", "tester").settings.set({
+		embeddingModel: "acme-embed/embed-2",
+	});
+	const result = await callFromCaller(["acme input"], { user: "tester" });
+	expect(result.ok).toBe(true);
+	if (!result.ok) throw new Error(JSON.stringify(result));
+	expect(result.model).toBe("acme-embed/embed-2");
+	expect(result.dimensions).toBe(2);
+	const listed = await rig.opened.seamHosts.get("acme-embedding-caller")?.embeddings.list({ user: "tester" });
+	expect(listed?.filter((row) => row.default).map((row) => row.model)).toEqual(["acme-embed/embed-2"]);
+});
+
 test("host.embeddings before loading completes waits", async () => {
 	resetEmbeddingCaller();
 	await boot([PROVIDER, EARLY_CALLER], { embeddingModel: "acme-embed/embed-1" });

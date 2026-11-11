@@ -975,7 +975,12 @@ The contract:
   arbitrary state and question sets either way.
 - **One provider, many models.** Declare each judge as a `models` entry;
   callers address them as `<id>/<modelId>`. `decisionModel` in
-  settings.json picks the default without a restart.
+  settings.json picks the default without a restart. Pass `opts.user` to
+  evaluate for that user's My settings → Models override instead; model
+  precedence is `opts.model`, the user's override, then the system
+  `decisionModel`, then the first provider's first model. Omitting
+  `opts.user` keeps the system value. `host.decisions.list()` stays
+  system-scoped and has no per-user `default` flag.
 
 ## Contributing embedding providers
 
@@ -1010,12 +1015,15 @@ export default function acmeEmbeddings() {
 ```
 
 - **Callers** use `host.embeddings.embed(texts, opts)` and
-  `host.embeddings.list()`. `opts.model` (`provider/model`) wins over the
-  live `embeddingModel` setting; with neither configured, `embed` returns
-  `no_model` rather than silently choosing a model. Calls never throw:
-  failures use `EmbeddingResult`'s `ok: false` codes. Core splits inputs
-  at `maxBatch`, preserves input order, and validates every returned
-  vector's dimensions.
+  `host.embeddings.list(opts)`. `opts.model` (`provider/model`) wins over
+  the effective `embeddingModel`; otherwise `opts.user` selects that
+  user's My settings → Models override before the system setting. With no
+  model configured, `embed` returns `no_model` rather than silently
+  choosing a model. `list({ user })` marks the user's effective model
+  with its `default` flag; plain `list()` keeps the system default. Calls
+  never throw: failures use `EmbeddingResult`'s `ok: false` codes. Core
+  splits inputs at `maxBatch`, preserves input order, and validates every
+  returned vector's dimensions.
 - **Confidentiality is fail-closed.** `confidentiality: "local-only"`
   succeeds only when the model appears in `embeddings.localModels` AND its
   declaration does not say `local: false`. A provider whose endpoint can
