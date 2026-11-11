@@ -30,7 +30,7 @@
  * transport.
  */
 
-import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "./api.js";
+import { authFailureForBody, type ConversationViewWire } from "./api.js";
 import { applyDelta, type ViewDelta } from "@sigrun/shared/view-delta";
 import { clientHeaders } from "./client-headers.js";
 import type { HostEventWire } from "@sigrun/shared/views";
@@ -225,7 +225,9 @@ export function watchConversation(
 			// reconnecting — surface the auth-failure string ONCE and stop
 			// (never a silent retry ladder against a revoked token).
 			if (response.status === 401) {
-				handlers.onError?.(AUTH_FAILURE_MESSAGE);
+				const body: unknown = await response.json().catch(() => undefined);
+				if (closed) return;
+				handlers.onError?.(authFailureForBody(body));
 				return;
 			}
 			handlers.onError?.(
@@ -426,7 +428,9 @@ export function watchEvents(
 			// A 401 (Task 5) is terminal — same rule as the conversation
 			// stream: the auth-failure string ONCE, never a retry ladder.
 			if (response.status === 401) {
-				handlers.onError?.(AUTH_FAILURE_MESSAGE);
+				const body: unknown = await response.json().catch(() => undefined);
+				if (closed) return;
+				handlers.onError?.(authFailureForBody(body));
 				return;
 			}
 			handlers.onError?.(

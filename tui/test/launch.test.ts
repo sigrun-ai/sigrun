@@ -10,7 +10,7 @@
  */
 
 import { describe, expect, test } from "vitest";
-import { AUTH_FAILURE_MESSAGE } from "../src/api.js";
+import { AUTH_FAILURE_MESSAGE, FRONT_AUTH_FAILURE_MESSAGE } from "../src/api.js";
 import { createStreamHealthNotices } from "../src/launch.js";
 
 describe("createStreamHealthNotices", () => {
@@ -73,6 +73,15 @@ describe("createStreamHealthNotices", () => {
 		// problem, not the transport.
 		health.onOpen();
 		expect(notices).toEqual([AUTH_FAILURE_MESSAGE]);
+	});
+
+	test("the front-auth message latches the same way as the token message", () => {
+		const notices: string[] = [];
+		const health = createStreamHealthNotices((message) => notices.push(message));
+		health.onError(FRONT_AUTH_FAILURE_MESSAGE);
+		health.onError(FRONT_AUTH_FAILURE_MESSAGE);
+		health.onOpen();
+		expect(notices).toEqual([FRONT_AUTH_FAILURE_MESSAGE]);
 	});
 
 	test("an unrelated message mentioning authentication is not the auth failure", () => {

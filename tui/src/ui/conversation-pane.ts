@@ -65,7 +65,7 @@ import {
 } from "@sigrun/shared/turns";
 import type { SurfaceTransport } from "@sigrun/shared/blocks";
 import { plainTuiTheme, type TuiTheme } from "../theme.js";
-import { AUTH_FAILURE_MESSAGE, type ConversationViewWire } from "../api.js";
+import { isAuthFailureMessage, type ConversationViewWire } from "../api.js";
 import { SurfaceState } from "../blocks/surface.js";
 import { SurfaceView } from "../blocks/surface-view.js";
 
@@ -450,7 +450,7 @@ export class ConversationPane implements Component {
 		for (let index = 0; index < this.#notices.length; index++) {
 			const notice = this.#notices[index];
 			if (notice === undefined) continue;
-			if (notice.text === AUTH_FAILURE_MESSAGE) {
+			if (isAuthFailureMessage(notice.text)) {
 				kept.push(notice);
 				const component = this.#noticeComponents[index];
 				if (component !== undefined) keptComponents.push(component);
@@ -471,9 +471,9 @@ export class ConversationPane implements Component {
 		// stream 401 at once): dedupe it to one line regardless of kind,
 		// and never let the backlog cap evict it — it is the only notice
 		// that tells the operator why everything stopped working.
-		if (notice.text === AUTH_FAILURE_MESSAGE) {
+		if (isAuthFailureMessage(notice.text)) {
 			const index = this.#notices.findIndex(
-				(existing) => existing.text === AUTH_FAILURE_MESSAGE,
+				(existing) => existing.text === notice.text,
 			);
 			if (index >= 0) {
 				// Not a plain no-op skip: the splice-and-remount REPLACES the
@@ -504,7 +504,7 @@ export class ConversationPane implements Component {
 		this.#container.addChild(component);
 		while (this.#notices.length > MAX_NOTICES) {
 			const evictIndex = this.#notices.findIndex(
-				(existing) => existing.text !== AUTH_FAILURE_MESSAGE,
+				(existing) => !isAuthFailureMessage(existing.text),
 			);
 			if (evictIndex < 0) break;
 			this.#notices.splice(evictIndex, 1);

@@ -8,7 +8,11 @@
 
 import { describe, expect, test } from "vitest";
 import {
+	AUTH_FAILURE_MESSAGE,
+	authFailureForBody,
 	authFailureMessage,
+	FRONT_AUTH_FAILURE_MESSAGE,
+	isAuthFailureMessage,
 	SigrunClient,
 	SigrunApiError,
 	type FetchLike,
@@ -427,5 +431,45 @@ describe("authFailureMessage (Task 5: naming auth failures for the user)", () =>
 		).toBeUndefined();
 		expect(authFailureMessage(new Error("boom"))).toBeUndefined();
 		expect(authFailureMessage(undefined)).toBeUndefined();
+	});
+
+	test("a 401 whose body is not sigrun's maps to the front-auth hint", () => {
+		// A forward-auth proxy answers before sigrun: HTML or no body.
+		expect(
+			authFailureMessage(new SigrunApiError("GET", "/v1/conversations", 401, undefined)),
+		).toBe(FRONT_AUTH_FAILURE_MESSAGE);
+		expect(
+			authFailureMessage(
+				new SigrunApiError("GET", "/v1/conversations", 401, "<a>401 Unauthorized</a>"),
+			),
+		).toBe(FRONT_AUTH_FAILURE_MESSAGE);
+		expect(FRONT_AUTH_FAILURE_MESSAGE).toContain("before the request reached sigrun");
+	});
+
+	test("authFailureForBody: sigrun's JSON error body vs anything else", () => {
+		expect(authFailureForBody({ error: "unauthenticated" })).toBe(AUTH_FAILURE_MESSAGE);
+		expect(authFailureForBody({ error: "invalid_token" })).toBe(AUTH_FAILURE_MESSAGE);
+		for (const body of [undefined, null, "", "<html>", {}, { error: 401 }, []]) {
+			expect(authFailureForBody(body)).toBe(FRONT_AUTH_FAILURE_MESSAGE);
+		}
+	});
+
+	test("isAuthFailureMessage recognises both auth messages only", () => {
+		expect(isAuthFailureMessage(AUTH_FAILURE_MESSAGE)).toBe(true);
+		expect(isAuthFailureMessage(FRONT_AUTH_FAILURE_MESSAGE)).toBe(true);
+		expect(isAuthFailureMessage("authentication failed (401) for some other reason")).toBe(false);
+	});
+
+	test("a client GET answered by a non-JSON 401 surfaces the front-auth hint", async () => {
+		const fetchImpl: FetchLike = () =>
+			Promise.resolve({
+				ok: false,
+				status: 401,
+				json: () => Promise.reject(new SyntaxError("Unexpected token <")),
+				text: () => Promise.resolve("<a>401 Unauthorized</a>"),
+			});
+		const client = new SigrunClient({ baseUrl: BASE, token: "sgr_example", fetch: fetchImpl });
+		const error = await client.listConversations().catch((caught: unknown) => caught);
+		expect(authFailureMessage(error)).toBe(FRONT_AUTH_FAILURE_MESSAGE);
 	});
 });

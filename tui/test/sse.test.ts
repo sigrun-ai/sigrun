@@ -11,6 +11,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
+import { FRONT_AUTH_FAILURE_MESSAGE } from "../src/api.js";
 import { watchConversation, watchEvents, type WatchHandlers } from "../src/sse.js";
 
 /** One scripted connection of the fake SSE server. */
@@ -541,6 +542,46 @@ describe("watchConversation", () => {
 				"authentication failed (401): SIGRUN_TOKEN is missing, expired, or revoked — create one in Settings → API tokens",
 			]);
 			unwatch();
+		} finally {
+			randomSpy.mockRestore();
+			vi.useRealTimers();
+		}
+	});
+
+	test("a non-sigrun 401 (forward auth, HTML body) reports the front-auth hint, terminal, on both watchers", async () => {
+		vi.useFakeTimers();
+		const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0.5);
+		try {
+			let calls = 0;
+			const proxied = vi.fn(async (): Promise<Response> => {
+				calls += 1;
+				return new Response("<a>401 Unauthorized</a>", {
+					status: 401,
+					headers: { "content-type": "text/html; charset=utf-8" },
+				});
+			});
+			const conversationErrors: string[] = [];
+			const eventErrors: string[] = [];
+			const options = {
+				baseUrl: "http://127.0.0.1:1",
+				reconnectBaseMs: 10,
+				fetch: proxied as unknown as typeof globalThis.fetch,
+			};
+			const unwatchConversation = watchConversation(
+				1,
+				{ onError: (message) => conversationErrors.push(message) },
+				options,
+			);
+			const unwatchEvents = watchEvents(
+				{ onEvent: () => {}, onError: (message) => eventErrors.push(message) },
+				options,
+			);
+			await vi.advanceTimersByTimeAsync(1_000_000);
+			expect(calls).toBe(2);
+			expect(conversationErrors).toEqual([FRONT_AUTH_FAILURE_MESSAGE]);
+			expect(eventErrors).toEqual([FRONT_AUTH_FAILURE_MESSAGE]);
+			unwatchConversation();
+			unwatchEvents();
 		} finally {
 			randomSpy.mockRestore();
 			vi.useRealTimers();
