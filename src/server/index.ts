@@ -306,8 +306,21 @@ export async function createServer(
 	// Settings split Plan 2 Task 2: migration ran in openHarness so headless
 	// boots migrate too; the NOTICE needs this server's notices service.
 	// Owned by core, keyed for idempotent replace; an empty directory
-	// (UserNoticeInput.user is required) logs one line instead.
-	await noticeLocalityMigration({ opened, notices: noticesService });
+	// (UserNoticeInput.user is required) logs one line instead. INFORMATIONAL
+	// side report only: log through the service's own info log on the
+	// empty-directory arm, and let a notice-post rejection log-and-continue
+	// rather than refuse server creation for a side report.
+	try {
+		await noticeLocalityMigration({
+			opened,
+			notices: noticesService,
+			log: (line) => console.info(line),
+		});
+	} catch (cause) {
+		console.warn(
+			`settings: locality migration notice failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+		);
+	}
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};

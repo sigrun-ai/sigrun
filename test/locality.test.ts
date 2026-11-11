@@ -111,6 +111,21 @@ describe("migrateLocalModels", () => {
 		expect(store.read().localProviders).toEqual(["acme-embed"]);
 	});
 
+	test("migration never claims a model whose extension was already local", async () => {
+		const store = await storeWith({
+			embeddingModel: "acme-embed/embed-1",
+			localProviders: ["acme-embed"],
+			embeddings: { localModels: ["acme-embed/embed-1", "acme-embed/embed-2"] },
+		});
+		const owners = new Map<string, string>([
+			["acme-embed/embed-1", "acme-embed"],
+			["acme-embed/embed-2", "acme-embed"],
+		]);
+		expect(migrateLocalModels(store, (model) => owners.get(model))).toEqual({ migrated: [] });
+		expect(store.read().localProviders).toEqual(["acme-embed"]);
+		expect(store.read().embeddings?.localModels).toEqual([]);
+	});
+
 	test("migration with nothing to migrate is a no-op", async () => {
 		const store = await storeWith({ defaultModel: "openai/gpt-test" });
 		expect(migrateLocalModels(store, () => "acme-embed").migrated).toEqual([]);
@@ -360,8 +375,8 @@ test("localModels migrate to localProviders once, with a notice", async () => {
 
 test("migration with an empty directory logs instead of noticing", async () => {
 	const logged: string[] = [];
-	const original = console.warn;
-	console.warn = (line: string) => logged.push(String(line));
+	const original = console.info;
+	console.info = (line: string) => logged.push(String(line));
 	try {
 		const { opened } = await boot({
 			emptyDirectory: true,
@@ -373,6 +388,6 @@ test("migration with an empty directory logs instead of noticing", async () => {
 		expect(opened.localityMigration.migrated).toEqual(["acme-embed"]);
 		expect(logged.some((line) => line.includes("localProviders"))).toBe(true);
 	} finally {
-		console.warn = original;
+		console.info = original;
 	}
 });
