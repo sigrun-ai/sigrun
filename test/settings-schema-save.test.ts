@@ -84,14 +84,6 @@ async function boot(options: {
 	}
 	const faux = fauxProvider({ provider: "faux", models: [{ id: "m", contextWindow: 128_000 }] });
 	const contributor: ProviderContributor = { name: "ext-faux", providers: [{ provider: faux.provider }] };
-	const judge = {
-		name: "acme-judge",
-		decisionProviders: [{
-			id: "acme-judge",
-			models: [{ id: "judge-1" }],
-			evaluate: async () => ({}),
-		}],
-	};
 	const config = loadConfig({
 		SIGRUN_DEFAULT_MODEL: "faux/m",
 		SIGRUN_CONFIG_DIR: configDir,
@@ -105,7 +97,7 @@ async function boot(options: {
 	const identity = await seededIdentity(join(dir, "seed"), "alice");
 	const opened = await openHarness(config, {
 		identity,
-		extensions: [contributor, judge],
+		extensions: [contributor],
 		extensionSpecifiers: [options.specifier ?? DECLARING],
 		env: { SIGRUN_CONFIG_DIR: configDir },
 		settingsDir: dir,
@@ -465,6 +457,7 @@ test("the first option names the effective default", async () => {
 	expect(shared.status).toBe(200);
 	expect(modelChoices(shared.body.tree as Tree, shared.body.data as Record<string, unknown>).get("judgeModel")?.options).toEqual([
 		{ id: "", label: "Use the default (acme-judge/judge-1)" },
+		{ id: "acme-judge/judge-1", label: "acme-judge/judge-1 · acme-schema-save" },
 		{ id: "acme-judge/unserved-model", label: "acme-judge/unserved-model (not currently served)" },
 	]);
 
@@ -476,6 +469,15 @@ test("the first option names the effective default", async () => {
 	const idle = modelChoices(overridden.body.tree as Tree, overridden.body.data as Record<string, unknown>).get("idleModel");
 	expect(idle?.options[0]).toEqual({ id: "", label: "Use the default (acme-user/chat)" });
 	expect(idle?.options.slice(1).map((row) => row.id)).toEqual(["faux/m"]);
+});
+
+test("a $ref-declared model field receives its roster", async () => {
+	const rig = await boot({ specifier: fixture("fixture-settings-model-ref") });
+	const rendered = await call(rig, "GET", "/v1/ext/acme-model-ref/surfaces/settings");
+	expect(rendered.status).toBe(200);
+	const model = modelChoices(rendered.body.tree as Tree, rendered.body.data as Record<string, unknown>).get("model");
+	expect(model?.options[0]).toEqual({ id: "", label: "Use the default (none)" });
+	expect(model?.options.slice(1).map((row) => row.id)).toEqual(["acme-judge/judge-1"]);
 });
 
 test("choosing the default leaves the key unset", async () => {

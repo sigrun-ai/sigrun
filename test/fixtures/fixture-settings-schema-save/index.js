@@ -53,6 +53,13 @@ export default function fixture(host) {
 	});
 	return {
 		extension: defineExtension({ name: "acme-schema-save" }),
+		decisionProviders: [{
+			id: "acme-judge",
+			models: [{ id: "judge-1" }],
+			async evaluate() {
+				return { answers: {} };
+			},
+		}],
 		onSettingsChanged(keys, user) {
 			changes.push({ keys: [...keys], user });
 		},

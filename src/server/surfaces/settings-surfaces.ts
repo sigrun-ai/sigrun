@@ -55,7 +55,7 @@ import { dropBlankOptionalStrings } from "../../settings/schema/blanks.js";
 import type { ModelKindId, ModelRoster } from "../../settings/model-kinds.js";
 import { MODEL_KINDS } from "../../settings/model-kinds.js";
 import { systemModelRosterData, withUnserved } from "../model-roster.js";
-import { MODEL_KEYWORD } from "../../settings/schema/keywords.js";
+import { deref, MODEL_KEYWORD } from "../../settings/schema/keywords.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -1056,7 +1056,9 @@ function modelKindsInSchema(node: unknown): Map<ModelKindId, string[]> {
 		if (!isRec(current)) continue;
 		if (isRec(current.properties)) {
 			for (const [name, property] of Object.entries(current.properties)) {
-				const kind = isRec(property) ? MODEL_KINDS.find((entry) => entry.kind === property[MODEL_KEYWORD]) : undefined;
+				if (!isRec(property)) continue;
+				const resolved = deref(current, property);
+				const kind = MODEL_KINDS.find((entry) => entry.kind === resolved[MODEL_KEYWORD]);
 				if (kind !== undefined) kinds.set(kind.kind, [...(kinds.get(kind.kind) ?? []), name]);
 			}
 		}
