@@ -23,6 +23,7 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 		user?: string;
 		authorization?: string;
 		accept?: string;
+		client?: string;
 		body?: string;
 	}[] = [];
 	const fetchImpl: FetchLike = (input, request) => {
@@ -32,6 +33,7 @@ function stubFetch(body: unknown, init?: { status?: number }) {
 			user: request?.headers?.["x-sigrun-user"],
 			authorization: request?.headers?.["authorization"],
 			accept: request?.headers?.["accept"],
+			client: request?.headers?.["x-sigrun-client"],
 			body: request?.body,
 		});
 		return Promise.resolve({
@@ -65,6 +67,7 @@ describe("SigrunClient request shaping", () => {
 				method: "GET",
 				user: "acme-agent",
 				accept: "application/json",
+				client: "tui",
 				body: undefined,
 			},
 		]);
@@ -367,6 +370,14 @@ describe("authorization header (Task 7: the token seam)", () => {
 		await client.submit(1, "hello");
 		expect(calls[0]?.authorization).toBe("Bearer sgr_test_token");
 		expect(calls[1]?.authorization).toBe("Bearer sgr_test_token");
+	});
+
+	test("every request carries x-sigrun-client: tui (GET and POST, with or without a token)", async () => {
+		const { calls, fetchImpl } = stubFetch({ conversations: [] });
+		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
+		await client.listConversations();
+		await client.submit(1, "hello");
+		expect(calls.map((call) => call.client)).toEqual(["tui", "tui"]);
 	});
 
 	test("absent token omits the authorization header entirely", async () => {

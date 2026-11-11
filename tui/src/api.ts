@@ -18,6 +18,7 @@
  */
 
 import type { CommandRunResponse, CommandsResponse } from "@sigrun/shared/commands";
+import { clientHeaders } from "./client-headers.js";
 import type {
 	NoticeActionResponse,
 	NoticesResponse,
@@ -241,13 +242,11 @@ export class SigrunClient {
 		const token = options.token?.trim();
 		this.#token = token === "" ? undefined : token;
 		this.#user = user === "" ? undefined : user;
-		this.#headers = {
+		this.#headers = clientHeaders({
 			accept: "application/json",
-			...(user === undefined || user === "" ? {} : { "x-sigrun-user": user }),
-			...(token === undefined || token === ""
-				? {}
-				: { authorization: `Bearer ${token}` }),
-		};
+			...(user === undefined ? {} : { user }),
+			...(token === undefined ? {} : { token }),
+		});
 	}
 
 	async #get<T>(path: string): Promise<T> {

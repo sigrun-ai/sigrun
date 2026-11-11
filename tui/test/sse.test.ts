@@ -11,7 +11,7 @@
 import http from "node:http";
 import type { AddressInfo } from "node:net";
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { watchConversation, type WatchHandlers } from "../src/sse.js";
+import { watchConversation, watchEvents, type WatchHandlers } from "../src/sse.js";
 
 /** One scripted connection of the fake SSE server. */
 interface ConnectionScript {
@@ -609,6 +609,29 @@ describe("authorization header (Task 7: the token seam)", () => {
 		});
 		expect(seen[0]?.authorization).toBeUndefined();
 		unwatch();
+		await close();
+	});
+
+	test("both watchers' connects carry x-sigrun-client: tui", async () => {
+		const { seen, baseUrl, close } = await headerRecordingServer();
+		const unwatchConversation = watchConversation(1, {}, {
+			baseUrl,
+			reconnectBaseMs: 1,
+			reconnectMaxMs: 1,
+		});
+		const unwatchEvents = watchEvents(
+			{ onEvent: () => {} },
+			{ baseUrl, reconnectBaseMs: 1, reconnectMaxMs: 1 },
+		);
+		await vi.waitFor(() => {
+			expect(seen.length).toBeGreaterThanOrEqual(2);
+		});
+		expect(seen.map((headers) => headers["x-sigrun-client"])).toEqual([
+			"tui",
+			"tui",
+		]);
+		unwatchConversation();
+		unwatchEvents();
 		await close();
 	});
 });

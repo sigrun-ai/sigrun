@@ -73,6 +73,7 @@ describe("createExtSurfaceTransport", () => {
 		expect(stub.calls[0]?.init?.headers?.["x-sigrun-user"]).toBe("alice");
 		expect(stub.calls[0]?.init?.headers?.authorization).toBe("Bearer tok-1");
 		expect(stub.calls[0]?.init?.headers?.["x-sigrun-stream"]).toBe("stream-9");
+		expect(stub.calls[0]?.init?.headers?.["x-sigrun-client"]).toBe("tui");
 	});
 
 	test("params ride load (?params=) and the actions body", async () => {
