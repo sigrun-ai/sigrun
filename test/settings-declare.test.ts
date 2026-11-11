@@ -172,6 +172,13 @@ async function invalidNotices(rig: Rig) {
 	return (await store.list()).filter((notice) => notice.key === "settings.invalid");
 }
 
+test("userSchema may not use x-sigrun-env", async () => {
+	const { opened } = await boot([fixture("fixture-settings-user-env")]);
+	expect(opened.extensionOutcomes[0]).toMatchObject({ status: "quarantined" });
+	expect(opened.extensionOutcomes[0]?.error).toMatch(/userSchema.*x-sigrun-env/);
+	expect(opened.extensionOutcomes[0]?.error).toContain("non-admin");
+});
+
 test("declare returns defaults for an empty file", async () => {
 	const { opened } = await boot([DECLARING]);
 	await expect(declared?.get()).resolves.toEqual({ interval: 60, group: { label: "acme" } });

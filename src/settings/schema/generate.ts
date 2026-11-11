@@ -24,14 +24,17 @@ import {
 } from "@sigrun/shared/blocks";
 import {
 	APPLY_KEYWORD,
+	ENV_KEYWORD,
 	KEY_KEYWORD,
 	SUMMARY_KEYWORD,
 	applyOf,
 	deref,
+	envOf,
 	hasNonDrawableKeyword,
 	hasOtherNonDrawableKeyword,
 	isRecord,
 	keyOf,
+	pointerEscape,
 	pointerJoin,
 	propertiesOf,
 	resolveRef,
@@ -41,6 +44,7 @@ import {
 	type JsonSchema,
 } from "./keywords.js";
 
+export { ENV_KEYWORD, envOf } from "./keywords.js";
 export type { Apply, JsonSchema } from "./keywords.js";
 
 /** A secret value location (spec §4). */
@@ -61,12 +65,20 @@ function secretPath(ctx: Ctx, pattern: string): SecretPath {
 	return ctx.identity === undefined ? { pattern } : { pattern, key: ctx.identity };
 }
 
+/** One extension field's environment fallback. Core's env-backed keys use ENV_OVERRIDES instead. */
+export interface EnvField {
+	readonly name: string;
+	readonly variable: string;
+	readonly fallback?: string;
+}
+
 /** The generator's product: the form plus everything the save path needs. */
 export interface GeneratedForm {
 	readonly form: Tree; // a root `form`, bind "/settings", mode "submit", onSubmit "save"
 	readonly secrets: readonly SecretPath[]; // every writeOnly property
 	readonly fallbacks: readonly string[]; // JSON-pointer paths drawn as a JSON box
 	readonly apply: ReadonlyMap<string, Apply>; // top-level property → apply
+	readonly envFields: readonly EnvField[]; // extension-only string fields with an env fallback
 }
 
 /** Core's section layout (Task 8); extensions omit it. */
@@ -180,6 +192,7 @@ interface Ctx {
 	readonly root: JsonSchema;
 	readonly secrets: SecretPath[];
 	readonly fallbacks: string[];
+	readonly envFields: EnvField[];
 	/** Property-name prefix for dotted field names inside titled sections. */
 	readonly namePrefix: string;
 	/** The identity property of the enclosing array item, for its secrets' keys. */
@@ -254,7 +267,17 @@ function propertyNode(
 	if (typeof schema.$ref === "string" && resolveRef(ctx.root, schema.$ref) === undefined) {
 		return fallbackNode(ctx, name, pointer, `unresolved $ref ${schema.$ref}`);
 	}
-	const base = baseProps(schema, name, required);
+	const variable = envOf(schema);
+	const base: FieldBase = variable === undefined
+		? baseProps(schema, name, required)
+		: { ...baseProps(schema, name, required), placeholder: { $: `/envFallbacks/${pointerEscape(name)}` } };
+	if (variable !== undefined) {
+		ctx.envFields.push({
+			name,
+			variable,
+			...(schema.default === undefined ? {} : { fallback: String(schema.default) }),
+		});
+	}
 
 	// writeOnly → secret, anywhere in the tree
 	if (schema.writeOnly === true) {
@@ -468,7 +491,7 @@ export function generateForm(
 	schema: JsonSchema,
 	opts: { idPrefix: string; layout?: readonly LayoutGroup[] },
 ): GeneratedForm {
-	const ctx: Ctx = { root: schema, secrets: [], fallbacks: [], namePrefix: "" };
+	const ctx: Ctx = { root: schema, secrets: [], fallbacks: [], envFields: [], namePrefix: "" };
 	const apply = new Map<string, Apply>();
 
 	const topLevel = propertiesOf(schema, schema);
@@ -597,7 +620,7 @@ export function generateForm(
 		children,
 	};
 	const form: Tree = { v: BLOCK_SET_VERSION, root };
-	return { form, secrets: ctx.secrets, fallbacks: ctx.fallbacks, apply };
+	return { form, secrets: ctx.secrets, fallbacks: ctx.fallbacks, apply, envFields: ctx.envFields };
 }
 
 /** Load-time schema check (spec §1): loud, naming the offending keyword. */
@@ -641,6 +664,15 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 	}
 	if (schema[KEY_KEYWORD] !== undefined && typeof schema[KEY_KEYWORD] !== "string") {
 		return fail(`${KEY_KEYWORD} must be a string`);
+	}
+	if (schema[ENV_KEYWORD] !== undefined) {
+		const variable = schema[ENV_KEYWORD];
+		if (typeof variable !== "string" || !/^[A-Z_][A-Z0-9_]*$/.test(variable)) {
+			return fail(`${ENV_KEYWORD} must be an uppercase environment variable name (got ${JSON.stringify(variable)})`);
+		}
+		if (schema.type !== "string" || schema.writeOnly === true) {
+			return fail(`${ENV_KEYWORD} is valid only on a non-writeOnly string property`);
+		}
 	}
 	if (schema.writeOnly !== undefined && typeof schema.writeOnly !== "boolean") {
 		return fail("writeOnly must be a boolean");

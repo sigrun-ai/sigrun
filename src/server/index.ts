@@ -130,7 +130,8 @@ import {
  * registry is the no-extension deploy).
  * @param options.env the boot env (`process.env` at the deploy entry) — the
  * `/v1/settings` `effective` block classifies env-sourced server keys
- * against it (spec §6.6). Defaults to `{}` for hand-built test servers
+ * against it (spec §6.6); extension x-sigrun-env placeholders show the
+ * fallback values in admin forms. Defaults to `{}` for hand-built test servers
  * (every key then reports file/default, which is accurate for an
  * env-less boot).
  */
@@ -354,6 +355,7 @@ export async function createServer(
 			extension: binding.extension,
 			defs: binding.defs.map((section) =>
 				settingsSurfaceFor(binding.extension, section, {
+					env,
 					stores: opened.extensionStores,
 					publishSettingsChanged: opened.publishSettingsChanged,
 					service: surfacesService,
@@ -376,6 +378,7 @@ export async function createServer(
 					schema,
 					generated,
 					{
+						env,
 						stores: opened.extensionStores,
 						publishSettingsChanged: opened.publishSettingsChanged,
 						service: surfacesService,
@@ -394,6 +397,7 @@ export async function createServer(
 			extension: "core",
 			defs: CORE_SETTINGS_SECTIONS.map((section) =>
 				settingsSurfaceFor("core", section, {
+					env,
 					stores: opened.extensionStores,
 					publishSettingsChanged: opened.publishSettingsChanged,
 					service: surfacesService,

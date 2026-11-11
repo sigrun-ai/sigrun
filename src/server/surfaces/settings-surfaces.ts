@@ -272,8 +272,8 @@ function withAppendedSecretFields(
 }
 
 /** The env knob mirroring one core key, when one exists (the
- *  General/Providers sections' "env wins" notes). Only the keys the
- *  core forms render are listed. */
+ *  General/Providers sections' env notes). Only the keys the core forms
+ *  render are listed. Extension string fields use x-sigrun-env instead. */
 const ENV_OVERRIDES: Readonly<Record<string, string>> = {
 	defaultModel: "SIGRUN_DEFAULT_MODEL",
 	"defaultProvider.baseUrl": "OPENAI_BASE_URL",
@@ -345,6 +345,8 @@ function pendingContext(core: {
 /** The dependencies one adapted section closes over. */
 export interface SettingsSurfaceOptions {
 	readonly stores: SharedExtensionStores;
+	/** The live boot environment, for extension string fields' x-sigrun-env fallbacks. */
+	readonly env: Readonly<Record<string, string | undefined>>;
 	/** The §13.2 change path (hub + onSettingsChanged + scheduler). */
 	readonly publishSettingsChanged: (
 		scope: "server" | { extension: string },
@@ -947,6 +949,28 @@ export const EXTENSION_SETTINGS_SECTIONS = [
 	},
 ] as const satisfies readonly Omit<SettingsSectionDef, "form">[];
 
+/** Admin placeholders are display-only: a non-empty env value displays with
+ * its source name; otherwise the literal default remains the fallback. */
+function envFallbacks(
+	generated: GeneratedForm,
+	stored: Record<string, unknown>,
+	env: Readonly<Record<string, string | undefined>>,
+): JsonObject {
+	const values: Record<string, string> = {};
+	for (const field of generated.envFields) {
+		const value = readDotted(stored, field.name);
+		const fromEnv = optionsNonEmpty(env[field.variable]);
+		values[field.name] = value === undefined && fromEnv !== undefined
+			? `${fromEnv} (from ${field.variable})`
+			: field.fallback ?? "";
+	}
+	return values;
+}
+
+function optionsNonEmpty(value: string | undefined): string | undefined {
+	return value === undefined || value.length === 0 ? undefined : value;
+}
+
 /** The schema-backed extension section; core sections retain settingsSurfaceFor. */
 export function schemaSettingsSurfaceFor(
 	slug: string,
@@ -1029,6 +1053,7 @@ export function schemaSettingsSurfaceFor(
 				tree: generated.form,
 				data: {
 					settings: settings as JsonObject,
+					envFallbacks: envFallbacks(generated, stored, options.env),
 					secrets: secretData as JsonObject,
 					unknownKeys: Object.keys(stored).filter(
 						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
