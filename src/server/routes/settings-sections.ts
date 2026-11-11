@@ -29,7 +29,7 @@ import type {
 	SettingsSectionIndexEntry,
 } from "../views.js";
 import {
-	CORE_SECTION_IDS,
+	CORE_SECTION_GROUP,
 	CORE_SETTINGS_SECTIONS,
 	type CoreSectionId,
 } from "../../settings/core-sections.js";
@@ -120,10 +120,26 @@ function coreKeyEntry(key: string): SettingsIndexEntry | undefined {
 	};
 }
 
+/** The search-index title rows for the core sections. The section array is
+ *  the ONE order source: when a section is inserted mid-array its id and
+ *  title stay together (a separately-maintained id list would mislabel
+ *  every following row). */
+export function coreSectionTitleIndex(
+	sections: readonly import("../../extension.js").SettingsSectionDef[],
+): SettingsIndexEntry[] {
+	return sections.map((section) => ({
+		slug: "core",
+		sectionId: section.id,
+		kind: "section",
+		label: section.title,
+	}));
+}
+
 /** Build the section list + search index from the schema declarations. */
 export function buildSettingsSections(
 	declarations: readonly import("../../harness/loader.js").ExtensionSettingsDeclaration[],
 	titles: ReadonlyMap<string, string | undefined> = new Map(),
+	coreSections: readonly import("../../extension.js").SettingsSectionDef[] = CORE_SETTINGS_SECTIONS,
 ): SettingsSectionsResponse {
 	const extensionSections = declarations.map((binding) => ({
 		extension: binding.extension,
@@ -138,11 +154,12 @@ export function buildSettingsSections(
 			},
 		),
 	}));
-	const sections: SettingsSectionEntry[] = CORE_SETTINGS_SECTIONS.map((section) => ({
+	const sections: SettingsSectionEntry[] = coreSections.map((section) => ({
 		slug: "core",
 		id: section.id,
 		title: section.title,
 		icon: section.icon ?? "key",
+		group: CORE_SECTION_GROUP[section.id] ?? "system",
 	}));
 	const sorted = [...extensionSections].sort((a, b) =>
 		a.extension.localeCompare(b.extension),
@@ -158,22 +175,14 @@ export function buildSettingsSections(
 				admin: def.admin,
 				page: binding.extension,
 				pageTitle: binding.pageTitle,
+				group: def.scope === "user" ? "mine" as const : "system" as const,
 			});
 		}
 	}
 
 	const index: SettingsIndexEntry[] = [];
 	// Core section titles (a hit on the title lands on the section).
-	for (const [position, id] of CORE_SECTION_IDS.entries()) {
-		const section = CORE_SETTINGS_SECTIONS[position];
-		if (section === undefined) continue;
-		index.push({
-			slug: "core",
-			sectionId: id,
-			kind: "section",
-			label: section.title,
-		});
-	}
+	index.push(...coreSectionTitleIndex(coreSections));
 	// Core keys (registry-driven — every registry key whose section
 	// renders gets a row). Cove-rendered sections (Interface / Providers
 	// / Extensions — the channels draw them natively) drop their keys:
@@ -234,7 +243,12 @@ export function registerSettingsSectionsRoutes(
 			const admin = isSuperuser(request.principal as Principal) || request.principal.admin;
 			const allowed = new Set(
 				response.sections
-					.filter((section) => section.scope !== "user" || section.admin !== true || admin)
+					.filter((section) => {
+						// System-group sections are admin-only.
+						if (section.group === "system" && !admin) return false;
+						if (section.scope !== "user" || section.admin !== true || admin) return true;
+						return false;
+					})
 					.map((section) => `${section.slug}\u0000${section.id}`),
 			);
 			return {

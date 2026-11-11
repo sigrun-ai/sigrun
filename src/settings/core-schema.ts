@@ -311,9 +311,9 @@ export const coreSchema: JsonSchema = {
 };
 
 /** Core's field grouping; unlisted schema properties remain file/API-only. */
-export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly LayoutGroup[]> = {
+export const CORE_LAYOUT: Record<"general" | "advanced", readonly LayoutGroup[]> = {
 	general: [
-		{ title: "Queueing", paths: ["/steeringMode", "/followUpMode"] },
+		{ title: "Conversations", paths: ["/steeringMode", "/followUpMode"] },
 		{ title: "Models", paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"],
 			overrides: {
 				// Model pickers, not free text: options bind the served catalog
@@ -356,19 +356,19 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 			overrides: { "/skills/sectionMaxBytes": { placeholder: undefined } },
 		},
 	],
-	tools: [{
-		title: "Defaults",
-		paths: ["/defaultTools", "/autoEnableCodemode"],
-		overrides: {
-			"/defaultTools": {
-				type: "choice",
-				multi: true,
-				options: { $: "/toolRoster" },
-				item: undefined,
+	advanced: [
+		{
+			title: "Tools",
+			paths: ["/defaultTools", "/autoEnableCodemode"],
+			overrides: {
+				"/defaultTools": {
+					type: "choice",
+					multi: true,
+					options: { $: "/toolRoster" },
+					item: undefined,
+				},
 			},
 		},
-	}],
-	advanced: [
 		{ title: "Retries and streaming", paths: [
 			"/retry/enabled",
 			"/retry/maxRetries",
@@ -431,10 +431,11 @@ export function coreProperty(key: string): JsonSchema | undefined {
 export function generatedCoreForm(id: keyof typeof CORE_LAYOUT): GeneratedForm {
 	const generated = generateForm(coreSchema, { idPrefix: `core-${id}`, layout: CORE_LAYOUT[id] });
 	const slugs: Record<string, string> = {
-		Queueing: "queue",
+		Conversations: "queue",
 		Models: "models",
 		Behaviour: "behaviour",
 		Defaults: "defaults",
+		Tools: "tools",
 		"Retries and streaming": "resilience",
 		"Model overrides": "models",
 		Server: "server",

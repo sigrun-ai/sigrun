@@ -1,11 +1,10 @@
 /**
- * The core settings sections (UI-blocks U4 Task 4, spec §13.4): the
- * sections the webui settings panel has today (General, Tools,
- * Interface, Advanced, Providers, Extensions) declared as
- * `SettingsSectionDef`s under the reserved `core` slug, so core and
- * extensions render settings through ONE renderer (the settings-surface
- * adapter, `src/server/surfaces/settings-surfaces.ts`, mounted under
- * `/v1/ext/core/surfaces/<id>`).
+ * The core settings sections (General, Interface, Advanced, Providers,
+ * Account links, API tokens) declared as `SettingsSectionDef`s under the
+ * reserved `core` slug. The Tools section's fields have moved into
+ * Advanced (its first group is `Tools`). Sections carry a `group`
+ * ("mine" or "system"); the route returns system-group sections to
+ * admins only.
  *
  * Scope rulings (plan Task 4):
  * - **Jobs** stays its own rail panel — NO settings section here (the
@@ -17,9 +16,11 @@
  *   a settings-object write). Their declarations still exist so the
  *   section LIST and the search index cover them; their forms are
  *   minimal and never rendered by the channels.
- * General, Tools and Advanced generate from `core-schema.ts`; their
- * fields' apply values come from the schema (the registry derives the
- * same values). The remaining cove sections keep their declarations.
+ * General and Advanced generate from `core-schema.ts`; their fields'
+ * apply values come from the schema (the registry derives the same
+ * values). Tools' fields are now Advanced's first group. The remaining
+ * cove sections keep their declarations. Each section's nav grouping
+ * ("mine" or "system") is `CORE_SECTION_GROUP` below.
  */
 
 import type { SettingsSectionDef } from "../extension.js";
@@ -29,18 +30,15 @@ import { applyOf } from "./registry.js";
 /** The reserved slug the core sections mount under (spec §13.4). */
 export const CORE_SECTIONS_SLUG = "core";
 
-/** Every section's id, in nav order (the sections route serves it). */
-export const CORE_SECTION_IDS = [
-	"general",
-	"tools",
-	"interface",
-	"advanced",
-	"providers",
-	"accounts",
-	"tokens",
-] as const;
-
-export type CoreSectionId = (typeof CORE_SECTION_IDS)[number];
+/** The My-settings / System-settings group a core section belongs to. */
+export const CORE_SECTION_GROUP: Readonly<Record<string, "mine" | "system">> = {
+	interface: "mine",
+	accounts: "mine",
+	tokens: "mine",
+	general: "system",
+	advanced: "system",
+	providers: "system",
+};
 
 /**
  * The core settings sections, in nav order (the sections route serves
@@ -57,12 +55,6 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 		title: "General",
 		icon: "key",
 		form: generatedCoreForm("general").form,
-	},
-	{
-		id: "tools",
-		title: "Tools",
-		icon: "edit",
-		form: generatedCoreForm("tools").form,
 	},
 	{
 		id: "interface",
@@ -179,3 +171,10 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 		},
 	},
 ];
+
+/** Every section's id, in nav order — derived from CORE_SETTINGS_SECTIONS
+ *  so the section array is the ONE order source (the sections route zips
+ *  the two positionally; later tasks insert sections mid-array). */
+export const CORE_SECTION_IDS = CORE_SETTINGS_SECTIONS.map((s) => s.id);
+
+export type CoreSectionId = (typeof CORE_SECTION_IDS)[number];

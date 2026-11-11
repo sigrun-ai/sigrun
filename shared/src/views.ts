@@ -959,6 +959,8 @@ export interface SettingsSectionEntry {
 	readonly scope?: "user";
 	/** Explicit admin gate (user sections are otherwise non-admin by default). */
 	readonly admin?: boolean;
+	/** Which top-level nav group this section belongs to ("mine" or "system"). */
+	readonly group?: "mine" | "system";
 }
 
 /** One search-index row (the label search's hit shape, spec §13.4). */

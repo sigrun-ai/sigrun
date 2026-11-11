@@ -65,7 +65,7 @@ type SectionsLoad =
 /** The section the body shows (the nav selection). */
 type OpenSection =
 	| { readonly kind: "section"; readonly entry: SettingsSectionEntryWire }
-	| { readonly kind: "extension"; readonly slug: string };
+	| { readonly kind: "extension"; readonly slug: string; readonly group: "mine" | "system" };
 
 /** The per-section field values cache (the search hit's resolve target). */
 type SectionValues = Record<string, JsonObject>;
@@ -94,6 +94,9 @@ export function visibleSettingsSections(
 	admin: boolean | undefined,
 ): readonly SettingsSectionEntryWire[] {
 	return sections.filter((section) => {
+		// The route returns system-group sections to admins only; the
+		// client enforces the same rule for a known non-admin.
+		if (section.group === "system" && admin === false) return false;
 		if (section.id === "providers" && admin === false) return false;
 		if (section.slug !== "core" && admin === false) return section.scope === "user" && section.admin !== true;
 		if (section.scope === "user" && section.admin === true && admin === false) return false;
@@ -214,24 +217,45 @@ export function SettingsPanel(props: {
 		if (load.status !== "ready") return;
 		const visible = visibleSettingsSections(load.sections, admin);
 		if (section !== undefined) {
-			const core = visible.find(
-				(entry) => entry.slug === "core" && entry.id === section,
-			);
-			if (core !== undefined) {
-				setOpen({ kind: "section", entry: core });
-				return;
-			}
-			const page = extensions?.find((entry) => entry.name === section);
-			if (page?.settingsPage === true && (admin !== false || visible.some((entry) => entry.page === page.name && entry.scope === "user"))) {
-				setOpen({ kind: "extension", slug: page.name });
-				return;
+			// My-settings deep link (one hash token: `my:<slug>` opens the
+			// extension's personal page).
+			if (section.startsWith("my:")) {
+				const slug = section.slice("my:".length);
+				const page = extensions?.find((entry) => entry.name === slug);
+				if (page?.settingsPage === true && visible.some((entry) => entry.page === slug && entry.scope === "user")) {
+					setOpen({ kind: "extension", slug, group: "mine" });
+					return;
+				}
+			} else {
+				// Tools merged into Advanced: its old deep-link id opens Advanced.
+				const id = section === "tools" ? "advanced" : section;
+				const core = visible.find(
+					(entry) => entry.slug === "core" && entry.id === id,
+				);
+				if (core !== undefined) {
+					setOpen({ kind: "section", entry: core });
+					return;
+				}
+				const page = extensions?.find((entry) => entry.name === section);
+				const hasUserPage = visible.some((entry) => entry.page === section && entry.scope === "user");
+				if (page?.settingsPage === true && (admin !== false || hasUserPage)) {
+					// A non-admin's bare-slug deep link is the personal page —
+					// they never see the system parts.
+					setOpen({ kind: "extension", slug: page.name, group: admin === false ? "mine" : "system" });
+					return;
+				}
 			}
 		}
-		const general = visible.find(
-			(entry) => entry.slug === "core" && entry.id === "general",
+		// The default is the first My-settings section (Interface) — a
+		// non-admin deep link to a system page lands here too.
+		const firstMine = visible.find(
+			(entry) => entry.slug === "core" && entry.group === "mine",
 		);
-		if (general !== undefined) {
-			setOpen({ kind: "section", entry: general });
+		const fallback = firstMine?.group !== undefined
+			? firstMine
+			: visible.find((entry) => entry.slug === "core" && entry.id === "general");
+		if (fallback !== undefined) {
+			setOpen({ kind: "section", entry: fallback });
 		}
 	}, [load, section, admin, extensions]);
 
@@ -254,7 +278,13 @@ export function SettingsPanel(props: {
 					: undefined;
 			if (entry === undefined) return;
 			setQuery("");
-			onSection(entry.page ?? entry.id);
+			// A mine-group hit with an owning extension page routes through
+			// `my:<slug>` so the personal page (not the system one) opens.
+			if (entry.page !== undefined) {
+				onSection(entry.group === "mine" ? `my:${entry.page}` : entry.page);
+			} else {
+				onSection(entry.id);
+			}
 			// The surface loads async; the focus pass polls the body for
 			// the field element (a `[name="<key>"]` control) briefly.
 			if (hit.key !== undefined) {
@@ -343,9 +373,11 @@ export function SettingsPanel(props: {
 					</p>
 				)}
 				{load.status === "ready" && (
-					<div className="settings-layout">
-						<nav className="settings-nav" aria-label="settings sections">
-							{navSections.filter((section) => section.slug === "core" && section.scope !== "user").map((section) => (
+				<div className="settings-layout">
+					<nav className="settings-nav" aria-label="settings sections">
+						<div className="settings-nav-group" role="group" aria-label="My settings">
+							<div className="settings-nav-heading">My settings</div>
+							{navSections.filter((section) => section.slug === "core" && section.group === "mine").map((section) => (
 								<button
 									key={`${section.slug}/${section.id}`}
 									type="button"
@@ -367,10 +399,42 @@ export function SettingsPanel(props: {
 								sections={navSections}
 								open={open}
 								admin={admin !== false}
+								group="mine"
 								onOpen={onSection}
 							/>
-						</nav>
-						<div className="settings-section" ref={bodyRef}>
+						</div>
+						{admin !== false && (
+						<div className="settings-nav-group" role="group" aria-label="System settings">
+							<div className="settings-nav-heading">System settings</div>
+							{navSections.filter((section) => section.slug === "core" && section.group === "system").map((section) => (
+								<button
+									key={`${section.slug}/${section.id}`}
+									type="button"
+									className="settings-nav-item"
+									data-active={
+										open?.kind === "section" &&
+										open.entry.slug === section.slug &&
+										open.entry.id === section.id
+											? ""
+											: undefined
+									}
+									onClick={() => onSection(section.id)}
+								>
+									{section.title}
+								</button>
+							))}
+							<ExtensionPagesNav
+								extensions={extensions}
+								sections={navSections}
+								open={open}
+								admin
+								group="system"
+								onOpen={onSection}
+							/>
+						</div>
+						)}
+					</nav>
+					<div className="settings-section" ref={bodyRef}>
 							{open === null ? (
 								<p className="settings-note">select a section</p>
 							) : open.kind === "extension" && openExtension !== undefined ? (
@@ -380,6 +444,7 @@ export function SettingsPanel(props: {
 									extension={openExtension}
 									sections={navSections.filter((entry) => entry.page === openExtension.name)}
 									admin={admin !== false}
+									group={open.group}
 								/>
 							) : open.kind === "section" ? (
 								<SettingsSectionBody
@@ -429,13 +494,17 @@ function ExtensionPagesNav(props: {
 	readonly sections: readonly SettingsSectionEntryWire[];
 	readonly open: OpenSection | null;
 	readonly admin: boolean;
+	readonly group: "mine" | "system";
 	readonly onOpen: (page: string) => void;
 }): React.ReactElement | null {
-	const { extensions, sections, open, admin, onOpen } = props;
+	const { extensions, sections, open, admin, onOpen, group } = props;
 	if (extensions === null) return null;
-	const pages = new Set(sections.map((section) => section.page).filter((page): page is string => page !== undefined));
+	if (group === "system" && !admin) return null;
+	// My settings lists extensions with a personal (user-scope) page;
+	// System settings lists every settingsPage extension (plan 1's rule).
+	const minePages = new Set(sections.filter((section) => section.scope === "user").map((section) => section.page).filter((page): page is string => page !== undefined));
 	const listed = extensions
-		.filter((extension) => extension.settingsPage === true && (admin || pages.has(extension.name)))
+		.filter((extension) => extension.settingsPage === true && (group === "mine" ? minePages.has(extension.name) : true))
 		.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name, undefined, { sensitivity: "base" }));
 	if (listed.length === 0) return null;
 	return (
@@ -447,8 +516,8 @@ function ExtensionPagesNav(props: {
 					type="button"
 					className="settings-nav-item settings-nav-extension"
 					data-ext={extension.name}
-					data-active={open?.kind === "extension" && open.slug === extension.name ? "" : undefined}
-					onClick={() => onOpen(extension.name)}
+					data-active={open?.kind === "extension" && open.slug === extension.name && open.group === group ? "" : undefined}
+					onClick={() => onOpen(group === "mine" ? `my:${extension.name}` : extension.name)}
 				>
 					{extension.title ?? extension.name}
 				</button>

@@ -27,6 +27,7 @@ import type { FastifyInstance } from "fastify";
 import type { EntriesField, JsonObject, Tree } from "@sigrun/shared/blocks";
 import { validateTree } from "../src/blocks/validate.js";
 import { loadConfig } from "../src/config.js";
+import { buildSettingsSections } from "../src/server/routes/settings-sections.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import { createServer } from "../src/server/index.js";
 import {
@@ -150,6 +151,10 @@ function normalizedForm(form: Tree): unknown {
 				(child) => (child as { name?: string }).name !== "perModelThinking",
 			);
 		}
+		// The Queueing group was renamed Conversations (plan 2 Task 1).
+		if (record.type === "section" && record.title === "Conversations") {
+				record.title = "Queueing";
+		}
 		// The fixture predates the Models-group moves AND the model-picker
 		// overrides: normalize the four fields back to the plain text
 		// fields the fixture froze (drop decisionModel/embeddingModel,
@@ -188,10 +193,21 @@ function normalizedForm(form: Tree): unknown {
 
 describe("core settings sections (U4 Task 4)", () => {
 	test("generated core sections equal today's, apart from the thinking table", () => {
-		for (const id of ["general", "tools", "advanced"] as const) {
+		for (const id of ["general", "advanced"] as const) {
 			const section = CORE_SETTINGS_SECTIONS.find((candidate) => candidate.id === id);
 			expect(section).toBeDefined();
-			expect(normalizedForm(section!.form), id).toEqual(normalizedForm(beforeForms[id]));
+			const normalized = normalizedForm(section!.form) as Record<string, unknown>;
+			// Advanced gained a Tools group at the top (from the former Tools
+			// section); the fixture predates it — drop it for the comparison.
+			if (id === "advanced") {
+				const root = (normalized as { root?: { children?: unknown[] } }).root;
+				if (root?.children !== undefined) {
+					root.children = (root.children as { title?: string }[]).filter(
+						(group) => group.title !== "Tools",
+					);
+				}
+			}
+			expect(normalized, id).toEqual(normalizedForm(beforeForms[id]));
 		}
 		const advanced = CORE_SETTINGS_SECTIONS.find((section) => section.id === "advanced");
 		const root = advanced?.form.root;
@@ -236,15 +252,19 @@ describe("core settings sections (U4 Task 4)", () => {
 	});
 
 	test("defaultTools keeps the tool roster binding", () => {
-		const tools = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tools");
-		const json = JSON.stringify(tools?.form);
+		const advanced = CORE_SETTINGS_SECTIONS.find((section) => section.id === "advanced");
+		const root = advanced?.form.root;
+		const toolsGroup = root?.type === "form"
+			? root.children.find((child) => child.type === "section" && child.title === "Tools")
+			: undefined;
+		const json = JSON.stringify(toolsGroup);
 		expect(json).toContain('"$":"/toolRoster"');
 	});
 
 	test("unlisted keys are not rendered", () => {
 		const json = JSON.stringify(
 			CORE_SETTINGS_SECTIONS.filter((section) =>
-				["general", "tools", "advanced"].includes(section.id),
+				["general", "advanced"].includes(section.id),
 			),
 		);
 		for (const key of [
@@ -267,7 +287,7 @@ describe("core settings sections (U4 Task 4)", () => {
 			expect(property?.["x-sigrun-apply"], entry.key).toMatch(/^(live|restart)$/);
 			expect(entry, entry.key).not.toHaveProperty("apply");
 		}
-		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "tools", "advanced"]);
+		expect(Object.keys(CORE_LAYOUT)).toEqual(["general", "advanced"]);
 		const general = CORE_SETTINGS_SECTIONS.find((section) => section.id === "general");
 		const root = general?.form.root;
 		expect(root?.type === "form" ? root.children.map((child) => "id" in child ? child.id : undefined) : []).toEqual([
@@ -293,10 +313,12 @@ describe("core settings sections (U4 Task 4)", () => {
 	});
 
 	test("Default Tools explains the allow-list", () => {
-		const tools = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tools");
-		const root = tools?.form.root as unknown as { children?: { children?: unknown[] }[] };
-		const section = root?.children?.[0];
-		const field = section?.children?.[0];
+		const advanced = CORE_SETTINGS_SECTIONS.find((section) => section.id === "advanced");
+		const root = advanced?.form.root as unknown as { children?: { children?: unknown[] }[] };
+		const toolsGroup = root?.children?.find(
+			(child) => (child as { title?: string }).title === "Tools",
+		);
+		const field = toolsGroup?.children?.[0];
 		expect(field).toMatchObject({
 			name: "defaultTools",
 			label: "Tools offered to the model",
@@ -307,7 +329,6 @@ describe("core settings sections (U4 Task 4)", () => {
 	test("the section ids are the plan's list, in nav order", () => {
 		expect([...CORE_SECTION_IDS]).toEqual([
 			"general",
-			"tools",
 			"interface",
 			"advanced",
 			"providers",
@@ -384,6 +405,7 @@ describe("core settings sections (U4 Task 4)", () => {
 		// rows).
 		expect(fieldsBySection.get("general")?.some((f) => f.name === "namingModel")).toBe(true);
 		expect(fieldsBySection.get("advanced")?.some((f) => f.name === "server.port")).toBe(true);
+		expect(fieldsBySection.get("advanced")?.some((f) => f.name === "defaultTools")).toBe(true);
 		// NO unregistry'd field renders (a field with no §13.1 entry would
 		// write through the SettingsStore's allowlist at save time and
 		// reject the whole save — the panel's one-renderer rule pins the
@@ -615,16 +637,16 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		const file = opened.settings.read();
 		expect(file.retry?.enabled).toBeUndefined();
 		expect(file.server?.compaction?.enabled).toBeUndefined();
-		// The same rule on the other default-on toggles (Tools).
+		// The same rule on the other default-on toggles (Tools group, now under Advanced).
 		const tools = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/tools",
+			url: "/v1/ext/core/surfaces/advanced",
 			token: aliceToken,
 		});
 		const toolsRev = (tools.body as { rev: number }).rev;
 		const toolsSave = await call(app, {
 			method: "POST",
-			url: "/v1/ext/core/surfaces/tools/actions",
+			url: "/v1/ext/core/surfaces/advanced/actions",
 			token: aliceToken,
 			payload: {
 				action: "save",
@@ -737,11 +759,11 @@ describe("core settings surfaces (U4 Task 4)", () => {
 		expect(opened.settings.read().perModelThinking).toBeUndefined();
 	});
 
-	test("the Tools section's data carries the tool roster (the defaultTools options)", async () => {
+	test("the Advanced section's Tools group carries the tool roster (the defaultTools options)", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {
 			method: "GET",
-			url: "/v1/ext/core/surfaces/tools",
+			url: "/v1/ext/core/surfaces/advanced",
 			token: aliceToken,
 		});
 		expect(result.status).toBe(200);
@@ -882,6 +904,144 @@ describe("core settings surfaces (U4 Task 4)", () => {
 // ─── The sections route (the list + search index) ─────────────────────────
 
 describe("GET /v1/settings/sections (U4 Task 4)", () => {
+	test("non-admins receive only mine sections", async () => {
+		// A second boot with a non-admin bob seeded into the identity.
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-sections-bob-"));
+		const configDir = join(dir, "config");
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "faux/m",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_WEBUI: "false",
+			SIGRUN_AUTH: "token",
+			SIGRUN_CONFIG_DIR: configDir,
+		});
+		const identity = await seededIdentity(join(dir, "seed"), "alice");
+		await identity.users.add({ user: "bob", admin: false, source: "cli" });
+		const opened = await openHarness(config, {
+			identity,
+			extensionSpecifiers: [],
+			env: { SIGRUN_CONFIG_DIR: configDir },
+			settingsDir: dir,
+		});
+		const { token: bobToken } = await opened.identity.tokens.create("bob-cli", "bob");
+		const app = await createServer(opened, config);
+		cleanups.push(async () => {
+			await app.close();
+			await opened.harness.close(BACKGROUND_CONTEXT);
+			await rm(dir, { recursive: true, force: true });
+		});
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/settings/sections",
+			token: bobToken,
+		});
+		expect(result.status).toBe(200);
+		const body = result.body as { sections: { slug: string; group?: string }[] };
+		// Non-admin must see no system sections.
+		const system = body.sections.filter((s) => s.group === "system");
+		expect(system).toHaveLength(0);
+		// Must see at least one mine section (Interface, Account links, API tokens).
+		const mine = body.sections.filter((s) => s.group === "mine");
+		expect(mine.length).toBeGreaterThan(0);
+	});
+
+	test("admins receive both groups", async () => {
+		const { app, aliceToken } = await server();
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/settings/sections",
+			token: aliceToken,
+		});
+		expect(result.status).toBe(200);
+		const body = result.body as { sections: { slug: string; group?: string }[] };
+		const mine = body.sections.filter((s) => s.group === "mine");
+		const system = body.sections.filter((s) => s.group === "system");
+		expect(mine.length).toBeGreaterThan(0);
+		expect(system.length).toBeGreaterThan(0);
+	});
+
+	test("no tools section; Advanced draws defaultTools first", async () => {
+		const { app, aliceToken } = await server();
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/settings/sections",
+			token: aliceToken,
+		});
+		const body = result.body as { sections: { slug: string; id: string }[] };
+		const tools = body.sections.find((s) => s.id === "tools");
+		expect(tools).toBeUndefined();
+		// Advanced section must contain defaultTools as its first field group.
+		const advanced = CORE_SETTINGS_SECTIONS.find((s) => s.id === "advanced");
+		const root = advanced?.form.root;
+		const firstGroup = root?.type === "form" ? root.children[0] : undefined;
+		const fields = firstGroup?.type === "section" ? firstGroup.children : [];
+		expect(fields.some((f) => "name" in f && f.name === "defaultTools")).toBe(true);
+	});
+
+	test("General's queue modes sit under Conversations", () => {
+		const general = CORE_SETTINGS_SECTIONS.find((s) => s.id === "general");
+		const root = general?.form.root;
+		if (root?.type !== "form") throw new Error("general form root missing");
+		const conversations = root.children.find(
+			(child) => child.type === "section" && child.title === "Conversations",
+		);
+		expect(conversations).toBeDefined();
+		const fields = conversations?.type === "section" ? conversations.children : [];
+		const names = fields.map((f) => ("name" in f ? f.name : undefined));
+		expect(names).toContain("steeringMode");
+		expect(names).toContain("followUpMode");
+	});
+
+	test("search hits land on the right section after an insert", async () => {
+		// Pin the positional zip: CORE_SECTION_IDS and CORE_SETTINGS_SECTIONS
+		// must match exactly so later tasks can insert sections mid-array.
+		expect([...CORE_SECTION_IDS]).toEqual(CORE_SETTINGS_SECTIONS.map((s) => s.id));
+		// Insert a synthetic section mid-array (between general and
+		// interface, where Tasks 3 and 5 will insert models/my-models) and
+		// build the real index: every title row must carry its own section's
+		// id. The old positional zip against a separately-maintained id list
+		// mislabels every row after the insertion point.
+		const inserted = CORE_SETTINGS_SECTIONS[0]!;
+		const withInsert = [
+			inserted,
+			{ ...inserted, id: "models", title: "Models" },
+			...CORE_SETTINGS_SECTIONS.slice(1),
+		];
+		const built = buildSettingsSections([], new Map(), withInsert);
+		for (const section of withInsert) {
+			expect(
+				built.index.find(
+					(row) => row.slug === "core" && row.kind === "section" && row.label === section.title,
+				)?.sectionId,
+				`title row for '${section.title}'`,
+			).toBe(section.id);
+		}
+		// Verify that the search index's sectionId for each core section title
+		// matches the actual section id (not an off-by-one from a stale id list).
+		const { app, aliceToken } = await server();
+		const result = await call(app, {
+			method: "GET",
+			url: "/v1/settings/sections",
+			token: aliceToken,
+		});
+		const body = result.body as {
+			sections: { slug: string; id: string; title: string }[];
+			index: { slug: string; sectionId: string; kind: string; label: string }[];
+		};
+		for (const section of CORE_SETTINGS_SECTIONS) {
+			const sectionEntry = body.sections.find(
+				(s) => s.slug === "core" && s.id === section.id,
+			);
+			expect(sectionEntry, `section ${section.id} is in the payload`).toBeDefined();
+			// The title-row index entry for this section carries the same sectionId.
+			const indexRow = body.index.find(
+				(e) => e.slug === "core" && e.kind === "section" && e.label === section.title,
+			);
+			expect(indexRow?.sectionId, `index row for '${section.title}' matches section id`).toBe(section.id);
+		}
+	});
+
 	test("orders core first, then extensions alphabetically", async () => {
 		const { app, aliceToken } = await server();
 		const result = await call(app, {
@@ -900,6 +1060,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				pageTitle?: string;
 				admin?: boolean;
 				scope?: "user";
+				group?: "mine" | "system";
 			}[];
 		};
 		const core = body.sections.filter((s) => s.slug === "core");
@@ -917,6 +1078,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				title: "Settings",
 				icon: "key",
 				admin: true,
+				group: "system",
 			},
 			{
 				slug: "curator",
@@ -927,6 +1089,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				icon: "key",
 				scope: "user",
 				admin: false,
+				group: "mine",
 			},
 			{
 				slug: "gateway",
@@ -936,6 +1099,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				title: "Settings",
 				icon: "key",
 				admin: true,
+				group: "system",
 			},
 			{
 				slug: "oauth",
@@ -945,6 +1109,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				title: "Settings",
 				icon: "key",
 				admin: true,
+				group: "system",
 			},
 			{
 				slug: "sigrun-mcp",
@@ -954,6 +1119,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				title: "Settings",
 				icon: "key",
 				admin: true,
+				group: "system",
 			},
 			{
 				slug: "sigrun-mcp",
@@ -964,6 +1130,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				icon: "key",
 				scope: "user",
 				admin: false,
+				group: "mine",
 			},
 		]);
 	});
@@ -1057,7 +1224,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 		expect(coreRows.find((entry) => entry.key === "stream.timeoutMs")?.sectionId).toBe("advanced");
 		expect(coreRows.find((entry) => entry.key === "perModelThinking")?.sectionId).toBe("advanced");
 		expect(coreRows.find((entry) => entry.key === "server.port")?.sectionId).toBe("advanced");
-		expect(coreRows.find((entry) => entry.key === "defaultTools")?.sectionId).toBe("tools");
+		expect(coreRows.find((entry) => entry.key === "defaultTools")?.sectionId).toBe("advanced");
 		// Every core row carries a label.
 		expect(coreRows.every((entry) => entry.label.length > 0)).toBe(true);
 	});

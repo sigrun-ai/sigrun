@@ -141,8 +141,11 @@ export class SettingsView implements Component {
 				const section = this.#sections.find(
 					(candidate) => candidate.slug === entry.slug && candidate.id === entry.sectionId,
 				);
+				const groupLabel = section?.group === "mine"
+					? "My settings"
+					: "System settings";
 				return {
-					label: entry.label,
+					label: `${groupLabel} · ${entry.label}`,
 					detail: `${entry.slug === "core" ? "" : `${section?.pageTitle ?? entry.slug} · `}${entry.sectionId}`,
 					value: entry,
 				};

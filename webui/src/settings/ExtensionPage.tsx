@@ -46,8 +46,15 @@ export function ExtensionPage(props: {
 	readonly extension: ExtensionInfoWire;
 	readonly sections: readonly SettingsSectionEntryWire[];
 	readonly admin: boolean;
+	/**
+	 * The nav group the page was opened from: "mine" draws only the Your
+	 * settings part (no header, no credentials, no shared settings, no
+	 * Advanced); "system" draws header, credentials, Settings and
+	 * Advanced (and Your settings when declared). Default "system".
+	 */
+	readonly group?: "mine" | "system";
 }): React.ReactElement {
-	const { client, extension, sections, admin } = props;
+	const { client, extension, sections, admin, group = "system" } = props;
 	const [providers, setProviders] = useState<readonly AuthCheckProviderWire[]>([]);
 	const [stored, setStored] = useState<Record<string, unknown>>({});
 	const [unknownKeys, setUnknownKeys] = useState<readonly string[]>([]);
@@ -79,14 +86,19 @@ export function ExtensionPage(props: {
 		setStored({});
 		setUnknownKeys([]);
 		setLoadError(undefined);
-		client.listProviders()
-			.then((response) => {
-				if (!cancelled) setProviders(response.providers.filter((provider) => provider.owner === extension.name));
-			})
-			.catch((cause: unknown) => {
-				if (!cancelled) setLoadError(cause instanceof Error ? cause.message : String(cause));
-			});
-		if (admin) {
+		// The My settings page needs only the personal form — skip the
+		// admin-only shared-settings read (it would 403 for non-admins).
+		const systemPage = group === "system";
+		if (systemPage) {
+			client.listProviders()
+				.then((response) => {
+					if (!cancelled) setProviders(response.providers.filter((provider) => provider.owner === extension.name));
+				})
+				.catch((cause: unknown) => {
+					if (!cancelled) setLoadError(cause instanceof Error ? cause.message : String(cause));
+				});
+		}
+		if (systemPage && admin) {
 			client.getExtensionSettings(extension.name)
 				.then((response) => { if (!cancelled) setStored(response.settings); })
 				.catch((cause: unknown) => {
@@ -94,15 +106,17 @@ export function ExtensionPage(props: {
 				});
 		}
 		return () => { cancelled = true; };
-	}, [client, extension.name, admin, shared]);
+	}, [client, extension.name, admin, shared, group]);
 
 	const credentials = providers.filter((provider, index) =>
 		providers.findIndex((candidate) => candidate.provider === provider.provider) === index,
 	);
 	const declared = shared !== undefined || personal !== undefined;
 	const visibleUnknownKeys = declared ? unknownKeys : Object.keys(stored);
+	const systemPage = group === "system";
 	return (
 		<div className="settings-body settings-extension-page" data-extension-page={extension.name}>
+			{systemPage && (
 			<header className="settings-extension-header">
 				<h2>{extension.title ?? extension.name}</h2>
 				<span className="settings-ext-meta">
@@ -110,9 +124,11 @@ export function ExtensionPage(props: {
 					{providers.map((provider) => ` · ${provider.provider}: ${provider.status}`).join("")}
 				</span>
 			</header>
+			)}
 			{loadError !== undefined && <p className="settings-note" role="alert">{loadError}</p>}
-			{!declared && <p className="settings-note">This extension doesn't describe its settings.</p>}
-			{admin && credentials.length > 0 && (
+			{systemPage && !declared && <p className="settings-note">This extension doesn't describe its settings.</p>}
+			{!systemPage && personal === undefined && <p className="settings-note">This extension doesn't describe its settings.</p>}
+			{systemPage && admin && credentials.length > 0 && (
 				<section className="settings-extension-credentials" data-extension-part="credentials">
 					<h3>Credentials</h3>
 					{credentials.map((provider) => (
@@ -125,7 +141,7 @@ export function ExtensionPage(props: {
 					))}
 				</section>
 			)}
-			{admin && shared !== undefined && (
+			{systemPage && admin && shared !== undefined && (
 				<section data-extension-part="settings" aria-label="Settings">
 					<h3>Settings</h3>
 					<ExtensionSurface
@@ -136,7 +152,7 @@ export function ExtensionPage(props: {
 					/>
 				</section>
 			)}
-			{personal !== undefined && (
+			{!systemPage && personal !== undefined && (
 				<section data-extension-part="user-settings" aria-label="Your settings">
 					<h3>Your settings</h3>
 					<ExtensionSurface
@@ -147,7 +163,7 @@ export function ExtensionPage(props: {
 					/>
 				</section>
 			)}
-			{admin && (
+			{systemPage && admin && (
 				<details className="settings-extension-advanced" data-extension-part="advanced">
 					<summary>Advanced</summary>
 					{visibleUnknownKeys.length > 0 && (

@@ -60,12 +60,12 @@ interface ExtensionsHarness {
 
 /** The sections the fake server's `/v1/settings/sections` serves. */
 const SECTIONS = [
-	{ slug: "core", id: "general", title: "General", icon: "key" },
-	{ slug: "core", id: "tools", title: "Tools", icon: "edit" },
-	{ slug: "core", id: "interface", title: "Interface", icon: "image" },
-	{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
-	{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
-	{ slug: "core", id: "accounts", title: "Account links", icon: "key" },
+	{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
+	{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" },
+	{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" },
+	{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" },
+	{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" },
+	{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" },
 ] as const;
 
 const INDEX: readonly SettingsSectionIndexEntryWire[] = [
@@ -125,6 +125,7 @@ function makeHarness(init?: {
 			readonly page?: string;
 			readonly scope?: "user";
 			readonly admin?: boolean;
+			readonly group?: "mine" | "system";
 		}[];
 		readonly index: readonly SettingsSectionIndexEntryWire[];
 	};
@@ -380,9 +381,154 @@ async function openSection(
 
 describe("SettingsPanel", () => {
 	test("initial selection and navigation share the same non-admin visible section set", () => {
+		// A known non-admin sees only the My-settings sections.
 		expect(visibleSettingsSections(SECTIONS, false)).toEqual(
-			SECTIONS.filter((section) => section.id !== "providers"),
+			SECTIONS.filter((section) => section.group === "mine"),
 		);
+	});
+
+	test("two nav groups for admins", async () => {
+		const groupedSections = [
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
+			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+		];
+		const { client } = makeHarness({
+			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { admin: true });
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("My settings");
+		expect(text).toContain("System settings");
+	});
+
+	test("non-admins see only My settings", async () => {
+		const groupedSections = [
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
+			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+		];
+		const { client } = makeHarness({
+			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { admin: false });
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("My settings");
+		expect(text).not.toContain("System settings");
+	});
+
+	test("non-admin deep link to a system page lands in My settings", async () => {
+		const groupedSections = [
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
+			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+		];
+		const nonAdmin = makeHarness({
+			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
+		});
+		const { renderer } = await renderPanelWithPrefs(nonAdmin.client, { admin: false, section: "advanced" });
+		// Non-admin deep-linking to a system section lands on the first
+		// My settings (mine) section, not the advanced body.
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("My settings");
+		expect(text).not.toContain("System settings");
+		expect(renderer.root.findAllByProps({ "data-settings-section": "advanced" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
+		// The first My-settings (mine) section — the Interface cove — opens.
+		expect(renderer.root.findAllByProps({ "data-mode-option": "dark" })).toHaveLength(1);
+		// The Advanced body was never fetched (no System-section mount).
+		expect(nonAdmin.calls.some((call) => call.input.includes("surfaces/advanced"))).toBe(false);
+	});
+
+	test("#/settings/tools opens Advanced", async () => {
+		const groupedSections = [
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
+			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+		];
+		const { client } = makeHarness({
+			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { admin: true, section: "tools" });
+		// Flush the resolve effect (the tools alias maps to advanced).
+		await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+		// The tools route alias resolves to Advanced: the Advanced nav item is active.
+		const activeItem = renderer.root.findAllByType("button").find(
+			(node) => node.props.className === "settings-nav-item" &&
+				node.props["data-active"] !== undefined && node.props.children === "Advanced",
+		);
+		expect(activeItem).toBeDefined();
+		// No Tools entry exists.
+		const toolsItem = renderer.root.findAllByType("button").find(
+			(node) => typeof node.props.className === "string" && node.props.className.startsWith("settings-nav-item") && node.props.children === "Tools",
+		);
+		expect(toolsItem).toBeUndefined();
+	});
+
+	test("an extension with both schemas has a page in each group", async () => {
+		const extSections = [
+			{ slug: "curator", id: "settings", title: "Settings", icon: "key", group: "system" as const, page: "curator", admin: true },
+			{ slug: "curator", id: "user-settings", title: "Your settings", icon: "key", group: "mine" as const, page: "curator", scope: "user" as const, admin: false },
+		];
+		const { client } = makeHarness({
+			sectionsResponse: { sections: extSections, index: [...INDEX] },
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "curator" }] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { admin: true });
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("My settings");
+		expect(text).toContain("System settings");
+		// #/settings/my:curator draws only Your settings — no header, no
+		// credentials, no shared Settings section.
+		const mine = makeHarness({
+			sectionsResponse: { sections: extSections, index: [...INDEX] },
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "curator" }] },
+		});
+		const { renderer: mineRenderer } = await renderPanelWithPrefs(mine.client, { admin: true, section: "my:curator" });
+		const minePage = mineRenderer.root.findByProps({ "data-extension-page": "curator" });
+		expect(minePage.findAllByProps({ "data-extension-part": "user-settings" })).toHaveLength(1);
+		expect(minePage.findAllByType("header")).toHaveLength(0);
+		expect(minePage.findAllByProps({ "data-extension-part": "settings" })).toHaveLength(0);
+		expect(minePage.findAllByProps({ "data-extension-part": "credentials" })).toHaveLength(0);
+		// #/settings/curator (the system page) has NO Your settings part.
+		const system = makeHarness({
+			sectionsResponse: { sections: extSections, index: [...INDEX] },
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "curator" }] },
+		});
+		const { renderer: systemRenderer } = await renderPanelWithPrefs(system.client, { admin: true, section: "curator" });
+		const systemPage = systemRenderer.root.findByProps({ "data-extension-page": "curator" });
+		expect(systemPage.findAllByProps({ "data-extension-part": "user-settings" })).toHaveLength(0);
+		expect(systemPage.findAllByType("header")).toHaveLength(1);
+		expect(systemPage.findAllByProps({ "data-extension-part": "settings" })).toHaveLength(1);
+	});
+
+	test("non-admin deep link to an extension's bare slug shows only Your settings", async () => {
+		const extSections = [
+			{ slug: "curator", id: "settings", title: "Settings", icon: "key", group: "system" as const, page: "curator", admin: true },
+			{ slug: "curator", id: "user-settings", title: "Your settings", icon: "key", group: "mine" as const, page: "curator", scope: "user" as const, admin: false },
+		];
+		const harness = makeHarness({
+			sectionsResponse: { sections: extSections, index: [...INDEX] },
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "curator" }] },
+		});
+		const { renderer } = await renderPanelWithPrefs(harness.client, { admin: false, section: "curator" });
+		const page = renderer.root.findByProps({ "data-extension-page": "curator" });
+		expect(page.findAllByProps({ "data-extension-part": "user-settings" })).toHaveLength(1);
+		expect(page.findAllByType("header")).toHaveLength(0);
+		expect(page.findAllByProps({ "data-extension-part": "settings" })).toHaveLength(0);
+		expect(page.findAllByType("h2")).toHaveLength(0);
 	});
 
 	test("non-admins see an extension's user page without its shared section", async () => {
@@ -408,7 +554,7 @@ describe("SettingsPanel", () => {
 		expect(textContent(adminRenderer.toJSON())).toContain("Settings");
 	});
 
-	test("renders the sections nav from GET /v1/settings/sections, General first", async () => {
+	test("renders the sections nav in My settings / System settings groups, Interface first", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderPanel(client);
 		expect(
@@ -418,16 +564,16 @@ describe("SettingsPanel", () => {
 			.findAllByType("button")
 			.filter((node) => node.props.className === "settings-nav-item");
 		expect(navItems.map((node) => node.props.children)).toEqual([
-			"General",
-			"Tools",
 			"Interface",
+			"Account links",
+			"API tokens",
+			"General",
 			"Advanced",
 			"Providers",
-			"Account links",
 		]);
-		// The General surface mounted (its SurfaceView renders the form).
+		// The Interface cove mounted (the first My-settings section).
 		expect(
-			renderer.root.findAllByProps({ "data-settings-section": "general" }),
+			renderer.root.findAllByProps({ "data-mode-option": "dark" }),
 		).toHaveLength(1);
 	});
 
@@ -480,11 +626,12 @@ describe("SettingsPanel", () => {
 	});
 
 	test("the pending-restart callout lists keys; the Restart button shows only for a supervised admin", async () => {
-		// Supervised + admin: the button renders and calls the action.
+		// Supervised + admin: the button renders and calls the action (General
+		// carries the meta block).
 		const { client } = makeHarness({
 			meta: { pendingRestart: ["server.port"], env: {}, supervised: true },
 		});
-		const rendered = await renderPanelWithPrefs(client, { admin: true });
+		const rendered = await renderPanelWithPrefs(client, { admin: true, section: "general" });
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
@@ -503,6 +650,7 @@ describe("SettingsPanel", () => {
 		});
 		const secondRenderer = await renderPanelWithPrefs(second.client, {
 			admin: true,
+			section: "general",
 		});
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
@@ -517,14 +665,15 @@ describe("SettingsPanel", () => {
 		).toHaveLength(0);
 	});
 
-	test("a non-admin deep link to Providers falls back to General; an admin opens Providers", async () => {
-			const nonAdmin = makeHarness();
-			const nonAdminRenderer = await renderPanelWithPrefs(nonAdmin.client, {
-				admin: false,
-				section: "providers",
-			});
-			expect(nonAdminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
-			expect(nonAdmin.calls.some((call) => call.input === "/v1/providers")).toBe(false);
+	test("a non-admin deep link to Providers falls back to the first My-settings section; an admin opens Providers", async () => {
+		const nonAdmin = makeHarness();
+		const nonAdminRenderer = await renderPanelWithPrefs(nonAdmin.client, {
+			admin: false,
+			section: "providers",
+		});
+		expect(nonAdminRenderer.renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
+		expect(nonAdminRenderer.renderer.root.findAllByProps({ "data-mode-option": "dark" })).toHaveLength(1);
+		expect(nonAdmin.calls.some((call) => call.input === "/v1/providers")).toBe(false);
 
 			const admin = makeHarness();
 			const adminRenderer = await renderPanelWithPrefs(admin.client, {
@@ -668,13 +817,14 @@ describe("SettingsPanel extension pages", () => {
 		expect(buttons.map((button) => button.props.children)).toEqual(["alpha", "Zeta"]);
 	});
 
-	test("deep link to an extension without settings opens General", async () => {
+	test("deep link to an extension without settings opens the first My-settings section", async () => {
 		const { client } = makeHarness({
 			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "codemode", settingsPage: undefined }] },
 		});
 		const { renderer } = await renderPanelWithPrefs(client, { section: "codemode" });
-		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
 		expect(renderer.root.findAllByProps({ "data-extension-page": "codemode" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-mode-option": "dark" })).toHaveLength(1);
 	});
 
 	test("nav lists one Extensions entry per page; no (advanced) rows", async () => {
@@ -688,17 +838,26 @@ describe("SettingsPanel extension pages", () => {
 			extensions: { list: [{ ...EXTENSIONS[0], name: "acme-one" }, { ...EXTENSIONS[0], name: "acme-two" }] },
 		});
 		const { renderer, onSectionCalls } = await renderPanelWithPrefs(harness.client);
-		const group = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
-		const labels = group.findAllByType("button").map((node) => node.props.children);
-		expect(labels).toEqual(["acme-one", "acme-two"]);
+		const groups = renderer.root.findAllByProps({ role: "group", "aria-label": "Extensions" });
+		// Two sub-lists: My settings (extensions with a personal page, here
+		// acme-one) and System settings (every extension page).
+		expect(groups).toHaveLength(2);
+		const labels = groups[0].findAllByType("button").map((node) => node.props.children);
+		expect(labels).toEqual(["acme-one"]);
+		expect(groups[1].findAllByType("button").map((node) => node.props.children)).toEqual(["acme-one", "acme-two"]);
 		const nav = renderer.root.findByProps({ className: "settings-nav" });
 		const flatLabels = nav.findAllByType("button")
-			.filter((node) => node.parent === nav)
+			.filter((node) => node.props.className === "settings-nav-item")
 			.map((node) => node.props.children);
-		expect(flatLabels).toEqual(SECTIONS.map((section) => section.title));
+		// My settings first (Interface, Account links, API tokens), then System.
+		expect(flatLabels).toEqual(
+			["Interface", "Account links", "API tokens"].concat(
+				SECTIONS.filter((s) => s.group === "system").map((s) => s.title),
+			),
+		);
 		expect(textContent(renderer.toJSON())).not.toContain("(advanced)");
 		await act(async () => {
-			group.findAllByType("button")[1].props.onClick();
+			groups[1].findAllByType("button")[1].props.onClick();
 		});
 		expect(onSectionCalls()).toContain("acme-two");
 		expect(renderer.root.findAllByProps({ "data-extension-page": "acme-two" })).toHaveLength(1);
@@ -729,13 +888,14 @@ describe("SettingsPanel extension pages", () => {
 		expect(renderer.root.findAllByProps({ role: "group", "aria-label": "Extensions" })).toHaveLength(0);
 	});
 
-	test("a stale extension route falls back to General", async () => {
+	test("a stale extension route falls back to the first My-settings section", async () => {
 		const harness = makeHarness({
 			sectionsResponse: { sections: [...SECTIONS], index: [...INDEX] },
 			extensions: { list: [] },
 		});
 		const { renderer } = await renderPanelWithPrefs(harness.client, { section: "missing-extension" });
-		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
+		expect(renderer.root.findAllByProps({ "data-mode-option": "dark" })).toHaveLength(1);
 	});
 
 	test("a deep link to an extension page opens its Advanced pane", async () => {

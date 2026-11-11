@@ -335,6 +335,24 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(admin.render(80).join("\n")).toContain("Personal admin");
 	});
 
+	test("picker labels carry the group", async () => {
+		const extra: readonly SettingsSectionEntry[] = [
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" },
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", pageTitle: "Acme", title: "Settings", icon: "key", group: "system", admin: true },
+			{ slug: "acme-ext", id: "user-settings", page: "acme-ext", pageTitle: "Acme", title: "Your settings", icon: "key", group: "mine", scope: "user", admin: false },
+		];
+		const view = makeView(fakeWire({ sectionsExtra: extra, withoutDefaultExtension: true }));
+		await view.load();
+		view.openSearch();
+		const picker = shownPicker?.render(80).join("\n");
+		expect(picker).toBeDefined();
+		// Section rows carry the group label (My settings / System settings).
+		expect(picker).toContain("My settings");
+		expect(picker).toContain("System settings");
+	});
+
 	test("the search index filters on label/help/key; 'naming' resolves to General's naming model", () => {
 		const index = [
 			{

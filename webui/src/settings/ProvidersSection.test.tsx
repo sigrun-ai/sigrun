@@ -60,12 +60,11 @@ function makeProvidersHarness(init?: {
 	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
 	const sectionsResponse = {
 		sections: [
-			{ slug: "core", id: "general", title: "General", icon: "key" },
-			{ slug: "core", id: "tools", title: "Tools", icon: "edit" },
-			{ slug: "core", id: "interface", title: "Interface", icon: "image" },
-			{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
-			{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
-			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true },
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" },
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true, group: "system" },
 		],
 		index: [],
 	};
