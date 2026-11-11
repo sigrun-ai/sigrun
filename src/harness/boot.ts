@@ -82,6 +82,8 @@ import {
 	type EmbeddingRegistry,
 } from "./embeddings.js";
 import { createLocality, type Locality } from "./locality.js";
+import { createEffectiveSettings, type EffectiveSettings } from "../settings/effective.js";
+import { coreSchema } from "../settings/core-schema.js";
 import {
 	migrateLocalModels,
 	type LocalityMigrationResult,
@@ -207,6 +209,7 @@ import {
 	ensureStoreRoots,
 	resolveStoreRoots,
 	sharedExtensionStores,
+	userExtensionStores,
 	type SharedExtensionStores,
 	type StoreRoots,
 } from "./stores.js";
@@ -409,6 +412,8 @@ export interface OpenedHarness {
 	readonly embeddings: EmbeddingRegistry;
 	/** The one live locality answer (settings split Plan 2 Task 2). */
 	readonly locality: Locality;
+	/** The per-user effective settings resolver (settings split Plan 2 Task 4). */
+	readonly effective: EffectiveSettings;
 	/** The boot migration's result; createServer posts the one notice. */
 	readonly localityMigration: LocalityMigrationResult;
 	/**
@@ -2756,6 +2761,18 @@ export async function openHarness(
 		decisions: decisionsSlot.registry as DecisionRegistry,
 		embeddings,
 		locality: localityRef,
+		effective: createEffectiveSettings({
+			schema: coreSchema,
+			system: (key: string) => {
+				if (key === "defaultModel") return `${defaultModel.provider}/${defaultModel.modelId}`;
+				return settingsStore.read()[key as keyof typeof settingsStore.read extends never ? never : string];
+			},
+			overrides: async (user: string) => {
+				const stores = userExtensionStores(roots, identity.users, "core", user);
+				return stores.settings.get();
+			},
+			directory: () => identity.users.list(),
+		}),
 		localityMigration,
 		extensionStores: sharedStores,
 		packagesDir,

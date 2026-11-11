@@ -15,6 +15,7 @@ export const APPLY_KEYWORD = "x-sigrun-apply";
 export const SUMMARY_KEYWORD = "x-sigrun-summary";
 export const KEY_KEYWORD = "x-sigrun-key";
 export const ENV_KEYWORD = "x-sigrun-env";
+export const OVERRIDABLE_KEYWORD = "x-sigrun-overridable";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);

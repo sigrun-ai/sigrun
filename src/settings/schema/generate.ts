@@ -27,6 +27,7 @@ import {
 	ENV_KEYWORD,
 	KEY_KEYWORD,
 	SUMMARY_KEYWORD,
+	OVERRIDABLE_KEYWORD,
 	applyOf,
 	deref,
 	envOf,
@@ -676,6 +677,14 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 	}
 	if (schema.writeOnly !== undefined && typeof schema.writeOnly !== "boolean") {
 		return fail("writeOnly must be a boolean");
+	}
+	if (schema[OVERRIDABLE_KEYWORD] !== undefined) {
+		if (schema[OVERRIDABLE_KEYWORD] !== true) {
+			return fail(`${OVERRIDABLE_KEYWORD} must be true`);
+		}
+		if (schema.type === "object" || schema.type === "array") {
+			return fail(`${OVERRIDABLE_KEYWORD} is valid only on leaf properties (not object/array)`);
+		}
 	}
 
 	if (Array.isArray(schema.oneOf)) {

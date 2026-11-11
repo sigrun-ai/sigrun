@@ -148,26 +148,35 @@ export const coreSchema: JsonSchema = {
 		jobDefaults: object({
 			maxTurns: number("Default max turns per job run", "", DEFAULT_JOB_MAX_TURNS, "live"),
 		}),
-		defaultModel: string(
-			"Chat model",
-			"The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
-		),
+		defaultModel: {
+			...string(
+				"Chat model",
+				"The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
+			),
+			"x-sigrun-overridable": true,
+		},
 		namingModel: string(
 			"Utility model",
 			"Names conversations and builds skill cards. Absent: the default chat model.",
 			undefined,
 			"live",
 		),
-		decisionModel: string("Decision model", "Default model for decision-provider evaluations", "", "live"),
+		decisionModel: {
+			...string("Decision model", "Default model for decision-provider evaluations", "", "live"),
+			"x-sigrun-overridable": true,
+		},
 		decisions: object({
 			tool: toggle("Decision evaluation tool", "Whether decision_evaluate is enabled", false, "live"),
 		}),
-		embeddingModel: string(
-			"Embedding model",
-			"The model every extension embeds with, as provider/model. Unset: embeddings are off.",
-			"",
-			"live",
-		),
+		embeddingModel: {
+			...string(
+				"Embedding model",
+				"The model every extension embeds with, as provider/model. Unset: embeddings are off.",
+				"",
+				"live",
+			),
+			"x-sigrun-overridable": true,
+		},
 		localProviders: {
 			type: "array",
 			items: { type: "string", minLength: 1 },
