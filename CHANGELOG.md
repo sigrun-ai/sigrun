@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.4] - 2026-11-10
+
+### Fixed
+
+- Bundles @sigrun/ext-mcp 0.3.1: a remote MCP server's expired session
+  now recovers. FastMCP-style stateful servers reap idle sessions (30
+  minutes by default) and answer later requests with `404 Session not
+  found`; the client kept the dead session id for the life of the
+  process, so searxng/SearXNG search failed on every call after the
+  first idle half-hour while crawl4ai (a stateless endpoint) kept
+  working. Image-only release: core source is unchanged, only the
+  bundled built-in moves.
+
 ## [0.13.3] - 2026-11-10
 
 ### Fixed
