@@ -117,7 +117,8 @@ describe("overridesSchema", () => {
 		expect(result.additionalProperties).toBe(false);
 	});
 
-	it("overridesSchema rejects extra keys", () => {
+	it("overridesSchema rejects extra keys", async () => {
+		const { checkStoredSettings } = await import("../src/settings/schema/defaults.js");
 		const schema = objectSchema({
 			defaultModel: { type: "string", [OVERRIDABLE_KEYWORD]: true },
 			namingModel: { type: "string" },
@@ -138,6 +139,10 @@ describe("overridesSchema", () => {
 		const nestedResult = overridesSchema(nested);
 		const outer = (nestedResult.properties as Record<string, unknown>).outer as Record<string, unknown>;
 		expect(outer.additionalProperties).toBe(false);
+		// Actually validate a payload with an extra key — it must be rejected
+		const validated = checkStoredSettings(result, { namingModel: "acme/hack" });
+		expect(validated.repairs.length).toBeGreaterThan(0);
+		expect(validated.value).not.toHaveProperty("namingModel");
 	});
 });
 
@@ -156,6 +161,11 @@ describe("overridableKeys", () => {
 			namingModel: { type: "string" },
 		});
 		expect(overridableKeys(schema)).toEqual(["defaultModel", "retry.enabled"]);
+	});
+
+	it("coreSchema has exactly the three overridable keys", async () => {
+		const { coreSchema } = await import("../src/settings/core-schema.js");
+		expect(overridableKeys(coreSchema)).toEqual(["defaultModel", "decisionModel", "embeddingModel"]);
 	});
 });
 
@@ -241,15 +251,44 @@ describe("createEffectiveSettings", () => {
 	});
 
 	it("the system defaultModel is the env-resolved one", async () => {
-		// Simulate: env SIGRUN_DEFAULT_MODEL=acme/env-model, file says acme/file-model
-		// The system() dep should return the env-resolved value
-		const system = (key: string) => {
-			if (key === "defaultModel") return "acme/env-model";
-			return undefined;
-		};
-		const overrides = async () => ({});
-		const directory = () => [] as readonly DirectoryUser[];
-		const effective = createEffectiveSettings({ schema: testSchema, system, overrides, directory });
-		expect(await effective.value("defaultModel", undefined)).toBe("acme/env-model");
+		const { mkdtemp, rm } = await import("node:fs/promises");
+		const { tmpdir } = await import("node:os");
+		const { join } = await import("node:path");
+		const { loadConfig } = await import("../src/config.js");
+		const { openHarness } = await import("../src/harness/boot.js");
+		const { seededIdentity } = await import("./helpers/identity.js");
+		const { fauxProvider } = await import("@earendil-works/pi-ai/providers/faux");
+		const { BACKGROUND_CONTEXT } = await import("@earendil-works/chord/context");
+
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-effective-env-"));
+		const config = loadConfig({
+			SIGRUN_DEFAULT_MODEL: "acme/env-model",
+			SIGRUN_STORAGE_PATH: join(dir, "sigrun.db"),
+			SIGRUN_WORKSPACE_PATH: dir,
+			SIGRUN_DATA_DIR: join(dir, "data"),
+			SIGRUN_AUTH: "token",
+		});
+		const identity = await seededIdentity(dir);
+		const provider = fauxProvider({
+			provider: "acme",
+			models: [{ id: "env-model", contextWindow: 128_000 }, { id: "file-model", contextWindow: 128_000 }],
+		});
+		const opened = await openHarness(config, {
+			identity,
+			extensions: [{ name: "acme-chat", providers: [{ provider: provider.provider }] }],
+			env: {},
+			settingsDir: dir,
+			builtins: false,
+		});
+		// Write a DIFFERENT defaultModel into the settings file
+		await opened.settings.apply({ defaultModel: "acme/file-model", decisionModel: "acme/file-decision" });
+
+		// The env-resolved defaultModel wins over the file
+		expect(await opened.effective.value("defaultModel", undefined)).toBe("acme/env-model");
+		// A non-defaultModel key resolves from the file
+		expect(await opened.effective.value("decisionModel", undefined)).toBe("acme/file-decision");
+
+		await opened.harness.close(BACKGROUND_CONTEXT);
+		await rm(dir, { recursive: true, force: true });
 	});
 });

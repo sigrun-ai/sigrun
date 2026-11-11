@@ -2765,7 +2765,7 @@ export async function openHarness(
 			schema: coreSchema,
 			system: (key: string) => {
 				if (key === "defaultModel") return `${defaultModel.provider}/${defaultModel.modelId}`;
-				return settingsStore.read()[key as keyof typeof settingsStore.read extends never ? never : string];
+				return (settingsStore.read() as Record<string, unknown>)[key];
 			},
 			overrides: async (user: string) => {
 				const stores = userExtensionStores(roots, identity.users, "core", user);

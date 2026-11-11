@@ -1,8 +1,8 @@
 /**
- * The four sigrun keywords a settings schema may carry (spec §1):
- * `x-sigrun-apply`, `x-sigrun-summary`, `x-sigrun-key`, `x-sigrun-env` — plus the shared
- * structural predicates and JSON-pointer helpers the generator and the
- * load-time checker both use.
+ * The five sigrun keywords a settings schema may carry (spec §1):
+ * `x-sigrun-apply`, `x-sigrun-summary`, `x-sigrun-key`, `x-sigrun-env`,
+ * `x-sigrun-overridable` — plus the shared structural predicates and
+ * JSON-pointer helpers the generator and the load-time checker both use.
  */
 
 /** A JSON Schema document (or subschema), viewed structurally. */

@@ -836,6 +836,27 @@ describe("checkSchema", () => {
 		expect(checkSchema(objectSchema({ a: { $ref: "https://example.invalid/x" } })).ok).toBe(false);
 	});
 
+	it("overridable marker on a leaf is accepted; on an object property it is rejected", () => {
+		const leaf = objectSchema({
+			model: { type: "string", "x-sigrun-overridable": true },
+		});
+		expect(checkSchema(leaf).ok).toBe(true);
+
+		const obj = objectSchema({
+			nested: {
+				type: "object",
+				"x-sigrun-overridable": true,
+				properties: { a: { type: "string" } },
+			},
+		});
+		const result = checkSchema(obj);
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("/nested");
+			expect(result.error).toContain("x-sigrun-overridable");
+		}
+	});
+
 	it("finds secrets declared inside anyOf branches", () => {
 		const result = checkSchema(
 			objectSchema({
