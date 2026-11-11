@@ -128,13 +128,23 @@ export function ExtensionPage(props: {
 			{admin && shared !== undefined && (
 				<section data-extension-part="settings" aria-label="Settings">
 					<h3>Settings</h3>
-					<ExtensionSurface client={client} section={shared} onData={handleData} />
+					<ExtensionSurface
+						key={`${shared.slug}/${shared.id}`}
+						client={client}
+						section={shared}
+						onData={handleData}
+					/>
 				</section>
 			)}
 			{personal !== undefined && (
 				<section data-extension-part="user-settings" aria-label="Your settings">
 					<h3>Your settings</h3>
-					<ExtensionSurface client={client} section={personal} onData={ignoreData} />
+					<ExtensionSurface
+						key={`${personal.slug}/${personal.id}`}
+						client={client}
+						section={personal}
+						onData={ignoreData}
+					/>
 				</section>
 			)}
 			{admin && (

@@ -371,6 +371,7 @@ export function SettingsPanel(props: {
 								<p className="settings-note">select a section</p>
 							) : open.kind === "extension" && openExtension !== undefined ? (
 								<ExtensionPage
+									key={openExtension.name}
 									client={client}
 									extension={openExtension}
 									sections={navSections.filter((entry) => entry.page === openExtension.name)}
