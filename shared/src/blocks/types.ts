@@ -552,6 +552,8 @@ export interface ChoiceField extends FieldBase {
 	/** Literal or binding. */
 	readonly options: Bindable<readonly ChoiceOption[]>;
 	readonly multi?: boolean;
+	/** Single-select only: the webui always draws a dropdown. */
+	readonly presentation?: "dropdown";
 	readonly allowOther?: { label?: string };
 }
 
