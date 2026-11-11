@@ -449,7 +449,19 @@ describe("authFailureMessage (Task 5: naming auth failures for the user)", () =>
 	test("authFailureForBody: sigrun's JSON error body vs anything else", () => {
 		expect(authFailureForBody({ error: "unauthenticated" })).toBe(AUTH_FAILURE_MESSAGE);
 		expect(authFailureForBody({ error: "invalid_token" })).toBe(AUTH_FAILURE_MESSAGE);
-		for (const body of [undefined, null, "", "<html>", {}, { error: 401 }, []]) {
+		for (const body of [
+			undefined,
+			null,
+			"",
+			"<html>",
+			{},
+			{ error: 401 },
+			[],
+			// A gateway that answers JSON is still not sigrun: only sigrun's
+			// own 401 codes count.
+			{ error: "Unauthorized" },
+			{ error: "unauthorized", message: "forward auth required" },
+		]) {
 			expect(authFailureForBody(body)).toBe(FRONT_AUTH_FAILURE_MESSAGE);
 		}
 	});
