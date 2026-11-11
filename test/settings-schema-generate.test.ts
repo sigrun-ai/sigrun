@@ -185,6 +185,18 @@ describe("generateForm", () => {
 		expect(root.onSubmit).toBe("save");
 	});
 
+	it("model keyword draws a dropdown bound to its kind", () => {
+		const schema = objectSchema({
+			model: { type: "string", minLength: 1, "x-sigrun-model": "decision" },
+		});
+		expect(checkSchema(schema).ok).toBe(true);
+		const field = fieldNamed(childrenOf(schema), "model") as ChoiceField;
+		expect(field.type).toBe("choice");
+		expect(field.presentation).toBe("dropdown");
+		expect(field.options).toEqual({ $: "/modelRoster/decision" });
+		expect(field.allowOther).toEqual({ label: "Other model id (provider/model)" });
+	});
+
 	it("env keyword binds the placeholder", () => {
 		const schema = objectSchema({
 			endpoint: {
@@ -724,6 +736,18 @@ describe("generateForm", () => {
 });
 
 describe("checkSchema", () => {
+	it("model keyword with an unknown kind is rejected", () => {
+		const result = checkSchema(objectSchema({
+			model: { type: "string", "x-sigrun-model": "acme-unknown" },
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("/model");
+			expect(result.error).toContain("x-sigrun-model");
+			expect(result.error).toContain("acme-unknown");
+		}
+	});
+
 	it("env keyword on a writeOnly field is rejected", () => {
 		const result = checkSchema(objectSchema({
 			token: { type: "string", writeOnly: true, "x-sigrun-env": "ACME_TOKEN" },

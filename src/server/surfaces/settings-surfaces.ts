@@ -30,7 +30,7 @@
 
 import { Errors } from "typebox/schema";
 import { isSuperuser } from "../auth/principal.js";
-import type { JsonObject, JsonValue, Tree } from "@sigrun/shared/blocks";
+import type { ChoiceOption, JsonObject, JsonValue, Tree } from "@sigrun/shared/blocks";
 import type {
 	ActionResult,
 	Principal,
@@ -52,8 +52,10 @@ import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
 import { applyDefaults } from "../../settings/schema/defaults.js";
 import { dropBlankOptionalStrings } from "../../settings/schema/blanks.js";
-import type { ModelRoster } from "../../settings/model-kinds.js";
-import { systemModelRosterData } from "../model-roster.js";
+import type { ModelKindId, ModelRoster } from "../../settings/model-kinds.js";
+import { MODEL_KINDS } from "../../settings/model-kinds.js";
+import { systemModelRosterData, withUnserved } from "../model-roster.js";
+import { MODEL_KEYWORD } from "../../settings/schema/keywords.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -376,6 +378,11 @@ export interface SettingsSurfaceOptions {
 	 * the RESOLVED caller (the primary admin for a userless superuser).
 	 */
 	readonly extraData?: (user: string | undefined) => Promise<JsonObject>;
+	/** Live model rosters and the effective defaults behind extension model fields. */
+	readonly models?: {
+		readonly roster: () => Record<ModelKindId, ChoiceOption[]>;
+		readonly effective: (kind: ModelKindId, user: string | undefined) => Promise<string | undefined>;
+	};
 	/**
 	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
 	 * `slug === "core"` — the core sections read/write the core
@@ -1040,6 +1047,63 @@ function optionsNonEmpty(value: string | undefined): string | undefined {
 	return value === undefined || value.length === 0 ? undefined : value;
 }
 
+/** Model fields declared anywhere in the schema, including table rows. */
+function modelKindsInSchema(node: unknown): Map<ModelKindId, string[]> {
+	const kinds = new Map<ModelKindId, string[]>();
+	const stack: unknown[] = [node];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!isRec(current)) continue;
+		if (isRec(current.properties)) {
+			for (const [name, property] of Object.entries(current.properties)) {
+				const kind = isRec(property) ? MODEL_KINDS.find((entry) => entry.kind === property[MODEL_KEYWORD]) : undefined;
+				if (kind !== undefined) kinds.set(kind.kind, [...(kinds.get(kind.kind) ?? []), name]);
+			}
+		}
+		for (const key of ["properties", "additionalProperties", "items", "$defs", "definitions"]) {
+			const child = current[key];
+			if (isRec(child)) stack.push(...Object.values(child));
+		}
+		for (const key of ["oneOf", "anyOf"]) {
+			const branches = current[key];
+			if (Array.isArray(branches)) stack.push(...branches);
+		}
+	}
+	return kinds;
+}
+
+/** Extension model fields get a default row; System → Models keeps its bare payload. */
+async function extensionModelData(
+	models: NonNullable<SettingsSurfaceOptions["models"]>,
+	kinds: ReadonlyMap<ModelKindId, string[]>,
+	stored: Record<string, unknown>,
+	user: string | undefined,
+): Promise<JsonObject> {
+	const roster = models.roster();
+	const modelRoster: JsonObject = {};
+	for (const [kind, fieldNames] of kinds) {
+		const settingKey = MODEL_KINDS.find((entry) => entry.kind === kind)?.settingKey;
+		if (settingKey === undefined) continue;
+		const effective = await models.effective(kind, user);
+		const storedValues = [...new Set([settingKey, ...fieldNames].flatMap((key) => {
+			const value = stored[key];
+			return typeof value === "string" && value !== "" ? [value] : [];
+		}))];
+		const options = storedValues.reduce(
+			(rows, value) => withUnserved(rows, value),
+			roster[kind],
+		);
+		modelRoster[kind] = [
+			{ id: "", label: `Use the default (${effective ?? "none"})` },
+			...options.map((row) => ({
+				id: row.id,
+				label: typeof row.label === "string" ? row.label : row.label.$,
+			})),
+		];
+	}
+	return { modelRoster };
+}
+
 /** The schema-backed extension section; core sections retain settingsSurfaceFor. */
 export function schemaSettingsSurfaceFor(
 	slug: string,
@@ -1065,6 +1129,7 @@ export function schemaSettingsSurfaceFor(
 		return "write";
 	};
 	const properties = isRec(schema.properties) ? schema.properties : {};
+	const modelKinds = modelKindsInSchema(schema);
 	const rootTable = isRec(schema.additionalProperties);
 	const readStored = async (principal: Principal) => {
 		const user = userScope ? namedUser(principal) : undefined;
@@ -1130,6 +1195,9 @@ export function schemaSettingsSurfaceFor(
 						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
 					),
 					...(options.extraData === undefined ? {} : await options.extraData(user)),
+					...(options.models === undefined || modelKinds.size === 0
+						? {}
+						: await extensionModelData(options.models, modelKinds, stored, user)),
 				},
 				access,
 			};

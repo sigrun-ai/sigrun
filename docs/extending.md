@@ -2947,6 +2947,11 @@ export function imageForms(): Tree {
 | `x-sigrun-summary` | Array item object | Names the fields rendered in an entry's one-line summary. |
 | `x-sigrun-key` | Array item object containing secrets | Names the stable string property that identifies each entry when secrets move or clear. |
 | `x-sigrun-env` | Non-`writeOnly` string property on the shared `schema` | Names an uppercase environment variable. When no value is stored, the admin form replaces the field's default placeholder with the env value and a `(from VAR)` suffix; the schema `default` remains the fallback when env is unset/empty. Saving blank keeps the value unset and never copies env into the file. |
+| `x-sigrun-model` | Non-`writeOnly` string property on `schema` or `userSchema` | `"chat"`, `"decision"`, or `"embedding"` draws a dropdown of that kind's live model roster, with a free-form `provider/model` alternative. The first option, `Use the default (<effective model>)`, saves blank and therefore leaves the key unset. Shared-schema forms use the system effective value; personal forms use the caller's effective value. |
+
+`x-sigrun-model` is allowed in `userSchema`; unlike `x-sigrun-env`, its
+options carry model ids and provider display labels, never server env values.
+An unserved stored id remains selectable and is labelled not currently served.
 
 `x-sigrun-env` is for extension server settings, not core settings or
 `userSchema`. Core's env-backed keys retain their own `ENV_OVERRIDES` mapping.

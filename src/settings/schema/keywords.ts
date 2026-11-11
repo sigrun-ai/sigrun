@@ -1,8 +1,8 @@
 /**
- * The five sigrun keywords a settings schema may carry (spec §1):
+ * The six sigrun keywords a settings schema may carry (spec §1):
  * `x-sigrun-apply`, `x-sigrun-summary`, `x-sigrun-key`, `x-sigrun-env`,
- * `x-sigrun-overridable` — plus the shared structural predicates and
- * JSON-pointer helpers the generator and the load-time checker both use.
+ * `x-sigrun-overridable`, `x-sigrun-model` — plus the shared structural
+ * predicates and JSON-pointer helpers the generator and the load-time checker both use.
  */
 
 /** A JSON Schema document (or subschema), viewed structurally. */
@@ -16,6 +16,7 @@ export const SUMMARY_KEYWORD = "x-sigrun-summary";
 export const KEY_KEYWORD = "x-sigrun-key";
 export const ENV_KEYWORD = "x-sigrun-env";
 export const OVERRIDABLE_KEYWORD = "x-sigrun-overridable";
+export const MODEL_KEYWORD = "x-sigrun-model";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -42,6 +43,12 @@ export function keyOf(schema: JsonSchema): string | undefined {
 export function envOf(schema: JsonSchema): string | undefined {
 	const variable = schema[ENV_KEYWORD];
 	return typeof variable === "string" ? variable : undefined;
+}
+
+/** The model-kind roster a non-secret string property draws from. */
+export function modelKindOf(schema: JsonSchema): string | undefined {
+	const kind = schema[MODEL_KEYWORD];
+	return typeof kind === "string" ? kind : undefined;
 }
 
 /** JSON-pointer escape of one segment (`~` → `~0`, `/` → `~1`). */

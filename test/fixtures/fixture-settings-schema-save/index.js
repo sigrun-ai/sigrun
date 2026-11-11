@@ -17,8 +17,8 @@ export default function fixture(host) {
 				properties: { label: { type: "boolean", default: true } },
 			},
 			mode: { type: "string" },
+				judgeModel: { type: "string", minLength: 1, "x-sigrun-model": "decision" },
 				enabled: { type: "boolean", default: true },
-				mode: { type: "string" },
 				labels: {
 					type: "object",
 					additionalProperties: { type: "string", title: "Label" },
@@ -46,6 +46,7 @@ export default function fixture(host) {
 			type: "object",
 			properties: {
 				nickname: { type: "string", default: "tester" },
+				idleModel: { type: "string", minLength: 1, "x-sigrun-model": "chat" },
 				enabled: { type: "boolean", default: true },
 			},
 		},

@@ -104,6 +104,7 @@ import {
 import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { coreSchema, generatedMyModelsForm } from "../settings/core-schema.js";
 import { overridesSchema } from "../settings/effective.js";
+import type { ModelKindId } from "../settings/model-kinds.js";
 import { MODEL_KINDS } from "../settings/model-kinds.js";
 import type { JsonObject } from "@sigrun/shared/blocks";
 import { registerUserRoutes } from "./routes/users.js";
@@ -332,6 +333,19 @@ export async function createServer(
 	}
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
+	const modelSurfaceOptions = {
+		roster: () => buildModelRoster(
+			opened,
+			opened.locality,
+			(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+		),
+		effective: async (kind: ModelKindId, user: string | undefined) => {
+			const settingKey = MODEL_KINDS.find((entry) => entry.kind === kind)?.settingKey;
+			if (settingKey === undefined) return undefined;
+			const value = await opened.effective.value(settingKey, user);
+			return typeof value === "string" && value !== "" ? value : undefined;
+		},
+	};
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};
 	// Decorated for the shutdown path (serve.ts): fastify's own drain waits
 	// on in-flight requests, so the SSE registry must be endable from the
@@ -410,6 +424,7 @@ export async function createServer(
 						stores: opened.extensionStores,
 						publishSettingsChanged: opened.publishSettingsChanged,
 						service: surfacesService,
+						models: modelSurfaceOptions,
 					},
 				)];
 			}),
