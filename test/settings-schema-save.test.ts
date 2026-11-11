@@ -449,6 +449,50 @@ test("a panel named user-settings fails the load of a declaring extension", asyn
 
 
 
+test("a blank optional string clears a stored value", async () => {
+	const rig = await boot({ settings: { endpoint: "https://a.example.invalid", interval: 30 } });
+	const result = await save(rig, { endpoint: "", interval: 30 }, "blank-clears");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ interval: 30 });
+});
+
+test("a blank optional string on a fresh file saves", async () => {
+	const rig = await boot();
+	const result = await save(rig, { endpoint: "" }, "blank-fresh");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({});
+});
+
+test("a blank optional string inside a table entry is dropped", async () => {
+	const rig = await boot();
+	const result = await save(rig, {
+		servers: { first: { url: "https://a.example.invalid", label: "" } },
+	}, "blank-table-entry");
+	expect(result.body).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	expect(Object.hasOwn((stored.servers as Record<string, Record<string, unknown>>).first, "label")).toBe(false);
+});
+
+test("a blank required string still fails", async () => {
+	const rig = await boot();
+	const result = await save(rig, { servers: { first: { url: "" } } }, "blank-required");
+	expect(result.body.ok).toBe(false);
+	expect((result.body.error as { field: string }).field).toBe("/servers/first/url");
+});
+
+test("a blank secret still means unchanged", async () => {
+	const rig = await boot({ secrets: { token: "synthetic-top-level-value" } });
+	const result = await save(rig, { token: "" }, "blank-secret");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await secrets(rig)).toEqual({ token: "synthetic-top-level-value" });
+});
+
+test("clearing a value still publishes its key", async () => {
+	const rig = await boot({ settings: { endpoint: "https://a.example.invalid" } });
+	await save(rig, { endpoint: "" }, "blank-notifies");
+	expect(changes.some((entry) => entry.keys.includes("endpoint"))).toBe(true);
+});
+
 test("dotted nested field names save through the generated form (provider-openai shape)", async () => {
 	// The regression Michael hit live: a schema whose nested objects
 	// carry default-true booleans (provider-openai's chat.enabled /

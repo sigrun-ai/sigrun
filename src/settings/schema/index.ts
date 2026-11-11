@@ -13,6 +13,8 @@ export {
 	type SettingsRepair,
 } from "./defaults.js";
 
+export { dropBlankOptionalStrings } from "./blanks.js";
+
 export {
 	assertDrawable,
 	checkSchema,

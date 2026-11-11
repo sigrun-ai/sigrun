@@ -51,6 +51,7 @@ import {
 import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
 import { applyDefaults } from "../../settings/schema/defaults.js";
+import { dropBlankOptionalStrings } from "../../settings/schema/blanks.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -1046,7 +1047,13 @@ export function schemaSettingsSurfaceFor(
 				const rev = service.currentRev(slug, section.id, ctx.key);
 				if (parsed.rev !== rev) return { ok: false, error: { message: "changed by someone else" } };
 				const channelValues = channelSubmissionToFile(parsed.values, schema);
-				const validationValues = stripEntryMarkers(channelValues) as Record<string, unknown>;
+				// Bug 2: an untouched optional text field submits as "" and would
+				// fail a minLength: 1 schema — drop blank OPTIONAL strings before
+				// validation. The settings.changed key list keeps the SUBMITTED
+				// top-level names so a clear still notifies (plan note b).
+				const submittedKeys = Object.keys(channelValues);
+				const dropped = dropBlankOptionalStrings(channelValues, schema);
+				const validationValues = stripEntryMarkers(dropped) as Record<string, unknown>;
 				const invalid = schemaError(schema, validationValues);
 				if (invalid !== undefined) return invalid;
 				const user = userScope ? namedUser(ctx.principal) : undefined;
@@ -1057,8 +1064,8 @@ export function schemaSettingsSurfaceFor(
 						const stored = userStores === undefined
 							? await stores.settingsFor(slug).get()
 							: await userStores.settings.get();
-						const split = splitSecrets(channelValues, generated.secrets);
-						const moves = secretMoves(stored, channelValues, generated.secrets);
+						const split = splitSecrets(dropped, generated.secrets);
+						const moves = secretMoves(stored, dropped, generated.secrets);
 						for (const [key, value] of split.writes) await setSecret(user, key, value);
 						for (const key of split.deletes) await deleteSecret(user, key);
 						for (const [from, to] of moves.moves) {
@@ -1095,7 +1102,7 @@ export function schemaSettingsSurfaceFor(
 						}
 						if (userStores === undefined) await stores.settingsFor(slug).set(next);
 						else await userStores.settings.set(next);
-						publishSettingsChanged({ extension: slug }, Object.keys(validationValues), user);
+						publishSettingsChanged({ extension: slug }, submittedKeys, user);
 						return { ok: true };
 					},
 				);
