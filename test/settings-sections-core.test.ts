@@ -153,7 +153,8 @@ function normalizedForm(form: Tree): unknown {
 		// The fixture predates the Models-group moves AND the model-picker
 		// overrides: normalize the four fields back to the plain text
 		// fields the fixture froze (drop decisionModel/embeddingModel,
-		// restore defaultModel/namingModel to generated text fields).
+		// restore defaultModel/namingModel to generated text fields, and
+		// omit the dropdown presentation the model pickers now declare).
 		if (record.type === "section" && record.title === "Models") {
 			const children = record.children as unknown[];
 			record.children = children.flatMap((child) => {
@@ -164,6 +165,7 @@ function normalizedForm(form: Tree): unknown {
 					field.type = "text";
 					delete field.options;
 					delete field.allowOther;
+					delete field.presentation;
 					return [field];
 				}
 				return [child];
@@ -214,6 +216,23 @@ describe("core settings sections (U4 Task 4)", () => {
 				),
 			}],
 		} satisfies Partial<EntriesField>);
+	});
+
+	test("model pickers are dropdowns", () => {
+		const general = CORE_SETTINGS_SECTIONS.find((section) => section.id === "general");
+		const root = general?.form.root;
+		const models = root?.type === "form"
+			? root.children.find(
+				(child) => child.type === "section" && child.title === "Models",
+			)
+			: undefined;
+		const fields = models?.type === "section" ? models.children : [];
+		for (const name of ["defaultModel", "namingModel", "decisionModel", "embeddingModel"]) {
+			expect(
+				fields.find((field) => "name" in field && field.name === name),
+				name,
+			).toMatchObject({ type: "choice", presentation: "dropdown" });
+		}
 	});
 
 	test("defaultTools keeps the tool roster binding", () => {
@@ -878,6 +897,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				title: string;
 				icon: string;
 				page?: string;
+				pageTitle?: string;
 				admin?: boolean;
 				scope?: "user";
 			}[];
@@ -893,6 +913,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "curator",
 				id: "settings",
 				page: "curator",
+				pageTitle: "Curator",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -901,6 +922,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "curator",
 				id: "user-settings",
 				page: "curator",
+				pageTitle: "Curator",
 				title: "Your settings",
 				icon: "key",
 				scope: "user",
@@ -910,6 +932,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "gateway",
 				id: "settings",
 				page: "gateway",
+				pageTitle: "Gateway",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -918,6 +941,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "oauth",
 				id: "settings",
 				page: "oauth",
+				pageTitle: "OAuth login",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -926,6 +950,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "sigrun-mcp",
 				id: "settings",
 				page: "sigrun-mcp",
+				pageTitle: "MCP",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -934,6 +959,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "sigrun-mcp",
 				id: "user-settings",
 				page: "sigrun-mcp",
+				pageTitle: "MCP",
 				title: "Your settings",
 				icon: "key",
 				scope: "user",

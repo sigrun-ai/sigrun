@@ -825,6 +825,10 @@ export interface ServiceStatusWire {
 
 export interface ExtensionInfo {
 	readonly name: string;
+	/** Display-only title; the name remains the stable slug. */
+	readonly title?: string;
+	/** Present when the extension has a settings page for this caller. */
+	readonly settingsPage?: true;
 	readonly status: string;
 	readonly error?: string;
 	readonly version?: string;
@@ -947,6 +951,8 @@ export interface SettingsSectionEntry {
 	readonly id: string;
 	readonly title: string;
 	readonly icon: string;
+	/** The extension display title, or its slug when no title was declared. */
+	readonly pageTitle?: string;
 	/** Extension sections sharing this slug render on this one extension page. */
 	readonly page?: string;
 	/** Personal sections group under My settings and store caller-owned data. */

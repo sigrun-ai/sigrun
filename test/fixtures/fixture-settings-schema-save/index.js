@@ -11,6 +11,7 @@ export default function fixture(host) {
 			type: "object",
 			properties: {
 				interval: { type: "integer", minimum: 1, default: 60 },
+				endpoint: { type: "string", minLength: 1, "x-sigrun-env": "ACME_SCHEMA_SAVE_URL" },
 			group: {
 				type: "object",
 				properties: { label: { type: "boolean", default: true } },
@@ -29,7 +30,8 @@ export default function fixture(host) {
 					additionalProperties: {
 						type: "object",
 						properties: {
-							url: { type: "string", title: "Gateway address", description: "The entry endpoint" },
+							url: { type: "string", minLength: 1, title: "Gateway address", description: "The entry endpoint" },
+							label: { type: "string", minLength: 1 },
 							headers: {
 								type: "object",
 								additionalProperties: { type: "string", writeOnly: true },

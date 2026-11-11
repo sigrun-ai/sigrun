@@ -57,6 +57,8 @@ export interface BuiltinExtension {
 	 * sees the built-in's row under the same identity whether it loaded,
 	 * was replaced or (absent, when disabled). */
 	readonly slug: string;
+	/** The display title used when the factory does not declare one. */
+	readonly title: string;
 }
 
 /**
@@ -71,12 +73,12 @@ export interface BuiltinExtension {
  * exact `0.1.0`s).
  */
 export const BUILTIN_EXTENSIONS: readonly BuiltinExtension[] = [
-	{ key: "codemode", specifier: "@sigrun/ext-codemode", slug: "codemode" },
-	{ key: "mcp", specifier: "@sigrun/ext-mcp", slug: "sigrun-mcp" },
-	{ key: "toolSearch", specifier: "@sigrun/ext-tool-search", slug: "tool-search" },
-	{ key: "gateway", specifier: "@sigrun/ext-gateway", slug: "gateway" },
-	{ key: "oauth", specifier: "@sigrun/oauth", slug: "oauth" },
-	{ key: "curator", specifier: "@sigrun/ext-curator", slug: "curator" },
+	{ key: "codemode", specifier: "@sigrun/ext-codemode", slug: "codemode", title: "Codemode" },
+	{ key: "mcp", specifier: "@sigrun/ext-mcp", slug: "sigrun-mcp", title: "MCP" },
+	{ key: "toolSearch", specifier: "@sigrun/ext-tool-search", slug: "tool-search", title: "Tool search" },
+	{ key: "gateway", specifier: "@sigrun/ext-gateway", slug: "gateway", title: "Gateway" },
+	{ key: "oauth", specifier: "@sigrun/oauth", slug: "oauth", title: "OAuth login" },
+	{ key: "curator", specifier: "@sigrun/ext-curator", slug: "curator", title: "Curator" },
 ];
 
 /** The outcome of resolving the built-ins against settings + configured extensions. */
@@ -238,7 +240,8 @@ export function resolveBuiltins(
 			skipped.push({ key: builtin.key, reason: "replaced", by: replacement });
 			continue;
 		}
-		load.push({ ...resolve(builtin.specifier, builtinEntry), settingsSlug: builtin.slug });
+		const entry = resolve(builtin.specifier, builtinEntry);
+		load.push({ ...entry, settingsSlug: builtin.slug, title: builtin.title });
 	}
 	// The test-seam extra entries (the boot's `extraBuiltins` option):
 	// resolved exactly like the real built-ins, appended after them,

@@ -1,6 +1,6 @@
 /**
- * The three sigrun keywords a settings schema may carry (spec §1):
- * `x-sigrun-apply`, `x-sigrun-summary`, `x-sigrun-key` — plus the shared
+ * The four sigrun keywords a settings schema may carry (spec §1):
+ * `x-sigrun-apply`, `x-sigrun-summary`, `x-sigrun-key`, `x-sigrun-env` — plus the shared
  * structural predicates and JSON-pointer helpers the generator and the
  * load-time checker both use.
  */
@@ -14,6 +14,7 @@ export type Apply = "live" | "restart";
 export const APPLY_KEYWORD = "x-sigrun-apply";
 export const SUMMARY_KEYWORD = "x-sigrun-summary";
 export const KEY_KEYWORD = "x-sigrun-key";
+export const ENV_KEYWORD = "x-sigrun-env";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -34,6 +35,12 @@ export function summaryOf(schema: JsonSchema): readonly string[] {
 export function keyOf(schema: JsonSchema): string | undefined {
 	const key = schema[KEY_KEYWORD];
 	return typeof key === "string" ? key : undefined;
+}
+
+/** The environment variable a non-secret string property falls back to. */
+export function envOf(schema: JsonSchema): string | undefined {
+	const variable = schema[ENV_KEYWORD];
+	return typeof variable === "string" ? variable : undefined;
 }
 
 /** JSON-pointer escape of one segment (`~` → `~0`, `/` → `~1`). */

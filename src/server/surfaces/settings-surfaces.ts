@@ -51,6 +51,7 @@ import {
 import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
 import { applyDefaults } from "../../settings/schema/defaults.js";
+import { dropBlankOptionalStrings } from "../../settings/schema/blanks.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -271,8 +272,8 @@ function withAppendedSecretFields(
 }
 
 /** The env knob mirroring one core key, when one exists (the
- *  General/Providers sections' "env wins" notes). Only the keys the
- *  core forms render are listed. */
+ *  General/Providers sections' env notes). Only the keys the core forms
+ *  render are listed. Extension string fields use x-sigrun-env instead. */
 const ENV_OVERRIDES: Readonly<Record<string, string>> = {
 	defaultModel: "SIGRUN_DEFAULT_MODEL",
 	"defaultProvider.baseUrl": "OPENAI_BASE_URL",
@@ -344,6 +345,8 @@ function pendingContext(core: {
 /** The dependencies one adapted section closes over. */
 export interface SettingsSurfaceOptions {
 	readonly stores: SharedExtensionStores;
+	/** The live boot environment, for extension string fields' x-sigrun-env fallbacks. */
+	readonly env: Readonly<Record<string, string | undefined>>;
 	/** The §13.2 change path (hub + onSettingsChanged + scheduler). */
 	readonly publishSettingsChanged: (
 		scope: "server" | { extension: string },
@@ -890,12 +893,13 @@ function schemaError(
 	schema: JsonSchema,
 	values: Record<string, unknown>,
 ): ActionResult | undefined {
-	// A writeOnly null is the channels' explicit-clear action. Omit the slot
-	// from validation so constraints on a present string never reject a clear;
-	// splitSecrets consumes the original null and deletes the store key.
+	// A writeOnly null is the channels' explicit-clear action; a blank
+	// string means unchanged. Omit both from validation so constraints on
+	// a present string never reject either no-op. splitSecrets consumes
+	// the original values to delete a cleared key or preserve a blank one.
 	const project = (value: unknown, node: unknown): JsonValue | undefined => {
 		if (!isRec(node)) return value as JsonValue;
-		if (node.writeOnly === true && value === null) return undefined;
+		if (node.writeOnly === true && (value === null || value === "")) return undefined;
 		if (Array.isArray(value)) return value.flatMap((entry) => {
 			const projected = project(entry, node.items);
 			return projected === undefined ? [] : [projected];
@@ -944,6 +948,28 @@ export const EXTENSION_SETTINGS_SECTIONS = [
 		admin: false,
 	},
 ] as const satisfies readonly Omit<SettingsSectionDef, "form">[];
+
+/** Admin placeholders are display-only: a non-empty env value displays with
+ * its source name; otherwise the literal default remains the fallback. */
+function envFallbacks(
+	generated: GeneratedForm,
+	stored: Record<string, unknown>,
+	env: Readonly<Record<string, string | undefined>>,
+): JsonObject {
+	const values: Record<string, string> = {};
+	for (const field of generated.envFields) {
+		const value = readDotted(stored, field.name);
+		const fromEnv = optionsNonEmpty(env[field.variable]);
+		values[field.name] = value === undefined && fromEnv !== undefined
+			? `${fromEnv} (from ${field.variable})`
+			: field.fallback ?? "";
+	}
+	return values;
+}
+
+function optionsNonEmpty(value: string | undefined): string | undefined {
+	return value === undefined || value.length === 0 ? undefined : value;
+}
 
 /** The schema-backed extension section; core sections retain settingsSurfaceFor. */
 export function schemaSettingsSurfaceFor(
@@ -1027,6 +1053,7 @@ export function schemaSettingsSurfaceFor(
 				tree: generated.form,
 				data: {
 					settings: settings as JsonObject,
+					envFallbacks: envFallbacks(generated, stored, options.env),
 					secrets: secretData as JsonObject,
 					unknownKeys: Object.keys(stored).filter(
 						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
@@ -1046,7 +1073,13 @@ export function schemaSettingsSurfaceFor(
 				const rev = service.currentRev(slug, section.id, ctx.key);
 				if (parsed.rev !== rev) return { ok: false, error: { message: "changed by someone else" } };
 				const channelValues = channelSubmissionToFile(parsed.values, schema);
-				const validationValues = stripEntryMarkers(channelValues) as Record<string, unknown>;
+				// Bug 2: an untouched optional text field submits as "" and would
+				// fail a minLength: 1 schema — drop blank OPTIONAL strings before
+				// validation. The settings.changed key list keeps the SUBMITTED
+				// top-level names so a clear still notifies (plan note b).
+				const submittedKeys = Object.keys(channelValues);
+				const dropped = dropBlankOptionalStrings(channelValues, schema);
+				const validationValues = stripEntryMarkers(dropped) as Record<string, unknown>;
 				const invalid = schemaError(schema, validationValues);
 				if (invalid !== undefined) return invalid;
 				const user = userScope ? namedUser(ctx.principal) : undefined;
@@ -1057,8 +1090,8 @@ export function schemaSettingsSurfaceFor(
 						const stored = userStores === undefined
 							? await stores.settingsFor(slug).get()
 							: await userStores.settings.get();
-						const split = splitSecrets(channelValues, generated.secrets);
-						const moves = secretMoves(stored, channelValues, generated.secrets);
+						const split = splitSecrets(dropped, generated.secrets);
+						const moves = secretMoves(stored, dropped, generated.secrets);
 						for (const [key, value] of split.writes) await setSecret(user, key, value);
 						for (const key of split.deletes) await deleteSecret(user, key);
 						for (const [from, to] of moves.moves) {
@@ -1095,7 +1128,7 @@ export function schemaSettingsSurfaceFor(
 						}
 						if (userStores === undefined) await stores.settingsFor(slug).set(next);
 						else await userStores.settings.set(next);
-						publishSettingsChanged({ extension: slug }, Object.keys(validationValues), user);
+						publishSettingsChanged({ extension: slug }, submittedKeys, user);
 						return { ok: true };
 					},
 				);

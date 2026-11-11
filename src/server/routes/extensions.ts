@@ -30,6 +30,13 @@ import type {
 	ExtensionSecretsResponse,
 } from "../views.js";
 
+/** At least one typed property makes a schema settings-editable. */
+function schemaHasProperties(schema: Record<string, unknown> | undefined): boolean {
+	const properties = schema?.properties;
+	return typeof properties === "object" && properties !== null &&
+		!Array.isArray(properties) && Object.keys(properties).length > 0;
+}
+
 /** One extension's settings GET/PUT payload (U4 §13.2). */
 export interface ExtensionSettingsResponse {
 	/** The stored `settings/<slug>.json` object verbatim. */
@@ -44,6 +51,24 @@ export function registerExtensionRoutes(
 	ctx: ServerContext,
 ): void {
 	const { opened } = ctx;
+	// A page exists for declared fields or a contributed provider. Stored
+	// JSON without declarations is an admin-only page, checked per request.
+	const settingsPageExtensions = new Set(
+		opened.extensionSettingsDeclarations
+			.filter(
+				(binding) =>
+					schemaHasProperties(binding.decl.schema) ||
+					schemaHasProperties(binding.decl.userSchema),
+			)
+			.map((binding) => binding.extension),
+	);
+	for (const extension of [
+		...opened.providerOwnership.values(),
+		...opened.decisions.providers().map((provider) => provider.extension),
+		...opened.embeddings.providers().map((provider) => provider.extension),
+	]) {
+		settingsPageExtensions.add(extension);
+	}
 
 	// The loaded-outcome lookup every :slug route gates on: ok outcomes
 	// carry the slug; quarantined outcomes carry the display specifier —
@@ -52,9 +77,9 @@ export function registerExtensionRoutes(
 		opened.extensionOutcomes.some((outcome) => outcome.name === slug);
 
 	// The inventory: outcomes + declared kinds + workers + routes, one
-	// entry per configured extension, in load order. Pure synchronous
-	// derivations over boot-retained state (the /v1/meta discipline) — a
-	// client may cache it per boot. Built-in extensions (Task 2) carry
+	// entry per configured extension, in load order. settingsPage derives
+	// from boot-retained declarations plus an admin-only live file read.
+	// Built-in extensions (Task 2) carry
 	// `builtin: true` from their outcomes; a REPLACED built-in (a
 	// configured extension resolved to the same package name) appends a
 	// row here — `builtin: true`, `replacedBy` the configured specifier,
@@ -62,6 +87,23 @@ export function registerExtensionRoutes(
 	// (ruling 6).
 	app.get("/v1/extensions", async (request): Promise<ExtensionsResponse> => {
 		const workerStatuses = opened.workerStatuses();
+		const storedSettings = new Map(
+			request.principal.admin
+				? await Promise.all(opened.extensionOutcomes.map(async (outcome) => {
+						try {
+							return [
+								outcome.name,
+								Object.keys(
+									await opened.extensionStores.settingsFor(outcome.name).get(),
+								).length > 0,
+							] as const;
+						} catch {
+							// Unreadable/malformed JSON means no page, never a dead inventory.
+							return [outcome.name, false] as const;
+						}
+					}))
+				: [],
+		);
 		const extensions: ExtensionInfo[] = opened.extensionOutcomes.map(
 			(outcome) => {
 				const kinds = opened.seamKinds.get(outcome.name);
@@ -74,12 +116,16 @@ export function registerExtensionRoutes(
 				);
 				return {
 					name: outcome.name,
+					...(settingsPageExtensions.has(outcome.name) || storedSettings.get(outcome.name) === true
+						? { settingsPage: true as const }
+						: {}),
 					status: outcome.status,
 					...(outcome.error === undefined ? {} : { error: outcome.error }),
 					...(outcome.version === undefined
 						? {}
 						: { version: outcome.version }),
 					...(outcome.builtin === true ? { builtin: true } : {}),
+					...(outcome.title === undefined ? {} : { title: outcome.title }),
 					...(outcome.channels === undefined
 						? {}
 						: { channels: [...outcome.channels] }),
@@ -134,12 +180,14 @@ export function registerExtensionRoutes(
 		// the package `@sigrun/ext-mcp`), appended after the loaded set.
 		for (const skipped of opened.builtinSkipped) {
 			if (skipped.reason !== "replaced") continue;
-			const slug = BUILTIN_EXTENSIONS.find(
-				(builtin) => builtin.key === skipped.key,
-			)?.slug;
-			if (slug === undefined) continue;
+			const builtin = BUILTIN_EXTENSIONS.find(
+				(candidate) => candidate.key === skipped.key,
+			);
+			if (builtin === undefined) continue;
+			const slug = builtin.slug;
 			extensions.push({
 				name: slug,
+				title: builtin.title,
 				status: "replaced",
 				builtin: true,
 				...(skipped.by === undefined ? {} : { replacedBy: skipped.by }),

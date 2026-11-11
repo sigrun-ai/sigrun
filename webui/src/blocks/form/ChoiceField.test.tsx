@@ -80,6 +80,51 @@ function submit(renderer: TestRenderer.ReactTestRenderer): void {
 	});
 }
 
+describe("choice: presentation", () => {
+	test("dropdown presentation renders a select with two options", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: [
+					{ id: "acme/alpha", label: "Alpha" },
+					{ id: "acme/beta", label: "Beta" },
+				],
+				presentation: "dropdown",
+			},
+		]);
+		expect(renderer.root.findAllByType("select")).toHaveLength(1);
+		expect(
+			renderer.root.findAll(
+				(node) => node.type === "input" && node.props.type === "radio",
+			),
+		).toHaveLength(0);
+	});
+
+	test("multi choice ignores dropdown presentation", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/alpha", label: "Alpha" },
+					{ id: "acme/beta", label: "Beta" },
+				],
+				multi: true,
+				presentation: "dropdown",
+			},
+		]);
+		expect(renderer.root.findAllByType("select")).toHaveLength(0);
+		expect(
+			renderer.root.findAll(
+				(node) => node.type === "input" && node.props.type === "checkbox",
+			),
+		).toHaveLength(2);
+	});
+});
+
 describe("choice: value shapes (§5.6)", () => {
 	test("single: the selected id", () => {
 		const { dispatch, renderer } = harness([

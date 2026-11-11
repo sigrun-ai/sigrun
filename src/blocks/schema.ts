@@ -576,6 +576,7 @@ const ChoiceField = Type.Object({
 	type: Type.Literal("choice"),
 	options: Type.Union([Type.Array(ChoiceOption), Type.Ref("Binding")]),
 	multi: Type.Optional(Type.Boolean()),
+	presentation: Type.Optional(Type.Literal("dropdown")),
 	allowOther: Type.Optional(Type.Object({ label: Type.Optional(Type.String()) })),
 });
 

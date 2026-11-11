@@ -14,9 +14,10 @@ function kindLabel(kind?: string): string {
 export function ProvidersSection(props: {
 	readonly client: SigrunClient;
 	readonly pageOwners: ReadonlySet<string>;
+	readonly titles: ReadonlyMap<string, string | undefined>;
 	readonly onOpenPage: (owner: string) => void;
 }): React.ReactElement {
-	const { client, pageOwners, onOpenPage } = props;
+	const { client, pageOwners, titles, onOpenPage } = props;
 	const [providers, setProviders] = useState<readonly AuthCheckProviderWire[]>();
 	const [error, setError] = useState<string>();
 	const [refreshError, setRefreshError] = useState<string>();
@@ -64,7 +65,7 @@ export function ProvidersSection(props: {
 									data-owner={provider.owner}
 									onClick={() => onOpenPage(provider.owner!)}
 								>
-									{provider.owner}
+									{titles.get(provider.owner) ?? provider.owner}
 								</button>
 							)}
 							<button type="button" className="settings-provider-refresh" onClick={() => void refresh(provider)}>Refresh</button>

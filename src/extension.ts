@@ -2006,6 +2006,8 @@ export interface SigrunHost {
  * begins reading each when its task lands.
  */
 export interface SigrunExtensionResult extends SigrunLifecycleHandlers {
+	/** Display name, trimmed to 1..60 characters. It never changes the extension's slug. */
+	readonly title?: string;
 	/** Long-lived per-user sibling processes, launched and supervised by core. */
 	readonly userServices?: readonly UserService[];
 	/** Declare the per-user tool surface (`host.tools.setUserTools`). */

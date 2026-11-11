@@ -47,6 +47,7 @@ async function boot(options: {
 	readonly userSettings?: Record<string, unknown>;
 	readonly userSecrets?: Record<string, string>;
 	readonly specifier?: string;
+	readonly env?: Record<string, string | undefined>;
 } = {}): Promise<Rig> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-schema-save-"));
 	const configDir = join(dir, "config");
@@ -103,7 +104,7 @@ async function boot(options: {
 		expectHostBridge: true,
 	});
 	const { token } = await opened.identity.tokens.create("alice-cli", "alice");
-	const app = await createServer(opened, config);
+	const app = await createServer(opened, config, [], { env: options.env });
 	cleanups.push(async () => {
 		await app.close();
 		await opened.harness.close(BACKGROUND_CONTEXT);
@@ -448,6 +449,96 @@ test("a panel named user-settings fails the load of a declaring extension", asyn
 });
 
 
+test("render shows the env fallback", async () => {
+	const rig = await boot({ env: { ACME_SCHEMA_SAVE_URL: "https://env.example.invalid" } });
+	const result = await call(rig, "GET", SURFACE);
+	expect(result.status).toBe(200);
+	const data = result.body.data as Record<string, unknown>;
+	const envFallbacks = data.envFallbacks as Record<string, string>;
+	expect(envFallbacks.endpoint).toBe("https://env.example.invalid (from ACME_SCHEMA_SAVE_URL)");
+});
+
+test("a stored value hides the env fallback", async () => {
+	const rig = await boot({
+		settings: { endpoint: "https://stored.example.invalid" },
+		env: { ACME_SCHEMA_SAVE_URL: "https://env.example.invalid" },
+	});
+	const result = await call(rig, "GET", SURFACE);
+	const data = result.body.data as Record<string, unknown>;
+	const envFallbacks = data.envFallbacks as Record<string, string>;
+	expect(envFallbacks.endpoint).toBe("");
+});
+
+test("env field with no env value and no default has an empty placeholder", async () => {
+	const rig = await boot();
+	const result = await call(rig, "GET", SURFACE);
+	const data = result.body.data as Record<string, unknown>;
+	const envFallbacks = data.envFallbacks as Record<string, string>;
+	expect(envFallbacks.endpoint).toBe("");
+});
+
+test("saving blank never copies the env value", async () => {
+	const rig = await boot({ env: { ACME_SCHEMA_SAVE_URL: "https://env.example.invalid" } });
+	const result = await save(rig, { endpoint: "" }, "blank-env");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({});
+	expect(Object.hasOwn(await file(rig), "endpoint")).toBe(false);
+});
+
+test("a blank optional string clears a stored value", async () => {
+	const rig = await boot({ settings: { endpoint: "https://a.example.invalid", interval: 30 } });
+	const result = await save(rig, { endpoint: "", interval: 30 }, "blank-clears");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ interval: 30 });
+});
+
+test("a blank optional string on a fresh file saves", async () => {
+	const rig = await boot();
+	const result = await save(rig, { endpoint: "" }, "blank-fresh");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({});
+});
+
+test("a blank optional string inside a table entry is dropped", async () => {
+	const rig = await boot();
+	const result = await save(rig, {
+		servers: { first: { url: "https://a.example.invalid", label: "" } },
+	}, "blank-table-entry");
+	expect(result.body).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	expect(Object.hasOwn((stored.servers as Record<string, Record<string, unknown>>).first, "label")).toBe(false);
+});
+
+test("a blank required string still fails", async () => {
+	const rig = await boot();
+	const result = await save(rig, { servers: { first: { url: "" } } }, "blank-required");
+	expect(result.body.ok).toBe(false);
+	expect((result.body.error as { field: string }).field).toBe("/servers/first/url");
+});
+
+test("a blank secret still means unchanged", async () => {
+	const rig = await boot({ secrets: { token: "synthetic-top-level-value" } });
+	const result = await save(rig, { token: "" }, "blank-secret");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await secrets(rig)).toEqual({ token: "synthetic-top-level-value" });
+});
+
+test("a blank constrained secret saves other valid values without changing the secret", async () => {
+	const rig = await boot({
+		settings: { interval: 30 },
+		secrets: { constrainedToken: "synthetic-constrained-value" },
+	});
+	const result = await save(rig, { constrainedToken: "", interval: 45 }, "blank-constrained-secret");
+	expect(result.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ interval: 45 });
+	expect(await secrets(rig)).toEqual({ constrainedToken: "synthetic-constrained-value" });
+});
+
+test("clearing a value still publishes its key", async () => {
+	const rig = await boot({ settings: { endpoint: "https://a.example.invalid" } });
+	await save(rig, { endpoint: "" }, "blank-notifies");
+	expect(changes.some((entry) => entry.keys.includes("endpoint"))).toBe(true);
+});
 
 test("dotted nested field names save through the generated form (provider-openai shape)", async () => {
 	// The regression Michael hit live: a schema whose nested objects

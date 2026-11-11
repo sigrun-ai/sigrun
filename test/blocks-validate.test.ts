@@ -375,6 +375,28 @@ describe("fixtures validate for their placements (spec §5.7)", () => {
 		expect(errs.some((e) => e.path === "root.display")).toBe(true);
 	});
 
+	it("a choice field accepts only the dropdown presentation", () => {
+		const field = {
+			type: "choice",
+			name: "mode",
+			label: "Mode",
+			options: [{ id: "fast", label: "Fast" }],
+		};
+		const formWith = (presentation: unknown): Tree => treeOf({
+			type: "form",
+			id: "f",
+			bind: "/values",
+			mode: "submit",
+			children: [{ ...field, presentation }],
+		} as unknown as Block);
+
+		expect(validateTree(formWith("dropdown"), { placement: "settings" }).ok).toBe(true);
+		for (const presentation of ["other", 1]) {
+			const errs = errorsOf(validateTree(formWith(presentation), { placement: "settings" }));
+			expect(errs.some((error) => error.path === "root.children[0].presentation")).toBe(true);
+		}
+	});
+
 	it("settings placement accepts entries and variant", () => {
 		const tree = treeOf({
 			type: "form",

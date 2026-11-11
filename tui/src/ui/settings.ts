@@ -114,6 +114,7 @@ export class SettingsView implements Component {
 				sections.sections.filter((entry) => entry.slug !== "core").map((entry) => entry.slug),
 			);
 			this.#sectionlessExtensions = (extensions?.extensions ?? [])
+				.filter((extension) => extension.settingsPage === true)
 				.map((extension) => extension.name)
 				.filter((name) => !withSections.has(name));
 		} catch (cause: unknown) {
@@ -136,11 +137,16 @@ export class SettingsView implements Component {
 	 *  index query — typing "naming" filters to the Naming model row). */
 	openSearch(): void {
 		const items: PickerItem<SettingsSectionIndexEntry>[] = this.#index.map(
-			(entry) => ({
-				label: entry.label,
-				detail: `${entry.slug === "core" ? "" : `${entry.slug} · `}${entry.sectionId}`,
-				value: entry,
-			}),
+			(entry) => {
+				const section = this.#sections.find(
+					(candidate) => candidate.slug === entry.slug && candidate.id === entry.sectionId,
+				);
+				return {
+					label: entry.label,
+					detail: `${entry.slug === "core" ? "" : `${section?.pageTitle ?? entry.slug} · `}${entry.sectionId}`,
+					value: entry,
+				};
+			},
 		);
 		openPicker(this.#tui, items, {
 			title: "Settings",
@@ -272,7 +278,7 @@ export class SettingsView implements Component {
 			}
 			if (pages.size > 0) lines.push(truncateToWidth(this.#theme.bold("Extensions"), width));
 			for (const [page, sections] of pages) {
-				lines.push(truncateToWidth(`  ${page}`, width));
+				lines.push(truncateToWidth(`  ${sections[0]?.pageTitle ?? page}`, width));
 				for (const section of sections) {
 					lines.push(truncateToWidth(`    ${section.title}`, width));
 				}

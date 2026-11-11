@@ -185,6 +185,35 @@ describe("generateForm", () => {
 		expect(root.onSubmit).toBe("save");
 	});
 
+	it("env keyword binds the placeholder", () => {
+		const schema = objectSchema({
+			endpoint: {
+				type: "string",
+				default: "https://default.example.invalid",
+				"x-sigrun-env": "ACME_ENDPOINT_URL",
+			},
+			nested: {
+				type: "object",
+				properties: {
+					endpoint: { type: "string", "x-sigrun-env": "ACME_NESTED_URL" },
+				},
+			},
+		});
+		expect(checkSchema(schema).ok).toBe(true);
+		const generated = generate(schema);
+		const children = generated.form.root.type === "form" ? generated.form.root.children : [];
+		expect(fieldNamed(children, "endpoint").placeholder).toEqual({ $: "/envFallbacks/endpoint" });
+		expect(fieldNamed(children, "nested.endpoint").placeholder).toEqual({ $: "/envFallbacks/nested.endpoint" });
+		expect(generated.envFields).toEqual([
+			{
+				name: "endpoint",
+				variable: "ACME_ENDPOINT_URL",
+				fallback: "https://default.example.invalid",
+			},
+			{ name: "nested.endpoint", variable: "ACME_NESTED_URL" },
+		]);
+	});
+
 	it("nested titled object becomes a section with dotted names", () => {
 		const children = childrenOf(
 			objectSchema({
@@ -695,6 +724,30 @@ describe("generateForm", () => {
 });
 
 describe("checkSchema", () => {
+	it("env keyword on a writeOnly field is rejected", () => {
+		const result = checkSchema(objectSchema({
+			token: { type: "string", writeOnly: true, "x-sigrun-env": "ACME_TOKEN" },
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("/token");
+			expect(result.error).toContain("x-sigrun-env");
+			expect(result.error).toContain("writeOnly");
+		}
+	});
+
+	it("env keyword with a lowercase name is rejected", () => {
+		const result = checkSchema(objectSchema({
+			endpoint: { type: "string", "x-sigrun-env": "acme_endpoint" },
+		}));
+		expect(result.ok).toBe(false);
+		if (!result.ok) {
+			expect(result.error).toContain("/endpoint");
+			expect(result.error).toContain("x-sigrun-env");
+			expect(result.error).toContain("acme_endpoint");
+		}
+	});
+
 	it("rejects an array item with writeOnly fields and no x-sigrun-key", () => {
 		const result = checkSchema(
 			objectSchema({

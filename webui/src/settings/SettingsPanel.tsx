@@ -222,7 +222,7 @@ export function SettingsPanel(props: {
 				return;
 			}
 			const page = extensions?.find((entry) => entry.name === section);
-			if (page !== undefined && (admin !== false || visible.some((entry) => entry.page === page.name && entry.scope === "user"))) {
+			if (page?.settingsPage === true && (admin !== false || visible.some((entry) => entry.page === page.name && entry.scope === "user"))) {
 				setOpen({ kind: "extension", slug: page.name });
 				return;
 			}
@@ -293,6 +293,10 @@ export function SettingsPanel(props: {
 	}, [load, admin]);
 	const pageOwners = useMemo(
 		() => new Set((extensions ?? []).map((extension) => extension.name)),
+		[extensions],
+	);
+	const pageTitles = useMemo(
+		() => new Map((extensions ?? []).map((extension) => [extension.name, extension.title])),
 		[extensions],
 	);
 	const openExtension = open?.kind === "extension"
@@ -371,6 +375,7 @@ export function SettingsPanel(props: {
 								<p className="settings-note">select a section</p>
 							) : open.kind === "extension" && openExtension !== undefined ? (
 								<ExtensionPage
+									key={openExtension.name}
 									client={client}
 									extension={openExtension}
 									sections={navSections.filter((entry) => entry.page === openExtension.name)}
@@ -387,6 +392,7 @@ export function SettingsPanel(props: {
 									onCoreMeta={setCoreMeta}
 									valuesRef={sectionDataRef}
 									pageOwners={pageOwners}
+									titles={pageTitles}
 									onOpenPage={onSection}
 								/>
 							) : null}
@@ -428,7 +434,9 @@ function ExtensionPagesNav(props: {
 	const { extensions, sections, open, admin, onOpen } = props;
 	if (extensions === null) return null;
 	const pages = new Set(sections.map((section) => section.page).filter((page): page is string => page !== undefined));
-	const listed = extensions.filter((extension) => admin || pages.has(extension.name));
+	const listed = extensions
+		.filter((extension) => extension.settingsPage === true && (admin || pages.has(extension.name)))
+		.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name, undefined, { sensitivity: "base" }));
 	if (listed.length === 0) return null;
 	return (
 		<div className="settings-nav-group" role="group" aria-label="Extensions">
@@ -442,7 +450,7 @@ function ExtensionPagesNav(props: {
 					data-active={open?.kind === "extension" && open.slug === extension.name ? "" : undefined}
 					onClick={() => onOpen(extension.name)}
 				>
-					{extension.name}
+					{extension.title ?? extension.name}
 				</button>
 			))}
 		</div>
@@ -464,15 +472,16 @@ function SettingsSectionBody(props: {
 	}) => void;
 	readonly valuesRef: React.MutableRefObject<SectionValues>;
 	readonly pageOwners: ReadonlySet<string>;
+	readonly titles: ReadonlyMap<string, string | undefined>;
 	readonly onOpenPage: (owner: string) => void;
 }): React.ReactElement {
-	const { entry, client, prefsState, theme, meta, onCoreMeta } = props;
+	const { entry, client, prefsState, theme, meta, onCoreMeta, titles } = props;
 	// The Interface + Providers + Extensions coves never mount a surface.
 	if (entry.slug === "core" && entry.id === "interface") {
 		return <InterfaceCove prefsState={prefsState} theme={theme} />;
 	}
 	if (entry.slug === "core" && entry.id === "providers") {
-		return <ProvidersSection client={client} pageOwners={props.pageOwners} onOpenPage={props.onOpenPage} />;
+		return <ProvidersSection client={client} pageOwners={props.pageOwners} titles={titles} onOpenPage={props.onOpenPage} />;
 	}
 	if (entry.slug === "core" && entry.id === "accounts") {
 		return <AccountLinksSection client={client} />;

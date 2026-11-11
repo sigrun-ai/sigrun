@@ -4,9 +4,10 @@
  * value is `{other: text}` (single) or the ids plus `{other: text}` as
  * the last element (multi). A focused option's `preview` markdown shows
  * BESIDE the options at regular width and wider, BELOW at compact
- * (§12.3 — the channel picks the layout by width class). The channel
- * picks radio buttons (few options), a select (many options) or a list
- * by option count and width.
+ * (§12.3 — the channel picks the layout by width class). Single-select
+ * `presentation: "dropdown"` always uses a select; otherwise the
+ * channel picks radio buttons (few options) or a select (many options)
+ * by option count. The TUI's list picker ignores presentation.
  */
 
 import { useState, type ReactNode } from "react";
@@ -88,7 +89,7 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 
 	const body = (
 		<>
-			{options.length <= RADIO_MAX ? (
+			{options.length <= RADIO_MAX && (multi || field.presentation !== "dropdown") ? (
 				<div className="blk-choice-options" role={multi ? "group" : "radiogroup"} aria-label={label}>
 					{options.map((option) => {
 						const optionLabel = boundString(data, option.label);

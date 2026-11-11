@@ -707,9 +707,11 @@ describe("replacement", () => {
 			status: string;
 			builtin?: boolean;
 			replacedBy?: string;
+			title?: string;
 		}[];
 		const builtinRow = rows.find((row) => row.name === "sigrun-mcp");
 		expect(builtinRow).toBeDefined();
+		expect(builtinRow?.title).toBe("MCP");
 		expect(builtinRow?.builtin).toBe(true);
 		expect(builtinRow?.replacedBy).toBe(REPLACES_MCP_SPECIFIER);
 		expect(builtinRow?.status).not.toBe("ok");

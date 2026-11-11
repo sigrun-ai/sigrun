@@ -37,6 +37,7 @@ import type {
 } from "../extension.js";
 import { checkSchema, generateForm } from "../settings/schema/generate.js";
 import { checkStoredSettings } from "../settings/schema/defaults.js";
+import { ENV_KEYWORD, envOf, isRecord } from "../settings/schema/keywords.js";
 import { fillSecrets } from "../settings/schema/secrets.js";
 import { NOTICE_LIMITS } from "@sigrun/shared/notices";
 import { primaryAdmin } from "./identity/primary-admin.js";
@@ -322,6 +323,22 @@ export class HostBridgeUnavailableError extends Error {
 		this.member = member;
 		this.caller = caller;
 	}
+}
+
+/** Reject server-env fallbacks anywhere in a personal schema. User forms
+ * reach non-admin users, and must never receive the server's env values. */
+function assertNoUserEnv(node: unknown): void {
+	if (Array.isArray(node)) {
+		for (const child of node) assertNoUserEnv(child);
+		return;
+	}
+	if (!isRecord(node)) return;
+	if (envOf(node) !== undefined || node[ENV_KEYWORD] !== undefined) {
+		throw new Error(
+			"settings.declare userSchema may not use x-sigrun-env: user forms reach non-admin users; server env values must not reach them",
+		);
+	}
+	for (const child of Object.values(node)) assertNoUserEnv(child);
 }
 
 /**
@@ -645,6 +662,7 @@ export function createSeamHost(
 			): DeclaredSettings<S, U> {
 				if (sealed) throw new Error("settings.declare must be called during the factory");
 				if (declaration !== undefined) throw new Error("settings.declare may only be called once");
+				assertNoUserEnv(decl.userSchema);
 				for (const schema of [decl.schema, decl.userSchema]) {
 					if (schema === undefined) continue;
 					const checked = checkSchema(schema);

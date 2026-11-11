@@ -323,24 +323,28 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 				// not-yet-served id stays enterable (the value is provider/model).
 				"/defaultModel": {
 					type: "choice",
+					presentation: "dropdown",
 					options: { $: "/modelRoster/default" },
 					allowOther: { label: "Other model id (provider/model)" },
 				placeholder: undefined,
 				},
 				"/namingModel": {
 					type: "choice",
+					presentation: "dropdown",
 					options: { $: "/modelRoster/default" },
 					allowOther: { label: "Other model id (provider/model)" },
 				placeholder: undefined,
 				},
 				"/decisionModel": {
 					type: "choice",
+					presentation: "dropdown",
 					options: { $: "/modelRoster/decision" },
 					allowOther: { label: "Other model id (provider/model)" },
 				placeholder: undefined,
 				},
 				"/embeddingModel": {
 					type: "choice",
+					presentation: "dropdown",
 					options: { $: "/modelRoster/embedding" },
 					allowOther: { label: "Other model id (provider/model)" },
 				placeholder: undefined,
