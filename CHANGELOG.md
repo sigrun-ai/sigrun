@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.3] - 2026-11-10
+
+### Fixed
+
+- Schema-declared extension settings save correctly when the generated
+  form uses dotted field names (nested objects without a title — e.g.
+  provider-openai's chat.enabled / decisions.enabled toggles): the flat
+  submission is expanded back into the nested JSON before validation
+  and persistence. Previously such saves returned ok and silently
+  dropped every value, so toggles re-rendered at their defaults after a
+  reload.
+
 ## [0.13.2] - 2026-11-10
 
 ### Added
