@@ -827,6 +827,8 @@ export interface ExtensionInfo {
 	readonly name: string;
 	/** Display-only title; the name remains the stable slug. */
 	readonly title?: string;
+	/** Present when the extension has a settings page for this caller. */
+	readonly settingsPage?: true;
 	readonly status: string;
 	readonly error?: string;
 	readonly version?: string;

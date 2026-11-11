@@ -222,7 +222,7 @@ export function SettingsPanel(props: {
 				return;
 			}
 			const page = extensions?.find((entry) => entry.name === section);
-			if (page !== undefined && (admin !== false || visible.some((entry) => entry.page === page.name && entry.scope === "user"))) {
+			if (page?.settingsPage === true && (admin !== false || visible.some((entry) => entry.page === page.name && entry.scope === "user"))) {
 				setOpen({ kind: "extension", slug: page.name });
 				return;
 			}
@@ -434,7 +434,9 @@ function ExtensionPagesNav(props: {
 	const { extensions, sections, open, admin, onOpen } = props;
 	if (extensions === null) return null;
 	const pages = new Set(sections.map((section) => section.page).filter((page): page is string => page !== undefined));
-	const listed = extensions.filter((extension) => admin || pages.has(extension.name));
+	const listed = extensions
+		.filter((extension) => extension.settingsPage === true && (admin || pages.has(extension.name)))
+		.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name, undefined, { sensitivity: "base" }));
 	if (listed.length === 0) return null;
 	return (
 		<div className="settings-nav-group" role="group" aria-label="Extensions">

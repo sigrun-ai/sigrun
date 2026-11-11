@@ -114,6 +114,7 @@ export class SettingsView implements Component {
 				sections.sections.filter((entry) => entry.slug !== "core").map((entry) => entry.slug),
 			);
 			this.#sectionlessExtensions = (extensions?.extensions ?? [])
+				.filter((extension) => extension.settingsPage === true)
 				.map((extension) => extension.name)
 				.filter((name) => !withSections.has(name));
 		} catch (cause: unknown) {

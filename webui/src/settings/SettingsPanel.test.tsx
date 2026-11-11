@@ -42,6 +42,7 @@ interface Call {
 /** The extension fixtures the Extensions-cove tests serve. */
 const EXTENSIONS_FIXTURE: ExtensionInfoWire = {
 	name: "acme-tool",
+	settingsPage: true,
 	status: "ok",
 	interactionKinds: [],
 	ambientKeys: [],
@@ -608,6 +609,7 @@ describe("SettingsPanel extension pages", () => {
 	const EXTENSIONS: readonly ExtensionInfoWire[] = [
 		{
 			name: "acme-tool",
+			settingsPage: true,
 			status: "ok",
 			interactionKinds: [],
 			ambientKeys: [],
@@ -650,6 +652,29 @@ describe("SettingsPanel extension pages", () => {
 			link.props.onClick();
 		});
 		expect(onSectionCalls()).toContain("acme-tool");
+	});
+
+	test("nav lists only settingsPage extensions, sorted by title", async () => {
+		const list: readonly ExtensionInfoWire[] = [
+			{ ...EXTENSIONS[0], name: "zeta", settingsPage: true },
+			{ ...EXTENSIONS[0], name: "alpha", title: "Alpha Settings", settingsPage: true },
+			{ ...EXTENSIONS[0], name: "codemode", settingsPage: undefined },
+		];
+		const { client } = makeHarness({ extensions: { list } });
+		const renderer = await renderPanel(client);
+		const group = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
+		const buttons = group.findAllByProps({ className: "settings-nav-item settings-nav-extension" });
+		expect(buttons.map((button) => button.props["data-ext"])).toEqual(["alpha", "zeta"]);
+		expect(buttons.map((button) => button.props.children)).toEqual(["Alpha Settings", "zeta"]);
+	});
+
+	test("deep link to an extension without settings opens General", async () => {
+		const { client } = makeHarness({
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "codemode", settingsPage: undefined }] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { section: "codemode" });
+		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(1);
+		expect(renderer.root.findAllByProps({ "data-extension-page": "codemode" })).toHaveLength(0);
 	});
 
 	test("nav lists one Extensions entry per page; no (advanced) rows", async () => {

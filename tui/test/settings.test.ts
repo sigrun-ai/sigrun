@@ -92,8 +92,10 @@ function fakeWire(init?: {
 	readonly admin?: boolean;
 	readonly token?: string;
 	readonly sectionsExtra?: readonly SettingsSectionEntry[];
-	/** Loaded extensions WITHOUT settings sections (the notice lines). */
+	/** Loaded extension-only settings pages (the notice lines). */
 	readonly sectionlessExtensions?: readonly string[];
+	/** Loaded extensions with no settings page (no notice). */
+	readonly withoutSettingsPageExtensions?: readonly string[];
 	readonly savesFlipPending?: boolean;
 	readonly withoutDefaultExtension?: boolean;
 	/** Fix-wave C3: reject a save whose rev is stale (the two-saves
@@ -170,13 +172,23 @@ function fakeWire(init?: {
 		}
 		if (url.endsWith("/v1/extensions")) {
 			return json({
-				extensions: (init?.sectionlessExtensions ?? []).map((name) => ({
-					name,
-					status: "ok",
-					interactionKinds: [],
-					ambientKeys: [],
-					workers: [],
-				})),
+				extensions: [
+					...(init?.sectionlessExtensions ?? []).map((name) => ({
+						name,
+						settingsPage: true,
+						status: "ok",
+						interactionKinds: [],
+						ambientKeys: [],
+						workers: [],
+					})),
+					...(init?.withoutSettingsPageExtensions ?? []).map((name) => ({
+						name,
+						status: "ok",
+						interactionKinds: [],
+						ambientKeys: [],
+						workers: [],
+					})),
+				],
 			});
 		}
 		if (
@@ -526,6 +538,18 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		const lines = view.render(120).join("\n");
 		expect(lines).toContain("acme-plain: no settings section");
 		expect(lines).toContain("/v1/extensions/acme-plain/settings");
+	});
+
+	test("raw-JSON notices omit extensions without settingsPage", async () => {
+		const wire = fakeWire({
+			sectionlessExtensions: ["acme-plain"],
+			withoutSettingsPageExtensions: ["codemode"],
+		});
+		const view = makeView(wire);
+		await view.load();
+		const lines = view.render(120).join("\n");
+		expect(lines).toContain("acme-plain: no settings section");
+		expect(lines).not.toContain("codemode: no settings section");
 	});
 
 	test("two consecutive saves in one open both succeed (the form rides the live rev)", async () => {
