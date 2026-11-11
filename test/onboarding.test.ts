@@ -410,8 +410,11 @@ describe("derived proxy onboarding identity", () => {
 		SIGRUN_AUTH: "proxy",
 		SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
 		SIGRUN_ISOLATION: "auto",
+		// A secretHeader without the secret refuses to boot.
+		SIGRUN_PROXY_SECRET: "s3cret",
 	};
 	const file = { auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } } };
+	const secretHeader = { "x-sigrun-proxy-secret": "s3cret" };
 
 	test("GET previews Mike@Example.com without writing a user or link", async () => {
 		const { app, opened } = await bootServer({ env, file, listenHost: "0.0.0.0", isolationAvailable: true });
@@ -419,7 +422,7 @@ describe("derived proxy onboarding identity", () => {
 			method: "GET",
 			url: "/v1/onboarding",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "Mike@Example.com" },
+			headers: { ...secretHeader, "remote-user": "Mike@Example.com" },
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json().proxyIdentity).toEqual({
@@ -436,7 +439,7 @@ describe("derived proxy onboarding identity", () => {
 			method: "POST",
 			url: "/v1/onboarding/claim",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "Mike@Example.com" },
+			headers: { ...secretHeader, "remote-user": "Mike@Example.com" },
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json().user).toMatchObject({ user: "mike_example.com", admin: true, source: "proxy" });
@@ -478,7 +481,7 @@ describe("derived proxy onboarding identity", () => {
 				method: "GET",
 				url: "/v1/onboarding",
 				remoteAddress: "10.42.3.4",
-				headers: { "remote-user": "---" },
+				headers: { ...secretHeader, "remote-user": "---" },
 			});
 			expect(response.statusCode).toBe(200);
 			expect(response.json().proxyIdentity).toBeUndefined();

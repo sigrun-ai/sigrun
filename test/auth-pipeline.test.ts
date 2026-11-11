@@ -477,7 +477,12 @@ describe("login limiter", () => {
 const PROXY_ENV = {
 	SIGRUN_AUTH: "proxy",
 	SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+	// PROXY_FILE configures secretHeader, and a secretHeader without the
+	// secret refuses to boot: the fixture carries both, and its requests
+	// send the header as the forward-auth proxy would.
+	SIGRUN_PROXY_SECRET: "s3cret",
 };
+const PROXY_SECRET_HEADER = { "x-sigrun-proxy-secret": "s3cret" };
 const PROXY_FILE = { auth: { adminGroups: ["admins"], proxy: { secretHeader: "x-sigrun-proxy-secret" } } };
 
 describe("proxy method", () => {
@@ -491,6 +496,7 @@ describe("proxy method", () => {
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
 			headers: {
+				...PROXY_SECRET_HEADER,
 				"remote-user": "alice",
 				"remote-groups": "users,admins",
 			},
@@ -517,7 +523,7 @@ describe("proxy method", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "203.0.113.7",
-			headers: { "remote-user": "alice" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "alice" },
 		});
 		expect(response.statusCode).toBe(401);
 	});
@@ -528,7 +534,7 @@ describe("proxy method", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "::ffff:10.42.3.4",
-			headers: { "remote-user": "alice" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "alice" },
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json().user).toBe("alice");
@@ -541,7 +547,7 @@ describe("proxy username derivation and account links", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": header },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": header },
 		});
 	}
 
@@ -682,7 +688,7 @@ describe("proxy username derivation and account links", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "Mike", "remote-groups": "admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "Mike", "remote-groups": "admins" },
 		});
 		expect(initial.statusCode).toBe(200);
 		await opened.identity.users.add({ user: "admin2", admin: true, source: "cli" });
@@ -690,7 +696,7 @@ describe("proxy username derivation and account links", () => {
 			method: "DELETE",
 			url: "/v1/users/mike?transferTo=admin2",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "Mike", "remote-groups": "admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "Mike", "remote-groups": "admins" },
 		});
 		expect(removed.statusCode).toBe(204);
 		expect(opened.identity.users.get("mike")).toBeUndefined();
@@ -718,6 +724,29 @@ describe("proxy secret header", () => {
 		...PROXY_ENV,
 		SIGRUN_PROXY_SECRET: "s3cret",
 	};
+
+	test("proxy + secretHeader with no SIGRUN_PROXY_SECRET refuses to boot", async () => {
+		// The half-configured shape would skip the secret check and let any
+		// trusted peer vouch for any user from Remote-User alone.
+		const file = {
+			auth: { proxy: { secretHeader: "x-sigrun-proxy-secret" } },
+		};
+		const noSecret = {
+			SIGRUN_AUTH: "proxy",
+			SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+		};
+		await expect(bootServer({ env: noSecret, file })).rejects.toThrow(
+			/SIGRUN_PROXY_SECRET/,
+		);
+		await expect(
+			bootServer({ env: { ...noSecret, SIGRUN_PROXY_SECRET: "   " }, file }),
+		).rejects.toThrow(/SIGRUN_PROXY_SECRET/);
+		// Controls: the secret set boots; proxy inactive boots.
+		await expect(bootServer({ env: SECRET_ENV, file })).resolves.toBeDefined();
+		await expect(
+			bootServer({ env: { SIGRUN_AUTH: "token" }, file }),
+		).resolves.toBeDefined();
+	});
 	const SECRET_FILE = {
 		auth: { ...PROXY_FILE.auth, proxy: { secretHeader: "X-Sigrun-Proxy-Secret" } },
 	};
@@ -771,7 +800,7 @@ describe("proxy autoProvision", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "mallory" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "mallory" },
 		});
 		expect(response.statusCode).toBe(403);
 		expect(response.json()).toMatchObject({ error: "user_not_provisioned" });
@@ -806,7 +835,7 @@ describe("proxy group write-through", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "bob", "remote-groups": "users,admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "users,admins" },
 		});
 		expect(first.statusCode).toBe(200);
 		expect(first.json()).toMatchObject({
@@ -830,7 +859,7 @@ describe("proxy group write-through", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "bob", "remote-groups": "users" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "users" },
 		});
 		expect(later.statusCode).toBe(200);
 		expect(later.json()).toMatchObject({ user: "bob", admin: false });
@@ -859,7 +888,7 @@ describe("proxy group write-through", () => {
 				method: "GET",
 				url: "/v1/auth/whoami",
 				remoteAddress: "10.42.3.4",
-				headers: { "remote-user": "bob", "remote-groups": "admins" },
+				headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "admins" },
 			});
 			expect(response.statusCode, `attempt ${attempt}`).toBe(200);
 		}
@@ -870,7 +899,7 @@ describe("proxy group write-through", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "bob", "remote-groups": "admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "admins" },
 		});
 		expect((await stat(usersPath)).mtimeMs).toBe(before);
 	});
@@ -891,7 +920,7 @@ describe("proxy group write-through", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "bob", "remote-groups": "admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "admins" },
 		});
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toMatchObject({ user: "bob", admin: false });
@@ -915,7 +944,7 @@ describe("proxy group write-through", () => {
 			method: "GET",
 			url: "/v1/auth/whoami",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "bob", "remote-groups": "admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "admins" },
 		});
 		expect(login.statusCode).toBe(200);
 		// The group admin passes the route's admin gate (effective admin),
@@ -925,7 +954,7 @@ describe("proxy group write-through", () => {
 			method: "GET",
 			url: "/v1/users",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "bob", "remote-groups": "admins" },
+			headers: { ...PROXY_SECRET_HEADER, "remote-user": "bob", "remote-groups": "admins" },
 		});
 		expect(list.statusCode).toBe(200);
 		const rows = list.json().users as {

@@ -418,6 +418,7 @@ describe("gateway access e2e (Task 4)", () => {
 			authEnv: {
 				SIGRUN_AUTH: "proxy",
 				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+				SIGRUN_PROXY_SECRET: "s3cret",
 			},
 			serverAuth: {
 				adminGroups: ["admins"],
@@ -438,6 +439,7 @@ describe("gateway access e2e (Task 4)", () => {
 			// write-through stamps groupAdmin on the record (C8), and the
 			// command's principal carries EFFECTIVE admin.
 			const proxyHeaders = {
+				"x-sigrun-proxy-secret": "s3cret",
 				"remote-user": "pat",
 				"remote-groups": "users,admins",
 			};
@@ -465,7 +467,11 @@ describe("gateway access e2e (Task 4)", () => {
 			// A plain proxy user (no admin group) is refused.
 			await boot.loop.inbound(dmEvent("300000003", "m2", "me too", "Carol"));
 			const carolCode = codeFromReplies(boot, "300000003");
-			const plainHeaders = { "remote-user": "quinn", "remote-groups": "users" };
+			const plainHeaders = {
+				"x-sigrun-proxy-secret": "s3cret",
+				"remote-user": "quinn",
+				"remote-groups": "users",
+			};
 			const created2 = await boot.app.inject({
 				method: "POST",
 				url: "/v1/conversations",

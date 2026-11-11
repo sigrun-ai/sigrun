@@ -846,6 +846,7 @@ describe("DELETE /v1/users/:user", () => {
 			env: {
 				SIGRUN_AUTH: "proxy",
 				SIGRUN_AUTH_TRUSTED_PROXIES: "10.42.0.0/16",
+				SIGRUN_PROXY_SECRET: "s3cret",
 			},
 			file: { auth: { adminGroups: ["admins"], proxy: { secretHeader: "x-sigrun-proxy-secret" } } },
 			seed: "admin-only",
@@ -859,7 +860,11 @@ describe("DELETE /v1/users/:user", () => {
 			method: "DELETE",
 			url: "/v1/users/tester?transferTo=bob",
 			remoteAddress: "10.42.3.4",
-			headers: { "remote-user": "ops", "remote-groups": "admins" },
+			headers: {
+				"x-sigrun-proxy-secret": "s3cret",
+				"remote-user": "ops",
+				"remote-groups": "admins",
+			},
 		});
 		expect(response.statusCode).toBe(409);
 		expect(response.json()).toEqual({ error: "last_admin" });
