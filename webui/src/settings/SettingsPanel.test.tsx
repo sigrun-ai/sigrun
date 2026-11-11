@@ -656,8 +656,8 @@ describe("SettingsPanel extension pages", () => {
 
 	test("nav lists only settingsPage extensions, sorted by title", async () => {
 		const list: readonly ExtensionInfoWire[] = [
-			{ ...EXTENSIONS[0], name: "zeta", settingsPage: true },
-			{ ...EXTENSIONS[0], name: "alpha", title: "Alpha Settings", settingsPage: true },
+			{ ...EXTENSIONS[0], name: "zeta", title: "Zeta", settingsPage: true },
+			{ ...EXTENSIONS[0], name: "alpha", title: "alpha", settingsPage: true },
 			{ ...EXTENSIONS[0], name: "codemode", settingsPage: undefined },
 		];
 		const { client } = makeHarness({ extensions: { list } });
@@ -665,7 +665,7 @@ describe("SettingsPanel extension pages", () => {
 		const group = renderer.root.findByProps({ role: "group", "aria-label": "Extensions" });
 		const buttons = group.findAllByProps({ className: "settings-nav-item settings-nav-extension" });
 		expect(buttons.map((button) => button.props["data-ext"])).toEqual(["alpha", "zeta"]);
-		expect(buttons.map((button) => button.props.children)).toEqual(["Alpha Settings", "zeta"]);
+		expect(buttons.map((button) => button.props.children)).toEqual(["alpha", "Zeta"]);
 	});
 
 	test("deep link to an extension without settings opens General", async () => {

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -27,6 +27,7 @@ async function bootServer(options?: {
 		readonly slug: string;
 		readonly value: Record<string, unknown>;
 	};
+	readonly malformedSettingsSlug?: string;
 }) {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-extension-settings-page-"));
 	const configDir = join(dir, "config");
@@ -60,6 +61,13 @@ async function bootServer(options?: {
 		await opened.extensionStores
 			.settingsFor(options.storedSettings.slug)
 			.set(options.storedSettings.value);
+	}
+	if (options?.malformedSettingsSlug !== undefined) {
+		await writeFile(
+			join(configDir, "settings", `${options.malformedSettingsSlug}.json`),
+			"{not json}",
+			"utf8",
+		);
 	}
 	const adminToken = (await opened.identity.tokens.create("tester-cli", "tester")).token;
 	const plebToken = (await opened.identity.tokens.create("pleb-cli", "pleb")).token;
@@ -110,4 +118,12 @@ test("a stored settings file earns a page for admins only", async () => {
 	expect(nonAdmin.extensions).toContainEqual(expect.objectContaining({ name: "acme-tool" }));
 	expect(nonAdmin.extensions.find((extension) => extension.name === "acme-tool"))
 		.not.toHaveProperty("settingsPage");
+});
+
+test("a corrupt stored settings file earns no page without breaking the admin inventory", async () => {
+	const get = await bootServer({ malformedSettingsSlug: "acme-tool" });
+	const inventory = await get<ExtensionsResponse>("/v1/extensions");
+	const row = inventory.extensions.find((extension) => extension.name === "acme-tool");
+	expect(row).toMatchObject({ name: "acme-tool", status: "ok" });
+	expect(row).not.toHaveProperty("settingsPage");
 });

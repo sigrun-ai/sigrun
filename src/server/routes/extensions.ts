@@ -89,12 +89,19 @@ export function registerExtensionRoutes(
 		const workerStatuses = opened.workerStatuses();
 		const storedSettings = new Map(
 			request.principal.admin
-				? await Promise.all(opened.extensionOutcomes.map(async (outcome) => [
-						outcome.name,
-						Object.keys(
-							await opened.extensionStores.settingsFor(outcome.name).get(),
-						).length > 0,
-					] as const))
+				? await Promise.all(opened.extensionOutcomes.map(async (outcome) => {
+						try {
+							return [
+								outcome.name,
+								Object.keys(
+									await opened.extensionStores.settingsFor(outcome.name).get(),
+								).length > 0,
+							] as const;
+						} catch {
+							// Unreadable/malformed JSON means no page, never a dead inventory.
+							return [outcome.name, false] as const;
+						}
+					}))
 				: [],
 		);
 		const extensions: ExtensionInfo[] = opened.extensionOutcomes.map(
