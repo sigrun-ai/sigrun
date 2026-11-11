@@ -62,11 +62,12 @@ export function registerExtensionRoutes(
 			)
 			.map((binding) => binding.extension),
 	);
-	for (const extension of [
+	const providerExtensions = new Set([
 		...opened.providerOwnership.values(),
 		...opened.decisions.providers().map((provider) => provider.extension),
 		...opened.embeddings.providers().map((provider) => provider.extension),
-	]) {
+	]);
+	for (const extension of providerExtensions) {
 		settingsPageExtensions.add(extension);
 	}
 
@@ -116,6 +117,7 @@ export function registerExtensionRoutes(
 				);
 				return {
 					name: outcome.name,
+					...(providerExtensions.has(outcome.name) ? { provider: true as const } : {}),
 					...(settingsPageExtensions.has(outcome.name) || storedSettings.get(outcome.name) === true
 						? { settingsPage: true as const }
 						: {}),

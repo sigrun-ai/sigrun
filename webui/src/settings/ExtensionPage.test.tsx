@@ -96,7 +96,7 @@ function parts(renderer: TestRenderer.ReactTestRenderer): string[] {
 
 describe("ExtensionPage", () => {
 	test("page stacks Credentials, Settings, Advanced in that order", async () => {
-		const renderer = await renderPage({ providers: [{ provider: "acme", owner: "acme-ext", status: "ready", models: 2 }] });
+		const renderer = await renderPage({ providers: [{ provider: "acme", owner: "acme-ext", status: "ready", models: 2, modelIds: ["m1", "m2"] }] });
 		expect(parts(renderer)).toEqual(["credentials", "settings", "advanced"]);
 	});
 
@@ -114,9 +114,9 @@ describe("ExtensionPage", () => {
 	test("provider page shows one auth.json key row per provider across chat and decision kinds", async () => {
 		const renderer = await renderPage({
 			providers: [
-				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 2 },
-				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1 },
-				{ provider: "acme-decision", owner: "acme-ext", kind: "decision", status: "degraded", models: 1 },
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 2, modelIds: ["m1", "m2"] },
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1, modelIds: ["m1"] },
+				{ provider: "acme-decision", owner: "acme-ext", kind: "decision", status: "degraded", models: 1, modelIds: ["judge-1"] },
 			],
 		});
 		expect(renderer.root.findAllByProps({ className: "settings-provider-key" })).toHaveLength(2);

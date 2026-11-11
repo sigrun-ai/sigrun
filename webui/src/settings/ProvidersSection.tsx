@@ -1,26 +1,54 @@
-import { useEffect, useState } from "react";
-import type { AuthCheckProviderWire, SigrunClient } from "../api";
+import { useEffect, useMemo, useState } from "react";
+import type { AuthCheckProviderWire, ExtensionInfoWire, SigrunClient } from "../api";
+import { createExtTransport } from "../blocks/extTransport";
+import { SurfaceView } from "../blocks/SurfaceView";
 
-/** The user-facing kind badge label (wire kind → plural for non-chat). */
+/** The user-facing kind label; an absent wire kind is chat. */
 function kindLabel(kind?: string): string {
 	if (kind === "decision") return "decisions";
 	if (kind === "embedding") return "embeddings";
 	return "chat";
 }
 
-/** Provider readiness in one compact list. Credentials and provider-specific
- * settings live on the owning extension's page (the kind rows here link to
- * it — main's per-row key editor moved there with this rework). */
+/** One provider extension and every kind it contributes. */
+interface ProviderOwner {
+	readonly slug: string;
+	readonly title: string;
+	readonly rows: readonly AuthCheckProviderWire[];
+}
+
+/** Group rows by their owning extension. Ownerless env providers share the
+ * reserved core pseudo-slug and one display row. */
+function providerOwners(
+	providers: readonly AuthCheckProviderWire[],
+	extensions: readonly ExtensionInfoWire[],
+): readonly ProviderOwner[] {
+	const groups = new Map<string, AuthCheckProviderWire[]>();
+	for (const provider of providers) {
+		const slug = provider.owner ?? "core";
+		groups.set(slug, [...(groups.get(slug) ?? []), provider]);
+	}
+	return [...groups].map(([slug, rows]) => ({
+		slug,
+		title: slug === "core"
+			? "Default provider (environment)"
+			: extensions.find((extension) => extension.name === slug)?.title ?? slug,
+		rows,
+	}));
+}
+
+/** The core providers form stays the same core/providers surface (saveCore),
+ * with extension rows below it instead of a second settings-write path. */
 export function ProvidersSection(props: {
 	readonly client: SigrunClient;
-	readonly pageOwners: ReadonlySet<string>;
-	readonly titles: ReadonlyMap<string, string | undefined>;
+	readonly extensions: readonly ExtensionInfoWire[];
 	readonly onOpenPage: (owner: string) => void;
 }): React.ReactElement {
-	const { client, pageOwners, titles, onOpenPage } = props;
+	const { client, extensions, onOpenPage } = props;
 	const [providers, setProviders] = useState<readonly AuthCheckProviderWire[]>();
 	const [error, setError] = useState<string>();
 	const [refreshError, setRefreshError] = useState<string>();
+	const transport = useMemo(() => createExtTransport({ slug: "core", id: "providers", fetch: client.rawFetch }), [client]);
 
 	useEffect(() => {
 		let cancelled = false;
@@ -33,46 +61,40 @@ export function ProvidersSection(props: {
 	const refresh = async (provider: AuthCheckProviderWire): Promise<void> => {
 		try {
 			const next = await client.refreshProvider(provider.provider);
-			setProviders((current) => current?.map((row) => row.provider === next.provider && row.kind === next.kind ? next : row));
+			setProviders((current) => current?.map((row) => row.provider === next.provider && (row.kind ?? "chat") === (next.kind ?? "chat") ? next : row));
 			setRefreshError(undefined);
 		} catch (cause: unknown) {
 			setRefreshError(cause instanceof Error ? cause.message : String(cause));
 		}
 	};
 
-	if (error !== undefined) return <p className="settings-note" role="alert">{error}</p>;
-	if (providers === undefined) return <p className="settings-note">loading providers…</p>;
-	if (providers.length === 0) return <div className="settings-body"><p className="settings-note">no providers are loaded</p></div>;
 	return (
 		<div className="settings-body settings-provider-list">
+			<SurfaceView transport={transport} />
+			{error !== undefined && <p className="settings-note" role="alert">{error}</p>}
 			{refreshError !== undefined && <p className="settings-note" role="alert">{refreshError}</p>}
-			{providers.map((provider) => {
-				const linked = provider.owner !== undefined && pageOwners.has(provider.owner);
-				return (
-					<fieldset key={`${provider.kind ?? "chat"}/${provider.provider}`} className="settings-provider" data-provider={provider.provider}>
-						<legend className="settings-provider-name">
-							{provider.provider}
-							<span className="settings-provider-meta">{kindLabel(provider.kind)}</span>
-							<span className="settings-provider-status" data-status={provider.status}>{provider.status}</span>
-							<span className="settings-provider-meta">{provider.models} model{provider.models === 1 ? "" : "s"}</span>
-						</legend>
-						{provider.detail !== undefined && <p className="settings-note">{provider.detail}</p>}
-						<div className="settings-provider-row">
-							{linked && (
-								<button
-									type="button"
-									className="settings-provider-page-link"
-									data-owner={provider.owner}
-									onClick={() => onOpenPage(provider.owner!)}
-								>
-									{titles.get(provider.owner) ?? provider.owner}
-								</button>
-							)}
-							<button type="button" className="settings-provider-refresh" onClick={() => void refresh(provider)}>Refresh</button>
-						</div>
-					</fieldset>
-				);
-			})}
+			{providers === undefined && error === undefined && <p className="settings-note">loading providers…</p>}
+			{providers?.length === 0 && <p className="settings-note">no providers are loaded</p>}
+			{providers !== undefined && providerOwners(providers, extensions).map((owner) => (
+				<fieldset key={owner.slug} className="settings-provider-owner" data-provider-owner={owner.slug}>
+					<legend>
+						<button type="button" className="settings-provider-page-link" data-owner={owner.slug} onClick={() => onOpenPage(owner.slug)}>{owner.title}</button>
+					</legend>
+					{owner.rows.map((provider) => {
+						const kind = provider.kind ?? "chat";
+						return (
+							<div key={`${kind}/${provider.provider}`} className="settings-provider" data-provider={provider.provider} data-kind={kind}>
+								<span className="settings-provider-name">{provider.provider}</span>
+								<span className="settings-provider-kind">{kindLabel(provider.kind)}</span>
+								<span className="settings-provider-status" data-status={provider.status}>{provider.status}</span>
+								<span className="settings-provider-meta">{provider.models} model{provider.models === 1 ? "" : "s"}</span>
+								{kind === "chat" && owner.slug !== "core" && <button type="button" className="settings-provider-refresh" data-provider={provider.provider} onClick={() => void refresh(provider)}>Refresh</button>}
+								{provider.detail !== undefined && <p className="settings-note">{provider.detail}</p>}
+							</div>
+						);
+					})}
+				</fieldset>
+			))}
 		</div>
 	);
 }

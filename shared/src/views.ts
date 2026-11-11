@@ -778,11 +778,8 @@ export interface AuthCheckProvider {
 	 * field); providers sharing an id stay SEPARATE entries, one per kind.
 	 */
 	readonly kind?: "chat" | "decision" | "embedding";
-	/**
-	 * The decision or embedding provider's bare model ids — present
-	 * only on non-chat entries (`models` is their count).
-	 */
-	readonly modelIds?: readonly string[];
+	/** The bare model ids served by this provider, for every provider kind. */
+	readonly modelIds: readonly string[];
 	/** The owning contributor's name; absent for the env-degenerate provider. */
 	readonly owner?: string;
 	/**
@@ -792,6 +789,8 @@ export interface AuthCheckProvider {
 	 * wins; this row is the extension-level switch only.
 	 */
 	readonly local?: boolean;
+	/** This provider resolves the auth.json `default` credential. */
+	readonly systemDefault?: true;
 	readonly detail?: string;
 }
 
@@ -836,6 +835,8 @@ export interface ExtensionInfo {
 	readonly title?: string;
 	/** Present when the extension has a settings page for this caller. */
 	readonly settingsPage?: true;
+	/** Present when the extension contributes any provider kind. */
+	readonly provider?: true;
 	readonly status: string;
 	readonly error?: string;
 	readonly version?: string;

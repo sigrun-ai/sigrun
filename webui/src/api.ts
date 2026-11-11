@@ -627,8 +627,10 @@ export interface SigrunClient {
 	): Promise<AuthCheckProviderWire>;
 	/** Remove one provider's credential (`DELETE .../credential`, admin). */
 	deleteProviderCredential(id: string): Promise<AuthCheckProviderWire>;
-	/** One bounded refresh of the named provider (`POST .../refresh`). */
+	/** One bounded refresh of the named chat provider (`POST .../refresh`). */
 	refreshProvider(id: string): Promise<AuthCheckProviderWire>;
+	/** Set a provider extension's locality (`PUT .../local/:extension`, admin). */
+	setProviderLocal(extension: string, local: boolean): Promise<{ readonly local: boolean }>;
 	/** The caller-visible jobs (`GET /v1/jobs`; access-stamped per row). */
 	listJobs(): Promise<JobsResponse>;
 	/** Fire a job now (`POST /v1/jobs/:id/run`; write access). */
@@ -1014,6 +1016,12 @@ export function createClient(options: SigrunClientOptions = {}): SigrunClient {
 				`/v1/providers/${encodeURIComponent(id)}/refresh`,
 				{},
 			) as Promise<AuthCheckProviderWire>,
+		setProviderLocal: (extension, local) =>
+			send(
+				"PUT",
+				`/v1/providers/local/${encodeURIComponent(extension)}`,
+				{ local },
+			) as Promise<{ readonly local: boolean }>,
 		listJobs: () => get<JobsResponse>("/v1/jobs"),
 		runJob: (id) =>
 			send("POST", `/v1/jobs/${encodeURIComponent(id)}/run`, {}) as Promise<

@@ -99,12 +99,15 @@ function readinessEntry(
 		producersByName,
 	);
 	const owner = opened.providerOwnership.get(providerId);
+	const modelIds = opened.models.getModels(providerId).map((model) => model.id);
 	return {
 		provider: providerId,
 		local: opened.locality.isLocalExtension(owner ?? "core"),
 		status,
-		models: opened.models.getModels(providerId).length,
+		models: modelIds.length,
+		modelIds,
 		...(owner === undefined ? {} : { owner }),
+		...(providerId === opened.defaultModel.provider ? { systemDefault: true as const } : {}),
 		...(detail === undefined ? {} : { detail }),
 	};
 }
@@ -140,6 +143,7 @@ function providerReadinessReport(
 			...entry,
 			status: "ready",
 			detail: "credential saved; the first call verifies it",
+			...(entry.provider === opened.defaultModel.provider ? { systemDefault: true as const } : {}),
 		};
 	};
 	const providers: AuthCheckProvider[] = [];

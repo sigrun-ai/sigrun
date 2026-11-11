@@ -400,8 +400,10 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					provider,
 					status: "not_configured",
 					models: 0,
+					modelIds: [],
 					owner: `provider-${provider}`,
 					local: false,
+					...(provider === "pareto" ? { systemDefault: true } : {}),
 				});
 			}
 		},
@@ -463,6 +465,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				provider: "bifrost",
 				status: "ready",
 				models: 2,
+				modelIds: ["acme/gw-mini", "acme/gw-large"],
 				owner: "provider-bifrost",
 				local: false,
 			});
@@ -470,6 +473,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				provider: "ollama",
 				status: "ready",
 				models: 2,
+				modelIds: ["acme/ollama-mini", "acme/ollama-large"],
 				owner: "provider-ollama",
 				local: false,
 			});
@@ -477,6 +481,7 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				provider: "opencode",
 				status: "ready",
 				models: 1,
+				modelIds: ["acme-go-mini"],
 				owner: "provider-opencode",
 				local: false,
 			});
@@ -484,8 +489,10 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 				provider: "pareto",
 				status: "ready",
 				models: 2,
+				modelIds: ["acme/acme-mini", "acme/acme-large"],
 				owner: "provider-pareto",
 				local: false,
+				systemDefault: true,
 			});
 			// The refresh persisted every catalog (the phase-C precondition).
 			for (const provider of ["bifrost", "ollama", "opencode", "pareto"]) {
@@ -566,8 +573,10 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 					provider: "pareto",
 					status: "ready",
 					models: 1,
+					modelIds: ["acme/pareto-moved"],
 					owner: "provider-pareto",
 					local: false,
+					systemDefault: true,
 				});
 			} finally {
 				await moved.close();

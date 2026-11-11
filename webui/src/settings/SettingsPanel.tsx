@@ -236,7 +236,9 @@ export function SettingsPanel(props: {
 					setOpen({ kind: "section", entry: core });
 					return;
 				}
-				const page = extensions?.find((entry) => entry.name === section);
+				const page = section === "core"
+					? { name: "core", title: "Default provider (environment)", settingsPage: true as const, status: "ok", interactionKinds: [], ambientKeys: [], workers: [], services: [] }
+					: extensions?.find((entry) => entry.name === section);
 				const hasUserPage = visible.some((entry) => entry.page === section && entry.scope === "user");
 				if (page?.settingsPage === true && (admin !== false || hasUserPage)) {
 					// A non-admin's bare-slug deep link is the personal page —
@@ -321,16 +323,10 @@ export function SettingsPanel(props: {
 		// not pretend those controls are available.
 		return visibleSettingsSections(load.sections, admin);
 	}, [load, admin]);
-	const pageOwners = useMemo(
-		() => new Set((extensions ?? []).map((extension) => extension.name)),
-		[extensions],
-	);
-	const pageTitles = useMemo(
-		() => new Map((extensions ?? []).map((extension) => [extension.name, extension.title])),
-		[extensions],
-	);
 	const openExtension = open?.kind === "extension"
-		? extensions?.find((entry) => entry.name === open.slug)
+		? open.slug === "core"
+			? { name: "core", title: "Default provider (environment)", settingsPage: true as const, status: "ok", interactionKinds: [], ambientKeys: [], workers: [], services: [] }
+			: extensions?.find((entry) => entry.name === open.slug)
 		: undefined;
 
 	return (
@@ -431,6 +427,7 @@ export function SettingsPanel(props: {
 								group="system"
 								onOpen={onSection}
 							/>
+							<ProviderPagesNav extensions={extensions} open={open} onOpen={onSection} />
 						</div>
 						)}
 					</nav>
@@ -456,9 +453,8 @@ export function SettingsPanel(props: {
 									meta={meta}
 									onCoreMeta={setCoreMeta}
 									valuesRef={sectionDataRef}
-									pageOwners={pageOwners}
-									titles={pageTitles}
 									onOpenPage={onSection}
+									extensions={extensions ?? []}
 								/>
 							) : null}
 						</div>
@@ -489,6 +485,30 @@ export function SettingsPanel(props: {
 	);
 }
 
+function ProviderPagesNav(props: {
+	readonly extensions: readonly ExtensionInfoWire[] | null;
+	readonly open: OpenSection | null;
+	readonly onOpen: (page: string) => void;
+}): React.ReactElement | null {
+	const { extensions, open, onOpen } = props;
+	if (extensions === null) return null;
+	const listed = extensions.filter((extension) => extension.provider === true && extension.settingsPage === true)
+		.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name, undefined, { sensitivity: "base" }));
+	if (listed.length === 0) return null;
+	return (
+		<div className="settings-nav-group" role="group" aria-label="Providers">
+			<div className="settings-nav-heading">Providers</div>
+			{listed.map((extension) => (
+				<button key={extension.name} type="button" className="settings-nav-item settings-nav-extension" data-ext={extension.name}
+					data-active={open?.kind === "extension" && open.slug === extension.name && open.group === "system" ? "" : undefined}
+					onClick={() => onOpen(extension.name)}>
+					{extension.title ?? extension.name}
+				</button>
+			))}
+		</div>
+	);
+}
+
 function ExtensionPagesNav(props: {
 	readonly extensions: readonly ExtensionInfoWire[] | null;
 	readonly sections: readonly SettingsSectionEntryWire[];
@@ -504,7 +524,7 @@ function ExtensionPagesNav(props: {
 	// System settings lists every settingsPage extension (plan 1's rule).
 	const minePages = new Set(sections.filter((section) => section.scope === "user").map((section) => section.page).filter((page): page is string => page !== undefined));
 	const listed = extensions
-		.filter((extension) => extension.settingsPage === true && (group === "mine" ? minePages.has(extension.name) : true))
+		.filter((extension) => extension.provider !== true && extension.settingsPage === true && (group === "mine" ? minePages.has(extension.name) : true))
 		.sort((a, b) => (a.title ?? a.name).localeCompare(b.title ?? b.name, undefined, { sensitivity: "base" }));
 	if (listed.length === 0) return null;
 	return (
@@ -540,17 +560,16 @@ function SettingsSectionBody(props: {
 		readonly supervised: boolean;
 	}) => void;
 	readonly valuesRef: React.MutableRefObject<SectionValues>;
-	readonly pageOwners: ReadonlySet<string>;
-	readonly titles: ReadonlyMap<string, string | undefined>;
+	readonly extensions: readonly ExtensionInfoWire[];
 	readonly onOpenPage: (owner: string) => void;
 }): React.ReactElement {
-	const { entry, client, prefsState, theme, meta, onCoreMeta, titles } = props;
+	const { entry, client, prefsState, theme, meta, onCoreMeta } = props;
 	// The Interface + Providers + Extensions coves never mount a surface.
 	if (entry.slug === "core" && entry.id === "interface") {
 		return <InterfaceCove prefsState={prefsState} theme={theme} />;
 	}
 	if (entry.slug === "core" && entry.id === "providers") {
-		return <ProvidersSection client={client} pageOwners={props.pageOwners} titles={titles} onOpenPage={props.onOpenPage} />;
+		return <ProvidersSection client={client} extensions={props.extensions} onOpenPage={props.onOpenPage} />;
 	}
 	if (entry.slug === "core" && entry.id === "accounts") {
 		return <AccountLinksSection client={client} />;
