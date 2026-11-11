@@ -447,3 +447,24 @@ test("a panel named user-settings fails the load of a declaring extension", asyn
 	expect(opened.extensionOutcomes[0]?.error).toContain('"user-settings"');
 });
 
+
+
+test("dotted nested field names save through the generated form (provider-openai shape)", async () => {
+	// The regression Michael hit live: a schema whose nested objects
+	// carry default-true booleans (provider-openai's chat.enabled /
+	// decisions.enabled) generates DOTTED field names; the channel
+	// submits them flat and the save silently dropped them — the file
+	// stayed {} while the UI reported saved and re-rendered defaults.
+	const rig = await boot({});
+	const result = await save(rig, { "group.label": false }, "dotted-nested-off");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ group: { label: false } });
+	// The reload + re-save shape: submitting again (still off) persists.
+	const again = await save(rig, { "group.label": false }, "dotted-nested-off-2");
+	expect(again.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ group: { label: false } });
+	// Siblings under one parent merge, not clobber.
+	const both = await save(rig, { "group.label": false, mode: "auto" }, "dotted-siblings");
+	expect(both.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ group: { label: false }, mode: "auto" });
+});

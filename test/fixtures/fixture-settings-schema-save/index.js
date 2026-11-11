@@ -11,6 +11,11 @@ export default function fixture(host) {
 			type: "object",
 			properties: {
 				interval: { type: "integer", minimum: 1, default: 60 },
+			group: {
+				type: "object",
+				properties: { label: { type: "boolean", default: true } },
+			},
+			mode: { type: "string" },
 				enabled: { type: "boolean", default: true },
 				mode: { type: "string" },
 				labels: {

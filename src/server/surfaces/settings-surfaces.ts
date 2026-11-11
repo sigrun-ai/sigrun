@@ -793,6 +793,46 @@ function childSchema(node: unknown, key: string): JsonSchema | undefined {
 }
 
 /**
+ * Expand the generated form's DOTTED field names (a nested object
+ * without a title renders its children as `parent.child` fields — the
+ * form submits them flat) back into the nested JSON the schema and the
+ * settings file use. Only keys whose dotted path resolves against the
+ * schema expand: a literal `a.b` property name (the core sections use
+ * dotted STORE keys) is indistinguishable by name alone, so the schema
+ * decides — it has `a` → `b` or not.
+ */
+/**
+ * Expand the generated form's DOTTED field names (a nested object
+ * without a title renders its children as `parent.child` fields — the
+ * form submits them flat) back into the nested JSON the schema and the
+ * settings file use. This surface family (schema-declared extension
+ * settings) stores NESTED objects; the core sections' dotted STORE keys
+ * never pass through here (saveCore folds them separately).
+ */
+function expandDottedNames(
+	values: Record<string, unknown>,
+): Record<string, unknown> {
+	const expanded: Record<string, unknown> = {};
+	for (const [name, value] of Object.entries(values)) {
+		if (!name.includes(".")) {
+			expanded[name] = value;
+			continue;
+		}
+		// `chat.enabled: false` → `chat: { enabled: false }`, merging with
+		// any prior siblings under the same parent.
+		const segments = name.split(".");
+		let cursor = expanded;
+		for (const segment of segments.slice(0, -1)) {
+			const existing = cursor[segment];
+			if (!isRec(existing)) cursor[segment] = {};
+			cursor = cursor[segment] as Record<string, unknown>;
+		}
+		cursor[segments.at(-1)!] = value;
+	}
+	return expanded;
+}
+
+/**
  * Convert the channel's entry packing to the settings file's JSON shape.
  * A scalar table value (including writeOnly strings) packs `{value: ...}`;
  * object-valued rows remain ordinary JSON. `$from` is retained for the
@@ -823,7 +863,7 @@ function channelSubmissionToFile(
 		}
 		return result;
 	};
-	const unpacked = unpack(values, schema) as Record<string, unknown>;
+	const unpacked = unpack(expandDottedNames(values), schema) as Record<string, unknown>;
 	// A root additionalProperties table binds at the reserved empty field
 	// name. Flatten its rows back to root keys before validation/persistence;
 	// known properties keep their own slots.
