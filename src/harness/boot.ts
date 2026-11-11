@@ -1819,7 +1819,8 @@ export async function openHarness(
 				: env[credentialEnv]?.trim() || undefined;
 		},
 		readSettings: () => settingsStore.read(),
-		effectiveModel: async (user) => await effective.value("decisionModel", user) as string | undefined,
+	effectiveModel: async (user) =>
+			await safeEffectiveModel("decisionModel", user, undefined),
 		timeoutCapMs: config.decisions.timeoutMs,
 		// The env tier of the timeout knob: env always wins over a live
 		// file edit (the config's env-over-file precedence, per call).
@@ -1843,7 +1844,8 @@ export async function openHarness(
 			};
 		},
 		locality: localityRef,
-		effectiveModel: async (user) => await effective.value("embeddingModel", user) as string | undefined,
+		effectiveModel: async (user) =>
+			await safeEffectiveModel("embeddingModel", user, undefined),
 		credential: async (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
@@ -2022,6 +2024,31 @@ export async function openHarness(
 	// Invalid overrides never prevent a conversation from running. Unreadable
 	// files warn once per user; each bad value warns once per boot. Later reads
 	// still fall back to the system model.
+	const warnedEffectiveReads = new Set<string>();
+	const safeEffectiveModel = async (
+		key: string,
+		user: string | undefined,
+		fallback: string | undefined,
+	): Promise<string | undefined> => {
+		if (user === undefined) {
+			try {
+				return (await effective.value(key, user)) as string | undefined;
+			} catch {
+				return fallback;
+			}
+		}
+		try {
+			return (await effective.value(key, user)) as string | undefined;
+		} catch (error) {
+			if (!warnedEffectiveReads.has(`${key}:${user}`)) {
+				warnedEffectiveReads.add(`${key}:${user}`);
+				console.warn(
+					`${key} override for "${user}" could not be read; using system value: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return fallback;
+		}
+	};
 	const warnedDefaultUsers = new Set<string>();
 	const warnedDefaultOverrides = new Set<string>();
 	const defaultModelFor = async (user: string | undefined): Promise<ModelRef> => {
