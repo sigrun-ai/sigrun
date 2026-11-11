@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- Extension settings pages mount fresh form state when navigating between
+  extensions, so a page no longer reuses the previous page's stale values.
+- An untouched optional text field is omitted instead of submitted as `""`,
+  so it no longer rejects an otherwise valid settings save.
+- A blank optional constrained secret is treated as unset instead of rejecting
+  the whole save.
+- An unreadable or corrupt extension settings file no longer makes the
+  `/v1/extensions` inventory return a 500.
+
+### Added
+
+- Extensions may declare a display `title`; settings navigation lists only
+  extensions with a `settingsPage`, in alphabetical order by display name.
+- Choice fields support `presentation: "dropdown"`, used by the model pickers
+  to render a `<select>` regardless of option count.
+- The `x-sigrun-env` settings-schema keyword shows a field's environment
+  fallback in its generated form without copying the value into stored settings.
+
 ## [0.13.4] - 2026-11-10
 
 ### Fixed

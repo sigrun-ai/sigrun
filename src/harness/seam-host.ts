@@ -37,7 +37,7 @@ import type {
 } from "../extension.js";
 import { checkSchema, generateForm } from "../settings/schema/generate.js";
 import { checkStoredSettings } from "../settings/schema/defaults.js";
-import { envOf, isRecord } from "../settings/schema/keywords.js";
+import { ENV_KEYWORD, envOf, isRecord } from "../settings/schema/keywords.js";
 import { fillSecrets } from "../settings/schema/secrets.js";
 import { NOTICE_LIMITS } from "@sigrun/shared/notices";
 import { primaryAdmin } from "./identity/primary-admin.js";
@@ -333,7 +333,7 @@ function assertNoUserEnv(node: unknown): void {
 		return;
 	}
 	if (!isRecord(node)) return;
-	if (envOf(node) !== undefined || node["x-sigrun-env"] !== undefined) {
+	if (envOf(node) !== undefined || node[ENV_KEYWORD] !== undefined) {
 		throw new Error(
 			"settings.declare userSchema may not use x-sigrun-env: user forms reach non-admin users; server env values must not reach them",
 		);

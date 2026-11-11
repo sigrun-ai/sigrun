@@ -301,6 +301,7 @@ what core does with each, and where its rules are documented:
 |---|---|---|---|
 | `extension` | pi-durable `Extension` | installed into the registry before `Harness.open`; its declared name is the slug source | this page ("The stores handle", "Prompt sections") |
 | `name` | `string` | the identity of a contributor-only result (no `extension`) | "Contributing model providers" |
+| `title` | `string` | the human-facing display name, trimmed to 1..60 characters; never changes the slug. A built-in uses this when declared, otherwise its built-ins-table title | this table |
 | `providers` | `readonly ProviderContribution[]` | merged into the boot model catalog; last-registered-wins, collisions recorded and surfaced | "Contributing model providers" |
 | `loginProviders` | `readonly LoginProviderContribution[]` | qualified as `login:<slug>:<id>` and mounted on core-owned begin/callback routes | ["Login providers"](#login-providers) |
 | `webuiBundles` | `readonly WebuiBundleContribution[]` | each `dir` anchored at the entry; the name-keyed registry `server.webui.bundle` selects from | "Contributing webui bundles" |
@@ -1412,7 +1413,10 @@ export function gatingConfirmBody(command: string, reason: string): Tree {
 ```
 
 A multi-question form (the ask-user-question shape — one `section` per
-question, per-option `preview` markdown, `allowOther` for free text):
+question, per-option `preview` markdown, `allowOther` for free text).
+On a single-select choice, `presentation: "dropdown"` makes the webui draw a
+native `<select>` regardless of option count. Multi-select choices and the
+TUI's list picker ignore `presentation`:
 
 ```ts check
 import { choice, form, section, tree } from "@sigrun/sigrun/blocks";
