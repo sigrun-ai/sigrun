@@ -2019,12 +2019,25 @@ export async function openHarness(
 		},
 		directory: () => identity.users.list(),
 	});
-	// Invalid overrides never prevent a conversation from running. Each bad
-	// value warns once per boot; later reads still fall back to the system model.
+	// Invalid overrides never prevent a conversation from running. Unreadable
+	// files warn once per user; each bad value warns once per boot. Later reads
+	// still fall back to the system model.
+	const warnedDefaultUsers = new Set<string>();
 	const warnedDefaultOverrides = new Set<string>();
 	const defaultModelFor = async (user: string | undefined): Promise<ModelRef> => {
 		if (user === undefined) return defaultModel;
-		const resolved = await effective.value("defaultModel", user);
+		let resolved: unknown;
+		try {
+			resolved = await effective.value("defaultModel", user);
+		} catch (error) {
+			if (!warnedDefaultUsers.has(user)) {
+				warnedDefaultUsers.add(user);
+				console.warn(
+					`defaultModel override for "${user}" could not be read; using system default: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return defaultModel;
+		}
 		if (typeof resolved !== "string" || resolved === `${defaultModel.provider}/${defaultModel.modelId}`) {
 			return defaultModel;
 		}

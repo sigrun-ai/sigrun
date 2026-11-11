@@ -471,6 +471,11 @@ picker entries (`id`, `provider`, `modelId`, `name`, `contextWindow`,
 through the one shared construction (helpers `listModels`); the two
 surfaces cannot drift.
 
+`host.models.isLocal(model)` answers whether the chat model's owning
+provider extension is listed in the admin-only `localProviders` setting.
+The pseudo-slug `"core"` represents the env-driven provider. Locality is
+live on every call; an unserved model is never local.
+
 `host.models.complete(input)` runs ONE one-shot completion with NO
 conversation (skill-card generation, summaries, classification) and
 resolves `{text, model}` — `text` is the concatenated text parts of
@@ -981,6 +986,11 @@ The contract:
   `decisionModel`, then the first provider's first model. Omitting
   `opts.user` keeps the system value. `host.decisions.list()` stays
   system-scoped and has no per-user `default` flag.
+- **Confidentiality uses the admin locality switch.** The provider's
+  extension slug must be listed in the top-level `localProviders` setting
+  before `confidentiality: "local-only"` can use one of its models.
+  Otherwise evaluation returns the decision result code `not_local` without
+  calling the provider.
 
 ## Contributing embedding providers
 
@@ -1025,9 +1035,11 @@ export default function acmeEmbeddings() {
   splits inputs at `maxBatch`, preserves input order, and validates every
   returned vector's dimensions.
 - **Confidentiality is fail-closed.** `confidentiality: "local-only"`
-  succeeds only when the model appears in `embeddings.localModels` AND its
-  declaration does not say `local: false`. A provider whose endpoint can
-  change should report remote endpoints as `local: false`.
+  succeeds only when the provider's extension slug appears in the
+  admin-only `localProviders` setting AND its model declaration does not
+  say `local: false`. Otherwise `embed` returns `not_local` without calling
+  the provider. A provider whose endpoint can change should report remote
+  endpoints as `local: false`.
 - **Credentials** resolve per call from `auth.json[id].apiKey`, then the
   ambient `credentialEnv` (empty means unset) — plus the magic `"default"`
   key when the embedding provider's id IS the default model's provider

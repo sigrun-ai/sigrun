@@ -7,7 +7,7 @@
  * `chat-2`, users alice/bob/carol, and `.invalid` hosts where needed.
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, afterEach, describe, expect, test, vi } from "vitest";
@@ -44,6 +44,7 @@ interface Rig {
 	identity: IdentityStores;
 	faux: FauxProviderHandle;
 	jobDeps: JobRuntimeDeps;
+	configDir: string;
 }
 
 async function override(
@@ -117,7 +118,7 @@ async function boot(options: {
 		gatewayLoaded: false,
 		effectiveOwner: (owner) => resolveEffectiveOwner(identity.users.list(), owner),
 	};
-	return { opened, identity, faux, jobDeps };
+	return { opened, identity, faux, jobDeps, configDir: dir };
 }
 
 async function agentModel(opened: OpenedHarness, id: number): Promise<ModelRef | undefined> {
@@ -241,6 +242,29 @@ describe("per-user chat defaults", () => {
 			provider: "acme-chat",
 			modelId: "chat-2",
 		});
+	});
+
+	test("a corrupt core override falls back to the system default and warns once per user", async () => {
+		const rig = await boot({ responses: [fauxAssistantMessage("acme system answer")] });
+		await mkdir(join(rig.configDir, "user-settings", "bob"), { recursive: true });
+		await writeFile(
+			join(rig.configDir, "user-settings", "bob", "core.json"),
+			"{not json",
+		);
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		const created = await createConversationOp({ opened: rig.opened } as never, { owner: "bob" });
+		expect(await agentModel(rig.opened, created.id as number)).toEqual(rig.opened.defaultModel);
+		const conversation = await rig.opened.harness.conversation(created.id as ConversationId, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation missing");
+		const submission = await conversation.submit({
+			type: "input",
+			content: [{ type: "text", text: "run despite the corrupt override" }],
+		}, BACKGROUND_CONTEXT);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await rig.opened.defaultModelFor("bob");
+		expect(warn.mock.calls.filter(([message]) =>
+			String(message).includes('defaultModel override for "bob" could not be read'),
+		)).toHaveLength(1);
 	});
 
 	test("an unserved override falls back to the system default", async () => {

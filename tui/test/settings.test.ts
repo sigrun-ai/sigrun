@@ -335,6 +335,18 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(admin.render(80).join("\n")).toContain("Personal admin");
 	});
 
+	test("section list labels carry the group, including duplicate titles", async () => {
+		const extra: readonly SettingsSectionEntry[] = [
+			{ slug: "core", id: "models", title: "Models", icon: "key", group: "system" },
+			{ slug: "core", id: "my-models", title: "Models", icon: "key", group: "mine", scope: "user", admin: false },
+		];
+		const view = makeView(fakeWire({ sectionsExtra: extra, withoutDefaultExtension: true }));
+		await view.load();
+		const lines = view.render(80);
+		expect(lines).toContain("  System settings · Models");
+		expect(lines).toContain("  My settings · Models");
+	});
+
 	test("picker labels carry the group", async () => {
 		const extra: readonly SettingsSectionEntry[] = [
 			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
