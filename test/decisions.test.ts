@@ -22,6 +22,7 @@ import {
 } from "../src/harness/decisions.js";
 import type { DecisionProviderContribution } from "../src/extension.js";
 import type { SettingsFile } from "../src/harness/settings.js";
+import { createLocality } from "../src/harness/locality.js";
 
 const CREDENTIAL = "acme-secret-key";
 
@@ -69,6 +70,7 @@ function makeFixture(overrides: {
 	credential?: (id: string, env: string | undefined) => string | undefined;
 	settings?: Partial<SettingsFile & { decisionModel?: string }>;
 	evaluateImpl?: Fixture["evaluateImpl"];
+	effectiveModel?: (user: string | undefined) => Promise<string | undefined>;
 	now?: () => number;
 	timeoutCapMs?: number;
 } = {}): Fixture {
@@ -100,12 +102,67 @@ function makeFixture(overrides: {
 	const registry = buildDecisionRegistry(declarations, {
 		credential,
 		readSettings: () => settings,
+		locality: createLocality({
+			localProviders: () => (settings.localProviders as string[] | undefined) ?? [],
+			ownerOf: (kind, providerId) =>
+				kind === "decision" && providerId === "acme-judge" ? "acme-ext" : undefined,
+		}),
+		...(overrides.effectiveModel === undefined
+			? {}
+			: { effectiveModel: overrides.effectiveModel }),
 		timeoutCapMs: overrides.timeoutCapMs ?? 15_000,
 		now: overrides.now ?? Date.now,
 		warn: (message) => warnings.push(message),
 	});
 	return { declarations, warnings, calls, credential, settings, evaluateImpl, registry };
 }
+
+describe("decision locality (settings split Plan 2 Task 2)", () => {
+	it("local-only decision returns not_local", async () => {
+		const fixture = makeFixture();
+		const result = await fixture.registry.evaluate("acme-notes", validRequest(), {
+			confidentiality: "local-only",
+		});
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.code).toBe("not_local");
+		expect(fixture.calls.length).toBe(0);
+	});
+
+	it("a local-only call to a local model evaluates", async () => {
+		const fixture = makeFixture({ settings: { localProviders: ["acme-ext"] } });
+		const result = await fixture.registry.evaluate("acme-notes", validRequest(), {
+			confidentiality: "local-only",
+		});
+		expect(result.ok).toBe(true);
+		expect(fixture.calls.length).toBe(1);
+	});
+
+	it("decision list rows carry local", () => {
+		const notLocal = makeFixture();
+		expect(notLocal.registry.list()).toEqual([
+			{ model: "acme-judge/judge-1", provider: "acme-judge", local: false, status: expect.any(String) },
+		]);
+		const local = makeFixture({ settings: { localProviders: ["acme-ext"] } });
+		expect(local.registry.list()).toEqual([
+			{ model: "acme-judge/judge-1", provider: "acme-judge", local: true, status: expect.any(String) },
+		]);
+	});
+});
+
+describe("per-user decision defaults (settings split Plan 2 Task 6)", () => {
+	it("evaluate with user picks the user's decision override", async () => {
+		const fixture = makeFixture({
+			contribution: { models: [{ id: "judge-1" }, { id: "judge-2" }] },
+			settings: { decisionModel: "acme-judge/judge-1" },
+			effectiveModel: async (user) =>
+				user === "bob" ? "acme-judge/judge-2" : "acme-judge/judge-1",
+		});
+		const result = await fixture.registry.evaluate("acme-notes", validRequest(), { user: "bob" });
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.model).toBe("acme-judge/judge-2");
+		expect(fixture.calls[0]?.ctx.model).toBe("judge-2");
+	});
+});
 
 describe("validateDecisionRequest", () => {
 	it("accepts a valid noul/choice/score request", () => {
@@ -212,6 +269,7 @@ describe("buildDecisionRegistry", () => {
 		const empty = buildDecisionRegistry([], {
 			credential: fixture.credential,
 			readSettings: () => ({}),
+			locality: createLocality({ localProviders: () => [], ownerOf: () => undefined }),
 			timeoutCapMs: 15_000,
 			now: Date.now,
 			warn: () => {},
@@ -364,6 +422,7 @@ describe("buildDecisionRegistry", () => {
 			{
 				credential: () => CREDENTIAL,
 				readSettings: () => ({}),
+				locality: createLocality({ localProviders: () => [], ownerOf: () => undefined }),
 				timeoutCapMs: 15_000,
 				now: Date.now,
 				warn: (message) => warnings.push(message),
@@ -392,7 +451,7 @@ describe("buildDecisionRegistry", () => {
 			contribution: { readiness: () => ({ status: "ready" }) },
 		});
 		expect(fixture.registry.list()).toEqual([
-			{ model: "acme-judge/judge-1", provider: "acme-judge", status: "ready" },
+			{ model: "acme-judge/judge-1", provider: "acme-judge", local: false, status: "ready" },
 		]);
 	});
 

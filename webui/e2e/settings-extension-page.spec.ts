@@ -60,7 +60,11 @@ test("an extension table entry keeps its secret set across save, reload, and ren
 	await expect(pageRoot.getByRole("button", { name: "Edit entry renamed" })).toContainText("set");
 	await page.screenshot({ path: join("test-results", "settings-extension-page-desktop.png"), fullPage: true });
 	await page.setViewportSize({ width: 390, height: 844 });
-	const extensionNav = page.locator(".settings-nav-extension[data-ext=acme-settings-page]");
+	// The extension now has a personal and a system nav row; this test is
+	// on its system page, so measure the active System-settings row.
+	const extensionNav = page
+		.getByRole("group", { name: "System settings", exact: true })
+		.locator(".settings-nav-extension[data-ext=acme-settings-page]");
 	await extensionNav.scrollIntoViewIfNeeded();
 	const navBox = await page.locator(".settings-nav").boundingBox();
 	const extensionBox = await extensionNav.boundingBox();

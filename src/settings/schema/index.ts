@@ -15,7 +15,7 @@ export {
 
 export { dropBlankOptionalStrings } from "./blanks.js";
 
-export { ENV_KEYWORD, envOf } from "./keywords.js";
+export { ENV_KEYWORD, envOf, MODEL_KEYWORD, OVERRIDABLE_KEYWORD } from "./keywords.js";
 
 export {
 	assertDrawable,

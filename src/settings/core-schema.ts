@@ -1,7 +1,8 @@
 /**
  * Core's settings.json schema and the three schema-generated sections.
  * Every registry leaf is present, including file/API-only settings; layout
- * inclusion decides which of them the General, Tools and Advanced forms draw.
+ * inclusion decides which of them General, Models and Advanced draw. Models'
+ * four overrides explicitly retain their dropdown + allowOther presentation.
  */
 
 import {
@@ -24,6 +25,7 @@ import {
 	type JsonSchema,
 	type LayoutGroup,
 } from "./schema/index.js";
+import { overridesSchema } from "./effective.js";
 
 const property = (
 	title: string,
@@ -147,33 +149,51 @@ export const coreSchema: JsonSchema = {
 		jobDefaults: object({
 			maxTurns: number("Default max turns per job run", "", DEFAULT_JOB_MAX_TURNS, "live"),
 		}),
-		defaultModel: string(
-			"Default model",
-			"The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
-		),
+		defaultModel: {
+			...string(
+				"Chat model",
+				"The boot default model (provider/model-id); env SIGRUN_DEFAULT_MODEL wins over the file — a change applies at restart",
+			),
+			"x-sigrun-overridable": true,
+		},
 		namingModel: string(
-			"Naming model",
-			"The model the conversation auto-namer completes through (provider/model-id); absent = the default model",
+			"Utility model",
+			"Names conversations and builds skill cards. Absent: the default chat model.",
 			undefined,
 			"live",
 		),
-		decisionModel: string("Decision model", "Default model for decision-provider evaluations", "", "live"),
+		decisionModel: {
+			...string("Decision model", "Default model for decision-provider evaluations", "", "live"),
+			"x-sigrun-overridable": true,
+		},
 		decisions: object({
 			tool: toggle("Decision evaluation tool", "Whether decision_evaluate is enabled", false, "live"),
 		}),
-		embeddingModel: string(
-			"Embedding model",
-			"The model every extension embeds with, as provider/model. Unset: embeddings are off.",
-			"",
-			"live",
-		),
+		embeddingModel: {
+			...string(
+				"Embedding model",
+				"The model every extension embeds with, as provider/model. Unset: embeddings are off.",
+				"",
+				"live",
+			),
+			"x-sigrun-overridable": true,
+		},
+		localProviders: {
+			type: "array",
+			items: { type: "string", minLength: 1 },
+			title: "Local provider extensions",
+			description:
+				"Provider extensions trusted to receive local-only content. Includes chat, decision and embedding models. The pseudo-slug core covers the env-driven provider. Live.",
+			default: [],
+			"x-sigrun-apply": "live",
+		},
 		embeddings: object({
 			localModels: {
 				type: "array",
 				items: { type: "string", minLength: 1 },
-				title: "Local embedding models",
+				title: "Local embedding models (deprecated)",
 				description:
-					"Embedding models trusted to receive local-only content. A provider that reports a model as remote overrides this.",
+					"Deprecated: migrated to localProviders. Per-model embedding locality moved to the per-provider-extension switch.",
 				default: [],
 				"x-sigrun-apply": "live",
 			},
@@ -311,64 +331,66 @@ export const coreSchema: JsonSchema = {
 };
 
 /** Core's field grouping; unlisted schema properties remain file/API-only. */
-export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly LayoutGroup[]> = {
+const MODEL_FIELD_OVERRIDES: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+	"/defaultModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/chat" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: { $: "/modelDefaults/chat" },
+	},
+	"/namingModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/chat" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: undefined,
+	},
+	"/decisionModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/decision" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: undefined,
+	},
+	"/embeddingModel": {
+		type: "choice",
+		presentation: "dropdown",
+		options: { $: "/modelRoster/embedding" },
+		allowOther: { label: "Other model id (provider/model)" },
+		placeholder: undefined,
+	},
+};
+
+export const CORE_LAYOUT: Record<"general" | "models" | "advanced", readonly LayoutGroup[]> = {
 	general: [
-		{ title: "Queueing", paths: ["/steeringMode", "/followUpMode"] },
-		{ title: "Models", paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"],
-			overrides: {
-				// Model pickers, not free text: options bind the served catalog
-				// (the surface feeds `/modelRoster` per field — chat models for
-				// defaultModel/namingModel, decision models for decisionModel,
-				// embedding models for embeddingModel), with `allowOther` so a
-				// not-yet-served id stays enterable (the value is provider/model).
-				"/defaultModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/default" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-				"/namingModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/default" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-				"/decisionModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/decision" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-				"/embeddingModel": {
-					type: "choice",
-					presentation: "dropdown",
-					options: { $: "/modelRoster/embedding" },
-					allowOther: { label: "Other model id (provider/model)" },
-				placeholder: undefined,
-				},
-			} },
+		{ title: "Conversations", paths: ["/steeringMode", "/followUpMode"] },
 		{
 			title: "Behaviour",
 			paths: ["/skills/sectionMaxBytes", "/notifications/runSettled"],
 			overrides: { "/skills/sectionMaxBytes": { placeholder: undefined } },
 		},
 	],
-	tools: [{
-		title: "Defaults",
-		paths: ["/defaultTools", "/autoEnableCodemode"],
-		overrides: {
-			"/defaultTools": {
-				type: "choice",
-				multi: true,
-				options: { $: "/toolRoster" },
-				item: undefined,
+	models: [
+		{
+			title: "Models",
+			paths: ["/defaultModel", "/namingModel", "/decisionModel", "/embeddingModel"],
+			overrides: MODEL_FIELD_OVERRIDES,
+		},
+	],
+	advanced: [
+		{
+			title: "Tools",
+			paths: ["/defaultTools", "/autoEnableCodemode"],
+			overrides: {
+				"/defaultTools": {
+					type: "choice",
+					multi: true,
+					options: { $: "/toolRoster" },
+					item: undefined,
+				},
 			},
 		},
-	}],
-	advanced: [
 		{ title: "Retries and streaming", paths: [
 			"/retry/enabled",
 			"/retry/maxRetries",
@@ -399,7 +421,6 @@ export const CORE_LAYOUT: Record<"general" | "tools" | "advanced", readonly Layo
 			"/server/compaction/backgroundTokens": { placeholder: undefined },
 		} },
 		{ title: "Embeddings", paths: [
-			"/embeddings/localModels",
 			"/server/embeddings/timeoutMs",
 		] },
 		{ title: "Job history retention", paths: [
@@ -427,14 +448,39 @@ export function coreProperty(key: string): JsonSchema | undefined {
 	return node;
 }
 
+/**
+ * My settings → Models (settings split Plan 2 Task 5): the per-user
+ * overrides form over `overridesSchema(coreSchema)` — exactly the three
+ * overridable keys, each a dropdown bound to its kind's roster (the
+ * surface's `extraData` supplies the default-first options).
+ */
+export function generatedMyModelsForm(): GeneratedForm {
+	const overrides: Readonly<Record<string, Readonly<Record<string, unknown>>>> = {
+		"/defaultModel": { ...MODEL_FIELD_OVERRIDES["/defaultModel"], placeholder: undefined },
+		"/decisionModel": MODEL_FIELD_OVERRIDES["/decisionModel"],
+		"/embeddingModel": MODEL_FIELD_OVERRIDES["/embeddingModel"],
+	};
+	return generateForm(overridesSchema(coreSchema), {
+		idPrefix: "core-my-models",
+		layout: [
+			{
+				title: "Models",
+				paths: ["/defaultModel", "/decisionModel", "/embeddingModel"],
+				overrides,
+			},
+		],
+	});
+}
+
 /** Generate one core section with the section ids the channels already use. */
 export function generatedCoreForm(id: keyof typeof CORE_LAYOUT): GeneratedForm {
 	const generated = generateForm(coreSchema, { idPrefix: `core-${id}`, layout: CORE_LAYOUT[id] });
 	const slugs: Record<string, string> = {
-		Queueing: "queue",
+		Conversations: "queue",
 		Models: "models",
 		Behaviour: "behaviour",
 		Defaults: "defaults",
+		Tools: "tools",
 		"Retries and streaming": "resilience",
 		"Model overrides": "models",
 		Server: "server",

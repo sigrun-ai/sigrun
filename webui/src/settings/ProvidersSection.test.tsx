@@ -60,12 +60,11 @@ function makeProvidersHarness(init?: {
 	// The panel's nav comes from /v1/settings/sections (U4 Task 4).
 	const sectionsResponse = {
 		sections: [
-			{ slug: "core", id: "general", title: "General", icon: "key" },
-			{ slug: "core", id: "tools", title: "Tools", icon: "edit" },
-			{ slug: "core", id: "interface", title: "Interface", icon: "image" },
-			{ slug: "core", id: "advanced", title: "Advanced", icon: "more" },
-			{ slug: "core", id: "providers", title: "Providers", icon: "cloud" },
-			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true },
+			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
+			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" },
+			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" },
+			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" },
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", title: "Settings", icon: "key", admin: true, group: "system" },
 		],
 		index: [],
 	};
@@ -212,10 +211,9 @@ describe("SettingsPanel Providers section", () => {
 		const renderer = await renderPanel(client);
 		const rows = renderer.root
 			.findAllByType("fieldset")
-			.filter((node) => node.props.className === "settings-provider");
-		expect(rows.map((node) => node.props["data-provider"] as string)).toEqual([
-			"acme",
-			"acme2",
+			.filter((node) => node.props.className === "settings-provider-owner");
+		expect(rows.map((node) => node.props["data-provider-owner"] as string)).toEqual([
+			"acme-ext",
 		]);
 		const text = textContent(renderer.toJSON());
 		// The readiness badges and model counts render per row…
@@ -227,8 +225,8 @@ describe("SettingsPanel Providers section", () => {
 		expect(text).toContain("last refresh failed");
 		// The section mounted over GET /v1/providers.
 		const first = renderer.root.findByProps({
-			className: "settings-provider",
-			"data-provider": "acme",
+			className: "settings-provider-owner",
+			"data-provider-owner": "acme-ext",
 		});
 		expect(first).toBeDefined();
 	});
@@ -359,8 +357,9 @@ describe("SettingsPanel Providers section", () => {
 			],
 		});
 		const renderer = await renderPanel(harness.client);
-		const rows = renderer.root.findAllByProps({ className: "settings-provider" });
-		expect(rows).toHaveLength(3);
+		const rows = renderer.root.findAllByProps({ className: "settings-provider-owner" });
+		expect(rows).toHaveLength(1);
+		expect(rows[0].findAllByProps({ className: "settings-provider" })).toHaveLength(3);
 		const text = textContent(renderer.toJSON());
 		expect(text).toContain("chat");
 		expect(text).toContain("decisions");

@@ -469,9 +469,17 @@ export interface SettingsFile {
 	 * silent default. LIVE — the registry reads it per call.
 	 */
 	readonly embeddingModel?: string;
+	/**
+	 * Settings split Plan 2 Task 2: the ONE locality switch — extension
+	 * slugs of provider extensions the admin trusts with local-only
+	 * content (every model kind). The pseudo-slug `"core"` covers the
+	 * env-driven provider, which has no `providerOwnership` entry.
+	 * LIVE — each registry reads it per call.
+	 */
+	readonly localProviders?: readonly string[];
 	/** Embedding-provider settings, read live per call. */
 	readonly embeddings?: {
-		/** Models the admin trusts with local-only content. */
+		/** Deprecated: migrated to the top-level `localProviders`. */
 		readonly localModels?: readonly string[];
 	};
 	/**

@@ -48,6 +48,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { SettingsStore } from "../src/harness/settings.js";
 import { seededIdentity } from "./helpers/identity.js";
 import {
 	calls as gatedEmbeddingCalls,
@@ -77,6 +78,9 @@ const GATED_EMBEDDING_PROVIDER = pathToFileURL(
 /** The decision fixture (warden Task 6): provider `acme-judge`. */
 const DECISION_PROVIDER = pathToFileURL(
 	join(import.meta.dirname, "fixtures", "fixture-decision-provider", "index.js"),
+).href;
+const CHAT_PROVIDER = pathToFileURL(
+	join(import.meta.dirname, "fixtures", "fixture-providers", "index.js"),
 ).href;
 
 /** One fixture catalog row the upstream serves. */
@@ -244,6 +248,7 @@ async function bootServer(
 		 */
 		readonly chatProviderId?: string;
 	} = {},
+	preseed?: Record<string, unknown>,
 ): Promise<TestServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-providers-api-"));
 	const upstream = await startUpstream([
@@ -262,6 +267,7 @@ async function bootServer(
 		SIGRUN_DATA_DIR: join(dir, "data"),
 	});
 	const identity = await seededIdentity(dir);
+	if (preseed !== undefined) new SettingsStore({ dir }).update(preseed);
 	await identity.users.add({ user: "pleb", admin: false, source: "cli" });
 	const opened = await openHarness(config, {
 		identity,
@@ -334,6 +340,7 @@ interface ProviderEntry {
 	owner?: string;
 	kind?: "chat" | "decision" | "embedding";
 	modelIds?: readonly string[];
+	systemDefault?: true;
 	detail?: string;
 }
 
@@ -349,6 +356,41 @@ async function listProviders(
 	expect(response.status).toBe(200);
 	return (response.json() as { providers: ProviderEntry[] }).providers;
 }
+
+describe("settings split: provider management metadata", () => {
+	test("provider extensions are marked", async () => {
+		const rig = await bootServer("acme/m1", [CHAT_PROVIDER, DECISION_PROVIDER, EMBEDDING_PROVIDER]);
+		// Exercise the production loader path for all three provider kinds.
+		const response = await call(rig.app, { method: "GET", url: "/v1/extensions", token: rig.adminToken });
+		expect(response.status).toBe(200);
+		const { extensions } = response.json() as { extensions: { name: string; provider?: true }[] };
+		expect(extensions.find((entry) => entry.name === "sigrun-fixture-providers")).toMatchObject({ provider: true });
+		expect(extensions.find((entry) => entry.name === "acme-judge")).toMatchObject({ provider: true });
+		expect(extensions.find((entry) => entry.name === "acme-embed")).toMatchObject({ provider: true });
+		for (const entry of extensions.filter((entry) => !["sigrun-fixture-providers", "acme-judge", "acme-embed"].includes(entry.name))) {
+			expect(entry.provider).toBeUndefined();
+		}
+	});
+
+	test("chat rows carry model ids", async () => {
+		const rig = await bootServer("openai/gpt-test");
+		await rig.opened.auth.setApiKey("acme", "acme-catalog-fixture-key");
+		await rig.opened.refreshProvider("acme");
+		const entries = await listProviders(rig.app, rig.adminToken);
+		expect(entries.find((entry) => entry.provider === "acme")).toMatchObject({ modelIds: ["m1", "m2"] });
+		expect(entries.find((entry) => entry.provider === "openai")).toMatchObject({ modelIds: ["gpt-test"] });
+	});
+
+	test("the default-credential row is marked", async () => {
+		const rig = await bootServer("acme/m1", [], {}, { defaultProvider: { baseUrl: "https://acme.example.invalid/v1" } });
+		const entries = await listProviders(rig.app, rig.adminToken);
+		expect(entries.find((entry) => entry.provider === "acme")).toMatchObject({ systemDefault: true });
+		const rigOther = await bootServer("openai/gpt-test");
+		const otherEntries = await listProviders(rigOther.app, rigOther.adminToken);
+		expect(otherEntries.find((entry) => entry.provider === "acme")?.systemDefault).toBeUndefined();
+		expect(otherEntries.find((entry) => entry.provider === "openai")).toMatchObject({ systemDefault: true });
+	});
+});
 
 describe("embedding provider entries", () => {
 	test("Providers lists an embedding entry with owner and modelIds", async () => {
@@ -517,11 +559,13 @@ describe("GET /v1/providers entries (models + owner)", () => {
 		const entries = await listProviders(app, adminToken);
 		expect(entries).toEqual([
 			// The fixture: unconfigured at boot → three-state vocabulary +
-			// count 0 (empty baseline) + the contributor that owns it.
-			{ provider: "acme", status: "not_configured", models: 0, owner: "ext-acme" },
+			// count 0 (empty baseline) + the contributor that owns it, and
+			// the admin-local switch off until an admin toggles it.
+			{ provider: "acme", status: "not_configured", models: 0, owner: "ext-acme", local: false, modelIds: [] },
 			// The env-degenerate default provider: exactly its one pinned
-			// model, no owning contributor, legacy not_ready (no key).
-			{ provider: "openai", status: "not_ready", models: 1 },
+			// model, no owning contributor, legacy not_ready (no key), the
+			// `core` pseudo-slug's locality off.
+			{ provider: "openai", status: "not_ready", models: 1, modelIds: ["gpt-test"], local: false, systemDefault: true },
 		]);
 		// The deprecated alias serves the identical (enriched) body.
 		const alias = await call(app, {
@@ -562,6 +606,8 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
+			modelIds: ["m1", "m2"],
 		});
 		// No restart happened — the SAME opened handle's tracker flipped
 		// because the auth bridge re-read auth.json on the refresh.
@@ -571,6 +617,8 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
+			modelIds: ["m1", "m2"],
 		});
 		// auth.json holds the key under the PROVIDER id (acme is not the
 		// default model's provider here — the default is the degenerate
@@ -602,6 +650,8 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
+			modelIds: ["m1", "m2"],
 		});
 	});
 
@@ -620,6 +670,9 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "ready",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
+			modelIds: ["m1", "m2"],
+			systemDefault: true,
 		});
 		// The write landed under "default" (spec §7.6: the precedence fix
 		// makes it the winning key for the default model's provider), NOT
@@ -672,6 +725,8 @@ describe("PUT/DELETE /v1/providers/:id/credential + POST refresh", () => {
 			status: "not_configured",
 			models: 2,
 			owner: "ext-acme",
+			local: false,
+			modelIds: ["m1", "m2"],
 		});
 		// The entry is gone (the catalog holds its last-known rows).
 		expect(opened.auth.read()).toEqual({});

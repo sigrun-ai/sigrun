@@ -30,7 +30,7 @@
 
 import { Errors } from "typebox/schema";
 import { isSuperuser } from "../auth/principal.js";
-import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
+import type { ChoiceOption, JsonObject, JsonValue, Tree } from "@sigrun/shared/blocks";
 import type {
 	ActionResult,
 	Principal,
@@ -52,6 +52,10 @@ import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
 import { applyDefaults } from "../../settings/schema/defaults.js";
 import { dropBlankOptionalStrings } from "../../settings/schema/blanks.js";
+import type { ModelKindId, ModelRoster } from "../../settings/model-kinds.js";
+import { MODEL_KINDS } from "../../settings/model-kinds.js";
+import { systemModelRosterData, withUnserved } from "../model-roster.js";
+import { deref, MODEL_KEYWORD } from "../../settings/schema/keywords.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -355,6 +359,30 @@ export interface SettingsSurfaceOptions {
 	) => void;
 	/** The surface service (the rev read the save's optimistic check needs). */
 	readonly service: SurfaceService;
+	/** Optional render-only projection. Declared fields still accept saves;
+	 * calls to modelRoster are fresh on each core Models render. */
+	readonly renderTree?: (tree: Tree, data: JsonObject) => Tree;
+	/**
+	 * The per-caller user resolver (settings split Plan 2 Task 5): replaces
+	 * the default `namedUser` at every user-resolution site of
+	 * `schemaSettingsSurfaceFor` (accessFor, readStored, the instanceKey
+	 * closure, the save). Return `undefined` for "no user" — the surface
+	 * then answers `named_user_required`. The My-Models surface resolves
+	 * the userless superuser to the PRIMARY ADMIN; other surfaces keep
+	 * the default (the principal's own live directory user).
+	 */
+	readonly resolveUser?: (principal: Principal) => string | undefined;
+	/**
+	 * Extra render data merged over the schema surface's data (Task 5:
+	 * My Models' default-first `/modelRoster/<kind>` payloads). `user` is
+	 * the RESOLVED caller (the primary admin for a userless superuser).
+	 */
+	readonly extraData?: (user: string | undefined) => Promise<JsonObject>;
+	/** Live model rosters and the effective defaults behind extension model fields. */
+	readonly models?: {
+		readonly roster: () => Record<ModelKindId, ChoiceOption[]>;
+		readonly effective: (kind: ModelKindId, user: string | undefined) => Promise<string | undefined>;
+	};
 	/**
 	 * The core-sections deps (UI-blocks U4 Task 4): present exactly when
 	 * `slug === "core"` — the core sections read/write the core
@@ -369,13 +397,42 @@ export interface SettingsSurfaceOptions {
 		readonly bootSnapshot: SettingsBootSnapshot;
 		readonly env: Readonly<Record<string, string | undefined>>;
 		readonly toolRoster: readonly string[];
-		/** The Models group's picker options (the `/modelRoster/*` bindings):
-		 * `default` the served chat catalog, `decision`/`embedding` the
-		 * decision/embedding registries' provider-qualified model ids. */
-		readonly modelRoster: Readonly<Record<"default" | "decision" | "embedding", readonly { id: string; label: string }[]>>;
+		/** Live per-kind picker options for `/modelRoster/chat|decision|embedding`. */
+		readonly modelRoster: () => ModelRoster;
+		/** The env-resolved boot default model, never the raw file value. */
+		readonly defaultModel: string;
 		/** Deployment-managed top-level keys, read fresh per render/save. */
 		readonly managed: () => readonly string[];
 	};
+}
+
+/**
+ * Project live rosters into data-bindable records. ChoiceOption's
+ * `label: Bindable<string>` proves these exact literals are strings,
+ * so no record-to-record cast is needed. The auxiliary systemDefault
+ * binding displays the env-resolved default; it does not recast pending
+ * restart semantics or the persisted defaultModel value.
+ */
+function modelsData(roster: ModelRoster, values: {
+	readonly defaultModel?: string;
+	readonly namingModel?: string;
+	readonly decisionModel?: string;
+	readonly embeddingModel?: string;
+}, systemDefault: string): JsonObject {
+	const projected = systemModelRosterData(roster, values);
+	const data: JsonObject = {modelRoster: {}, modelDefaults: {}, modelLiveCounts: {}};
+	const target = data.modelRoster as JsonObject;
+	for (const kind of ["chat", "decision", "embedding"] as const) {
+		target[kind] = projected[kind].map((row) => ({
+			id: row.id,
+			label: typeof row.label === "string" ? row.label : row.label.$,
+		}));
+		const live = data.modelLiveCounts as JsonObject;
+		live[kind] = roster[kind].length;
+	}
+	const modelDefaults = data.modelDefaults as JsonObject;
+	modelDefaults.chat = `System default (${systemDefault})`;
+	return data;
 }
 
 /**
@@ -468,15 +525,20 @@ export function settingsSurfaceFor(
 			// checkbox list). The binding's shape is ChoiceOption[]
 			// (`{id, label}` rows, spec §5.6).
 			toolRoster: options.core.toolRoster.map((name) => ({ id: name, label: name })),
-			// The Models group's picker bindings (`/modelRoster/default`,
-			// `/modelRoster/decision`, `/modelRoster/embedding`) — served
-			// per render, so a provider refresh between loads is picked up
-			// without a settings change.
-			modelRoster: {
-				default: [...options.core.modelRoster.default],
-				decision: [...options.core.modelRoster.decision],
-				embedding: [...options.core.modelRoster.embedding],
-			} satisfies JsonObject,
+			// Computed on this call: a provider refresh never needs a server
+			// restart. General no longer draws these bindings.
+			...(section.id === "models"
+				? modelsData(
+						options.core.modelRoster(),
+						{
+							defaultModel: readDotted(file, "defaultModel") as string | undefined,
+							namingModel: readDotted(file, "namingModel") as string | undefined,
+							decisionModel: readDotted(file, "decisionModel") as string | undefined,
+							embeddingModel: readDotted(file, "embeddingModel") as string | undefined,
+						},
+						options.core.defaultModel,
+					)
+				: {}),
 		};
 	};
 
@@ -677,16 +739,16 @@ export function settingsSurfaceFor(
 		sharedData: true,
 		render: async (ctx): Promise<SurfaceRenderResult> => {
 			const access = accessFor(ctx.principal);
-			return {
-				tree: core === undefined ? form : markManagedFields(form, core.managed()),
-				data:
-					access === "none"
-						? {}
-						: core === undefined
-							? await readData(ctx.principal)
-							: readCoreData(),
-				access,
-			};
+			const data: JsonObject = access === "none"
+				? {}
+				: core === undefined
+					? await readData(ctx.principal)
+					: readCoreData();
+			let tree = core === undefined ? form : markManagedFields(form, core.managed());
+			if (options.renderTree !== undefined) {
+				tree = options.renderTree(tree, data);
+			}
+			return { tree, data, access };
 		},
 		actions: {
 			save: async (ctx, payload): Promise<ActionResult> => {
@@ -919,14 +981,28 @@ function schemaError(
 	};
 	const [valid, errors] = Errors(schema, project(values, schema));
 	if (valid) return undefined;
-	const first = errors.find(
+	// additionalProperties: false (Task 4's overridesSchema sets it at every
+	// object level) reports instancePath "" — name the OFFENDING KEY from
+	// the error's params so the save's error.field identifies it. Only a
+	// root `false` opts in: a table's additionalProperties SCHEMA also
+	// emits the keyword, and its more specific leaf error must win.
+	const additionalError = schema.additionalProperties === false
+		? errors.find((error) => error.keyword === "additionalProperties")
+		: undefined;
+	const first = additionalError ?? errors.find(
 		(error) => error.keyword !== "oneOf" && error.keyword !== "anyOf",
 	) ?? errors[0];
+	const additional = additionalError === undefined
+		? undefined
+		: (additionalError.params as { additionalProperties?: unknown }).additionalProperties;
+	const field = Array.isArray(additional) && typeof additional[0] === "string"
+		? additional[0]
+		: first?.instancePath ?? "";
 	return {
 		ok: false,
 		error: {
 			message: first?.message ?? "invalid settings",
-			field: first?.instancePath ?? "",
+			field,
 		},
 	};
 }
@@ -971,6 +1047,65 @@ function optionsNonEmpty(value: string | undefined): string | undefined {
 	return value === undefined || value.length === 0 ? undefined : value;
 }
 
+/** Model fields declared anywhere in the schema, including table rows. */
+function modelKindsInSchema(node: unknown): Map<ModelKindId, string[]> {
+	const kinds = new Map<ModelKindId, string[]>();
+	const stack: unknown[] = [node];
+	while (stack.length > 0) {
+		const current = stack.pop();
+		if (!isRec(current)) continue;
+		if (isRec(current.properties)) {
+			for (const [name, property] of Object.entries(current.properties)) {
+				if (!isRec(property)) continue;
+				const resolved = deref(current, property);
+				const kind = MODEL_KINDS.find((entry) => entry.kind === resolved[MODEL_KEYWORD]);
+				if (kind !== undefined) kinds.set(kind.kind, [...(kinds.get(kind.kind) ?? []), name]);
+			}
+		}
+		for (const key of ["properties", "additionalProperties", "items", "$defs", "definitions"]) {
+			const child = current[key];
+			if (isRec(child)) stack.push(...Object.values(child));
+		}
+		for (const key of ["oneOf", "anyOf"]) {
+			const branches = current[key];
+			if (Array.isArray(branches)) stack.push(...branches);
+		}
+	}
+	return kinds;
+}
+
+/** Extension model fields get a default row; System → Models keeps its bare payload. */
+async function extensionModelData(
+	models: NonNullable<SettingsSurfaceOptions["models"]>,
+	kinds: ReadonlyMap<ModelKindId, string[]>,
+	stored: Record<string, unknown>,
+	user: string | undefined,
+): Promise<JsonObject> {
+	const roster = models.roster();
+	const modelRoster: JsonObject = {};
+	for (const [kind, fieldNames] of kinds) {
+		const settingKey = MODEL_KINDS.find((entry) => entry.kind === kind)?.settingKey;
+		if (settingKey === undefined) continue;
+		const effective = await models.effective(kind, user);
+		const storedValues = [...new Set([settingKey, ...fieldNames].flatMap((key) => {
+			const value = stored[key];
+			return typeof value === "string" && value !== "" ? [value] : [];
+		}))];
+		const options = storedValues.reduce(
+			(rows, value) => withUnserved(rows, value),
+			roster[kind],
+		);
+		modelRoster[kind] = [
+			{ id: "", label: `Use the default (${effective ?? "none"})` },
+			...options.map((row) => ({
+				id: row.id,
+				label: typeof row.label === "string" ? row.label : row.label.$,
+			})),
+		];
+	}
+	return { modelRoster };
+}
+
 /** The schema-backed extension section; core sections retain settingsSurfaceFor. */
 export function schemaSettingsSurfaceFor(
 	slug: string,
@@ -982,11 +1117,13 @@ export function schemaSettingsSurfaceFor(
 	const { stores, publishSettingsChanged, service } = options;
 	const userScope = section.scope === "user";
 	const namedUser = (principal: Principal): string => {
-		const user = principal.user;
-		if (user === undefined || stores.users.get(user) === undefined) {
+		const resolved = options.resolveUser === undefined
+			? principal.user
+			: options.resolveUser(principal);
+		if (resolved === undefined || stores.users.get(resolved) === undefined) {
 			throw new NamedUserRequiredError();
 		}
-		return user;
+		return resolved;
 	};
 	const accessFor = (principal: Principal): "write" | "none" => {
 		if (userScope) namedUser(principal);
@@ -994,6 +1131,7 @@ export function schemaSettingsSurfaceFor(
 		return "write";
 	};
 	const properties = isRec(schema.properties) ? schema.properties : {};
+	const modelKinds = modelKindsInSchema(schema);
 	const rootTable = isRec(schema.additionalProperties);
 	const readStored = async (principal: Principal) => {
 		const user = userScope ? namedUser(principal) : undefined;
@@ -1058,6 +1196,10 @@ export function schemaSettingsSurfaceFor(
 					unknownKeys: Object.keys(stored).filter(
 						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
 					),
+					...(options.extraData === undefined ? {} : await options.extraData(user)),
+					...(options.models === undefined || modelKinds.size === 0
+						? {}
+						: await extensionModelData(options.models, modelKinds, stored, user)),
 				},
 				access,
 			};
@@ -1128,7 +1270,9 @@ export function schemaSettingsSurfaceFor(
 						}
 						if (userStores === undefined) await stores.settingsFor(slug).set(next);
 						else await userStores.settings.set(next);
-						publishSettingsChanged({ extension: slug }, submittedKeys, user);
+						// Core-slug saves touch CORE keys: publish server-scoped (no
+						// extension's user service is poked) with the user attached.
+						publishSettingsChanged(slug === "core" ? "server" : { extension: slug }, submittedKeys, user);
 						return { ok: true };
 					},
 				);

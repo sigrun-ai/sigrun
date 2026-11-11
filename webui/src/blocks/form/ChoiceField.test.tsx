@@ -11,7 +11,7 @@ import { createElement as h, act } from "react";
 import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
 import type { FormBlock, JsonObject } from "@sigrun/shared/blocks";
-import { findButton, render, textContent } from "../../test-utils";
+import { findButton, instanceText, render, textContent } from "../../test-utils";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
 import { WidthContext } from "../width";
 import { FormBlockView } from "./Form";
@@ -102,6 +102,24 @@ describe("choice: presentation", () => {
 		).toHaveLength(0);
 	});
 
+	test("a dropdown renders its bound placeholder in the empty option", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Chat model",
+				options: [{ id: "acme/default", label: "A different model" }],
+				presentation: "dropdown",
+				placeholder: { $: "/systemDefault" },
+			},
+		], { data: { systemDefault: "System default (acme/runtime-default)" } });
+		const empty = renderer.root.findAll(
+			(node) => node.type === "option" && node.props.value === "",
+		);
+		expect(empty).toHaveLength(1);
+		expect(instanceText(empty[0]!)).toBe("System default (acme/runtime-default)");
+	});
+
 	test("multi choice ignores dropdown presentation", () => {
 		const { renderer } = harness([
 			{
@@ -184,6 +202,24 @@ describe("choice: value shapes (§5.6)", () => {
 			rev: 0,
 			values: { pick: ["a", { other: "extra" }] },
 		});
+	});
+
+	test('a dropdown without a placeholder keeps its empty option blank', () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Chat model",
+				options: [{ id: "acme/default", label: "A different model" }],
+				presentation: "dropdown",
+			},
+		]);
+		const empty = renderer.root.findAll(
+			(node) => node.type === "option" && node.props.value === "",
+		);
+
+		expect(empty).toHaveLength(1);
+		expect(instanceText(empty[0]!)).toBe("");
 	});
 
 	test('the allowOther row carries the "Type something" placeholder', () => {

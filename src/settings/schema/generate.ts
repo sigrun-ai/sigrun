@@ -26,7 +26,9 @@ import {
 	APPLY_KEYWORD,
 	ENV_KEYWORD,
 	KEY_KEYWORD,
+	MODEL_KEYWORD,
 	SUMMARY_KEYWORD,
+	OVERRIDABLE_KEYWORD,
 	applyOf,
 	deref,
 	envOf,
@@ -34,6 +36,7 @@ import {
 	hasOtherNonDrawableKeyword,
 	isRecord,
 	keyOf,
+	modelKindOf,
 	pointerEscape,
 	pointerJoin,
 	propertiesOf,
@@ -43,6 +46,8 @@ import {
 	type Apply,
 	type JsonSchema,
 } from "./keywords.js";
+
+import { MODEL_KINDS } from "../model-kinds.js";
 
 export { ENV_KEYWORD, envOf } from "./keywords.js";
 export type { Apply, JsonSchema } from "./keywords.js";
@@ -297,6 +302,17 @@ function propertyNode(
 	const branches = blocked ? undefined : variantBranches(schema);
 	if (branches) {
 		return variantNode(ctx, base, pointer, branches);
+	}
+
+	const modelKind = modelKindOf(schema);
+	if (modelKind !== undefined) {
+		return {
+			...base,
+			type: "choice",
+			presentation: "dropdown",
+			options: { $: `/modelRoster/${modelKind}` },
+			allowOther: { label: "Other model id (provider/model)" },
+		};
 	}
 
 	if (hasNonDrawableKeyword(schema)) {
@@ -676,6 +692,24 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 	}
 	if (schema.writeOnly !== undefined && typeof schema.writeOnly !== "boolean") {
 		return fail("writeOnly must be a boolean");
+	}
+	if (schema[OVERRIDABLE_KEYWORD] !== undefined) {
+		if (schema[OVERRIDABLE_KEYWORD] !== true) {
+			return fail(`${OVERRIDABLE_KEYWORD} must be true`);
+		}
+		if (schema.type === "object" || schema.type === "array" || isRecord(schema.properties)) {
+			return fail(`${OVERRIDABLE_KEYWORD} is valid only on leaf properties (not object/array)`);
+		}
+	}
+
+	if (schema[MODEL_KEYWORD] !== undefined) {
+		const kind = schema[MODEL_KEYWORD];
+		if (!MODEL_KINDS.some((entry) => entry.kind === kind)) {
+			return fail(`${MODEL_KEYWORD} must be a model kind (chat, decision, or embedding; got ${JSON.stringify(kind)})`);
+		}
+		if (schema.type !== "string" || schema.writeOnly === true) {
+			return fail(`${MODEL_KEYWORD} is valid only on a non-writeOnly string property`);
+		}
 	}
 
 	if (Array.isArray(schema.oneOf)) {

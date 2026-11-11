@@ -12,6 +12,7 @@ import { afterEach, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
+import type { ChoiceField, Tree } from "@sigrun/shared/blocks";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
@@ -448,6 +449,81 @@ test("a panel named user-settings fails the load of a declaring extension", asyn
 	expect(opened.extensionOutcomes[0]?.error).toContain('"user-settings"');
 });
 
+
+test("the first option names the effective default", async () => {
+	const rig = await boot({ settings: { judgeModel: "acme-judge/unserved-model" } });
+	await rig.opened.settings.apply({ decisionModel: "acme-judge/judge-1" });
+	const shared = await call(rig, "GET", SURFACE);
+	expect(shared.status).toBe(200);
+	expect(modelChoices(shared.body.tree as Tree, shared.body.data as Record<string, unknown>).get("judgeModel")?.options).toEqual([
+		{ id: "", label: "Use the default (acme-judge/judge-1)" },
+		{ id: "acme-judge/judge-1", label: "acme-judge/judge-1 · acme-schema-save" },
+		{ id: "acme-judge/unserved-model", label: "acme-judge/unserved-model (not currently served)" },
+	]);
+
+	const personal = await call(rig, "GET", USER_SURFACE);
+	expect(personal.status).toBe(200);
+	await rig.opened.extensionStores.userExtensionStores("core", "alice").settings.set({ defaultModel: "acme-user/chat" });
+	const overridden = await call(rig, "GET", USER_SURFACE);
+	expect(overridden.status).toBe(200);
+	const idle = modelChoices(overridden.body.tree as Tree, overridden.body.data as Record<string, unknown>).get("idleModel");
+	expect(idle?.options[0]).toEqual({ id: "", label: "Use the default (acme-user/chat)" });
+	expect(idle?.options.slice(1).map((row) => row.id)).toEqual(["faux/m"]);
+});
+
+test("a $ref-declared model field receives its roster", async () => {
+	const rig = await boot({ specifier: fixture("fixture-settings-model-ref") });
+	const rendered = await call(rig, "GET", "/v1/ext/acme-model-ref/surfaces/settings");
+	expect(rendered.status).toBe(200);
+	const model = modelChoices(rendered.body.tree as Tree, rendered.body.data as Record<string, unknown>).get("model");
+	expect(model?.options[0]).toEqual({ id: "", label: "Use the default (none)" });
+	expect(model?.options.slice(1).map((row) => row.id)).toEqual(["acme-judge/judge-1"]);
+});
+
+test("choosing the default leaves the key unset", async () => {
+	const rig = await boot({
+		settings: { judgeModel: "acme-judge/judge-1", interval: 30 },
+		userSettings: { idleModel: "faux/m", nickname: "Before" },
+	});
+	const shared = await save(rig, { judgeModel: "", interval: 30 }, "default-model-unset");
+	expect(shared.body).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({ interval: 30 });
+	const personal = await save(rig, { idleModel: "", nickname: "After" }, "default-user-model-unset", USER_SURFACE);
+	expect(personal.body).toMatchObject({ ok: true });
+	expect(await file(rig, true)).toEqual({ nickname: "After" });
+});
+
+/** Resolve every generated model field's bound options from render data. */
+function modelChoices(
+	tree: Tree,
+	data: Record<string, unknown>,
+): Map<string, ChoiceField & { options: readonly { id: string; label: string }[] }> {
+	const fields = new Map<string, ChoiceField & { options: readonly { id: string; label: string }[] }>();
+	const walk = (node: unknown): void => {
+		if (Array.isArray(node)) {
+			for (const child of node) walk(child);
+			return;
+		}
+		if (typeof node !== "object" || node === null) return;
+		const record = node as Record<string, unknown>;
+		if (record.type === "choice" && typeof record.name === "string") {
+			const binding = record.options as { $?: string };
+			const path = binding.$?.slice(1).split("/").filter(Boolean) ?? [];
+			let options: unknown = data;
+			for (const segment of path) {
+				options = typeof options === "object" && options !== null && !Array.isArray(options)
+					? (options as Record<string, unknown>)[segment]
+					: undefined;
+			}
+			fields.set(record.name, { ...record, options: options ?? [] } as ChoiceField & {
+				options: readonly { id: string; label: string }[];
+			});
+		}
+		for (const key of ["root", "children", "fields", "item"]) walk(record[key]);
+	};
+	walk(tree);
+	return fields;
+}
 
 test("render shows the env fallback", async () => {
 	const rig = await boot({ env: { ACME_SCHEMA_SAVE_URL: "https://env.example.invalid" } });

@@ -213,7 +213,7 @@ describe("GET /v1/auth/check", () => {
 		expect(response.statusCode).toBe(200);
 		// W3 Task 6 enrichment: `models` (count) + `owner` when contributed.
 		expect(response.json()).toEqual({
-			providers: [{ provider: "openai", status: "ready", models: 1 }],
+			providers: [{ provider: "openai", status: "ready", models: 1, modelIds: ["gpt-test"], local: false, systemDefault: true }],
 		});
 		// §6.4: statuses only — the key material never appears.
 		expect(response.body).not.toContain(DUMMY_OPENAI_KEY);
@@ -228,7 +228,7 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "openai", status: "not_ready", models: 1 }],
+			providers: [{ provider: "openai", status: "not_ready", models: 1, modelIds: ["gpt-test"], local: false, systemDefault: true }],
 		});
 	});
 
@@ -240,7 +240,7 @@ describe("GET /v1/auth/check", () => {
 		});
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
-			providers: [{ provider: "openai", status: "not_ready", models: 1 }],
+			providers: [{ provider: "openai", status: "not_ready", models: 1, modelIds: ["gpt-test"], local: false, systemDefault: true }],
 		});
 	});
 
@@ -250,7 +250,7 @@ describe("GET /v1/auth/check", () => {
 		expect(response.statusCode).toBe(200);
 		expect(response.json()).toEqual({
 			providers: [
-				{ provider: "faux", status: "ready", models: 1, owner: "ext-faux" },
+				{ provider: "faux", status: "ready", models: 1, modelIds: ["m"], owner: "ext-faux", local: false, systemDefault: true },
 			],
 		});
 	});
@@ -262,7 +262,7 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
 			providers: [
-				{ provider: "faux", status: "invalid", models: 1, owner: "ext-faux" },
+				{ provider: "faux", status: "invalid", models: 1, modelIds: ["m"], owner: "ext-faux", local: false, systemDefault: true },
 			],
 		});
 	});
@@ -276,7 +276,7 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
 			providers: [
-				{ provider: "faux", status: "not_ready", models: 1, owner: "ext-faux" },
+				{ provider: "faux", status: "not_ready", models: 1, modelIds: ["m"], owner: "ext-faux", local: false, systemDefault: true },
 			],
 		});
 	});
@@ -291,8 +291,8 @@ describe("GET /v1/auth/check", () => {
 		const response = await getAuthCheck(app);
 		expect(response.json()).toEqual({
 			providers: [
-				{ provider: "faux", status: "ready", models: 1, owner: "ext-faux" },
-			{ provider: "openai", status: "ready", models: 1 },
+				{ provider: "faux", status: "ready", models: 1, modelIds: ["m"], owner: "ext-faux", local: false },
+				{ provider: "openai", status: "ready", models: 1, modelIds: ["gpt-test"], local: false, systemDefault: true },
 			],
 		});
 	});
@@ -313,9 +313,12 @@ describe("GET /v1/auth/check", () => {
 			// W3 Task 6: `models` joined the entry; still no credential
 			// material — every field is status/count/ownership.
 			expect(Object.keys(entry).sort()).toEqual([
+				"local",
+				"modelIds",
 				"models",
 				"provider",
 				"status",
+				"systemDefault",
 			]);
 		}
 		expect(response.body).not.toContain(DUMMY_OPENAI_KEY);

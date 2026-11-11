@@ -7,7 +7,7 @@ export declare let capturedHost: SigrunHost | undefined;
 export declare function resetEmbeddingCaller(): void;
 export declare function callFromCaller(
 	texts?: readonly string[],
-	opts?: { model?: string; confidentiality?: "normal" | "local-only"; signal?: AbortSignal; timeoutMs?: number },
+	opts?: { model?: string; user?: string; confidentiality?: "normal" | "local-only"; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<EmbeddingResult>;
 declare function createFixtureEmbeddingCaller(host: SigrunHost): unknown;
 export default createFixtureEmbeddingCaller;

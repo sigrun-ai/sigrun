@@ -77,10 +77,10 @@ function makeHarness(init?: {
 	return createClient({ fetch: fetchImpl, rawFetch: fetchImpl as never });
 }
 
-async function renderPage(init?: Parameters<typeof makeHarness>[0]) {
+async function renderPage(init?: Parameters<typeof makeHarness>[0] & { readonly group?: "mine" | "system" }) {
 	const client = makeHarness(init);
 	const renderer = await renderAsync(
-		<ExtensionPage client={client} extension={extension} sections={init?.sections ?? sections} admin={init?.admin ?? true} />,
+		<ExtensionPage client={client} extension={extension} sections={init?.sections ?? sections} admin={init?.admin ?? true} group={init?.group ?? "system"} />,
 	);
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -95,13 +95,18 @@ function parts(renderer: TestRenderer.ReactTestRenderer): string[] {
 }
 
 describe("ExtensionPage", () => {
-	test("page stacks Credentials, Settings, Your settings, Advanced in that order", async () => {
-		const renderer = await renderPage({ providers: [{ provider: "acme", owner: "acme-ext", status: "ready", models: 2 }] });
-		expect(parts(renderer)).toEqual(["credentials", "settings", "user-settings", "advanced"]);
+	test("page stacks Credentials, Settings, Advanced in that order", async () => {
+		const renderer = await renderPage({ providers: [{ provider: "acme", owner: "acme-ext", status: "ready", models: 2, modelIds: ["m1", "m2"] }] });
+		expect(parts(renderer)).toEqual(["credentials", "settings", "advanced"]);
 	});
 
-	test("non-admin sees only the user part", async () => {
-		const renderer = await renderPage({ admin: false });
+	test("the My-settings page draws only Your settings", async () => {
+		const renderer = await renderPage({ group: "mine", admin: false });
+		expect(parts(renderer)).toEqual(["user-settings"]);
+	});
+
+	test("a non-admin My-settings page shows only Your settings", async () => {
+		const renderer = await renderPage({ admin: false, group: "mine" });
 		expect(parts(renderer)).toEqual(["user-settings"]);
 		expect(textContent(renderer.toJSON())).not.toContain("not in this version's settings");
 	});
@@ -109,9 +114,9 @@ describe("ExtensionPage", () => {
 	test("provider page shows one auth.json key row per provider across chat and decision kinds", async () => {
 		const renderer = await renderPage({
 			providers: [
-				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 2 },
-				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1 },
-				{ provider: "acme-decision", owner: "acme-ext", kind: "decision", status: "degraded", models: 1 },
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 2, modelIds: ["m1", "m2"] },
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1, modelIds: ["m1"] },
+				{ provider: "acme-decision", owner: "acme-ext", kind: "decision", status: "degraded", models: 1, modelIds: ["judge-1"] },
 			],
 		});
 		expect(renderer.root.findAllByProps({ className: "settings-provider-key" })).toHaveLength(2);

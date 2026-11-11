@@ -22,7 +22,7 @@ import {
 	type Storage,
 } from "@earendil-works/pi-durable";
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
-import { DECISION_TIMEOUT_ENV, effectiveMethods, type Env, type SigrunConfig } from "../config.js";
+import { DECISION_TIMEOUT_ENV, effectiveMethods, parseModelSpec, type Env, type SigrunConfig } from "../config.js";
 import { requiresProxyVouch } from "../server/auth/proxy-only.js";
 import { wireActivity } from "./activity.js";
 import {
@@ -81,6 +81,13 @@ import {
 	buildEmbeddingRegistry,
 	type EmbeddingRegistry,
 } from "./embeddings.js";
+import { createLocality, type Locality } from "./locality.js";
+import { createEffectiveSettings, type EffectiveSettings } from "../settings/effective.js";
+import { coreSchema } from "../settings/core-schema.js";
+import {
+	migrateLocalModels,
+	type LocalityMigrationResult,
+} from "../server/locality-migration.js";
 import {
 	buildDecisionEvaluateTool,
 	createDecisionsExtension,
@@ -202,6 +209,7 @@ import {
 	ensureStoreRoots,
 	resolveStoreRoots,
 	sharedExtensionStores,
+	userExtensionStores,
 	type SharedExtensionStores,
 	type StoreRoots,
 } from "./stores.js";
@@ -280,6 +288,8 @@ export interface OpenedHarness {
 	readonly models: Models;
 	/** Boot default model (env/file config wins over contributor defaults). */
 	readonly defaultModel: ModelRef;
+	/** The acting user's served default, with a one-warning-per-value fallback. */
+	readonly defaultModelFor: (user: string | undefined) => Promise<ModelRef>;
 	/**
 	 * The union of every loaded extension's validated `interactiveTools`
 	 * (ask-user Task 3, spec §6): the tool names core hides in every
@@ -402,6 +412,12 @@ export interface OpenedHarness {
 	 * surface; settings and credentials resolve per call.
 	 */
 	readonly embeddings: EmbeddingRegistry;
+	/** The one live locality answer (settings split Plan 2 Task 2). */
+	readonly locality: Locality;
+	/** The per-user effective settings resolver (settings split Plan 2 Task 4). */
+	readonly effective: EffectiveSettings;
+	/** The boot migration's result; createServer posts the one notice. */
+	readonly localityMigration: LocalityMigrationResult;
 	/**
 	 * The pending-restart boot snapshot (UI-blocks U4, spec §13.2): every
 	 * restart key's stored value at boot, taken once after the settings
@@ -1598,6 +1614,22 @@ export async function openHarness(
 	const decisionsSlot: {
 		registry: DecisionRegistry | undefined;
 	} = { registry: undefined };
+	// Settings split Plan 2 Task 2: the ONE locality answer, live per call
+	// on every kind — chat models resolve through the collector's ownership
+	// map (last-registered wins), env-driven ids fall to the "core"
+	// pseudo-slug, and the non-chat registries answer for their own ids.
+	// The deferred slot mirrors the decision-registry one above: seam
+	// hosts and factory-time gate calls resolve through the live slot.
+	// `locality` (the OpenedHarness field below) is the LIVE ref itself.
+	let localitySlot: Locality | undefined;
+	const localityRef: Locality = {
+		isLocalExtension(slug: string): boolean {
+			return localitySlot?.isLocalExtension(slug) ?? false;
+		},
+		isLocalModel(kind: "chat" | "decision" | "embedding", model: string): boolean {
+			return localitySlot?.isLocalModel(kind, model) ?? false;
+		},
+	};
 	// The default model's provider id, as the credential readers below need
 	// it: `PUT /v1/providers/:id/credential` redirects a Save for THAT id to
 	// the magic `"default"` auth.json key, so the readers must look there
@@ -1677,6 +1709,7 @@ export async function openHarness(
 					}, userServices, {
 						publishedHooks: { current: publishedHooksSlot, ready: publishedHooksReady },
 						decisions: { current: decisionsSlot, ready: decisionsReady },
+						locality: localityRef,
 					}, undefined, settingsSlug);
 				if (priorHost !== undefined) host.rekey({ name: extensionName }, kinds);
 				// File under the final name only, and only once the load
@@ -1748,7 +1781,31 @@ export async function openHarness(
 	// Save the UI reports as succeeded would stay invisible here. The
 	// settings read is live too: `decisionModel` and
 	// `server.decisions.timeoutMs` apply without a restart.
+	// Settings split Task 2 order: the slot is declared before the
+	// resolver's owner closures so they can reference either registry.
+	let embeddingsSlot: EmbeddingRegistry | undefined;
+	const ownerOfLocal = (
+		kind: "chat" | "decision" | "embedding",
+		providerId: string,
+		modelId?: string,
+	): string | undefined => {
+		if (kind === "chat") {
+			// Live, not a boot snapshot: a refresh can add a model without
+			// rebooting, and an unserved id is never local.
+			if (modelId === undefined || models.getModel(providerId, modelId) === undefined) {
+				return undefined;
+			}
+			return providerOwnership.get(providerId) ?? "core";
+		}
+		const registry = kind === "decision" ? decisionsSlot.registry : embeddingsSlot;
+		return registry?.providers().find((row) => row.id === providerId)?.extension;
+	};
+	localitySlot = createLocality({
+		localProviders: () => settingsStore.read().localProviders ?? [],
+		ownerOf: ownerOfLocal,
+	});
 	decisionsSlot.registry = buildDecisionRegistry(decisionProviderDeclarations, {
+		locality: localityRef,
 		credential: (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
@@ -1762,6 +1819,8 @@ export async function openHarness(
 				: env[credentialEnv]?.trim() || undefined;
 		},
 		readSettings: () => settingsStore.read(),
+	effectiveModel: async (user) =>
+			await safeEffectiveModel("decisionModel", user, undefined),
 		timeoutCapMs: config.decisions.timeoutMs,
 		// The env tier of the timeout knob: env always wins over a live
 		// file edit (the config's env-over-file precedence, per call).
@@ -1771,7 +1830,8 @@ export async function openHarness(
 		now: () => Date.now(),
 		warn: (message) => console.warn(message),
 	});
-	// The embedding registry reads live settings on every call. Credentials
+	// The embedding registry reads live settings on every call (locality
+	// now comes from the one resolver, not a per-model list). Credentials
 	// are local auth.json reads over the ambient env, as for decisions —
 	// including the same magic-`"default"` fallback for the default model's
 	// provider id (the key `PUT /v1/providers/:id/credential` writes there).
@@ -1780,14 +1840,15 @@ export async function openHarness(
 			const settings = settingsStore.read();
 			return {
 				embeddingModel: settings.embeddingModel,
-				localModels: settings.embeddings?.localModels ?? [],
 				timeoutCapMs: settings.server?.embeddings?.timeoutMs ?? 30_000,
 			};
 		},
+		locality: localityRef,
+		effectiveModel: async (user) =>
+			await safeEffectiveModel("embeddingModel", user, undefined),
 		credential: async (id, credentialEnv) => {
 			const stored = authStore.read()[id]?.apiKey;
 			if (stored !== undefined) return stored;
-			// The route's `"default"` write, for the id it applies to.
 			if (id === defaultChatProviderId) {
 				const fromDefault = authStore.read()[DEFAULT_AUTH_KEY]?.apiKey;
 				if (fromDefault !== undefined) return fromDefault;
@@ -1798,6 +1859,7 @@ export async function openHarness(
 		},
 		warn: (message) => console.warn(message),
 	});
+	embeddingsSlot = embeddings;
 	decisionRegistryReady();
 	// Warden Task 7: the late fill — swap the placeholder extension for
 	// the tool-bearing one when any decision model exists at boot.
@@ -1944,6 +2006,99 @@ export async function openHarness(
 			declaredProviderIds,
 		},
 	);
+
+	// One effective-settings resolver for every per-user model read. The
+	// env-resolved boot default remains the system value for defaultModel.
+	const effective = createEffectiveSettings({
+		schema: coreSchema,
+		system: (key: string) => {
+			if (key === "defaultModel") return `${defaultModel.provider}/${defaultModel.modelId}`;
+			return (settingsStore.read() as Record<string, unknown>)[key];
+		},
+		overrides: async (user: string) => {
+			const stores = userExtensionStores(roots, identity.users, "core", user);
+			return stores.settings.get();
+		},
+		directory: () => identity.users.list(),
+	});
+	// Invalid overrides never prevent a conversation from running. Unreadable
+	// files warn once per user; each bad value warns once per boot. Later reads
+	// still fall back to the system model.
+	const warnedEffectiveReads = new Set<string>();
+	const safeEffectiveModel = async (
+		key: string,
+		user: string | undefined,
+		fallback: string | undefined,
+	): Promise<string | undefined> => {
+		if (user === undefined) {
+			try {
+				return (await effective.value(key, user)) as string | undefined;
+			} catch {
+				return fallback;
+			}
+		}
+		try {
+			return (await effective.value(key, user)) as string | undefined;
+		} catch (error) {
+			if (!warnedEffectiveReads.has(`${key}:${user}`)) {
+				warnedEffectiveReads.add(`${key}:${user}`);
+				console.warn(
+					`${key} override for "${user}" could not be read; using system value: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return fallback;
+		}
+	};
+	const warnedDefaultUsers = new Set<string>();
+	const warnedDefaultOverrides = new Set<string>();
+	const defaultModelFor = async (user: string | undefined): Promise<ModelRef> => {
+		if (user === undefined) return defaultModel;
+		let resolved: unknown;
+		try {
+			resolved = await effective.value("defaultModel", user);
+		} catch (error) {
+			if (!warnedDefaultUsers.has(user)) {
+				warnedDefaultUsers.add(user);
+				console.warn(
+					`defaultModel override for "${user}" could not be read; using system default: ${error instanceof Error ? error.message : String(error)}`,
+				);
+			}
+			return defaultModel;
+		}
+		if (typeof resolved !== "string" || resolved === `${defaultModel.provider}/${defaultModel.modelId}`) {
+			return defaultModel;
+		}
+		try {
+			const candidate = parseModelSpec(resolved, "user defaultModel override");
+			if (models.getModel(candidate.provider, candidate.modelId) !== undefined) return candidate;
+		} catch {
+			// The one warning below covers parse and served-catalog failures alike.
+		}
+		if (!warnedDefaultOverrides.has(resolved)) {
+			warnedDefaultOverrides.add(resolved);
+			console.warn(`user defaultModel override "${resolved}" is invalid or not currently served; using system default`);
+		}
+		return defaultModel;
+	};
+
+	// One-shot migration: the registry exists, so unknown models are
+	// dropped by the owner lookup. Headless boots migrate HERE too; the
+	// notice waits for createServer's notices service.
+	const localityMigration = migrateLocalModels(
+		settingsStore,
+		(model) => {
+			const slash = model.indexOf("/");
+			if (slash <= 0) return undefined;
+			const providerId = model.slice(0, slash);
+			const modelId = model.slice(slash + 1);
+			const provider = embeddings.providers().find((row) => row.id === providerId);
+			// Unknown models never migrate. The per-model local:false veto
+			// is intentionally NOT the gate: the admin explicitly listed
+			// this model, so its extension's admin intent moves; the veto
+			// still controls the serve-time refusal afterwards.
+			return provider?.models.includes(modelId) ? provider.extension : undefined;
+		},
+	);
 	// The jobs core extension (jobs Task 3, spec §8.1 "The executor"):
 	// ONE registry install carrying the `sigrun.schedule` task, BEFORE
 	// `Harness.open` reads the registry (the same slot as the other core
@@ -1965,6 +2120,7 @@ export async function openHarness(
 		registry,
 		models,
 		defaultModel,
+		defaultModelFor,
 		now: () => clockNow().getTime(),
 		defaultTz: config.timezone,
 		// Task 2c: job prompts expand `/skill:name` and template commands
@@ -2341,6 +2497,7 @@ export async function openHarness(
 		storage,
 		curation,
 		defaultModel,
+		defaultModelFor,
 		interactiveTools: new Set(loadedInteractiveTools),
 		stores: curationOf,
 		skillsOptions: {
@@ -2667,6 +2824,7 @@ export async function openHarness(
 		reports,
 		jobRunTotals: () => jobRunTotals,
 		defaultModel,
+		defaultModelFor,
 		interactiveTools: new Set(loadedInteractiveTools),
 		providerCollisions: sink.collisions,
 		webuiBundles,
@@ -2685,6 +2843,9 @@ export async function openHarness(
 		settings: settingsStore,
 		decisions: decisionsSlot.registry as DecisionRegistry,
 		embeddings,
+		locality: localityRef,
+		effective,
+		localityMigration,
 		extensionStores: sharedStores,
 		packagesDir,
 		seamHosts,

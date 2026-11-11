@@ -102,6 +102,7 @@ const EXPECTED_KEYS = [
 	"decisionModel",
 	"embeddingModel",
 	"embeddings.localModels",
+	"localProviders",
 	"decisions.tool",
 	"defaultProvider.baseUrl",
 	"skills.sectionMaxBytes",
@@ -201,6 +202,12 @@ interface RegistryEntry {
 describe("the core settings registry (spec §13.1)", () => {
 	const byKey = (): Map<string, RegistryEntry> => new Map(CORE_SETTING_KEYS.map((entry) => [entry.key, entry]));
 
+	test("localProviders is a settable key", () => {
+		expect(byKey().has("localProviders")).toBe(true);
+		expect(applyOf("localProviders")).toBe("live");
+		expect(EXPECTED_KEYS).toContain("localProviders");
+	});
+
 	test("the three keys are live", () => {
 		const map = byKey();
 		for (const key of ["embeddingModel", "embeddings.localModels", "server.embeddings.timeoutMs"]) {
@@ -209,7 +216,9 @@ describe("the core settings registry (spec §13.1)", () => {
 			expect(applyOf(key)).toBe("live");
 			expect(map.get(key)).toMatchObject({
 				key,
-				reason: expect.stringContaining("src/harness/embeddings.ts"),
+				reason: key === "embeddings.localModels"
+					? expect.stringContaining("src/server/locality-migration.ts")
+					: expect.stringContaining("src/harness/embeddings.ts"),
 			});
 		}
 	});

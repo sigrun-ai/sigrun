@@ -237,8 +237,8 @@ function makeHarness(init?: {
 			// the panel; the sections payload is the nav list (core only).
 			body = {
 				sections: [
-					{ slug: "core", id: "general", title: "General", icon: "key" },
-					{ slug: "core", id: "accounts", title: "Account links", icon: "key" },
+					{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
+					{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" },
 				],
 				index: [],
 			};
@@ -1223,6 +1223,7 @@ describe("App shell", () => {
 
 	test("the settings panel wires the shell restart: a supervised admin sees the button and clicking it POSTs the restart", async () => {
 		const ready = { current: true };
+		resetLocationHashForTest("#/settings/general");
 		const { client, createEventSource, restartCalls } = makeHarness({
 			meta: { ...makeMeta(), supervised: true },
 			readyzDown: { ready },
@@ -1624,7 +1625,9 @@ describe("App settings route (the page at #/settings/<section>)", () => {
 			await act(async () => {
 				nav.props.onClick();
 			});
-			expect(locationHash()).toBe("#/settings/general");
+			// My settings puts Account links first in this fixture;
+			// its nav click routes the id.
+			expect(locationHash()).toBe("#/settings/accounts");
 			// Browser back: the URL moves and the app's popstate handler
 			// re-parses it into the route — the chat column returns.
 			win.location = { hash: "#/c" };

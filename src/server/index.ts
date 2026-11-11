@@ -53,7 +53,7 @@ import { createJobsView } from "./core-views/jobs.js";
 import { createSkillsView } from "./core-views/skills.js";
 import { learnedSkillsDir } from "../curation/paths.js";
 import { primaryAdmin } from "../harness/identity/primary-admin.js";
-import { isSuperuser } from "./auth/principal.js";
+import { isSuperuser, type Principal } from "./auth/principal.js";
 import { accessPrincipalOf } from "./auth/access-principal.js";
 import { createHostBridge } from "./host-bridge.js";
 import { registerJobsOwnershipParticipant } from "../jobs/transfer.js";
@@ -75,6 +75,7 @@ import { registerNoticeRoutes } from "./routes/notices.js";
 import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
+import { noticeLocalityMigration } from "./locality-migration.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerSettingsSectionsRoutes } from "./routes/settings-sections.js";
 import { registerStreamRoutes } from "./routes/stream.js";
@@ -85,6 +86,11 @@ import { registerSubmissionRoutes } from "./routes/submissions.js";
 import { registerSurfaceRoutes } from "./routes/surfaces.js";
 import { subscribeChatSurfaceChanged } from "../harness/blocks/tools.js";
 import { loadOrCreateKey, signUrl } from "./images/sign.js";
+import {
+	buildModelRoster,
+	withoutEmptyModelKind,
+	withUnserved,
+} from "./model-roster.js";
 import { ImageCache } from "./images/cache.js";
 import type { FetchDeps } from "./images/fetch.js";
 import { registerImageRoutes } from "./routes/images.js";
@@ -96,6 +102,11 @@ import {
 	settingsSurfaceFor,
 } from "./surfaces/settings-surfaces.js";
 import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
+import { coreSchema, generatedMyModelsForm } from "../settings/core-schema.js";
+import { overridesSchema } from "../settings/effective.js";
+import type { ModelKindId } from "../settings/model-kinds.js";
+import { MODEL_KINDS } from "../settings/model-kinds.js";
+import type { JsonObject } from "@sigrun/shared/blocks";
 import { registerUserRoutes } from "./routes/users.js";
 import {
 	resolveWebuiBundle,
@@ -302,8 +313,39 @@ export async function createServer(
 	for (const host of opened.seamHosts.values()) {
 		host.bindSettingsNotices((slug, input) => noticesService.post(slug, input));
 	}
+	// Settings split Plan 2 Task 2: migration ran in openHarness so headless
+	// boots migrate too; the NOTICE needs this server's notices service.
+	// Owned by core, keyed for idempotent replace; an empty directory
+	// (UserNoticeInput.user is required) logs one line instead. INFORMATIONAL
+	// side report only: log through the service's own info log on the
+	// empty-directory arm, and let a notice-post rejection log-and-continue
+	// rather than refuse server creation for a side report.
+	try {
+		await noticeLocalityMigration({
+			opened,
+			notices: noticesService,
+			log: (line) => console.info(line),
+		});
+	} catch (cause) {
+		console.warn(
+			`settings: locality migration notice failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+		);
+	}
 	// The chat-surface seam's unsubscribe (filled in just below, after
 	// the events hub exists to publish onto; never reassigned after).
+	const modelSurfaceOptions = {
+		roster: () => buildModelRoster(
+			opened,
+			opened.locality,
+			(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+		),
+		effective: async (kind: ModelKindId, user: string | undefined) => {
+			const settingKey = MODEL_KINDS.find((entry) => entry.kind === kind)?.settingKey;
+			if (settingKey === undefined) return undefined;
+			const value = await opened.effective.value(settingKey, user);
+			return typeof value === "string" && value !== "" ? value : undefined;
+		},
+	};
 	let unsubscribeChatSurfaceChanged: () => void = (): void => {};
 	// Decorated for the shutdown path (serve.ts): fastify's own drain waits
 	// on in-flight requests, so the SSE registry must be endable from the
@@ -382,6 +424,7 @@ export async function createServer(
 						stores: opened.extensionStores,
 						publishSettingsChanged: opened.publishSettingsChanged,
 						service: surfacesService,
+						models: modelSurfaceOptions,
 					},
 				)];
 			}),
@@ -395,54 +438,99 @@ export async function createServer(
 	surfacesService.attachSettingsSurfaces([
 		{
 			extension: "core",
-			defs: CORE_SETTINGS_SECTIONS.map((section) =>
+			defs: CORE_SETTINGS_SECTIONS.filter((section) => section.id !== "my-models").map((section) =>
 				settingsSurfaceFor("core", section, {
 					env,
 					stores: opened.extensionStores,
 					publishSettingsChanged: opened.publishSettingsChanged,
 					service: surfacesService,
-				core: {
-					settings: opened.settings,
-					bootSnapshot: opened.settingsBootSnapshot,
-					env,
-					// The Tools section's default-tools options (the boot
-					// registry's tool names, deduped — the roster the
-					// checkbox list edits against).
-					toolRoster: [
+					...(section.id === "models" ? { renderTree: withoutEmptyModelKind } : {}),
+					core: {
+						settings: opened.settings,
+						bootSnapshot: opened.settingsBootSnapshot,
+						env,
+						// The Tools section's default-tools options (the boot
+						// registry's tool names, deduped — the roster the
+						// checkbox list edits against).
+						toolRoster: [
 							...new Set(
 								opened.registry
 									.snapshot()
 									.tools()
 									.map((entry) => entry.tool.name),
-								),
+							),
 						],
-					// The Models group's picker options (`/modelRoster/*` bindings),
-					// from the SERVED catalog: chat rows for defaultModel/namingModel,
-					// the decision registry's model ids for decisionModel, and the
-					// embedding registry's model ids for embeddingModel. A provider
-					// whose models are missing here appears via the field's
-					// allowOther instead (e.g. a not-yet-refreshed catalog).
-					modelRoster: {
-							default: listModels(opened).map((model) => ({ id: model.id, label: model.name ?? model.id })),
-							decision: opened.decisions.providers().flatMap((provider) =>
-								provider.models.map((model) => ({
-									id: `${provider.id}/${model}`,
-									label: `${provider.id}/${model}`,
-								})),
-							),
-							embedding: opened.embeddings.providers().flatMap((provider) =>
-								provider.models.map((model) => ({
-									id: `${provider.id}/${model}`,
-									label: `${provider.id}/${model}`,
-								})),
-							),
-						},
-					managed: opened.managedSettings,
-				},
+						modelRoster: () => buildModelRoster(
+							opened,
+							opened.locality,
+							(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+						),
+						defaultModel: `${opened.defaultModel.provider}/${opened.defaultModel.modelId}`,
+						managed: opened.managedSettings,
+					},
 				}),
 			),
 		},
 	]);
+	// My settings → Models (settings split Plan 2 Task 5): the per-user
+	// model overrides — a USER-scope schema surface over
+	// `overridesSchema(coreSchema)` under the reserved core slug. Saves
+	// write `user-settings/<user>/core.json` (never the system file) and
+	// publish server-scoped with the resolved user. The resolver replaces
+	// the default namedUser at all four sites: a userless superuser edits
+	// the PRIMARY ADMIN's overrides; an empty directory resolves to NO
+	// user (the section is unlisted and the surface answers
+	// named_user_required).
+	const myModelsSection = CORE_SETTINGS_SECTIONS.find((section) => section.id === "my-models");
+	if (myModelsSection !== undefined) {
+		const myModelsUser = (principal: Principal): string | undefined =>
+			principal.user ??
+			(isSuperuser(principal) ? primaryAdmin(opened.identity.users.list())?.user : undefined);
+		surfacesService.attachSettingsSurfaces([
+			{
+				extension: "core",
+				defs: [schemaSettingsSurfaceFor(
+					"core",
+					myModelsSection,
+					overridesSchema(coreSchema),
+					generatedMyModelsForm(),
+					{
+						env,
+						stores: opened.extensionStores,
+						publishSettingsChanged: opened.publishSettingsChanged,
+						service: surfacesService,
+						resolveUser: myModelsUser,
+						extraData: async (user) => {
+							const roster = buildModelRoster(
+								opened,
+								opened.locality,
+								(slug) => opened.extensionOutcomes.find((outcome) => outcome.name === slug)?.title ?? slug,
+							);
+							const stored = user === undefined
+								? {}
+								: await opened.extensionStores.userExtensionStores("core", user).settings.get();
+							const modelRoster: JsonObject = {};
+							for (const kind of MODEL_KINDS) {
+								const effective = await opened.effective.value(kind.settingKey, undefined);
+								const system = typeof effective === "string" && effective !== "" ? effective : undefined;
+								const storedValue = typeof stored[kind.settingKey] === "string"
+									? stored[kind.settingKey] as string
+									: undefined;
+								modelRoster[kind.kind] = [
+									{ id: "", label: `System default (${system ?? "none"})` },
+									...withUnserved(roster[kind.kind], storedValue).map((row) => ({
+										id: row.id,
+										label: typeof row.label === "string" ? row.label : row.label.$,
+									})),
+								];
+							}
+							return { modelRoster };
+						},
+					},
+				)],
+			},
+		]);
+	}
 	// The core-owned views (tabs+skills Tasks 4/5/12): the reserved `core`
 	// slug's `SurfaceDef<"view">` list — the built-in Jobs view (Task 5)
 	// and the built-in Skills view (Task 12). The jobs view shares the

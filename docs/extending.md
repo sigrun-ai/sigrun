@@ -471,6 +471,11 @@ picker entries (`id`, `provider`, `modelId`, `name`, `contextWindow`,
 through the one shared construction (helpers `listModels`); the two
 surfaces cannot drift.
 
+`host.models.isLocal(model)` answers whether the chat model's owning
+provider extension is listed in the admin-only `localProviders` setting.
+The pseudo-slug `"core"` represents the env-driven provider. Locality is
+live on every call; an unserved model is never local.
+
 `host.models.complete(input)` runs ONE one-shot completion with NO
 conversation (skill-card generation, summaries, classification) and
 resolves `{text, model}` — `text` is the concatenated text parts of
@@ -975,7 +980,17 @@ The contract:
   arbitrary state and question sets either way.
 - **One provider, many models.** Declare each judge as a `models` entry;
   callers address them as `<id>/<modelId>`. `decisionModel` in
-  settings.json picks the default without a restart.
+  settings.json picks the default without a restart. Pass `opts.user` to
+  evaluate for that user's My settings → Models override instead; model
+  precedence is `opts.model`, the user's override, then the system
+  `decisionModel`, then the first provider's first model. Omitting
+  `opts.user` keeps the system value. `host.decisions.list()` stays
+  system-scoped and has no per-user `default` flag.
+- **Confidentiality uses the admin locality switch.** The provider's
+  extension slug must be listed in the top-level `localProviders` setting
+  before `confidentiality: "local-only"` can use one of its models.
+  Otherwise evaluation returns the decision result code `not_local` without
+  calling the provider.
 
 ## Contributing embedding providers
 
@@ -1010,16 +1025,21 @@ export default function acmeEmbeddings() {
 ```
 
 - **Callers** use `host.embeddings.embed(texts, opts)` and
-  `host.embeddings.list()`. `opts.model` (`provider/model`) wins over the
-  live `embeddingModel` setting; with neither configured, `embed` returns
-  `no_model` rather than silently choosing a model. Calls never throw:
-  failures use `EmbeddingResult`'s `ok: false` codes. Core splits inputs
-  at `maxBatch`, preserves input order, and validates every returned
-  vector's dimensions.
+  `host.embeddings.list(opts)`. `opts.model` (`provider/model`) wins over
+  the effective `embeddingModel`; otherwise `opts.user` selects that
+  user's My settings → Models override before the system setting. With no
+  model configured, `embed` returns `no_model` rather than silently
+  choosing a model. `list({ user })` marks the user's effective model
+  with its `default` flag; plain `list()` keeps the system default. Calls
+  never throw: failures use `EmbeddingResult`'s `ok: false` codes. Core
+  splits inputs at `maxBatch`, preserves input order, and validates every
+  returned vector's dimensions.
 - **Confidentiality is fail-closed.** `confidentiality: "local-only"`
-  succeeds only when the model appears in `embeddings.localModels` AND its
-  declaration does not say `local: false`. A provider whose endpoint can
-  change should report remote endpoints as `local: false`.
+  succeeds only when the provider's extension slug appears in the
+  admin-only `localProviders` setting AND its model declaration does not
+  say `local: false`. Otherwise `embed` returns `not_local` without calling
+  the provider. A provider whose endpoint can change should report remote
+  endpoints as `local: false`.
 - **Credentials** resolve per call from `auth.json[id].apiKey`, then the
   ambient `credentialEnv` (empty means unset) — plus the magic `"default"`
   key when the embedding provider's id IS the default model's provider
@@ -2939,6 +2959,11 @@ export function imageForms(): Tree {
 | `x-sigrun-summary` | Array item object | Names the fields rendered in an entry's one-line summary. |
 | `x-sigrun-key` | Array item object containing secrets | Names the stable string property that identifies each entry when secrets move or clear. |
 | `x-sigrun-env` | Non-`writeOnly` string property on the shared `schema` | Names an uppercase environment variable. When no value is stored, the admin form replaces the field's default placeholder with the env value and a `(from VAR)` suffix; the schema `default` remains the fallback when env is unset/empty. Saving blank keeps the value unset and never copies env into the file. |
+| `x-sigrun-model` | Non-`writeOnly` string property on `schema` or `userSchema` | `"chat"`, `"decision"`, or `"embedding"` draws a dropdown of that kind's live model roster, with a free-form `provider/model` alternative. The first option, `Use the default (<effective model>)`, saves blank and therefore leaves the key unset. Shared-schema forms use the system effective value; personal forms use the caller's effective value. |
+
+`x-sigrun-model` is allowed in `userSchema`; unlike `x-sigrun-env`, its
+options carry model ids and provider display labels, never server env values.
+An unserved stored id remains selectable and is labelled not currently served.
 
 `x-sigrun-env` is for extension server settings, not core settings or
 `userSchema`. Core's env-backed keys retain their own `ENV_OVERRIDES` mapping.

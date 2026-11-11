@@ -141,8 +141,11 @@ export class SettingsView implements Component {
 				const section = this.#sections.find(
 					(candidate) => candidate.slug === entry.slug && candidate.id === entry.sectionId,
 				);
+				const groupLabel = section?.group === "mine"
+					? "My settings"
+					: "System settings";
 				return {
-					label: entry.label,
+					label: `${groupLabel} · ${entry.label}`,
 					detail: `${entry.slug === "core" ? "" : `${section?.pageTitle ?? entry.slug} · `}${entry.sectionId}`,
 					value: entry,
 				};
@@ -269,7 +272,8 @@ export class SettingsView implements Component {
 				),
 			);
 			for (const section of this.#sections.filter((entry) => entry.slug === "core")) {
-				lines.push(truncateToWidth(`  ${section.title}`, width));
+				const groupLabel = section.group === "mine" ? "My settings" : "System settings";
+				lines.push(truncateToWidth(`  ${groupLabel} · ${section.title}`, width));
 			}
 			const pages = new Map<string, SettingsSectionEntry[]>();
 			for (const section of this.#sections.filter((entry) => entry.slug !== "core")) {

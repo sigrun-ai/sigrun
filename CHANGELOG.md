@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- Settings sections are split into **My settings** (every user) and **System
+  settings** (admins); non-admins no longer receive system sections.
+- The Tools section merged into Advanced ("Tools offered to the model");
+  General's queue-mode group is retitled Conversations.
+- Per-user overrides for the default chat, decision and embedding models
+  (`x-sigrun-overridable`, My settings → Models, stored per user); every
+  model read (conversation create, forks, imports, job fires, curation,
+  `host.decisions.evaluate`, `host.embeddings`) resolves the acting user's
+  effective default.
+- A live per-kind model roster (computed per request — provider refreshes
+  reach it without a restart) drives a new System → Models section; a saved
+  model that is no longer served shows "not currently served" and is never
+  silently replaced.
+- Locality is one admin switch per provider extension
+  (`localProviders`, `PUT /v1/providers/local/:extension`), enforced for
+  chat, decisions and embeddings; `embeddings.localModels` migrates to it
+  once at boot. `host.decisions.evaluate` gains `confidentiality` and
+  `host.models.isLocal` lands on the host contract.
+- Providers is a real management section: one row per provider extension
+  (readiness, counts, Refresh on chat rows), a "Default provider
+  (environment)" row for env-driven providers, and a provider page with the
+  Runs-locally toggle and a read-only model list grouped by kind.
+- The `x-sigrun-model` schema keyword renders extension model fields as
+  dropdowns of that kind.
+
+### Changed
+
+- Deployment-managed keys lock the system value only; users can still
+  override them.
+
 ## [0.14.0] - 2026-11-11
 
 ### Fixed

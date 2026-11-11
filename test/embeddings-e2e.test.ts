@@ -90,7 +90,11 @@ async function fakeEmbeddingsServer(): Promise<{ baseUrl: string; requests: Capt
 				.map((text, index) => ({
 					object: "embedding",
 					index,
-					embedding: new Array<number>(DIMENSIONS).fill(text.length / 100),
+					// Two models → two dimensions; the registry accepts only the
+					// declared one.
+					embedding: new Array<number>(
+						body.model === "text-embedding-3-large" ? 3072 : DIMENSIONS,
+					).fill(text.length / 100),
 				}))
 				.reverse();
 			res.writeHead(200, { "content-type": "application/json" });
@@ -141,10 +145,11 @@ async function boot(overrides: { baseUrl?: string } = {}): Promise<Rig> {
 		JSON.stringify({
 			namingModel: false,
 			embeddingModel: `openai/${MODEL}`,
-			// The admin approves exactly ONE model for local-only input. The fake
-			// upstream is loopback, so the provider itself reports BOTH models
-			// local — the composite gate still fails the unlisted one closed.
-			embeddings: { localModels: [`openai/${MODEL}`] },
+			// The admin approves the WHOLE extension for local-only input
+			// (settings split Plan 2 Task 2 — locality is per provider
+			// EXTENSION, so both of the provider's loopback-served models
+			// are local once the switch is on).
+			localProviders: ["provider-openai"],
 		}),
 	);
 	await mkdir(join(configDir, "settings"), { recursive: true });
@@ -211,9 +216,9 @@ describe.skipIf(!AVAILABLE)("embeddings e2e: the shipped provider-openai package
 				model: "openai/text-embedding-3-large",
 				provider: "openai",
 				dimensions: 3072,
-				// The provider reports it local too (same loopback endpoint), but
-				// the admin did not list it: the composite gate says not local.
-				local: false,
+				// Switch-on extension ⇒ BOTH models are local; the switch is
+				// per extension, never per model.
+				local: true,
 				default: false,
 				status: "ready",
 			},
@@ -253,9 +258,10 @@ describe.skipIf(!AVAILABLE)("embeddings e2e: the shipped provider-openai package
 			["c", "d"],
 			["e"],
 		]);
-		// The local-only gate composes end to end: the approved model passes
-		// (admin list AND the provider's loopback host view), the unlisted one
-		// fails closed before any provider call.
+		// The local-only gate composes end to end: both of the switched-on
+		// extension's served models pass (the fake answers each in its
+		// declared dimensions). Refusal paths for non-local extensions are
+		// owned by test/locality.test.ts + test/embeddings.test.ts.
 		const before = requests.length;
 		expect(
 			await opened.embeddings.embed("e2e", ["secret"], { confidentiality: "local-only" }),
@@ -266,8 +272,8 @@ describe.skipIf(!AVAILABLE)("embeddings e2e: the shipped provider-openai package
 				model: "openai/text-embedding-3-large",
 				confidentiality: "local-only",
 			}),
-		).toMatchObject({ ok: false, code: "not_local" });
-		expect(requests).toHaveLength(before + 1);
+		).toMatchObject({ ok: true, model: "openai/text-embedding-3-large" });
+		expect(requests).toHaveLength(before + 2);
 	}, 120_000);
 
 	/**

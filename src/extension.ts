@@ -1869,6 +1869,13 @@ export interface SigrunHost {
 	readonly models: {
 		list(): Promise<readonly ModelEntry[]>;
 		/**
+		 * Settings split Plan 2 Task 2: whether the chat model's OWNING
+		 * provider extension has the admin locality switch on (the
+		 * `"core"` pseudo-slug answers for the env-driven provider).
+		 * Live on every call; an unserved model is never local.
+		 */
+		isLocal(model: string): boolean;
+		/**
 		 * Run ONE one-shot completion and return its concatenated text
 		 * parts (non-text parts skipped) plus the `provider/id` of the
 		 * model actually used. Model resolution: `input.model` wins;
@@ -1894,40 +1901,54 @@ export interface SigrunHost {
 	 * `evaluate` NEVER throws; failures arrive as the `ok: false` half of
 	 * {@link DecisionResult}. Model resolution: `opts.model` wins; else
 	 * the live `decisionModel` setting; else the first model of the
-	 * first-registered decision provider.
+	 * first-registered decision provider. `opts.user` selects that user's
+	 * `decisionModel` override before the system value.
 	 */
 	readonly decisions: {
 		evaluate(
 			request: DecisionRequest,
-			opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+			opts?: {
+				model?: string;
+				user?: string;
+				confidentiality?: "normal" | "local-only";
+				signal?: AbortSignal;
+				timeoutMs?: number;
+			},
 		): Promise<DecisionResult>;
-		/** Every decision model, with its provider's readiness status. */
-		list(): Promise<readonly { model: string; provider: string; status: ProviderReadiness["status"] }[]>;
+		/** Every decision model, its locality and readiness. */
+		list(): Promise<readonly {
+			model: string;
+			provider: string;
+			local: boolean;
+			status: ProviderReadiness["status"];
+		}[]>;
 	};
 
 	/**
 	 * Embedding providers: vectorize texts through the configured model.
 	 * `embed` NEVER throws; failures use {@link EmbeddingResult}. Model
 	 * resolution: `opts.model` wins; else the live `embeddingModel`
-	 * setting. There is no silent default when neither is configured.
+	 * setting; `opts.user` selects that user's override before the system
+	 * value. There is no silent default when neither is configured.
 	 */
 	readonly embeddings: {
 		embed(
 			texts: readonly string[],
 			opts?: {
 				model?: string;
+				user?: string;
 				confidentiality?: "normal" | "local-only";
 				signal?: AbortSignal;
 				timeoutMs?: number;
 			},
 		): Promise<EmbeddingResult>;
 		/** Every embedding model, its locality and readiness. */
-		list(): Promise<readonly {
+		list(opts?: { user?: string }): Promise<readonly {
 			model: string;
 			provider: string;
 			dimensions: number;
 			local: boolean;
-			/** True on the one row the `embeddingModel` setting resolves to. */
+			/** True on the one row the acting user's effective `embeddingModel` resolves to. */
 			default: boolean;
 			status: ProviderReadiness["status"];
 		}[]>;

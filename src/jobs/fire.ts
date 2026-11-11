@@ -78,6 +78,7 @@ export interface JobRuntimeDeps {
 	registry: Registry;
 	models: Models;
 	defaultModel: ModelRef;
+	defaultModelFor?(user: string | undefined): Promise<ModelRef>;
 	/** Epoch ms — the injectable clock (tests pin it). */
 	now(): number;
 	/** Resolved `server.timezone` (default: the process TZ). */
@@ -429,7 +430,7 @@ async function firePrompt(
 		const model =
 			action.model !== undefined
 				? parseModelSpec(action.model, "job action model")
-				: deps.defaultModel;
+				: await (deps.defaultModelFor?.(deps.effectiveOwner(record.owner)) ?? Promise.resolve(deps.defaultModel));
 		const conversation = await deps.harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },

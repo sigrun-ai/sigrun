@@ -19,7 +19,7 @@ export declare function resetDecisionCaller(): void;
 /** Drive one evaluate through the stashed host; the result records. */
 export declare function callFromCaller(
 	request: DecisionRequest,
-	opts?: { model?: string; signal?: AbortSignal; timeoutMs?: number },
+	opts?: { model?: string; user?: string; signal?: AbortSignal; timeoutMs?: number },
 ): Promise<DecisionResult>;
 
 declare function createFixtureDecisionCaller(host: SigrunHost): unknown;

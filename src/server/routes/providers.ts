@@ -23,6 +23,7 @@ import type { FastifyInstance } from "fastify";
 import type { OpenedHarness } from "../../harness/boot.js";
 import { DEFAULT_AUTH_KEY } from "../../harness/auth.js";
 import type { ServerContext } from "../context.js";
+import type { Locality } from "../../harness/locality.js";
 import { listModels, providerAuthStatus } from "../helpers.js";
 import type {
 	AuthCheckProvider,
@@ -98,11 +99,15 @@ function readinessEntry(
 		producersByName,
 	);
 	const owner = opened.providerOwnership.get(providerId);
+	const modelIds = opened.models.getModels(providerId).map((model) => model.id);
 	return {
 		provider: providerId,
+		local: opened.locality.isLocalExtension(owner ?? "core"),
 		status,
-		models: opened.models.getModels(providerId).length,
+		models: modelIds.length,
+		modelIds,
 		...(owner === undefined ? {} : { owner }),
+		...(providerId === opened.defaultModel.provider ? { systemDefault: true as const } : {}),
 		...(detail === undefined ? {} : { detail }),
 	};
 }
@@ -138,6 +143,7 @@ function providerReadinessReport(
 			...entry,
 			status: "ready",
 			detail: "credential saved; the first call verifies it",
+			...(entry.provider === opened.defaultModel.provider ? { systemDefault: true as const } : {}),
 		};
 	};
 	const providers: AuthCheckProvider[] = [];
@@ -149,10 +155,10 @@ function providerReadinessReport(
 	// whose id collides with a chat provider stays SEPARATE (distinct
 	// kinds, never merged).
 	for (const decision of opened.decisions.providers()) {
-		providers.push(credentialAware(decisionEntry(decision)));
+		providers.push(credentialAware(decisionEntry(decision, opened.locality)));
 	}
 	for (const embedding of opened.embeddings.providers()) {
-		providers.push(credentialAware(embeddingEntry(embedding)));
+		providers.push(credentialAware(embeddingEntry(embedding, opened.locality)));
 	}
 	return { providers };
 }
@@ -167,7 +173,7 @@ function decisionEntry(decision: {
 	extension: string;
 	models: readonly string[];
 	status: AuthCheckProvider["status"];
-}): AuthCheckProvider {
+}, locality: Locality): AuthCheckProvider {
 	return {
 		provider: decision.id,
 		kind: "decision",
@@ -175,6 +181,7 @@ function decisionEntry(decision: {
 		models: decision.models.length,
 		modelIds: decision.models,
 		owner: decision.extension,
+		local: locality.isLocalExtension(decision.extension),
 	};
 }
 
@@ -183,7 +190,7 @@ function embeddingEntry(embedding: {
 	extension: string;
 	models: readonly string[];
 	status: AuthCheckProvider["status"];
-}): AuthCheckProvider {
+}, locality: Locality): AuthCheckProvider {
 	return {
 		provider: embedding.id,
 		kind: "embedding",
@@ -191,6 +198,7 @@ function embeddingEntry(embedding: {
 		models: embedding.models.length,
 		modelIds: embedding.models,
 		owner: embedding.extension,
+		local: locality.isLocalExtension(embedding.extension),
 	};
 }
 
@@ -247,11 +255,11 @@ export function registerProviderRoutes(
 		const decision = opened.decisions
 			.providers()
 			.find((row) => row.id === providerId);
-		if (decision !== undefined) return decisionEntry(decision);
+		if (decision !== undefined) return decisionEntry(decision, opened.locality);
 		const embedding = opened.embeddings
 			.providers()
 			.find((row) => row.id === providerId);
-		if (embedding !== undefined) return embeddingEntry(embedding);
+		if (embedding !== undefined) return embeddingEntry(embedding, opened.locality);
 		throw new Error(`provider "${providerId}" is not routable`);
 	};
 	// The post-write refresh: chat ids only.
@@ -331,6 +339,40 @@ export function registerProviderRoutes(
 		await opened.auth.deleteApiKey(key);
 		await refreshAfterWrite(id);
 		return routableEntry(id);
+	});
+
+	// Settings split Plan 2 Task 2: the ONE locality switch — admin,
+	// per provider EXTENSION slug (pseudo-slug `core` covers an env-driven
+	// served provider, whose ownership map entry is absent). Writes sorted
+	// unique `localProviders` through the store (its onWrite observer
+	// publishes settings.changed on exactly that key).
+	app.put("/v1/providers/local/:extension", async (request, reply) => {
+		if (!request.principal.admin) {
+			return await reply.code(403).send({ error: "forbidden" });
+		}
+		const { extension } = request.params as { extension: string };
+		const owners = new Set<string>();
+		for (const { id } of opened.models.getProviders()) {
+			owners.add(opened.providerOwnership.get(id) ?? "core");
+		}
+		for (const row of opened.decisions.providers()) owners.add(row.extension);
+		for (const row of opened.embeddings.providers()) owners.add(row.extension);
+		if (!owners.has(extension)) {
+			return await reply.code(404).send({ error: "provider_not_found" });
+		}
+		const body = request.body as unknown;
+		if (typeof body !== "object" || body === null || Array.isArray(body)) {
+			return await reply.code(400).send({ error: "invalid_body" });
+		}
+		const local = (body as { local?: unknown }).local;
+		if (typeof local !== "boolean") {
+			return await reply.code(400).send({ error: "invalid_field", field: "local" });
+		}
+		const current = new Set(opened.settings.read().localProviders ?? []);
+		if (local) current.add(extension);
+		else current.delete(extension);
+		opened.settings.apply({ localProviders: [...current].sort() });
+		return { local };
 	});
 
 	// Models: the merged chat-model catalog as picker entries (no provider

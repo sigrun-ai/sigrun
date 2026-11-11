@@ -140,7 +140,9 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 						}
 					}}
 				>
-					{!multi && <option value="" />}
+					{!multi && (
+						<option value="">{boundString(data, field.placeholder)}</option>
+					)}
 					{options.map((option) => (
 						<option key={option.id} value={option.id}>
 							{boundString(data, option.label)}
