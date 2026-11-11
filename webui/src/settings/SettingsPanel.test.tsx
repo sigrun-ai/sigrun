@@ -616,6 +616,42 @@ describe("SettingsPanel extension pages", () => {
 		},
 	];
 
+	test("nav labels extensions by title", async () => {
+		const harness = makeHarness({
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "sigrun-mcp", title: "MCP" }] },
+		});
+		const { renderer } = await renderPanelWithPrefs(harness.client);
+		const nav = renderer.root.findByProps({
+			className: "settings-nav-item settings-nav-extension",
+			"data-ext": "sigrun-mcp",
+		});
+		expect(nav.props.children).toBe("MCP");
+		await act(async () => {
+			nav.props.onClick();
+		});
+		const page = renderer.root.findByProps({ "data-extension-page": "sigrun-mcp" });
+		expect(page.findByType("h2").props.children).toBe("MCP");
+	});
+
+	test("a provider's owner link uses the extension title", async () => {
+		const harness = makeHarness({
+			extensions: { list: [{ ...EXTENSIONS_FIXTURE, name: "acme-tool", title: "Acme Titled" }] },
+		});
+		const { renderer, onSectionCalls } = await renderPanelWithPrefs(harness.client, { section: "providers" });
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		const link = renderer.root.findByProps({
+			className: "settings-provider-page-link",
+			"data-owner": "acme-tool",
+		});
+		expect(link.props.children).toBe("Acme Titled");
+		await act(async () => {
+			link.props.onClick();
+		});
+		expect(onSectionCalls()).toContain("acme-tool");
+	});
+
 	test("nav lists one Extensions entry per page; no (advanced) rows", async () => {
 		const pageSections: readonly SettingsSectionEntryWire[] = [
 			{ slug: "acme-one", id: "settings", page: "acme-one", title: "Settings", icon: "key", admin: true },

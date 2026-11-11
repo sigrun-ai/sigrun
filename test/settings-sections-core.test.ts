@@ -878,6 +878,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				title: string;
 				icon: string;
 				page?: string;
+				pageTitle?: string;
 				admin?: boolean;
 				scope?: "user";
 			}[];
@@ -893,6 +894,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "curator",
 				id: "settings",
 				page: "curator",
+				pageTitle: "Curator",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -901,6 +903,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "curator",
 				id: "user-settings",
 				page: "curator",
+				pageTitle: "Curator",
 				title: "Your settings",
 				icon: "key",
 				scope: "user",
@@ -910,6 +913,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "gateway",
 				id: "settings",
 				page: "gateway",
+				pageTitle: "Gateway",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -918,6 +922,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "oauth",
 				id: "settings",
 				page: "oauth",
+				pageTitle: "OAuth login",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -926,6 +931,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "sigrun-mcp",
 				id: "settings",
 				page: "sigrun-mcp",
+				pageTitle: "MCP",
 				title: "Settings",
 				icon: "key",
 				admin: true,
@@ -934,6 +940,7 @@ describe("GET /v1/settings/sections (U4 Task 4)", () => {
 				slug: "sigrun-mcp",
 				id: "user-settings",
 				page: "sigrun-mcp",
+				pageTitle: "MCP",
 				title: "Your settings",
 				icon: "key",
 				scope: "user",

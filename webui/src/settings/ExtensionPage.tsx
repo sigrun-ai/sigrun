@@ -104,7 +104,7 @@ export function ExtensionPage(props: {
 	return (
 		<div className="settings-body settings-extension-page" data-extension-page={extension.name}>
 			<header className="settings-extension-header">
-				<h2>{extension.name}</h2>
+				<h2>{extension.title ?? extension.name}</h2>
 				<span className="settings-ext-meta">
 					{extension.version === undefined ? "" : `v${extension.version} · `}{extension.status}
 					{providers.map((provider) => ` · ${provider.provider}: ${provider.status}`).join("")}

@@ -295,6 +295,10 @@ export function SettingsPanel(props: {
 		() => new Set((extensions ?? []).map((extension) => extension.name)),
 		[extensions],
 	);
+	const pageTitles = useMemo(
+		() => new Map((extensions ?? []).map((extension) => [extension.name, extension.title])),
+		[extensions],
+	);
 	const openExtension = open?.kind === "extension"
 		? extensions?.find((entry) => entry.name === open.slug)
 		: undefined;
@@ -388,6 +392,7 @@ export function SettingsPanel(props: {
 									onCoreMeta={setCoreMeta}
 									valuesRef={sectionDataRef}
 									pageOwners={pageOwners}
+									titles={pageTitles}
 									onOpenPage={onSection}
 								/>
 							) : null}
@@ -443,7 +448,7 @@ function ExtensionPagesNav(props: {
 					data-active={open?.kind === "extension" && open.slug === extension.name ? "" : undefined}
 					onClick={() => onOpen(extension.name)}
 				>
-					{extension.name}
+					{extension.title ?? extension.name}
 				</button>
 			))}
 		</div>
@@ -465,15 +470,16 @@ function SettingsSectionBody(props: {
 	}) => void;
 	readonly valuesRef: React.MutableRefObject<SectionValues>;
 	readonly pageOwners: ReadonlySet<string>;
+	readonly titles: ReadonlyMap<string, string | undefined>;
 	readonly onOpenPage: (owner: string) => void;
 }): React.ReactElement {
-	const { entry, client, prefsState, theme, meta, onCoreMeta } = props;
+	const { entry, client, prefsState, theme, meta, onCoreMeta, titles } = props;
 	// The Interface + Providers + Extensions coves never mount a surface.
 	if (entry.slug === "core" && entry.id === "interface") {
 		return <InterfaceCove prefsState={prefsState} theme={theme} />;
 	}
 	if (entry.slug === "core" && entry.id === "providers") {
-		return <ProvidersSection client={client} pageOwners={props.pageOwners} onOpenPage={props.onOpenPage} />;
+		return <ProvidersSection client={client} pageOwners={props.pageOwners} titles={titles} onOpenPage={props.onOpenPage} />;
 	}
 	if (entry.slug === "core" && entry.id === "accounts") {
 		return <AccountLinksSection client={client} />;

@@ -123,9 +123,11 @@ function coreKeyEntry(key: string): SettingsIndexEntry | undefined {
 /** Build the section list + search index from the schema declarations. */
 export function buildSettingsSections(
 	declarations: readonly import("../../harness/loader.js").ExtensionSettingsDeclaration[],
+	titles: ReadonlyMap<string, string | undefined> = new Map(),
 ): SettingsSectionsResponse {
 	const extensionSections = declarations.map((binding) => ({
 		extension: binding.extension,
+		pageTitle: titles.get(binding.extension) ?? binding.extension,
 		defs: EXTENSION_SETTINGS_SECTIONS.flatMap(
 			(section): (typeof section & { form: typeof binding.generated.form })[] => {
 				if (section.scope === "user") {
@@ -155,6 +157,7 @@ export function buildSettingsSections(
 				...(def.scope === "user" ? { scope: "user" as const } : {}),
 				admin: def.admin,
 				page: binding.extension,
+				pageTitle: binding.pageTitle,
 			});
 		}
 	}
@@ -224,7 +227,10 @@ export function registerSettingsSectionsRoutes(
 	app.get(
 		"/v1/settings/sections",
 		async (request): Promise<SettingsSectionsResponse> => {
-			const response = buildSettingsSections(ctx.opened.extensionSettingsDeclarations);
+			const response = buildSettingsSections(
+				ctx.opened.extensionSettingsDeclarations,
+				new Map(ctx.opened.extensionOutcomes.map((outcome) => [outcome.name, outcome.title])),
+			);
 			const admin = isSuperuser(request.principal as Principal) || request.principal.admin;
 			const allowed = new Set(
 				response.sections

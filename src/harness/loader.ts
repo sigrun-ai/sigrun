@@ -154,6 +154,8 @@ export interface ExtensionOutcome {
 	/** The extension's slug identity on success; the specifier on quarantine. */
 	readonly name: string;
 	readonly status: "ok" | "quarantined";
+	/** Display title from the factory, falling back to a built-in's table title. */
+	readonly title?: string;
 	/** The failure message; present only when `status === "quarantined"`. */
 	readonly error?: string;
 	/**
@@ -614,6 +616,10 @@ export interface ResolvedExtension {
 	 * `extension` — identified by `name` instead).
 	 */
 	readonly extension?: Extension;
+	/** Display title from the factory, never the identity or registry key. */
+	readonly title?: string;
+	/** Set when a supplied title failed validation; the loader warns once. */
+	readonly invalidTitle?: true;
 	/**
 	 * The provider-only contributor's declared name — its collision-record
 	 * identity, sanitized to the slug like every extension name. Present
@@ -748,6 +754,7 @@ export interface ResolvedExtension {
  */
 type LoaderReadKeys =
 	| "extension"
+	| "title"
 	| "name"
 	| "providers"
 	| "loginProviders"
@@ -833,6 +840,14 @@ function isExtension(value: unknown): value is Extension {
 		value !== null &&
 		typeof (value as Extension).name === "string"
 	);
+}
+
+/** Optional title display policy: trim and bound, never change identity. */
+function validateDisplayTitle(value: unknown): { readonly title?: string; readonly invalidTitle?: true } {
+	if (value === undefined) return {};
+	const title = typeof value === "string" ? value.trim() : "";
+	if (title.length === 0 || title.length > 60) return { invalidTitle: true };
+	return { title };
 }
 
 /** Whether `dir` is an EXISTING directory (never throws). */
@@ -2501,6 +2516,7 @@ async function resolvedFromFactory(
 	// and the `LoaderReadKeys` assertion (above ResolvedExtension) pins the
 	// full read list to the contract's keys.
 	const candidate = awaited as CandidateFactoryResult;
+	const displayTitle = validateDisplayTitle(candidate.title);
 	if (
 		candidate.perUserTools !== undefined &&
 		typeof candidate.perUserTools !== "boolean"
@@ -2626,6 +2642,7 @@ async function resolvedFromFactory(
 		...(candidate.perUserTools === undefined
 			? {}
 			: { perUserTools: candidate.perUserTools }),
+		...displayTitle,
 		// Identity: the extension when one was carried, else the
 		// provider-only contributor's validated `name`.
 		...(extension !== undefined
@@ -2817,6 +2834,8 @@ export interface ResolvedExtensionInput {
 	 * `/v1/extensions`. Configured entries never set it.
 	 */
 	readonly builtin?: boolean;
+	/** A built-in's fallback display title; a factory title takes precedence. */
+	readonly title?: string;
 	/**
 	 * Core-tree resolution marker (Task 2, ruling 2): built-ins resolve
 	 * through core's OWN node_modules, NEVER the packages dir — when set,
@@ -2956,8 +2975,8 @@ options: LoadExtensionsOptions = {},
 // skills-only resolution (§9.4).
 const entries = specifiers.map((spec) =>
 typeof spec === "string"
-? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined, builtin: undefined as boolean | undefined, coreResolved: undefined as boolean | undefined, packageDir: undefined as string | undefined }
-: { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir, settingsSlug: spec.settingsSlug },
+? { name: undefined as string | undefined, entry: spec, skills: undefined as readonly string[] | undefined, builtin: undefined as boolean | undefined, coreResolved: undefined as boolean | undefined, packageDir: undefined as string | undefined, title: undefined as string | undefined }
+: { name: spec.name, entry: spec.entry, skills: spec.skills, builtin: spec.builtin, coreResolved: spec.coreResolved, packageDir: spec.packageDir, settingsSlug: spec.settingsSlug, title: spec.title },
 );
 const outcomes: ExtensionOutcome[] = [];
 const perUserSlugs: string[] = [];
@@ -3040,7 +3059,7 @@ const curationToolOwners = new Map<string, string>();
 // commands and bundles). Checked BEFORE `registry.install` so a colliding
 // extension leaves no registry entry, no slug claim, and no binding.
 const channelIds = new Map<string, string>();
-for (const { name: label, entry, skills, builtin, coreResolved, packageDir, settingsSlug } of entries) {
+for (const { name: label, entry, skills, builtin, coreResolved, packageDir, settingsSlug, title: tableTitle } of entries) {
 const display = label ?? entry ?? "skills-only";
 let quarantineSlug = slugifyName(label ?? entry ?? "");
 				try {
@@ -3440,9 +3459,17 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 				const versionDir = packageDir ?? extensionModuleDir(loaded);
 				const version =
 						versionDir === undefined ? undefined : readPackageVersion(versionDir);
+				if (resolved.invalidTitle === true) {
+					console.warn(
+						`extension "${slug}": title must be a string whose trimmed length is 1..60 characters; ignoring`,
+					);
+				}
+				// The factory title wins; a built-in without one uses its table title.
+				const title = resolved.title ?? tableTitle;
 				outcomes.push({
 					name: slug,
 					status: "ok",
+					...(title === undefined ? {} : { title }),
 					...(version === undefined ? {} : { version }),
 					...(builtin === true ? { builtin: true } : {}),
 					...(resolved.channels === undefined

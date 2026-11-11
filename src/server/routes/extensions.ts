@@ -80,6 +80,7 @@ export function registerExtensionRoutes(
 						? {}
 						: { version: outcome.version }),
 					...(outcome.builtin === true ? { builtin: true } : {}),
+					...(outcome.title === undefined ? {} : { title: outcome.title }),
 					...(outcome.channels === undefined
 						? {}
 						: { channels: [...outcome.channels] }),
@@ -134,12 +135,14 @@ export function registerExtensionRoutes(
 		// the package `@sigrun/ext-mcp`), appended after the loaded set.
 		for (const skipped of opened.builtinSkipped) {
 			if (skipped.reason !== "replaced") continue;
-			const slug = BUILTIN_EXTENSIONS.find(
-				(builtin) => builtin.key === skipped.key,
-			)?.slug;
-			if (slug === undefined) continue;
+			const builtin = BUILTIN_EXTENSIONS.find(
+				(candidate) => candidate.key === skipped.key,
+			);
+			if (builtin === undefined) continue;
+			const slug = builtin.slug;
 			extensions.push({
 				name: slug,
+				title: builtin.title,
 				status: "replaced",
 				builtin: true,
 				...(skipped.by === undefined ? {} : { replacedBy: skipped.by }),

@@ -20,14 +20,21 @@
  */
 
 import { describe, expect, test } from "vitest";
-import type { TUI } from "@earendil-works/pi-tui";
+import type { Component, TUI } from "@earendil-works/pi-tui";
 import type { SurfaceLoad } from "@sigrun/shared/blocks";
 import { SigrunClient } from "../src/api.js";
 import type { SettingsSectionEntry } from "../src/api.js";
 import { plainTuiTheme } from "../src/theme.js";
 import { SettingsView, filterSettingsIndex } from "../src/ui/settings.js";
 
-const fakeTui = { requestRender: () => {} } as unknown as TUI;
+let shownPicker: Component | undefined;
+const fakeTui = {
+	requestRender: () => {},
+	showOverlay: (component: Component) => {
+		shownPicker = component;
+		return { hide: () => {} };
+	},
+} as unknown as TUI;
 
 /** The General section's form (one naming-model field — the search
  *  target — plus one more so the focus move is observable). */
@@ -122,13 +129,19 @@ function fakeWire(init?: {
 			label: "Default model",
 			key: "defaultModel",
 		},
-		{
+		...(init?.withoutDefaultExtension === true ? [] : [{
 			slug: "acme-ext",
 			sectionId: "acme",
 			kind: "field" as const,
 			label: "Acme endpoint",
 			key: "endpoint",
-		},
+		}]),
+		...(init?.sectionsExtra ?? []).map((section) => ({
+			slug: section.slug,
+			sectionId: section.id,
+			kind: "section" as const,
+			label: section.title,
+		})),
 	];
 	const fetchImpl = async (
 		input: RequestInfo | URL,
@@ -275,6 +288,23 @@ describe("TUI SettingsView (UI-blocks U4 Task 4)", () => {
 		expect(page).toBeGreaterThanOrEqual(0);
 		expect(settings).toBeGreaterThan(page);
 		expect(user).toBeGreaterThan(settings);
+	});
+
+	test("extension sections use pageTitle in the list and picker details", async () => {
+		const extra: readonly SettingsSectionEntry[] = [
+			{ slug: "acme-ext", id: "settings", page: "acme-ext", pageTitle: "Acme Titled", title: "Settings", icon: "key", admin: true },
+		];
+		const view = makeView(fakeWire({ sectionsExtra: extra, withoutDefaultExtension: true }));
+		await view.load();
+		const lines = view.render(80);
+		expect(lines).toContain("  Acme Titled");
+		expect(lines).toContain("    Settings");
+		expect(lines).not.toContain("  acme-ext");
+
+		view.openSearch();
+		const picker = shownPicker?.render(80).join("\n");
+		expect(picker).toContain("Acme Titled · settings");
+		expect(picker).not.toContain("acme-ext · settings");
 	});
 
 	test("user sections list under My settings for non-admins; admin+user stays admin-only", async () => {
