@@ -35,6 +35,15 @@ export const BLOCKS_KIND = "sigrun.blocks";
 export const BLOCKS_NOTE_KIND = "sigrun.blocks.note";
 export const BLOCKS_ANSWER_KIND = "sigrun.blocks.answer";
 
+/** A display-only sitting boundary in the transcript. */
+export const CONTEXT_MARK_KIND = "sigrun.context-mark";
+
+/** The `data` payload a {@link CONTEXT_MARK_KIND} entry carries. */
+export type ContextMarkData = {
+	readonly at: number;
+	readonly label: string;
+};
+
 /** The `show_blocks`/`update_blocks` tool names: a call to one of these
  *  never joins the turn's `tools` or the timeline — the block surface it
  *  created IS the visible artifact (the activity line would otherwise

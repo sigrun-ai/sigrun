@@ -47,6 +47,7 @@ import {
 } from "@sigrun/shared/access";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
+import { ContextMarkEntry } from "../harness/context-marks.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { cleanTitle } from "../harness/naming.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
@@ -1416,6 +1417,45 @@ export async function setAutoNameOp(
 		applied = draft.name === undefined;
 	}, BACKGROUND_CONTEXT);
 	return { applied };
+}
+
+/**
+ * Append one display-only sitting boundary. `at` must name an entry in
+ * the conversation's fork-aware history; the label is trimmed to 1..120
+ * characters. The entry carries data only, so even a commit during a
+ * live run changes no model context.
+ */
+export async function markContextOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	mark: { readonly at: unknown; readonly label: unknown },
+): Promise<{ readonly entryId: number }> {
+	await assertNotDeleted(ctx, conversation);
+	if (typeof mark.at !== "number") {
+		throw new ConversationOpError({ error: "invalid_field", field: "at" });
+	}
+	const at = mark.at;
+	const page = await conversation.entries(
+		{ maxEntryId: at as EntryId },
+		1,
+		undefined,
+		BACKGROUND_CONTEXT,
+	);
+	if (page.items[0]?.id !== at) {
+		throw new ConversationOpError({ error: "invalid_field", field: "at" });
+	}
+	const label = typeof mark.label === "string" ? mark.label.trim() : "";
+	if (label.length < 1 || label.length > 120) {
+		throw new ConversationOpError({ error: "invalid_field", field: "label" });
+	}
+	const entry = await conversation.commit(
+		async (tx) =>
+			await tx.appendEntry(ContextMarkEntry, conversation.id, {
+				data: { at, label },
+			}),
+		BACKGROUND_CONTEXT,
+	);
+	return { entryId: entry.id };
 }
 
 // ─── Upload + raw read (gateway C4b — the files routes' ops) ───────────────

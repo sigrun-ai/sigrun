@@ -425,6 +425,13 @@ effects are identical by construction:
   A non-string or empty-after-cleaning title throws `invalid_field`
   `title`; `autoNameAttempts` is unchanged. Like `patchMeta`, it is not
   gated on the `deleted` marker.
+- `markContext(id, {at, label})` — appends a `sigrun.context-mark` entry
+  whose data is `{at, label}` and returns `{entryId}`. `at` must name an
+  entry in the conversation's fork-aware history; the trimmed label must
+  be 1..120 characters. The entry is display-only (no model payload), so
+  it changes no model context. A deleted conversation refuses marks with
+  `conversation_deleted` (409); invalid input throws `invalid_field`
+  (`at` or `label`).
 - `upload(id, {name, mime?, bytes})` → `{path}` — the raw-upload route's
   op (gateway C4b): writes `uploads/<conversationId>/<name>` through
   the conversation's workspace env and returns the path exactly as a
