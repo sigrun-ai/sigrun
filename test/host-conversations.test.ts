@@ -32,7 +32,7 @@ import {
 	fauxProvider,
 	type FauxProviderHandle,
 } from "@earendil-works/pi-ai/providers/faux";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import type { AssistantMessage, Message } from "@earendil-works/pi-ai";
 import { loadConfig, type SigrunConfig } from "../src/config.js";
 import type { SigrunHost } from "../src/extension.js";
 import type { ConversationId } from "@earendil-works/pi-durable";
@@ -710,6 +710,289 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
 	});
 
+	test("markContext appends a display-only mark entry", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		faux.appendResponses([fauxAssistantMessage("mark answer")]);
+		const record = await host.conversations.submit(id, [
+			{ type: "text", text: "hello" },
+		]);
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the turn to settle",
+		);
+		const page = await host.conversations.entries(id, { order: "ascending" }, 50);
+		const userEntry = page.items.find((entry) => entry.kind === "pi.user");
+		expect(userEntry).toBeDefined();
+		const marked = await host.conversations.markContext(id, {
+			at: userEntry!.id,
+			label: "New sitting · Garden",
+		});
+		expect(typeof marked.entryId).toBe("number");
+		const entry = await host.conversations.entry(id, marked.entryId);
+		expect(entry).toMatchObject({
+			id: marked.entryId,
+			kind: "sigrun.context-mark",
+			data: { at: userEntry!.id, label: "New sitting · Garden" },
+		});
+		expect(entry?.model).toBeUndefined();
+	});
+
+	test("the mark changes no model context", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const requests: Message[][] = [];
+		const control = await host.conversations.create({ owner: "alice" });
+		const marked = await host.conversations.create({ owner: "alice" });
+		for (const id of [control, marked]) {
+			faux.setResponses([
+				(context) => {
+					requests.push([...context.messages]);
+					return fauxAssistantMessage("first answer");
+				},
+			]);
+			const first = await host.conversations.submit(id, [
+				{ type: "text", text: "first question" },
+			]);
+			await waitFor(
+				async () => (await submissionOf(opened, first.id)).status === "done",
+				"the first turn to settle",
+			);
+		}
+		const controlEntries = await host.conversations.entries(
+			control,
+			{ order: "ascending" },
+			50,
+		);
+		const markedEntries = await host.conversations.entries(
+			marked,
+			{ order: "ascending" },
+			50,
+		);
+		const userEntry = markedEntries.items.find((entry) => entry.kind === "pi.user");
+		expect(userEntry).toBeDefined();
+		await host.conversations.markContext(marked, {
+			at: userEntry!.id,
+			label: "New sitting · Garden",
+		});
+		for (const id of [control, marked]) {
+			faux.setResponses([
+				(context) => {
+					requests.push([...context.messages]);
+					return fauxAssistantMessage("second answer");
+				},
+			]);
+			const second = await host.conversations.submit(id, [
+				{ type: "text", text: "second question" },
+			]);
+			await waitFor(
+				async () => (await submissionOf(opened, second.id)).status === "done",
+				"the second turn to settle",
+			);
+		}
+		expect(requests).toHaveLength(4);
+		expect(controlEntries.items.map((entry) => entry.kind)).toEqual(
+			markedEntries.items.map((entry) => entry.kind),
+		);
+		expect(requests[2]).toHaveLength(requests[3]!.length);
+		expect(requests[2]?.map((message) => ({ ...message, timestamp: 0 }))).toEqual(
+			requests[3]?.map((message) => ({ ...message, timestamp: 0 })),
+		);
+	});
+
+	test("at must be an entry of the conversation", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await expect(
+			host.conversations.markContext(id, {
+				at: 999999 as never,
+				label: "New sitting · Garden",
+			}),
+		).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "at" },
+		});
+		const page = await host.conversations.entries(id, {}, 50);
+		expect(page.items).toEqual([]);
+	});
+
+	test("label must be 1..120 characters after trim", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
+		if (conversation === undefined) throw new Error("conversation not found");
+		await conversation.commit(async (tx) => {
+			await tx.appendEntry(id, { kind: "pi.user" });
+		}, BACKGROUND_CONTEXT);
+		const at = (await host.conversations.entries(id, {}, 1)).items[0]?.id;
+		expect(at).toBeDefined();
+		for (const label of ["", "x".repeat(121)]) {
+			await expect(
+				host.conversations.markContext(id, { at: at!, label }),
+			).rejects.toMatchObject({
+				name: "ConversationOpError",
+				body: { error: "invalid_field", field: "label" },
+			});
+		}
+		const marked = await host.conversations.markContext(id, {
+			at: at!,
+			label: `  ${"x".repeat(120)}  `,
+		});
+		const entry = await host.conversations.entry(id, marked.entryId);
+		expect(entry?.data).toEqual({ at, label: "x".repeat(120) });
+	});
+
+	test("markContext accepts a fork-inherited at entry", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const parentId = await host.conversations.create({ owner: "alice" });
+		faux.appendResponses([fauxAssistantMessage("fork mark answer")]);
+		const record = await host.conversations.submit(parentId, [
+			{ type: "text", text: "parent turn" },
+		]);
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the parent turn to settle",
+		);
+		const parentEntries = await host.conversations.entries(
+			parentId,
+			{ order: "ascending" },
+			50,
+		);
+		const parentUserEntry = parentEntries.items.find(
+			(entry) => entry.kind === "pi.user",
+		);
+		expect(parentUserEntry).toBeDefined();
+		const childId = await host.conversations.fork(parentId, { owner: "tester" });
+		await expect(
+			host.conversations.markContext(childId, {
+				at: parentUserEntry!.id,
+				label: "New sitting · Garden",
+			}),
+		).resolves.toMatchObject({ entryId: expect.any(Number) });
+	});
+
+	test("markContext commits while a run is live", { timeout: 30_000 }, async () => {
+		const { opened, faux } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const gate = gatedResponse();
+		faux.setResponses([gate.step]);
+		const record = await host.conversations.submit(id, [
+			{ type: "text", text: "held open" },
+		]);
+		await waitFor(
+			async () => (await agentLive(opened, id)) !== undefined,
+			"the run to place",
+		);
+		const page = await host.conversations.entries(id, { order: "ascending" }, 50);
+		const userEntry = page.items.find((entry) => entry.kind === "pi.user");
+		expect(userEntry).toBeDefined();
+		try {
+			await expect(
+				host.conversations.markContext(id, {
+					at: userEntry!.id,
+					label: "New sitting · Garden",
+				}),
+			).resolves.toMatchObject({ entryId: expect.any(Number) });
+		} finally {
+			gate.release();
+		}
+		await waitFor(
+			async () => (await submissionOf(opened, record.id)).status === "done",
+			"the gated run to settle",
+		);
+	});
+
+	test("a deleted conversation refuses marks", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.patchMeta(id, { deleted: true } as never);
+		await expect(
+			host.conversations.markContext(id, {
+				at: 999999 as never,
+				label: "New sitting · Garden",
+			}),
+		).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "conversation_deleted" },
+			status: 409,
+		});
+	});
+
+	test("setAutoName writes autoName when no typed name exists", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await expect(
+			host.conversations.setAutoName(id, "  Vet clinics for the cat. "),
+		).resolves.toEqual({ applied: true });
+		expect((await host.conversations.meta(id)).autoName).toBe(
+			"Vet clinics for the cat",
+		);
+		const listed = await host.conversations.list({ owner: "alice" });
+		expect(listed.find((conversation) => conversation.id === id)?.name).toBe(
+			"Vet clinics for the cat",
+		);
+	});
+
+	test("a typed name wins", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.patchMeta(id, { name: "Mine" });
+		await expect(host.conversations.setAutoName(id, "Other")).resolves.toEqual({
+			applied: false,
+		});
+		expect((await host.conversations.meta(id)).name).toBe("Mine");
+		const listed = await host.conversations.list({ owner: "alice" });
+		expect(listed.find((conversation) => conversation.id === id)?.name).toBe(
+			"Mine",
+		);
+	});
+
+	test("clearing the typed name shows the latest automatic title", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.patchMeta(id, { name: "Mine" });
+		await host.conversations.setAutoName(id, "Other");
+		await host.conversations.patchMeta(id, { name: null });
+		const listed = await host.conversations.list({ owner: "alice" });
+		expect(listed.find((conversation) => conversation.id === id)?.name).toBe(
+			"Other",
+		);
+	});
+
+	test("an empty title is invalid_field title", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await expect(host.conversations.setAutoName(id, "  ")).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "title" },
+		});
+		await expect(host.conversations.setAutoName(id, 42 as never)).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "title" },
+		});
+	});
+
+	test("autoNameAttempts is untouched", { timeout: 30_000 }, async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const before = await host.conversations.meta(id);
+		await host.conversations.setAutoName(id, "Automatic");
+		expect((await host.conversations.meta(id)).autoNameAttempts).toBe(
+			before.autoNameAttempts,
+		);
+	});
+
 	test("create preserves people-share groups and grants stored-group access", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		await opened.identity.users.setGroups("alice", "test", ["family"]);
@@ -792,6 +1075,12 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		).rejects.toThrow("conversation 999999 not found");
 		await expect(
 			host.conversations.patchMeta(id, { name: "x" }),
+		).rejects.toThrow("conversation 999999 not found");
+		await expect(host.conversations.setAutoName(id, "x")).rejects.toThrow(
+			"conversation 999999 not found",
+		);
+		await expect(
+			host.conversations.markContext(id, { at: 1 as never, label: "x" }),
 		).rejects.toThrow("conversation 999999 not found");
 	});
 });

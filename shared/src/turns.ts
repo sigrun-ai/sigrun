@@ -9,9 +9,11 @@
  * the single-source rule.
  *
  * Grouping: consecutive `pi.assistant` and `pi.tool-result` entries
- * form ONE assistant turn; a `pi.user` entry is its own turn; every
- * other kind (compaction records, summaries) is an `other` turn. A
- * user or other entry also ENDS the assistant run.
+ * form ONE assistant turn; a `pi.user` entry is its own turn; a
+ * `sigrun.context-mark` entry produces a `mark` divider turn placed
+ * before the entry it names (or nothing when that entry is absent);
+ * every other kind (compaction records, summaries) is an `other` turn.
+ * A user or other entry also ENDS the assistant run.
  *
  * Task 2c: an EXPANDED input (`/skill:name`, a prompt template) is
  * placed as ONE entry whose kind REPLACES `pi.user` —
@@ -34,6 +36,15 @@ export const EXPANDED_USER_KIND = "sigrun.user.expanded";
 export const BLOCKS_KIND = "sigrun.blocks";
 export const BLOCKS_NOTE_KIND = "sigrun.blocks.note";
 export const BLOCKS_ANSWER_KIND = "sigrun.blocks.answer";
+
+/** A display-only sitting boundary in the transcript. */
+export const CONTEXT_MARK_KIND = "sigrun.context-mark";
+
+/** The `data` payload a {@link CONTEXT_MARK_KIND} entry carries. */
+export type ContextMarkData = {
+	readonly at: number;
+	readonly label: string;
+};
 
 /** The `show_blocks`/`update_blocks` tool names: a call to one of these
  *  never joins the turn's `tools` or the timeline — the block surface it
@@ -119,6 +130,7 @@ export type Turn<E extends TurnEntry> =
 			 * stream merge into one segment (multi-block answers read as one). */
 			readonly timeline: readonly TimelineEvent[];
 		}
+	| { readonly kind: "mark"; readonly entry: E; readonly label: string }
 	| { readonly kind: "other"; readonly entry: E };
 
 /** One chronological segment of an assistant turn. */
@@ -161,6 +173,24 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 	const turns: Turn<E>[] = [];
 	let pending: PendingTurn<E> | null = null;
 
+	// Pre-scan marks: the latest mark for each `at` wins. A mark is a
+	// display-only sitting boundary; it renders as a divider BEFORE the
+	// entry it names (the entry whose id equals `at`). Marks are dropped
+	// when the named entry never appears (fork past its range) or when
+	// the payload is malformed (non-numeric `at` or non-string/blank
+	// `label`).
+	const marks = new Map<number, { entry: E; label: string }>();
+	for (const entry of entries) {
+		if (entry.kind !== CONTEXT_MARK_KIND) continue;
+		const data = entry.data;
+		if (typeof data !== "object" || data === null) continue;
+		const at = (data as { readonly at?: unknown }).at;
+		const label = (data as { readonly label?: unknown }).label;
+		if (typeof at !== "number" || !Number.isFinite(at)) continue;
+		if (typeof label !== "string" || label.trim() === "") continue;
+		marks.set(at, { entry, label });
+	}
+
 	const flush = (): void => {
 		if (pending === null) return;
 		// Merge consecutive text segments for the timeline (a multi-block
@@ -194,6 +224,19 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 	};
 
 	for (const entry of entries) {
+		// Mark entries themselves never produce a turn; they are consumed
+		// by the pre-scan and rendered as dividers before the named entry.
+		if (entry.kind === CONTEXT_MARK_KIND) continue;
+
+		// If this entry is named by a mark, flush the pending assistant
+		// turn and push the mark turn BEFORE processing the entry.
+		const mark = marks.get(entry.id);
+		if (mark !== undefined) {
+			flush();
+			turns.push({ kind: "mark", entry: mark.entry, label: mark.label });
+			marks.delete(entry.id);
+		}
+
 		if (entry.kind === "pi.assistant" || entry.kind === "pi.tool-result") {
 			pending ??= {
 				entries: [],

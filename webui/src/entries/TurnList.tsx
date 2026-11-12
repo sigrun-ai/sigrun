@@ -36,6 +36,7 @@ import {
 } from "@sigrun/shared/turns";
 import { AssistantTurn } from "./AssistantTurn";
 import { CompactionEntry } from "./CompactionEntry";
+import { ContextMarkEntry } from "./ContextMarkEntry";
 import { SystemEntry } from "./SystemEntry";
 import { UserEntry, userText } from "./UserEntry";
 import { messageText, thinkingTexts } from "./content";
@@ -202,6 +203,13 @@ export function TurnList(props: {
 							live={merged && index === turns.length - 1}
 							timeline={timeline}
 						/>
+					);
+				}
+				if (turn.kind === "mark") {
+					return (
+						<div key={turn.entry.id} className="turn turn-other" data-turn-kind="mark">
+							<ContextMarkEntry label={turn.label} />
+						</div>
 					);
 				}
 				return (

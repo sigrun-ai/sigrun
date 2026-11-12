@@ -52,6 +52,7 @@ import {
 	Markdown,
 	MouseRegion,
 	Text,
+	visibleWidth,
 	type Component,
 	type MarkdownTheme,
 	type TuiMouseEventResult,
@@ -68,6 +69,7 @@ import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import { isAuthFailureMessage, type ConversationViewWire } from "../api.js";
 import { SurfaceState } from "../blocks/surface.js";
 import { SurfaceView } from "../blocks/surface-view.js";
+import { truncate } from "../blocks/width.js";
 
 /** One §5 message's structural shape (B1's `TurnMessage` + content parts). */
 interface MessageShape {
@@ -174,16 +176,25 @@ function markdownTheme(theme: TuiTheme): MarkdownTheme {
 	};
 }
 
-/** Pad/centre the compaction divider to the render width. */
-function compactionLine(theme: TuiTheme): Component {
+/** Clamp and centre a divider line by DISPLAY width (CJK/emoji-safe). */
+function dividerLine(theme: TuiTheme, label: string): Component {
 	return new (class implements Component {
 		render(width: number): string[] {
-			const label = "── context compacted ──";
-			const pad = Math.max(0, Math.floor((width - label.length) / 2));
-			return [theme.dim(`${" ".repeat(pad)}${label}`)];
+			if (width <= 0) return [""];
+			const line = truncate(label, width);
+			const pad = Math.max(
+				0,
+				Math.floor((width - visibleWidth(line)) / 2),
+			);
+			return [theme.dim(`${" ".repeat(pad)}${line}`)];
 		}
 		invalidate(): void {}
 	})();
+}
+
+/** Pad/centre the compaction divider to the render width. */
+function compactionLine(theme: TuiTheme): Component {
+	return dividerLine(theme, "── context compacted ──");
 }
 
 /** One composer-surfaced line: `error` for failures, `notice` for outcomes. */
@@ -355,6 +366,8 @@ export class ConversationPane implements Component {
 			}
 			case "assistant":
 				return turn.text;
+			case "mark":
+				return turn.label;
 			case "other":
 				return entryText(turn.entry);
 		}
@@ -369,6 +382,8 @@ export class ConversationPane implements Component {
 				return turn.entry.id;
 			case "assistant":
 				return turn.lastEntryId;
+			case "mark":
+				return turn.entry.id;
 			case "other":
 				return turn.entry.id;
 		}
@@ -782,6 +797,10 @@ export class ConversationPane implements Component {
 						}
 					}
 				}
+				break;
+			}
+			case "mark": {
+				components.push(dividerLine(this.#theme, `── ${turn.label} ──`));
 				break;
 			}
 			case "other": {

@@ -1724,6 +1724,22 @@ export interface SigrunHost {
 			},
 		): Promise<SessionMeta>;
 		/**
+		 * Store an automatic title. A typed name stays visible; `applied`
+		 * reports whether the automatic title is currently shown instead.
+		 */
+		setAutoName(
+			id: ConversationId,
+			title: string,
+		): Promise<{ readonly applied: boolean }>;
+		/**
+		 * Append a display-only sitting boundary at an existing transcript
+		 * entry. The entry has no model payload and changes no model context.
+		 */
+		markContext(
+			id: ConversationId,
+			mark: { readonly at: EntryId; readonly label: string },
+		): Promise<{ readonly entryId: EntryId }>;
+		/**
 		 * Upload one file into the conversation's upload namespace (gateway
 		 * C4b, the raw-upload route's op): `uploads/<conversationId>/<name>`,
 		 * the exact path a `file`/`image` submission part takes. The NAME is

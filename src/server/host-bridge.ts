@@ -17,7 +17,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
-import type { Conversation, ConversationId } from "@earendil-works/pi-durable";
+import type { Conversation, ConversationId, EntryId } from "@earendil-works/pi-durable";
 import { watchFullHistory } from "./conversation-watch.js";
 import { accessOf as accessOfShared } from "@sigrun/shared/access";
 import type {
@@ -41,9 +41,11 @@ import {
 	createConversationOp,
 	forkOp,
 	listConversationsOp,
+	markContextOp,
 	patchMetaOp,
 	readFileOp,
 	readMetaOp,
+	setAutoNameOp,
 	submitOp,
 	uploadOp,
 } from "./conversation-ops.js";
@@ -319,6 +321,15 @@ export function createHostBridge(ctx: ServerContext): HostBridge {
 				// No principal: host callers are trusted — the sharing gate is
 				// the HTTP route's own concern (the plan's ruling).
 				return await patchMetaOp(ctx, conversation, patch);
+			},
+			async setAutoName(id, title) {
+				const conversation = await conversationOf(id);
+				return await setAutoNameOp(ctx, conversation, title);
+			},
+			async markContext(id, mark) {
+				const conversation = await conversationOf(id);
+				const marked = await markContextOp(ctx, conversation, mark);
+				return { entryId: marked.entryId as EntryId };
 			},
 			// Gateway C4b: the files routes' ops, each the SAME op its HTTP
 			// route runs — the upload routes' shared write core and the

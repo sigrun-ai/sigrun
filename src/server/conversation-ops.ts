@@ -47,7 +47,9 @@ import {
 } from "@sigrun/shared/access";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
+import { ContextMarkEntry } from "../harness/context-marks.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { cleanTitle } from "../harness/naming.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import {
 	ensureRequestId,
@@ -127,7 +129,7 @@ const WAIT_MS_MAX = 60_000;
  * SSE, fork, meta PATCH, abort and interaction answers are never gated —
  * but every op that would start NEW work in it throws
  * `ConversationOpError({error: "conversation_deleted"}, 409)`. The guarded
- * ops are submitOp, compactOp, configureOp, uploadOp and the
+ * ops are submitOp, compactOp, configureOp, uploadOp, markContextOp and the
  * extension-command invoke route (routes/submissions.ts); jobs check the
  * same flag in fire.ts.
  */
@@ -1391,6 +1393,69 @@ export async function patchMetaOp(
 			BACKGROUND_CONTEXT,
 		)) ?? DEFAULT_SESSION_META
 	);
+}
+
+/**
+ * Store an automatic display title without replacing a typed name. The
+ * title is always recorded; `applied` reports whether it is the title the
+ * conversation list currently shows. Like patchMeta, this is not gated on
+ * the deleted marker.
+ */
+export async function setAutoNameOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	title: unknown,
+): Promise<{ readonly applied: boolean }> {
+	const cleaned = typeof title === "string" ? cleanTitle(title) : undefined;
+	if (cleaned === undefined) {
+		throw new ConversationOpError({ error: "invalid_field", field: "title" });
+	}
+	let applied = false;
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		draft.autoName = cleaned;
+		applied = draft.name === undefined;
+	}, BACKGROUND_CONTEXT);
+	return { applied };
+}
+
+/**
+ * Append one display-only sitting boundary. `at` must name an entry in
+ * the conversation's fork-aware history; the label is trimmed to 1..120
+ * characters. The entry carries data only, so even a commit during a
+ * live run changes no model context.
+ */
+export async function markContextOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	mark: { readonly at: unknown; readonly label: unknown },
+): Promise<{ readonly entryId: number }> {
+	await assertNotDeleted(ctx, conversation);
+	if (typeof mark.at !== "number") {
+		throw new ConversationOpError({ error: "invalid_field", field: "at" });
+	}
+	const at = mark.at;
+	const page = await conversation.entries(
+		{ maxEntryId: at as EntryId },
+		1,
+		undefined,
+		BACKGROUND_CONTEXT,
+	);
+	if (page.items[0]?.id !== at) {
+		throw new ConversationOpError({ error: "invalid_field", field: "at" });
+	}
+	const label = typeof mark.label === "string" ? mark.label.trim() : "";
+	if (label.length < 1 || label.length > 120) {
+		throw new ConversationOpError({ error: "invalid_field", field: "label" });
+	}
+	const entry = await conversation.commit(
+		async (tx) =>
+			await tx.appendEntry(ContextMarkEntry, conversation.id, {
+				data: { at, label },
+			}),
+		BACKGROUND_CONTEXT,
+	);
+	return { entryId: entry.id };
 }
 
 // ─── Upload + raw read (gateway C4b — the files routes' ops) ───────────────

@@ -1078,6 +1078,12 @@ export function createSeamHost(
 			async patchMeta(id, patch) {
 				return (await hostBridge("conversations.patchMeta")).conversations.patchMeta(id, patch);
 			},
+			async setAutoName(id, title) {
+				return (await hostBridge("conversations.setAutoName")).conversations.setAutoName(id, title);
+			},
+			async markContext(id, mark) {
+				return (await hostBridge("conversations.markContext")).conversations.markContext(id, mark);
+			},
 			// The C4b ops: same straight delegation.
 			async upload(id, file) {
 				return (await hostBridge("conversations.upload")).conversations.upload(id, file);
