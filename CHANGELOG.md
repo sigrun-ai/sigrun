@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.0] - 2026-11-12
+
+### Added
+
+- `host.conversations.setAutoName(id, title)`: extensions set a conversation's
+  automatic title; a name typed by a person always wins, `autoName` stays
+  server-owned and unpatchable by clients.
+- `host.conversations.markContext(id, {at, label})`: display-only
+  `sigrun.context-mark` entries; the web UI and TUI render them as quiet
+  transcript dividers ("New sitting · …") styled like the compaction
+  divider. Never enters model context.
+
 ## [0.15.0] - 2026-11-11
 
 ### Added
