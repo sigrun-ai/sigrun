@@ -451,6 +451,11 @@ describe("groupTurns", () => {
 			{
 				id: 5,
 				kind: CONTEXT_MARK_KIND,
+				data: { at: 2, label: " \t\n " },
+			},
+			{
+				id: 6,
+				kind: CONTEXT_MARK_KIND,
 				data: { at: 2 },
 			},
 		]);
@@ -460,7 +465,7 @@ describe("groupTurns", () => {
 		]);
 	});
 
-	it("marks do not produce an other turn and do not break the blocks timeline", () => {
+	it("a mark naming a blocks entry splits the run into its own assistant turn", () => {
 		const turns = groupTurns([
 			userEntry(1, "show the ranking"),
 			assistantEntry(2, [

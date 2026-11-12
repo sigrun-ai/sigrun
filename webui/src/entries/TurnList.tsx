@@ -208,7 +208,7 @@ export function TurnList(props: {
 				if (turn.kind === "mark") {
 					return (
 						<div key={turn.entry.id} className="turn turn-other" data-turn-kind="mark">
-							<ContextMarkEntry entry={turn.entry} />
+							<ContextMarkEntry label={turn.label} />
 						</div>
 					);
 				}

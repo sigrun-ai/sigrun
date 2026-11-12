@@ -52,6 +52,7 @@ import {
 	Markdown,
 	MouseRegion,
 	Text,
+	visibleWidth,
 	type Component,
 	type MarkdownTheme,
 	type TuiMouseEventResult,
@@ -68,6 +69,7 @@ import { plainTuiTheme, type TuiTheme } from "../theme.js";
 import { isAuthFailureMessage, type ConversationViewWire } from "../api.js";
 import { SurfaceState } from "../blocks/surface.js";
 import { SurfaceView } from "../blocks/surface-view.js";
+import { truncate } from "../blocks/width.js";
 
 /** One §5 message's structural shape (B1's `TurnMessage` + content parts). */
 interface MessageShape {
@@ -174,12 +176,17 @@ function markdownTheme(theme: TuiTheme): MarkdownTheme {
 	};
 }
 
-/** Pad/centre a divider line to the render width. */
+/** Clamp and centre a divider line by DISPLAY width (CJK/emoji-safe). */
 function dividerLine(theme: TuiTheme, label: string): Component {
 	return new (class implements Component {
 		render(width: number): string[] {
-			const pad = Math.max(0, Math.floor((width - label.length) / 2));
-			return [theme.dim(`${" ".repeat(pad)}${label}`)];
+			if (width <= 0) return [""];
+			const line = truncate(label, width);
+			const pad = Math.max(
+				0,
+				Math.floor((width - visibleWidth(line)) / 2),
+			);
+			return [theme.dim(`${" ".repeat(pad)}${line}`)];
 		}
 		invalidate(): void {}
 	})();

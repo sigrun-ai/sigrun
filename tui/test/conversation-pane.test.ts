@@ -11,6 +11,7 @@
  */
 
 import { describe, expect, test } from "vitest";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { SurfaceTransport, Tree } from "@sigrun/shared/blocks";
 import { ConversationPane } from "../src/ui/conversation-pane.js";
 import {
@@ -430,6 +431,60 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		const lines = pane.render(80).join("\n");
 		expect(lines).toContain("New sitting · Garden");
 		expect(lines).toContain("──");
+	});
+
+	test("a mark divider clamps to display width and centres CJK labels", () => {
+		const pane = new ConversationPane();
+		const label = "新しい席・園";
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "pi.user",
+					model: [{ role: "user", content: "First question" }],
+				},
+				{
+					id: 2,
+					kind: "sigrun.context-mark",
+					data: { at: 1, label },
+				},
+			]),
+		);
+		const divider = pane
+			.render(40)
+			.find((line) => line.includes("──"));
+		expect(divider).toBeDefined();
+		expect(visibleWidth(divider!)).toBeLessThanOrEqual(40);
+		const leftPadding = divider!.length - divider!.trimStart().length;
+		expect(leftPadding).toBeGreaterThan(0);
+		// UTF-16 length would place this CJK divider 5 cells too far right.
+		expect(divider!.indexOf("──")).toBeLessThan(
+			Math.floor((40 - `── ${label} ──`.length) / 2),
+		);
+	});
+
+	test("a mark divider truncates an over-wide label with an ellipsis", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "pi.user",
+					model: [{ role: "user", content: "First question" }],
+				},
+				{
+					id: 2,
+					kind: "sigrun.context-mark",
+					data: { at: 1, label: "A sitting title that is much too wide" },
+				},
+			]),
+		);
+		const divider = pane
+			.render(24)
+			.find((line) => line.includes("──"));
+		expect(divider).toBeDefined();
+		expect(divider).toContain("…");
+		expect(visibleWidth(divider!)).toBeLessThanOrEqual(24);
 	});
 
 	test("the focused turn's first line carries the surface2 background", () => {

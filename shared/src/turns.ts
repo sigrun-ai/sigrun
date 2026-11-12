@@ -9,9 +9,11 @@
  * the single-source rule.
  *
  * Grouping: consecutive `pi.assistant` and `pi.tool-result` entries
- * form ONE assistant turn; a `pi.user` entry is its own turn; every
- * other kind (compaction records, summaries) is an `other` turn. A
- * user or other entry also ENDS the assistant run.
+ * form ONE assistant turn; a `pi.user` entry is its own turn; a
+ * `sigrun.context-mark` entry produces a `mark` divider turn placed
+ * before the entry it names (or nothing when that entry is absent);
+ * every other kind (compaction records, summaries) is an `other` turn.
+ * A user or other entry also ENDS the assistant run.
  *
  * Task 2c: an EXPANDED input (`/skill:name`, a prompt template) is
  * placed as ONE entry whose kind REPLACES `pi.user` —
@@ -175,7 +177,8 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 	// display-only sitting boundary; it renders as a divider BEFORE the
 	// entry it names (the entry whose id equals `at`). Marks are dropped
 	// when the named entry never appears (fork past its range) or when
-	// the payload is malformed (non-numeric `at` or non-string/empty `label`).
+	// the payload is malformed (non-numeric `at` or non-string/blank
+	// `label`).
 	const marks = new Map<number, { entry: E; label: string }>();
 	for (const entry of entries) {
 		if (entry.kind !== CONTEXT_MARK_KIND) continue;
@@ -184,7 +187,7 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 		const at = (data as { readonly at?: unknown }).at;
 		const label = (data as { readonly label?: unknown }).label;
 		if (typeof at !== "number" || !Number.isFinite(at)) continue;
-		if (typeof label !== "string" || label === "") continue;
+		if (typeof label !== "string" || label.trim() === "") continue;
 		marks.set(at, { entry, label });
 	}
 

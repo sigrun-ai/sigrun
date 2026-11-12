@@ -305,6 +305,11 @@ describe("TurnList: grouping and rendering", () => {
 		});
 		expect(mark).toHaveLength(1);
 		expect(mark[0]?.props.className).toContain("turn-other");
+		expect(
+			renderer.root.findAll(
+				(node) => node.props.className === "turn-compaction",
+			),
+		).toHaveLength(1);
 		renderer.unmount();
 	});
 
