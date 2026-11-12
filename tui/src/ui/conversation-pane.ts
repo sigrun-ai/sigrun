@@ -174,16 +174,20 @@ function markdownTheme(theme: TuiTheme): MarkdownTheme {
 	};
 }
 
-/** Pad/centre the compaction divider to the render width. */
-function compactionLine(theme: TuiTheme): Component {
+/** Pad/centre a divider line to the render width. */
+function dividerLine(theme: TuiTheme, label: string): Component {
 	return new (class implements Component {
 		render(width: number): string[] {
-			const label = "── context compacted ──";
 			const pad = Math.max(0, Math.floor((width - label.length) / 2));
 			return [theme.dim(`${" ".repeat(pad)}${label}`)];
 		}
 		invalidate(): void {}
 	})();
+}
+
+/** Pad/centre the compaction divider to the render width. */
+function compactionLine(theme: TuiTheme): Component {
+	return dividerLine(theme, "── context compacted ──");
 }
 
 /** One composer-surfaced line: `error` for failures, `notice` for outcomes. */
@@ -355,6 +359,8 @@ export class ConversationPane implements Component {
 			}
 			case "assistant":
 				return turn.text;
+			case "mark":
+				return turn.label;
 			case "other":
 				return entryText(turn.entry);
 		}
@@ -369,6 +375,8 @@ export class ConversationPane implements Component {
 				return turn.entry.id;
 			case "assistant":
 				return turn.lastEntryId;
+			case "mark":
+				return turn.entry.id;
 			case "other":
 				return turn.entry.id;
 		}
@@ -782,6 +790,10 @@ export class ConversationPane implements Component {
 						}
 					}
 				}
+				break;
+			}
+			case "mark": {
+				components.push(dividerLine(this.#theme, `── ${turn.label} ──`));
 				break;
 			}
 			case "other": {

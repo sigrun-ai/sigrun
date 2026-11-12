@@ -17,11 +17,13 @@ import {
 	BLOCKS_ANSWER_KIND,
 	BLOCKS_KIND,
 	BLOCKS_NOTE_KIND,
+	CONTEXT_MARK_KIND,
 	EXPANDED_USER_KIND,
 	expandedUserEntry,
 	groupTurns,
 	previewArgument,
 	toolPreview,
+	type ContextMarkData,
 	type ToolCall,
 	type TurnBlock,
 	type TurnEntry,
@@ -361,6 +363,140 @@ describe("groupTurns", () => {
 				event.kind === "note" ? `note:${event.entryId}` : event.kind,
 			),
 		).toEqual(["note:4"]);
+	});
+
+	it("a mark renders before the entry it names", () => {
+		const mark: TurnEntry = {
+			id: 5,
+			kind: CONTEXT_MARK_KIND,
+			data: { at: 3, label: "New sitting · Garden" } satisfies ContextMarkData,
+		};
+		const turns = groupTurns([
+			userEntry(1, "First question"),
+			assistantEntry(2, [{ type: "text", text: "First answer." }]),
+			userEntry(3, "Second question"),
+			assistantEntry(4, [{ type: "text", text: "Second answer." }]),
+			mark,
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"mark",
+			"user",
+			"assistant",
+		]);
+		const markTurn = turns[2]!;
+		if (markTurn.kind !== "mark") throw new Error("expected a mark turn");
+		expect(markTurn.entry).toBe(mark);
+		expect(markTurn.label).toBe("New sitting · Garden");
+	});
+
+	it("the latest mark for the same entry wins", () => {
+		const turns = groupTurns([
+			userEntry(1, "First question"),
+			assistantEntry(2, [{ type: "text", text: "First answer." }]),
+			userEntry(3, "Second question"),
+			{
+				id: 4,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: 3, label: "First mark" } satisfies ContextMarkData,
+			},
+			{
+				id: 5,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: 3, label: "Second mark" } satisfies ContextMarkData,
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"mark",
+			"user",
+		]);
+		const markTurn = turns[2]!;
+		if (markTurn.kind !== "mark") throw new Error("expected a mark turn");
+		expect(markTurn.label).toBe("Second mark");
+	});
+
+	it("a mark naming an absent entry is dropped", () => {
+		const turns = groupTurns([
+			userEntry(1, "First question"),
+			assistantEntry(2, [{ type: "text", text: "First answer." }]),
+			{
+				id: 3,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: 99, label: "Absent mark" } satisfies ContextMarkData,
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+		]);
+	});
+
+	it("a malformed mark payload is dropped", () => {
+		const turns = groupTurns([
+			userEntry(1, "First question"),
+			assistantEntry(2, [{ type: "text", text: "First answer." }]),
+			{
+				id: 3,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: "not-a-number", label: "Bad at" },
+			},
+			{
+				id: 4,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: 2, label: "" },
+			},
+			{
+				id: 5,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: 2 },
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+		]);
+	});
+
+	it("marks do not produce an other turn and do not break the blocks timeline", () => {
+		const turns = groupTurns([
+			userEntry(1, "show the ranking"),
+			assistantEntry(2, [
+				{
+					type: "toolCall",
+					id: "call-blocks",
+					name: "show_blocks",
+					arguments: { title: "Ranking" },
+				},
+			]),
+			{
+				id: 3,
+				kind: BLOCKS_KIND,
+				data: {
+					title: "Ranking",
+					tree: { v: 1, root: { type: "markdown", text: "…" } },
+					data: {},
+				},
+			},
+			toolResultEntry(4, "call-blocks"),
+			{
+				id: 5,
+				kind: CONTEXT_MARK_KIND,
+				data: { at: 3, label: "After blocks" } satisfies ContextMarkData,
+			},
+			assistantEntry(6, [{ type: "text", text: "Here is the ranking." }]),
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual([
+			"user",
+			"assistant",
+			"mark",
+			"assistant",
+		]);
+		const markTurn = turns[2]!;
+		if (markTurn.kind !== "mark") throw new Error("expected a mark turn");
+		expect(markTurn.label).toBe("After blocks");
 	});
 
 	it("a sigrun.blocks.answer entry is a USER turn (like the expanded kind)", () => {

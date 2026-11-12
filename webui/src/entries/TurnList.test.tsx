@@ -278,6 +278,36 @@ describe("TurnList: grouping and rendering", () => {
 		renderer.unmount();
 	});
 
+	test("a mark turn renders a divider with its label", () => {
+		const view = makeView({
+			id: 1,
+			entries: [
+				userTurnEntry(1, "First question"),
+				assistantTurnEntry(2, [textBlock("First answer.")]),
+				makeEntry("sigrun.context-mark", [], {
+					id: 3,
+					data: { at: 1, label: "New sitting · Garden" },
+				}),
+				userTurnEntry(4, "Second question"),
+			],
+		});
+		const renderer = render(
+			h(TurnList, {
+				view,
+				showThinking: true,
+				onNavigate: () => {},
+				client: makeTurnClient().client,
+			}),
+		);
+		expect(textContent(renderer.toJSON())).toContain("New sitting · Garden");
+		const mark = renderer.root.findAllByProps({
+			"data-turn-kind": "mark",
+		});
+		expect(mark).toHaveLength(1);
+		expect(mark[0]?.props.className).toContain("turn-other");
+		renderer.unmount();
+	});
+
 	test("the fork lineage row renders when parent is set and navigates to it", () => {
 		const onNavigate = vi.fn();
 		const renderer = render(

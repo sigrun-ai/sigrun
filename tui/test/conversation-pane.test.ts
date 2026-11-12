@@ -399,6 +399,39 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		expect(pane.render(80).join("\n")).toContain("── context compacted ──");
 	});
 
+	test("a mark renders a centred divider line containing its label", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "pi.user",
+					model: [{ role: "user", content: "First question" }],
+				},
+				{
+					id: 2,
+					kind: "pi.assistant",
+					model: [
+						{ role: "assistant", content: [{ type: "text", text: "First answer." }] },
+					],
+				},
+				{
+					id: 3,
+					kind: "sigrun.context-mark",
+					data: { at: 1, label: "New sitting · Garden" },
+				},
+				{
+					id: 4,
+					kind: "pi.user",
+					model: [{ role: "user", content: "Second question" }],
+				},
+			]),
+		);
+		const lines = pane.render(80).join("\n");
+		expect(lines).toContain("New sitting · Garden");
+		expect(lines).toContain("──");
+	});
+
 	test("the focused turn's first line carries the surface2 background", () => {
 		// Non-plain theme: the surface2 bg span wraps the first line only.
 		const pane = new ConversationPane({
