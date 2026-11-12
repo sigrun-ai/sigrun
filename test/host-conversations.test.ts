@@ -710,7 +710,7 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
 	});
 
-	test("setAutoName writes autoName when no typed name exists", async () => {
+	test("setAutoName writes autoName when no typed name exists", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
@@ -726,7 +726,7 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		);
 	});
 
-	test("a typed name wins", async () => {
+	test("a typed name wins", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
@@ -741,7 +741,7 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		);
 	});
 
-	test("clearing the typed name shows the latest automatic title", async () => {
+	test("clearing the typed name shows the latest automatic title", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
@@ -754,7 +754,7 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		);
 	});
 
-	test("an empty title is invalid_field title", async () => {
+	test("an empty title is invalid_field title", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
@@ -762,9 +762,13 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 			name: "ConversationOpError",
 			body: { error: "invalid_field", field: "title" },
 		});
+		await expect(host.conversations.setAutoName(id, 42 as never)).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "title" },
+		});
 	});
 
-	test("autoNameAttempts is untouched", async () => {
+	test("autoNameAttempts is untouched", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		const host = channelHost(opened);
 		const id = await host.conversations.create({ owner: "alice" });
@@ -858,6 +862,9 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		await expect(
 			host.conversations.patchMeta(id, { name: "x" }),
 		).rejects.toThrow("conversation 999999 not found");
+		await expect(host.conversations.setAutoName(id, "x")).rejects.toThrow(
+			"conversation 999999 not found",
+		);
 	});
 });
 

@@ -423,7 +423,8 @@ effects are identical by construction:
   shows the automatic title, `false` when the typed name still wins.
   Clearing the typed name later reveals the stored automatic title.
   A non-string or empty-after-cleaning title throws `invalid_field`
-  `title`; `autoNameAttempts` is unchanged.
+  `title`; `autoNameAttempts` is unchanged. Like `patchMeta`, it is not
+  gated on the `deleted` marker.
 - `upload(id, {name, mime?, bytes})` → `{path}` — the raw-upload route's
   op (gateway C4b): writes `uploads/<conversationId>/<name>` through
   the conversation's workspace env and returns the path exactly as a
