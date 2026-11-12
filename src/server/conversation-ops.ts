@@ -129,7 +129,7 @@ const WAIT_MS_MAX = 60_000;
  * SSE, fork, meta PATCH, abort and interaction answers are never gated —
  * but every op that would start NEW work in it throws
  * `ConversationOpError({error: "conversation_deleted"}, 409)`. The guarded
- * ops are submitOp, compactOp, configureOp, uploadOp and the
+ * ops are submitOp, compactOp, configureOp, uploadOp, markContextOp and the
  * extension-command invoke route (routes/submissions.ts); jobs check the
  * same flag in fire.ts.
  */
