@@ -1724,6 +1724,14 @@ export interface SigrunHost {
 			},
 		): Promise<SessionMeta>;
 		/**
+		 * Store an automatic title. A typed name stays visible; `applied`
+		 * reports whether the automatic title is currently shown instead.
+		 */
+		setAutoName(
+			id: ConversationId,
+			title: string,
+		): Promise<{ readonly applied: boolean }>;
+		/**
 		 * Upload one file into the conversation's upload namespace (gateway
 		 * C4b, the raw-upload route's op): `uploads/<conversationId>/<name>`,
 		 * the exact path a `file`/`image` submission part takes. The NAME is

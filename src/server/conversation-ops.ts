@@ -48,6 +48,7 @@ import {
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
 import type { OpenedHarness } from "../harness/boot.js";
+import { cleanTitle } from "../harness/naming.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import {
 	ensureRequestId,
@@ -1391,6 +1392,30 @@ export async function patchMetaOp(
 			BACKGROUND_CONTEXT,
 		)) ?? DEFAULT_SESSION_META
 	);
+}
+
+/**
+ * Store an automatic display title without replacing a typed name. The
+ * title is always recorded; `applied` reports whether it is the title the
+ * conversation list currently shows. Like patchMeta, this is not gated on
+ * the deleted marker.
+ */
+export async function setAutoNameOp(
+	ctx: ServerContext,
+	conversation: Conversation,
+	title: unknown,
+): Promise<{ readonly applied: boolean }> {
+	const cleaned = typeof title === "string" ? cleanTitle(title) : undefined;
+	if (cleaned === undefined) {
+		throw new ConversationOpError({ error: "invalid_field", field: "title" });
+	}
+	let applied = false;
+	await conversation.commit(async (tx) => {
+		const draft = await tx.doc(SessionMetaDoc, conversation.id);
+		draft.autoName = cleaned;
+		applied = draft.name === undefined;
+	}, BACKGROUND_CONTEXT);
+	return { applied };
 }
 
 // ─── Upload + raw read (gateway C4b — the files routes' ops) ───────────────

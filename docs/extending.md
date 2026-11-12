@@ -418,6 +418,12 @@ effects are identical by construction:
   into a deleted conversation writes an immediately-settled failed
   run (`error: "conversation_deleted"`) without submitting, and the
   curator's fork review refuses deleted conversations.
+- `setAutoName(id, title)` — stores the cleaned automatic title and
+  returns `{applied}`: `true` when no typed `name` exists and the list
+  shows the automatic title, `false` when the typed name still wins.
+  Clearing the typed name later reveals the stored automatic title.
+  A non-string or empty-after-cleaning title throws `invalid_field`
+  `title`; `autoNameAttempts` is unchanged.
 - `upload(id, {name, mime?, bytes})` → `{path}` — the raw-upload route's
   op (gateway C4b): writes `uploads/<conversationId>/<name>` through
   the conversation's workspace env and returns the path exactly as a

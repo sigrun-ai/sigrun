@@ -710,6 +710,71 @@ describe("host conversation ops (gateway C4a — the HTTP twins in-process)", ()
 		expect((ownerPatch.json() as { name?: string }).name).toBe("renamed by owner");
 	});
 
+	test("setAutoName writes autoName when no typed name exists", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await expect(
+			host.conversations.setAutoName(id, "  Vet clinics for the cat. "),
+		).resolves.toEqual({ applied: true });
+		expect((await host.conversations.meta(id)).autoName).toBe(
+			"Vet clinics for the cat",
+		);
+		const listed = await host.conversations.list({ owner: "alice" });
+		expect(listed.find((conversation) => conversation.id === id)?.name).toBe(
+			"Vet clinics for the cat",
+		);
+	});
+
+	test("a typed name wins", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.patchMeta(id, { name: "Mine" });
+		await expect(host.conversations.setAutoName(id, "Other")).resolves.toEqual({
+			applied: false,
+		});
+		expect((await host.conversations.meta(id)).name).toBe("Mine");
+		const listed = await host.conversations.list({ owner: "alice" });
+		expect(listed.find((conversation) => conversation.id === id)?.name).toBe(
+			"Mine",
+		);
+	});
+
+	test("clearing the typed name shows the latest automatic title", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await host.conversations.patchMeta(id, { name: "Mine" });
+		await host.conversations.setAutoName(id, "Other");
+		await host.conversations.patchMeta(id, { name: null });
+		const listed = await host.conversations.list({ owner: "alice" });
+		expect(listed.find((conversation) => conversation.id === id)?.name).toBe(
+			"Other",
+		);
+	});
+
+	test("an empty title is invalid_field title", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		await expect(host.conversations.setAutoName(id, "  ")).rejects.toMatchObject({
+			name: "ConversationOpError",
+			body: { error: "invalid_field", field: "title" },
+		});
+	});
+
+	test("autoNameAttempts is untouched", async () => {
+		const { opened } = await bootServer();
+		const host = channelHost(opened);
+		const id = await host.conversations.create({ owner: "alice" });
+		const before = await host.conversations.meta(id);
+		await host.conversations.setAutoName(id, "Automatic");
+		expect((await host.conversations.meta(id)).autoNameAttempts).toBe(
+			before.autoNameAttempts,
+		);
+	});
+
 	test("create preserves people-share groups and grants stored-group access", { timeout: 30_000 }, async () => {
 		const { opened } = await bootServer();
 		await opened.identity.users.setGroups("alice", "test", ["family"]);
