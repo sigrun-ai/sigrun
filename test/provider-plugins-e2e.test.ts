@@ -372,10 +372,10 @@ describe.skipIf(SKIPPED)("provider plugins end-to-end (Task 11)", () => {
 			// All four packages loaded through the loader (tarball installs:
 			// packages-dir resolution + the extension-package contract).
 			expect(opened.extensionOutcomes).toEqual([
-				{ name: "provider-ollama", status: "ok" },
-				{ name: "provider-opencode", status: "ok" },
-				{ name: "provider-pareto", status: "ok" },
-				{ name: "provider-bifrost", status: "ok" },
+				{ name: "provider-ollama", status: "ok", title: "Ollama" },
+				{ name: "provider-opencode", status: "ok", title: "OpenCode" },
+				{ name: "provider-pareto", status: "ok", title: "Pareto" },
+				{ name: "provider-bifrost", status: "ok", title: "Bifrost" },
 			]);
 			await opened.bootRefresh;
 			// No credential resolved → pi-ai skips the fetch phase entirely:

@@ -754,7 +754,7 @@ export async function digestRunRun(
 	user: string,
 	opts: CurationRunOpts & { input: string; model?: string },
 	defaultModel: { readonly provider: string; readonly modelId: string },
-	defaultAgent: () => AgentChange,
+	defaultAgent: () => AgentChange | Promise<AgentChange>,
 ): Promise<CurationRunResult> {
 	const allow = withoutInteractive(
 		opts.allow,
@@ -768,7 +768,7 @@ export async function digestRunRun(
 		{
 			ownership: { kind: "ownerless" },
 			agent: {
-				...defaultAgent(),
+				...(await defaultAgent()),
 				model: opts.model === undefined
 					? defaultModel
 					: parseModel(opts.model, defaultModel),

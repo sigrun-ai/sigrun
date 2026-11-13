@@ -22,7 +22,7 @@
  */
 
 import { readFileSync } from "node:fs";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -101,8 +101,13 @@ afterAll(async () => {
 	for (const teardown of cleanups.splice(0)) await teardown();
 });
 
+/** Saved process.env restores, drained in beforeEach (see the
+ * SIGRUN_MCP_CONFIG note in bootBuiltins). */
+const envRestores: Array<() => void> = [];
+
 beforeEach(() => {
 	vi.restoreAllMocks();
+	for (const restore of envRestores.splice(0)) restore();
 });
 
 /** Boot the auto-enable matrix server (built-ins on, MCP config per the option). */
@@ -110,6 +115,10 @@ async function bootBuiltins(options?: {
 	readonly extensionSpecifiers?: readonly string[];
 	/** mcp.json body written into the tmpdir (SIGRUN_MCP_CONFIG points at it). */
 	readonly mcpServers?: Record<string, unknown>;
+	/** settings/sigrun-mcp.json body (the settings-location registry; no
+	 * mcp.json file is written and SIGRUN_MCP_CONFIG stays unset — the
+	 * 0.16.1 auto-enable path). */
+	readonly mcpSettingsServers?: Record<string, unknown>;
 	/** Extra settings-file fields (merged with `namingModel: false`). */
 	readonly settings?: Record<string, unknown>;
 	/** Test-only: additional built-in load entries (the quarantine seam). */
@@ -157,7 +166,13 @@ async function bootBuiltins(options?: {
 		// Saved/restored so one boot's override never leaks into the next.
 		const saved = process.env.SIGRUN_MCP_CONFIG;
 		process.env.SIGRUN_MCP_CONFIG = mcpPath;
-		cleanups.push(async () => {
+		// Restored in beforeEach, not afterAll: ext-mcp's factory-time
+		// import reads process.env directly (the recorded known
+		// limitation), and a leaked override would import one test's
+		// mcp.json into the NEXT test's settings registry — visible to
+		// the 0.16.1 settings-reading auto-enable (and before that, to
+		// the file-reading one through the same leak).
+		envRestores.push(() => {
 			if (saved === undefined) delete process.env.SIGRUN_MCP_CONFIG;
 			else process.env.SIGRUN_MCP_CONFIG = saved;
 		});
@@ -171,6 +186,18 @@ async function bootBuiltins(options?: {
 		join(dir, "settings.json"),
 		JSON.stringify({ namingModel: false, ...options?.settings }),
 	);
+	if (options?.mcpSettingsServers !== undefined) {
+		// The settings-location registry: settings/sigrun-mcp.json, with NO
+		// mcp.json file and no SIGRUN_MCP_CONFIG — the registry source the
+		// 0.16.1 auto-enable reads (and what a deployment looks like after
+		// dropping the legacy file mount).
+		await mkdir(join(dir, "config", "settings"), { recursive: true });
+		await writeFile(
+			join(dir, "config", "settings", "sigrun-mcp.json"),
+			JSON.stringify({ servers: options.mcpSettingsServers }),
+			"utf8",
+		);
+	}
 	const opened = await openHarness(config, {
 		identity: await seededIdentity(dir),
 		extensions: [contributor],
@@ -881,6 +908,33 @@ describe("auto-enable", () => {
 			},
 			settings: { autoEnableCodemode: false },
 		});
+		const offered = await offeredToolNames(app, opened);
+		expect(offered).not.toContain("codemode");
+		expect(offered).not.toContain("tool_search");
+	});
+
+	test("a settings-located registry (settings/sigrun-mcp.json, no mcp.json file) drives auto-enable the same way", { timeout: 60_000 }, async () => {
+		// 0.16.1: the auto-enable reads the MCP extension's SETTINGS —
+		// the location a deployment is left with after dropping the legacy
+		// mcp.json mount (and SIGRUN_MCP_CONFIG). No file is written and no
+		// env override is set: this must behave exactly like the
+		// file-backed matrix above.
+		const codemodeBoot = await bootBuiltins({
+			mcpSettingsServers: {
+				acme: stubServer(),
+				beta: stubServer({ exposure: "deferred" }),
+			},
+		});
+		const offered = await offeredToolNames(
+			codemodeBoot.app,
+			codemodeBoot.opened,
+		);
+		expect(offered).toContain("codemode");
+		expect(offered).toContain("tool_search");
+	});
+
+	test("an empty settings registry (no mcp settings file at all) removes both arms", { timeout: 60_000 }, async () => {
+		const { app, opened } = await bootBuiltins({});
 		const offered = await offeredToolNames(app, opened);
 		expect(offered).not.toContain("codemode");
 		expect(offered).not.toContain("tool_search");

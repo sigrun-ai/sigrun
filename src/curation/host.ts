@@ -95,7 +95,7 @@ export interface CurationHostDeps {
 	 * defaults — modelTools narrowing, per-model thinking): what a
 	 * digest conversation starts from.
 	 */
-	readonly defaultAgent: () => AgentChange;
+	readonly defaultAgent: () => AgentChange | Promise<AgentChange>;
 }
 
 /** Per-target bound for one `wantsReview` answer (C5). */

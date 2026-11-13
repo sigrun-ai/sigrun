@@ -190,14 +190,18 @@ describe.skipIf(!AVAILABLE)("embeddings e2e: the shipped provider-openai package
 	test("loads as an extension and lists the openai embedding models", async () => {
 		const { opened } = await boot();
 		expect(opened.extensionOutcomes).toEqual([
-			{ name: "provider-openai", status: "ok" },
+			{ name: "provider-openai", status: "ok", title: "OpenAI" },
 		]);
 		expect(opened.embeddings.providers()).toEqual([
 			{
 				id: "openai",
 				label: "OpenAI",
 				extension: "provider-openai",
-				models: ["text-embedding-3-small", "text-embedding-3-large"],
+				models: [
+						"text-embedding-3-small",
+						"text-embedding-3-large",
+						"text-embedding-ada-002",
+					],
 				status: "ready",
 			},
 		]);
@@ -218,6 +222,14 @@ describe.skipIf(!AVAILABLE)("embeddings e2e: the shipped provider-openai package
 				dimensions: 3072,
 				// Switch-on extension ⇒ BOTH models are local; the switch is
 				// per extension, never per model.
+				local: true,
+				default: false,
+				status: "ready",
+			},
+			{
+				model: "openai/text-embedding-ada-002",
+				provider: "openai",
+				dimensions: 1536,
 				local: true,
 				default: false,
 				status: "ready",
