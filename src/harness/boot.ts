@@ -2505,12 +2505,15 @@ export async function openHarness(
 			packageRoots: (): readonly { extension: string; dir: string }[] =>
 				collectedSkillRoots,
 		},
-		defaultAgent: (): AgentChange =>
+		defaultAgent: async (): Promise<AgentChange> =>
 			storeAgentChange(
 				{
 					settings: { read: () => settingsStore.read() },
 					registry,
 					providerEnv: effectiveEnv,
+					extensionStores: {
+						settings: sharedStores.settings,
+					},
 				} as unknown as Parameters<typeof storeAgentChange>[0],
 				defaultModel,
 			),

@@ -272,7 +272,7 @@ export async function createServer(
 	// tool filter / thinking override snapshot at factory time — later
 	// creates re-read the store.
 	const root = await opened.harness.root(BACKGROUND_CONTEXT, {
-		agent: storeAgentChange(opened, opened.defaultModel),
+		agent: await storeAgentChange(opened, opened.defaultModel),
 	});
 	const rootId = root.id;
 	// The shared context every route module receives: the opened harness,

@@ -6,9 +6,6 @@
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { readFullConversationView } from "./conversation-watch.js";
-import { existsSync, readFileSync } from "node:fs";
-import { homedir } from "node:os";
-import { isAbsolute, resolve } from "node:path";
 import type {
 	AgentChange,
 	Conversation,
@@ -67,41 +64,39 @@ export type WhenBusyMode = NonNullable<InputSubmissionDraft["whenBusy"]>;
  * `defaultTools` filter always wins (auto-enable only edits the DEFAULT
  * set, never the user's named list).
  *
- * The registry path (ruling 3): the SAME place the extensions read it —
- * `SIGRUN_MCP_CONFIG` when set, else `~/.config/sigrun/mcp.json`. This is
- * deliberately NOT unified with `SIGRUN_CONFIG_DIR`: the extensions read
- * the fixed path directly, so the auto-enable must agree with them (the
- * divergence from the config-dir convention is a known, recorded
- * limitation for a later task — do not "fix" it here).
+ * The registry source (0.16.1): the MCP extension's SETTINGS
+ * (`settings/sigrun-mcp.json`, read through the extension settings store —
+ * the same mediated store the /v1/extensions routes ride). The extension
+ * moved there from the raw `mcp.json` file in the settings rework, keeping
+ * the file only as its one-time import source; the auto-enable now follows
+ * the settings location so a deployment can drop the file mount entirely.
+ * The per-server keys are unchanged (`enabled`/`disabled`/`exposure`, with
+ * the deprecated `codemode-deferred` alias normalizing to `codemode`).
  *
  * A create-time decision (like `defaultTools`), not a live toggle. The
  * narrowing rides the stored `modelTools` `{remove}` EDIT form — never
  * the array form — so pi-durable's default-offered set stays the base
  * and `tool_search`'s `control.addTools` merge keeps working over it.
  *
- * A missing/unparseable registry reads as EMPTY (both tools off): a
- * broken mcp.json must never block conversation creation.
+ * A missing/unparseable settings file reads as EMPTY (both tools off): a
+ * broken registry must never block conversation creation.
  */
-function autoEnableRemovals(
+/** The extension slug the MCP built-in loads under (`@sigrun/ext-mcp`). */
+const MCP_SLUG = "sigrun-mcp";
+
+async function autoEnableRemovals(
 	settings: { readonly autoEnableCodemode?: boolean },
-	env: Env,
-): readonly string[] {
+	mcpSettings: () => Promise<Record<string, unknown>>,
+): Promise<readonly string[]> {
 	if (settings.autoEnableCodemode === false) {
 		return ["codemode", "tool_search"];
 	}
-	const override = env.SIGRUN_MCP_CONFIG;
-	const path =
-		override !== undefined && override !== ""
-			? isAbsolute(override)
-				? override
-				: resolve(override)
-			: resolve(homedir(), ".config", "sigrun", "mcp.json");
 	let servers: unknown;
 	try {
-		if (!existsSync(path)) return ["codemode", "tool_search"];
-		servers = (JSON.parse(readFileSync(path, "utf8")) as { servers?: unknown })
-			.servers;
+		servers = (await mcpSettings()).servers;
 	} catch {
+		// The store throws only on a malformed file (absent → {}): a
+		// broken registry must never block conversation creation.
 		return ["codemode", "tool_search"];
 	}
 	if (typeof servers !== "object" || servers === null || Array.isArray(servers)) {
@@ -147,10 +142,10 @@ function autoEnableRemovals(
  * `control.addTools`-loaded deferred tool in a LIVE conversation's stored
  * filter is never clobbered.
  */
-export function storeAgentChange(
+export async function storeAgentChange(
 	opened: OpenedHarness,
 	model: ModelRef | undefined,
-): AgentChange {
+): Promise<AgentChange> {
 	const settings = opened.settings.read();
 	const filter = settings.defaultTools;
 	// `AgentChange.modelTools` takes ToolRegistration OBJECTS (pi-durable's
@@ -187,10 +182,12 @@ export function storeAgentChange(
 		// offered set (removing codemode/tool_search unless an MCP server's
 		// exposure engages them). Registered names only — a built-in
 		// disabled via settings simply drops out of the removal list. The
-		// env is the BOOT env (`opened.providerEnv`), so the hermetic test
-		// seam's SIGRUN_MCP_CONFIG override applies and the live process
-		// env is never read.
-		const removals = autoEnableRemovals(settings, opened.providerEnv);
+		// registry is the extension's MEDIATED settings file
+		// (`settings/sigrun-mcp.json` through the extension settings store
+		// — the same store the /v1/extensions routes ride).
+		const removals = await autoEnableRemovals(settings, () =>
+			opened.extensionStores.settings.read(MCP_SLUG),
+		);
 		if (removals.length > 0) {
 			const registered = new Set(
 				opened.registry

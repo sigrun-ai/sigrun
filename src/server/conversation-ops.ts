@@ -346,7 +346,10 @@ export async function createConversationOp(
 			// filters by name while the store's `modelTools` narrowing still
 			// applies (both come from storeAgentChange + the spread).
 			agent: {
-				...storeAgentChange(opened, await opened.defaultModelFor(input.owner)),
+				...(await storeAgentChange(
+				opened,
+				await opened.defaultModelFor(input.owner),
+			)),
 				...(selection?.extensions === undefined
 					? {}
 					: { extensions: selection.extensions }),
