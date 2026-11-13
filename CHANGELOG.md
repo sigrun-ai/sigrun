@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.16.1] - 2026-11-12
+
+### Fixed
+
+- The MCP codemode/tool_search auto-enable reads the extension's SETTINGS
+  registry (`settings/sigrun-mcp.json`) instead of the legacy raw
+  `mcp.json` file — deployments can drop the file mount and
+  `SIGRUN_MCP_CONFIG` entirely. Per-server semantics unchanged.
+
 ## [0.16.0] - 2026-11-12
 
 ### Added
