@@ -406,6 +406,26 @@ persistence:
     globalMounts:
       - path: /data
 
+  tmp:
+    # -- Pod-local /tmp (emptyDir). Everything that lands in os.tmpdir()
+    # is scratch: node's compile cache, the backup job's staged tar
+    # sections, npm's package-install temp. A dedicated emptyDir keeps
+    # that traffic off the container's writable layer (surviving
+    # container restarts within the pod, dying with it) and stays
+    # writable the day the root filesystem goes read-only. Disk-backed
+    # (never Memory) with a size cap: the backup section staging is
+    # bounded but not tiny, and evictions under Memory pressure would
+    # turn into EIO mid-backup.
+    enabled: true
+    type: emptyDir
+    sizeLimit: 1Gi
+    # Mounted at /tmp in every container (main + backup CronJob +
+    # initContainers — globalMounts shape): the entrypoint's HOME check,
+    # the seeder and the tools installer never touch /tmp, but mounting
+    # everywhere is one less surprise from any future script.
+    globalMounts:
+      - path: /tmp
+
   cache:
     # -- Pod-local cache volume: the SIGRUN_CACHE_DIR mount. Cache is
     # regenerable + self-cleaning (spec §4) — it NEVER touches the PVC

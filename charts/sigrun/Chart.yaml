@@ -14,7 +14,7 @@ type: application
 #            core version), and re-derived from package.json at the tagged
 #            commit by the release workflow — not checked against
 #            `version` (they are deliberately independent).
-version: 0.16.1
+version: 0.16.2
 appVersion: "0.16.1"
 keywords:
   - assistant
