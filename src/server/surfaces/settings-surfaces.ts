@@ -812,10 +812,6 @@ export function settingsSurfaceFor(
 						}
 						continue;
 					}
-					// Blank means unset (settings finishing pass): a "" on
-					// a plain form field DELETES the stored key rather than
-					// persisting the empty string. Matches saveCore.
-					if (value === "") continue;
 					plainValues[name] = value;
 				}
 				// Merge into the stored object (unknown stored keys survive —
@@ -835,14 +831,6 @@ export function settingsSurfaceFor(
 						? await stores.settingsFor(slug).get()
 						: await userStores.settings.get();
 					const next = { ...stored, ...plainValues };
-					// Blank-means-unset: a submitted ""
-					// field never reached plainValues (skipped above), so
-					// clear it from the merged document here.
-					for (const name of Object.keys(parsed.values)) {
-						if (parsed.values[name] === "" && !allSecretFieldNames.has(name)) {
-							delete next[name];
-						}
-					}
 					// A secret-typed field that previously leaked into the
 					// settings file is dropped by the next save (it lives in
 					// the secrets store from now on).

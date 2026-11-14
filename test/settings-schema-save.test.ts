@@ -662,15 +662,7 @@ describe("blank means unset", () => {
 	});
 
 	test("blank number inside a table row drops only that key", async () => {
-		const rig = await boot({
-			specifier: BLANKS,
-			settings: {
-				servers: {
-					a: { url: "https://a.example.invalid", timeout: 5 },
-					b: { url: "https://b.example.invalid" },
-				},
-			},
-		});
+		const rig = await boot({ specifier: BLANKS });
 		// Seed the fixture's stored file at the fixture's own slug.
 		await writeFile(
 			join(rig.configDir, "settings", "acme-blanks.json"),
@@ -697,10 +689,7 @@ describe("blank means unset", () => {
 	});
 
 	test("empty list with minItems 1 is unset", async () => {
-		const rig = await boot({
-			specifier: BLANKS,
-			settings: { names: ["x"] },
-		});
+		const rig = await boot({ specifier: BLANKS });
 		await writeFile(
 			join(rig.configDir, "settings", "acme-blanks.json"),
 			JSON.stringify({ names: ["x"] }),
@@ -740,5 +729,4 @@ describe("blank means unset", () => {
 		expect((stored.tools as string[]).length).toBe(2);
 		expect(stored.tools).toEqual(["a", ""]);
 	});
-
 });

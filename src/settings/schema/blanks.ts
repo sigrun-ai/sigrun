@@ -40,17 +40,11 @@ export function dropBlankUnsets(
 /** Back-compat alias for one minor — the published subpath export. */
 export const dropBlankOptionalStrings = dropBlankUnsets;
 
-const UNSET: unique symbol = Symbol("unset");
-type Walked = JsonValue | typeof UNSET;
-
-function walk(value: unknown, node: unknown, root: JsonSchema): Walked {
+function walk(value: unknown, node: unknown, root: JsonSchema): JsonValue {
 	if (!isRec(node)) return value as JsonValue;
 	const schema = deref(root, node);
 	if (Array.isArray(value)) {
-		return value.map((entry) => {
-			const walked = walk(entry, schema.items, root);
-			return walked === UNSET ? null : walked;
-		});
+		return value.map((entry) => walk(entry, schema.items, root));
 	}
 	if (!isRec(value)) return value as JsonValue;
 	const required = new Set(
@@ -86,7 +80,6 @@ function walk(value: unknown, node: unknown, root: JsonSchema): Walked {
 			}
 		}
 		const walked = walk(child, property, root);
-		if (walked === UNSET) continue;
 		// After the recursive walk, an optional object whose children ALL
 		// dropped out becomes the empty {} — that empty object is itself
 		// unset (its only content was the blanks we just dropped).
