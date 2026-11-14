@@ -15,7 +15,7 @@ export default function fixture(host) {
 					type: "object",
 					properties: {
 						enabled: { type: "boolean", default: false },
-						maxBatch: { type: "integer", minimum: 1, default: 2048 },
+						maxBatch: { type: "integer", minimum: 1, default: 2048, title: "Max batch" },
 					},
 				},
 				servers: {

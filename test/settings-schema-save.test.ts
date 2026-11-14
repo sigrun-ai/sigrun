@@ -17,6 +17,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { fieldForPointer } from "../src/settings/schema/field-pointer.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { changes, reset } from "./fixtures/fixture-settings-schema-save/index.js";
 
@@ -310,13 +311,40 @@ test("stale rev still rejects", async () => {
 	expect(await file(rig)).toEqual({ interval: 45 });
 });
 
-test("schema error is field-scoped by JSON pointer", async () => {
+test("schema error is field-scoped by form field name", async () => {
 	const rig = await boot();
 	const result = await save(rig, { interval: "often" }, "invalid-schema");
 	expect(result.body.ok).toBe(false);
-	expect(result.body.error).toMatchObject({ field: "/interval" });
+	expect(result.body.error).toMatchObject({ field: "interval" });
 	expect((result.body.error as { message: string }).message).toContain("integer");
 	expect(await file(rig)).toEqual({});
+});
+
+describe("fieldForPointer", () => {
+	const fields = [
+		{ name: "embeddings.maxBatch", label: "Max batch" },
+		{ name: "servers", label: "Servers" },
+	];
+
+	test("matches the longest dotted form field", () => {
+		expect(fieldForPointer("/embeddings/maxBatch", fields)).toEqual({
+			name: "embeddings.maxBatch",
+			label: "Max batch",
+			rest: [],
+		});
+	});
+
+	test("matches a table row to its table field", () => {
+		expect(fieldForPointer("/servers/searxng/timeout", fields)).toEqual({
+			name: "servers",
+			label: "Servers",
+			rest: ["searxng", "timeout"],
+		});
+	});
+
+	test("returns undefined when no form field matches", () => {
+		expect(fieldForPointer("/missing/value", fields)).toBeUndefined();
+	});
 });
 
 test("user-settings saves the caller's own file", async () => {
@@ -590,7 +618,8 @@ test("a blank required string still fails", async () => {
 	const rig = await boot();
 	const result = await save(rig, { servers: { first: { url: "" } } }, "blank-required");
 	expect(result.body.ok).toBe(false);
-	expect((result.body.error as { field: string }).field).toBe("/servers/first/url");
+	expect(result.body.error).toMatchObject({ field: "servers" });
+	expect((result.body.error as { message: string }).message).toContain("(first › url)");
 });
 
 test("a blank secret still means unchanged", async () => {
@@ -704,6 +733,16 @@ describe("blank means unset", () => {
 		const result = await save(rig, { tools: [] }, "blank-tools", BLANKS_SURFACE);
 		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
 		expect(await blanksFile(rig)).toEqual({ tools: [] });
+	});
+
+	test("schema error names the dotted field and its label", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, {
+			embeddings: { maxBatch: "x" },
+		}, "invalid-max-batch", BLANKS_SURFACE);
+		expect(result.body.ok).toBe(false);
+		expect(result.body.error).toMatchObject({ field: "embeddings.maxBatch" });
+		expect((result.body.error as { message: string }).message).toMatch(/^Max batch /);
 	});
 
 	test("required blank still fails", async () => {

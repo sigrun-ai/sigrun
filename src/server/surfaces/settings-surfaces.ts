@@ -52,6 +52,7 @@ import type { SurfaceService } from "./service.js";
 import { instanceKey as paramsInstanceKey } from "./instance.js";
 import { applyDefaults } from "../../settings/schema/defaults.js";
 import { dropBlankUnsets } from "../../settings/schema/blanks.js";
+import { fieldForPointer } from "../../settings/schema/field-pointer.js";
 import type { ModelKindId, ModelRoster } from "../../settings/model-kinds.js";
 import { MODEL_KINDS } from "../../settings/model-kinds.js";
 import { systemModelRosterData, withUnserved } from "../model-roster.js";
@@ -104,6 +105,7 @@ function parseSavePayload(payload: unknown): SavePayload | undefined {
 interface FormField {
 	readonly name: string;
 	readonly type: string;
+	readonly label?: unknown;
 	/** The absent-means-default value (toggles; §13.4 fix). */
 	readonly default?: unknown;
 	readonly required?: boolean;
@@ -954,6 +956,7 @@ function stripEntryMarkers(value: unknown): JsonValue {
 function schemaError(
 	schema: JsonSchema,
 	values: Record<string, unknown>,
+	fields: readonly { name: string; label: string }[],
 ): ActionResult | undefined {
 	// A writeOnly null is the channels' explicit-clear action; a blank
 	// string means unchanged. Omit both from validation so constraints on
@@ -995,14 +998,24 @@ function schemaError(
 	const additional = additionalError === undefined
 		? undefined
 		: (additionalError.params as { additionalProperties?: unknown }).additionalProperties;
-	const field = Array.isArray(additional) && typeof additional[0] === "string"
-		? additional[0]
-		: first?.instancePath ?? "";
+	if (Array.isArray(additional) && typeof additional[0] === "string") {
+		return {
+			ok: false,
+			error: {
+				message: first?.message ?? "invalid settings",
+				field: additional[0],
+			},
+		};
+	}
+	const match = fieldForPointer(first?.instancePath ?? "", fields);
 	return {
 		ok: false,
 		error: {
-			message: first?.message ?? "invalid settings",
-			field,
+			message: match === undefined
+				? first?.message ?? "invalid settings"
+				: `${match.label} ${first?.message ?? "invalid settings"}`
+					+ (match.rest.length > 0 ? ` (${match.rest.join(" › ")})` : ""),
+			field: match?.name ?? first?.instancePath ?? "",
 		},
 	};
 }
@@ -1116,6 +1129,10 @@ export function schemaSettingsSurfaceFor(
 ): SurfaceDef<"settings"> {
 	const { stores, publishSettingsChanged, service } = options;
 	const userScope = section.scope === "user";
+	const errorFields = collectFormFields(generated.form).map((field) => ({
+		name: field.name,
+		label: typeof field.label === "string" ? field.label : field.name,
+	}));
 	const namedUser = (principal: Principal): string => {
 		const resolved = options.resolveUser === undefined
 			? principal.user
@@ -1224,7 +1241,7 @@ export function schemaSettingsSurfaceFor(
 				const submittedKeys = Object.keys(channelValues);
 				const dropped = dropBlankUnsets(channelValues, schema);
 				const validationValues = stripEntryMarkers(dropped) as Record<string, unknown>;
-				const invalid = schemaError(schema, validationValues);
+				const invalid = schemaError(schema, validationValues, errorFields);
 				if (invalid !== undefined) return invalid;
 				const user = userScope ? namedUser(ctx.principal) : undefined;
 				return enqueueWrite(
