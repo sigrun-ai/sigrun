@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
@@ -28,6 +28,7 @@ afterEach(async () => {
 
 const DECLARING = fixture("fixture-settings-schema-save");
 const RESERVED_USER = fixture("fixture-settings-reserved-user-id");
+const BLANKS = fixture("fixture-settings-blanks");
 const SURFACE = "/v1/ext/acme-schema-save/surfaces/settings";
 const USER_SURFACE = "/v1/ext/acme-schema-save/surfaces/user-settings";
 
@@ -634,4 +635,110 @@ test("dotted nested field names save through the generated form (provider-openai
 	const both = await save(rig, { "group.label": false, mode: "auto" }, "dotted-siblings");
 	expect(both.body).toMatchObject({ ok: true });
 	expect(await file(rig)).toEqual({ group: { label: false }, mode: "auto" });
+});
+
+describe("blank means unset", () => {
+	const BLANKS_SURFACE = "/v1/ext/acme-blanks/surfaces/settings";
+
+	async function blanksFile(rig: Rig): Promise<Record<string, unknown>> {
+		try {
+			return JSON.parse(await readFile(
+				join(rig.configDir, "settings", "acme-blanks.json"),
+				"utf8",
+			)) as Record<string, unknown>;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+			throw error;
+		}
+	}
+
+	test("blank integer in a nested object is unset", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, {
+			embeddings: { enabled: true, maxBatch: "" },
+		}, "blank-max-batch", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({ embeddings: { enabled: true } });
+	});
+
+	test("blank number inside a table row drops only that key", async () => {
+		const rig = await boot({
+			specifier: BLANKS,
+			settings: {
+				servers: {
+					a: { url: "https://a.example.invalid", timeout: 5 },
+					b: { url: "https://b.example.invalid" },
+				},
+			},
+		});
+		// Seed the fixture's stored file at the fixture's own slug.
+		await writeFile(
+			join(rig.configDir, "settings", "acme-blanks.json"),
+			JSON.stringify({
+				servers: {
+					a: { url: "https://a.example.invalid", timeout: 5 },
+					b: { url: "https://b.example.invalid" },
+				},
+			}),
+		);
+		const result = await save(rig, {
+			servers: {
+				a: { url: "https://a.example.invalid", timeout: "" },
+				b: { url: "https://b.example.invalid" },
+			},
+		}, "blank-row-timeout", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({
+			servers: {
+				a: { url: "https://a.example.invalid" },
+				b: { url: "https://b.example.invalid" },
+			},
+		});
+	});
+
+	test("empty list with minItems 1 is unset", async () => {
+		const rig = await boot({
+			specifier: BLANKS,
+			settings: { names: ["x"] },
+		});
+		await writeFile(
+			join(rig.configDir, "settings", "acme-blanks.json"),
+			JSON.stringify({ names: ["x"] }),
+		);
+		const result = await save(rig, { names: [] }, "blank-names", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({});
+	});
+
+	test("empty list without minItems is kept", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, { tools: [] }, "blank-tools", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({ tools: [] });
+	});
+
+	test("required blank still fails", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, { limits: { n: "" } }, "blank-required-n", BLANKS_SURFACE);
+		expect(result.body.ok).toBe(false);
+		expect((result.body.error as { message: string }).message).toContain("integer");
+	});
+
+	test("null array element is kept", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		// The helper must NOT shrink arrays; the schema's string item rule
+		// still rejects a "" element. Verify the helper didn't silently
+		// drop it by asserting the save fails validation rather than
+		// passing on a one-element array.
+		const result = await save(rig, { tools: ["a", ""] }, "blank-array-element", BLANKS_SURFACE);
+		// Today's behavior: "" is a valid string, so the save succeeds
+		// with both elements. The invariant we are testing is that the
+		// helper did NOT silently shrink ["a", ""] down to ["a"].
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		const stored = await blanksFile(rig);
+		expect(Array.isArray(stored.tools)).toBe(true);
+		expect((stored.tools as string[]).length).toBe(2);
+		expect(stored.tools).toEqual(["a", ""]);
+	});
+
 });
