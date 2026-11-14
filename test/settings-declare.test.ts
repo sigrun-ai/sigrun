@@ -198,6 +198,7 @@ test("effective returns the system value when no override", async () => {
 	await boot([OVERRIDES]);
 	await expect(overrideDeclared?.effective("tester")).resolves.toEqual({
 		endpoint: "https://system.example.invalid",
+		envEndpoint: "https://system.example.invalid",
 		tools: ["system"],
 		enabled: true,
 		paused: false,
@@ -215,6 +216,7 @@ test("effective returns a valid override", async () => {
 	});
 	await expect(overrideDeclared?.effective("tester")).resolves.toEqual({
 		endpoint: "https://user.example.invalid",
+		envEndpoint: "https://system.example.invalid",
 		tools: ["system"],
 		enabled: true,
 		paused: false,
@@ -251,6 +253,16 @@ test("array override replaces the system list", async () => {
 		userSettings: { tools: ["user"] },
 	});
 	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({ tools: ["user"] });
+});
+
+test("effective validates a $ref override against the system definitions", async () => {
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: { referenced: "https://user.example.invalid" },
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({
+		referenced: "https://user.example.invalid",
+	});
 });
 
 test("declare returns defaults for an empty file", async () => {

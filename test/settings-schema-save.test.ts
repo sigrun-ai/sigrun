@@ -207,6 +207,19 @@ describe("extension user overrides", () => {
 		});
 	});
 
+	test("a personal user surface never exposes an env-backed overridable system value", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			env: { ACME_OVERRIDE_ENDPOINT_URL: "https://server-env.example.invalid" },
+		});
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		const data = result.body.data as Record<string, Record<string, unknown>>;
+		expect(Object.hasOwn(data.envFallbacks!, "envEndpoint")).toBe(false);
+		expect(JSON.stringify(data)).not.toContain("https://server-env.example.invalid");
+		expect(data.systemValues?.envEndpoint).toBe("https://system.example.invalid");
+	});
+
 	test("boolean display values are On and Off", async () => {
 		const rig = await boot({ specifier: OVERRIDES });
 		const result = await call(rig, "GET", OVERRIDES_SURFACE);

@@ -103,7 +103,14 @@ export function propertiesOf(
 	if (!isRecord(properties)) return [];
 	const result: [string, JsonSchema][] = [];
 	for (const [name, child] of Object.entries(properties)) {
-		if (isRecord(child)) result.push([name, deref(root, child)]);
+		if (!isRecord(child)) continue;
+		const resolved = deref(root, child);
+		result.push([
+			name,
+			child[OVERRIDABLE_KEYWORD] === true
+				? { ...resolved, [OVERRIDABLE_KEYWORD]: true }
+				: resolved,
+		]);
 	}
 	return result;
 }

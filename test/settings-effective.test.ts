@@ -235,6 +235,21 @@ describe("applyOverrides", () => {
 			endpoint: null,
 		})).toEqual({ endpoint: "https://system.example.invalid" });
 	});
+
+	it("uses root definitions to validate a $ref override", () => {
+		const system = {
+			...objectSchema({
+				endpoint: { $ref: "#/$defs/Endpoint", [OVERRIDABLE_KEYWORD]: true },
+			}),
+			$defs: { Endpoint: { type: "string", minLength: 3 } },
+		};
+		expect(applyOverrides(system, {}, { endpoint: "https://user.example.invalid" })).toEqual({
+			endpoint: "https://user.example.invalid",
+		});
+		expect(applyOverrides(system, { endpoint: "https://system.example.invalid" }, { endpoint: "x" })).toEqual({
+			endpoint: "https://system.example.invalid",
+		});
+	});
 });
 
 describe("mergedUserSchema", () => {
@@ -268,11 +283,83 @@ describe("mergedUserSchema", () => {
 						note: { type: "string", default: "personal" },
 						threshold: { type: "integer", "x-sigrun-inherit": true },
 					},
-					additionalProperties: false,
 				},
 			},
 		});
 		expect(merged?.additionalProperties).toBeUndefined();
+	});
+
+	it("preserves personal object keywords and stored table rows", async () => {
+		const merged = mergedUserSchema(
+			objectSchema({
+				group: {
+					type: "object",
+					properties: {
+						threshold: { type: "integer", [OVERRIDABLE_KEYWORD]: true },
+					},
+				},
+			}),
+			objectSchema({
+				group: {
+					type: "object",
+					title: "Personal group",
+					description: "Personal settings",
+					required: ["note"],
+					properties: { note: { type: "string", default: "personal" } },
+					additionalProperties: { type: "string" },
+				},
+			}),
+		);
+		const group = (merged?.properties as Record<string, JsonSchema>).group!;
+		expect(group).toMatchObject({
+			title: "Personal group",
+			description: "Personal settings",
+			required: ["note"],
+			additionalProperties: { type: "string" },
+		});
+		const { checkStoredSettings } = await import("../src/settings/schema/defaults.js");
+		const checked = checkStoredSettings(merged!, {
+			group: { note: "personal", acme: "keep me", threshold: 3 },
+		});
+		expect(checked.repairs).toEqual([]);
+		expect(checked.value).toEqual({
+			group: { note: "personal", acme: "keep me", threshold: 3 },
+		});
+	});
+
+	it("carries system $defs and strips server env fallbacks from override leaves", () => {
+		const system = {
+			...objectSchema({
+				endpoint: {
+					$ref: "#/$defs/Endpoint",
+					[OVERRIDABLE_KEYWORD]: true,
+				},
+				envEndpoint: {
+					type: "string",
+					"x-sigrun-env": "ACME_PERSONAL_URL",
+					[OVERRIDABLE_KEYWORD]: true,
+				},
+			}),
+			$defs: { Endpoint: { type: "string", minLength: 3 } },
+		};
+		const merged = mergedUserSchema(system, undefined);
+		expect(merged?.$defs).toEqual(system.$defs);
+		expect(merged?.properties).toMatchObject({
+			endpoint: { type: "string", minLength: 3, "x-sigrun-inherit": true },
+			envEndpoint: { type: "string", "x-sigrun-inherit": true },
+		});
+		expect((merged?.properties as Record<string, JsonSchema>).envEndpoint).not.toHaveProperty("x-sigrun-env");
+	});
+
+	it("carries legacy system definitions", () => {
+		const merged = mergedUserSchema(
+			{
+				...objectSchema({ endpoint: { type: "string", [OVERRIDABLE_KEYWORD]: true } }),
+				definitions: { Endpoint: { type: "string" } },
+			},
+			undefined,
+		);
+		expect(merged?.definitions).toEqual({ Endpoint: { type: "string" } });
 	});
 
 	it("is undefined when neither schema has properties", () => {

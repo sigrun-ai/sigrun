@@ -17,6 +17,7 @@
 import { Errors } from "typebox/schema";
 import type { JsonValue } from "@sigrun/shared/blocks";
 import {
+	ENV_KEYWORD,
 	INHERIT_KEYWORD,
 	OVERRIDABLE_KEYWORD,
 	deref,
@@ -82,6 +83,19 @@ export function overridesSchema(schema: JsonSchema): JsonSchema {
 
 // ─── extension overrides ────────────────────────────────────────────────
 
+/** TypeBox's detached-leaf context resolves local refs by pointer key. */
+function refContext(schema: JsonSchema): Record<PropertyKey, JsonSchema> {
+	const context: Record<PropertyKey, JsonSchema> = {};
+	for (const keyword of ["$defs", "definitions"]) {
+		const definitions = schema[keyword];
+		if (!isRecord(definitions)) continue;
+		for (const [name, definition] of Object.entries(definitions)) {
+			if (isRecord(definition)) context[`#/${keyword}/${name}`] = definition;
+		}
+	}
+	return context;
+}
+
 /** One dotted setting path, read from an ordinary nested settings object. */
 function valueAtKey(value: Record<string, unknown>, key: string): JsonValue | undefined {
 	let current: unknown = value;
@@ -127,11 +141,12 @@ export function applyOverrides(
 	warn: (key: string) => void = () => {},
 ): Record<string, unknown> {
 	const effective = structuredClone(system);
+	const context = refContext(schema);
 	for (const key of overridableKeys(schema)) {
 		const override = valueAtKey(stored, key);
 		if (override === undefined || override === null) continue;
 		const property = propertyAtKey(schema, key);
-		if (property !== undefined && Errors(property, override)[0] === true) {
+		if (property !== undefined && Errors(context, property, override)[0] === true) {
 			setAtKey(effective, key, override);
 		} else {
 			warn(key);
@@ -173,9 +188,10 @@ export function mergedUserSchema(
 					isRecord(personalChild) ? personalChild : undefined,
 				);
 			}
-			return { ...node, properties };
+			return { ...(personal ?? node), properties };
 		}
-		return { ...node, [INHERIT_KEYWORD]: true };
+		const { [ENV_KEYWORD]: _serverEnv, ...personalLeaf } = node;
+		return { ...personalLeaf, [INHERIT_KEYWORD]: true };
 	}
 	const inherited = Object.fromEntries(
 		Object.entries(overrideProperties).flatMap(([name, property]) => {
@@ -186,6 +202,8 @@ export function mergedUserSchema(
 	);
 	return {
 		...(userSchema ?? { type: "object" }),
+		...(isRecord(schema.$defs) ? { $defs: schema.$defs } : {}),
+		...(isRecord(schema.definitions) ? { definitions: schema.definitions } : {}),
 		properties: { ...userProperties, ...inherited },
 	};
 }
