@@ -53,7 +53,7 @@ test("gear opens the settings page; edit + save persists", async ({ page }) => {
 
 	// The bare route opens Interface (the first My-settings section);
 	// steering lives under General's Conversations group (System settings).
-	await settings.getByRole("button", { name: "General", exact: true }).click();
+	await settings.getByRole("button", { name: "Behaviour", exact: true }).click();
 	await expect(settings.getByRole("heading", { name: "Conversations" })).toBeVisible();
 	const steering = settings.getByRole("radiogroup", { name: "Steering mode" });
 	await expect(steering).toBeVisible();
@@ -81,7 +81,7 @@ test("gear opens the settings page; edit + save persists", async ({ page }) => {
 	await expect(page.locator(".settings-page")).toHaveCount(0);
 	await page.getByRole("button", { name: "settings" }).click();
 	const reopened = page.locator(".settings-page");
-	await reopened.getByRole("button", { name: "General", exact: true }).click();
+	await reopened.getByRole("button", { name: "Behaviour", exact: true }).click();
 	await expect(
 		reopened
 			.getByRole("radiogroup", { name: "Steering mode" })
@@ -147,7 +147,7 @@ test("a deployment-managed key renders locked", async ({ page }) => {
 		const settings = page.locator(".settings-page");
 		await expect(settings).toBeVisible();
 		await settings
-			.getByRole("group", { name: "System settings", exact: true })
+			.getByRole("group", { name: "System Settings", exact: true })
 			.getByRole("button", { name: "Models", exact: true })
 			.click();
 		const input = settings.getByRole("combobox", { name: "Chat model", exact: true });
@@ -225,7 +225,7 @@ test("the settings callout: the naming-model save needs no restart; the port sav
 	// route (the panel's ONE renderer); the settings file reflects it via
 	// the surface save.
 	await settings
-		.getByRole("group", { name: "System settings", exact: true })
+		.getByRole("group", { name: "System Settings", exact: true })
 		.getByRole("button", { name: "Models", exact: true })
 		.click();
 	const naming = settings.getByRole("combobox", { name: "Utility model", exact: true });
@@ -299,7 +299,7 @@ test("create a token in Settings → API tokens and authenticate with it", async
 		await page.getByRole("button", { name: "settings" }).click();
 		const settings = page.locator(".settings-page");
 		await expect(settings).toBeVisible();
-		await settings.getByRole("button", { name: "API tokens" }).click();
+		await settings.getByRole("button", { name: "API Tokens" }).click();
 
 		// Mint through the section's create form (the real POST route).
 		const name = "e2e-cli";

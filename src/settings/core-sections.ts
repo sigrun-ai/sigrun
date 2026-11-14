@@ -54,7 +54,7 @@ export const CORE_SECTION_GROUP: Readonly<Record<string, "mine" | "system">> = {
 export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 	{
 		id: "general",
-		title: "General",
+		title: "Behaviour",
 		icon: "key",
 		form: generatedCoreForm("general").form,
 	},
@@ -149,7 +149,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 	},
 	{
 		id: "accounts",
-		title: "Account links",
+		title: "Account Links",
 		icon: "key",
 		// Per-user identity management, not an administrator-only section.
 		admin: false,
@@ -169,7 +169,7 @@ export const CORE_SETTINGS_SECTIONS: readonly SettingsSectionDef[] = [
 	},
 	{
 		id: "tokens",
-		title: "API tokens",
+		title: "API Tokens",
 		// NOT "key" (General and Account links already use it); "lock" is
 		// the credential-affordance glyph from the same closed icon set.
 		icon: "lock",

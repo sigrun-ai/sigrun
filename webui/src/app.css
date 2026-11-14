@@ -2633,6 +2633,24 @@ body {
 	gap: 0.2rem;
 }
 
+/* Three levels: owner (top) → kind (sub) → page (item). Only page
+   rows carry the extra indentation; mobile clear this below. */
+.settings-nav-top,
+.settings-nav-sub {
+	padding: 0.3rem 0.6rem;
+	font-size: 12px;
+	color: var(--faint);
+}
+
+.settings-nav-sub {
+	padding-left: 0.9rem;
+}
+
+.settings-nav-sub + .settings-nav-item,
+.settings-nav-sub ~ .settings-nav-item {
+	padding-left: 1.2rem;
+}
+
 .settings-section {
 	flex: 1;
 	min-width: 0;
@@ -3684,17 +3702,29 @@ body {
 		flex-wrap: nowrap;
 	}
 
+	/* Both group levels flatten into the one non-wrapping bar: display
+	   contents promotes every page button to the nav's own flex layout.
+	   The heading boxes are desktop-only. */
 	.settings-nav .settings-nav-group {
-		flex-direction: row;
-		align-items: center;
-		flex: none;
-		min-width: 0;
-		gap: 0.2rem;
+		display: contents;
 	}
 
-	.settings-nav .settings-nav-heading,
-	.settings-nav .settings-nav-extension {
+	.settings-nav .settings-nav-heading {
+		display: none;
+	}
+
+	.settings-nav .settings-nav-item,
+	.settings-nav .settings-nav-sub + .settings-nav-item,
+	.settings-nav .settings-nav-sub ~ .settings-nav-item {
+		padding: 0.3rem 0.6rem;
+		white-space: nowrap;
 		flex: none;
+	}
+
+	/* Leave room after the last row: a flush fractional-width item can
+	   otherwise round a fraction past the nav's right boundary. */
+	.settings-nav {
+		padding-right: 0.6rem;
 	}
 }
 

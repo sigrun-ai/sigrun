@@ -31,7 +31,7 @@ test("switching extension pages through the nav saves the new page's own values"
 	await expect(page).toHaveURL(/#\/settings\/my:sigrun-mcp$/);
 
 	// Switch to the curator extension's personal page via My-settings nav.
-	const personalNav = page.getByRole("group", { name: "My settings", exact: true });
+	const personalNav = page.getByRole("group", { name: "My Settings", exact: true });
 	await personalNav.locator(".settings-nav-extension[data-ext=curator]").click();
 	const curatorPage = page.locator("[data-extension-page=curator]");
 	await expect(page).toHaveURL(/#\/settings\/my(?::|%3A)curator$/);
@@ -39,10 +39,12 @@ test("switching extension pages through the nav saves the new page's own values"
 	await expect(curatorPage.locator("[data-extension-part='user-settings']")).toBeVisible();
 	await expect(curatorPage.locator("[data-extension-part='settings']")).toHaveCount(0);
 	await expect(curatorPage.locator("[data-name='paused'] input")).not.toBeChecked();
-	await expect(curatorPage.locator("[data-name='idleModel'] input")).toHaveValue("");
+	const idleModel = curatorPage.locator("[data-name='idleModel'] select");
+	await expect(idleModel).toHaveValue("");
 	await curatorPage.locator("[data-name='paused'] input").check();
-	// The idleModel field has minLength 1; fill it so the save isn't blocked.
-	await curatorPage.locator("[data-name='idleModel'] input").fill("faux/m");
+	// Select the existing faux option; the allow-other text input remains
+	// empty, so the submitted field is a plain model id.
+	await idleModel.selectOption("faux/m");
 	await curatorPage
 		.locator("[data-extension-part='user-settings']")
 		.getByRole("button", { name: "Save" })

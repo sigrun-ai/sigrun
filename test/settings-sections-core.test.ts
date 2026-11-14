@@ -360,6 +360,19 @@ describe("core settings sections (U4 Task 4)", () => {
 		});
 	});
 
+	test("the renamed core sections keep their ids", () => {
+		expect(CORE_SETTINGS_SECTIONS.map(({ id, title }) => ({ id, title }))).toEqual([
+			{ id: "general", title: "Behaviour" },
+			{ id: "models", title: "Models" },
+			{ id: "interface", title: "Interface" },
+			{ id: "my-models", title: "Models" },
+			{ id: "advanced", title: "Advanced" },
+			{ id: "providers", title: "Providers" },
+			{ id: "accounts", title: "Account Links" },
+			{ id: "tokens", title: "API Tokens" },
+		]);
+	});
+
 	test("the section ids are the plan's list, in nav order", () => {
 		expect([...CORE_SECTION_IDS]).toEqual([
 			"general",
@@ -427,14 +440,14 @@ describe("core settings sections (U4 Task 4)", () => {
 			}
 		}
 		const accounts = CORE_SETTINGS_SECTIONS.find((section) => section.id === "accounts");
-		expect(accounts?.title).toBe("Account links");
+		expect(accounts?.title).toBe("Account Links");
 		expect(accounts?.admin).toBe(false);
 		// The tokens section (Task 5): immediately after accounts, per-user
 		// (not admin-gated), and a cove (empty form — the channels render
 		// their native component over the entry).
 		expect(CORE_SECTION_IDS.indexOf("tokens")).toBe(CORE_SECTION_IDS.indexOf("accounts") + 1);
 		const tokens = CORE_SETTINGS_SECTIONS.find((section) => section.id === "tokens");
-		expect(tokens?.title).toBe("API tokens");
+		expect(tokens?.title).toBe("API Tokens");
 		expect(tokens?.admin).toBe(false);
 
 		// The searchable keys render somewhere (the index's core-key

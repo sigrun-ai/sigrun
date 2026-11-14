@@ -160,7 +160,7 @@ describe("provider management", () => {
     ).toEqual(["Acme Tools"]);
     const providersGroup = renderer.root.findByProps({ role: "group", "aria-label": "Providers" });
     expect(providersGroup.findAllByType("button").map((node) => node.props.children)).toEqual(["Acme Providers"]);
-    expect(renderer.root.findByProps({ role: "group", "aria-label": "System settings" }).findAllByType("button").some((node) => node.props.children === "Providers")).toBe(true);
+    expect(renderer.root.findByProps({ role: "group", "aria-label": "System Settings" }).findAllByType("button").some((node) => node.props.children === "Providers")).toBe(true);
     expect(textContent(renderer.toJSON())).toContain("Acme Providers");
   });
 });
