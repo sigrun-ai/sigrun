@@ -16,6 +16,7 @@ import { bound, boundString, useSurfaceData } from "../context";
 import { useWidthClass } from "../width";
 import { MarkdownBlockView } from "../content";
 import { FieldRow, type FieldProps } from "./fields";
+import { Combobox } from "./Combobox";
 
 /** Few options render as radio buttons / checkboxes; many collapse to
  *  a `<select>` (§5.6's "by option count"). */
@@ -123,33 +124,30 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 						);
 					})}
 				</div>
-			) : (
-				<select
-					aria-label={label}
-					multiple={multi}
-					disabled={props.disabled}
-					value={multi ? [...selectedIds] : selectedSingle}
-					onFocus={() => setFocused(null)}
-					onChange={(event) => {
-						if (multi) {
-							const picked = Array.from(event.target.selectedOptions).map((o) => o.value);
-							const otherPart = other !== "" ? [{ other }] : [];
-							props.onChange(field.name, [...picked, ...otherPart]);
+		) : (
+			<Combobox
+				label={label}
+				options={options.map((o) => ({ id: o.id, label: boundString(data, o.label) }))}
+				multi={multi}
+				value={multi ? selectedIds : selectedSingle}
+				placeholder={boundString(data, field.placeholder)}
+				disabled={props.disabled}
+				allowOtherLabel={allowOther ? field.allowOther?.label : undefined}
+				onChange={(val) => {
+					if (multi) {
+						const picked = Array.isArray(val) ? val.filter((v): v is string => typeof v === "string") : [];
+						const otherPart = other !== "" ? [{ other }] : [];
+						props.onChange(field.name, [...picked, ...otherPart]);
+					} else {
+						if (typeof val === "string") {
+							setSingle(val);
 						} else {
-							setSingle(event.target.value);
+							setOtherSingle((val as { other: string }).other);
 						}
-					}}
-				>
-					{!multi && (
-						<option value="">{boundString(data, field.placeholder)}</option>
-					)}
-					{options.map((option) => (
-						<option key={option.id} value={option.id}>
-							{boundString(data, option.label)}
-						</option>
-					))}
-				</select>
-			)}
+					}
+				}}
+			/>
+		)}
 			{allowOther && (
 				<div className="blk-choice-other">
 					{multi && (

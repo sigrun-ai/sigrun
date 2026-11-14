@@ -230,7 +230,8 @@ test("the settings callout: the naming-model save needs no restart; the port sav
 		.click();
 	const naming = settings.getByRole("combobox", { name: "Utility model", exact: true });
 	await expect(naming).toBeVisible();
-	await naming.selectOption({ label: "faux/m2 · ext-faux" });
+	await naming.fill("faux/m2");
+	await settings.getByRole("option", { name: "faux/m2 · ext-faux", exact: true }).click();
 	const saved = page.waitForResponse((response) =>
 		response.url().includes("/v1/ext/core/surfaces/models/actions") &&
 		response.request().method() === "POST",
@@ -375,7 +376,7 @@ test("a settings form's Save is content-width and its fields cap their width", a
 	expect(formBox).not.toBeNull();
 	expect(saveBox!.width).toBeLessThan(160);
 	expect(saveBox!.width).toBeLessThan(formBox!.width / 3);
-	const model = settings.locator('[data-name="defaultModel"] input');
+	const model = settings.locator('[data-name="defaultModel"] input[role="combobox"]');
 	await expect(model).toBeVisible();
 	const modelBox = await model.boundingBox();
 	expect(modelBox!.width).toBeLessThanOrEqual(720);
