@@ -103,7 +103,8 @@ import {
 } from "./surfaces/settings-surfaces.js";
 import { CORE_SETTINGS_SECTIONS } from "../settings/core-sections.js";
 import { coreSchema, generatedMyModelsForm } from "../settings/core-schema.js";
-import { overridesSchema } from "../settings/effective.js";
+import { mergedUserSchema, overridableKeys, overridesSchema } from "../settings/effective.js";
+import { applyDefaults } from "../settings/schema/defaults.js";
 import type { ModelKindId } from "../settings/model-kinds.js";
 import { MODEL_KINDS } from "../settings/model-kinds.js";
 import type { JsonObject } from "@sigrun/shared/blocks";
@@ -411,7 +412,9 @@ export async function createServer(
 			extension: binding.extension,
 			defs: EXTENSION_SETTINGS_SECTIONS.flatMap((section) => {
 				const user = section.scope === "user";
-				const schema = user ? binding.decl.userSchema : binding.decl.schema;
+				const schema = user
+					? mergedUserSchema(binding.decl.schema, binding.decl.userSchema)
+					: binding.decl.schema;
 				const generated = user ? binding.generatedUser : binding.generated;
 				if (schema === undefined || generated === undefined) return [];
 				return [schemaSettingsSurfaceFor(
@@ -425,6 +428,33 @@ export async function createServer(
 						publishSettingsChanged: opened.publishSettingsChanged,
 						service: surfacesService,
 						models: modelSurfaceOptions,
+						...(user ? { systemValues: async () => {
+							const system = applyDefaults(
+								binding.decl.schema,
+								await opened.extensionStores.settingsFor(binding.extension).get(),
+							);
+							const display: JsonObject = {};
+							const raw: JsonObject = {};
+							for (const key of overridableKeys(binding.decl.schema)) {
+								let current: unknown = system;
+								for (const segment of key.split(".")) {
+									current = current !== null && typeof current === "object"
+										? (current as Record<string, unknown>)[segment]
+										: undefined;
+								}
+								raw[key] = current as JsonObject[string];
+								display[key] = current === undefined
+									? "(not set)"
+									: current === true
+										? "On"
+										: current === false
+											? "Off"
+											: Array.isArray(current)
+												? current.join(", ")
+												: String(current);
+							}
+							return { display, raw };
+						} } : {}),
 					},
 				)];
 			}),

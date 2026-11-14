@@ -24,6 +24,7 @@ import type {
 	ToggleField,
 	VariantField,
 } from "@sigrun/shared/blocks";
+import { generatedMyModelsForm } from "../src/settings/core-schema.js";
 import { validateTree } from "../src/blocks/validate.js";
 import {
 	assertDrawable,
@@ -876,8 +877,50 @@ describe("checkSchema", () => {
 		const result = checkSchema(obj);
 		expect(result.ok).toBe(false);
 		if (!result.ok) {
-			expect(result.error).toContain("/nested");
-			expect(result.error).toContain("x-sigrun-overridable");
+			expect(result.error).toBe(
+				"settings schema /nested: x-sigrun-overridable is valid only on scalar or array properties",
+			);
+		}
+	});
+
+	it("accepts an overridable array and rejects an overridable secret", () => {
+		const arr = objectSchema({
+			tools: { type: "array", items: { type: "string" }, "x-sigrun-overridable": true },
+		});
+		expect(checkSchema(arr)).toEqual({ ok: true });
+
+		const secret = objectSchema({
+			token: { type: "string", writeOnly: true, "x-sigrun-overridable": true },
+		});
+		expect(checkSchema(secret)).toEqual({
+			ok: false,
+			error: "settings schema /token: x-sigrun-overridable is not valid on writeOnly (secret) properties",
+		});
+	});
+
+	it("emits system and raw bindings for an inherit field", () => {
+		const generated = generate(objectSchema({
+			group: {
+				type: "object",
+				properties: {
+					threshold: { type: "integer", "x-sigrun-inherit": true },
+				},
+			},
+		}));
+		expect(fieldNamed(
+			generated.form.root.type === "form" ? generated.form.root.children : [],
+			"group.threshold",
+		).inherit).toEqual({
+			system: { $: "/systemValues/group.threshold" },
+			raw: { $: "/systemValuesRaw/group.threshold" },
+		});
+	});
+
+	it("core My Models still renders the prebuilt form", () => {
+		const generated = generatedMyModelsForm();
+		const fields = generated.form.root.type === "form" ? generated.form.root.children : [];
+		for (const name of ["defaultModel", "decisionModel", "embeddingModel"]) {
+			expect(fieldNamed(fields, name).inherit).toBeUndefined();
 		}
 	});
 

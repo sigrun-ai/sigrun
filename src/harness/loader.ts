@@ -113,6 +113,7 @@ import type { JobSpec } from "@sigrun/shared/jobs";
 import { validateJobSpec } from "../jobs/spec.js";
 import { validateTree } from "../blocks/validate.js";
 import { generateForm } from "../settings/schema/generate.js";
+import { mergedUserSchema } from "../settings/effective.js";
 import type { HealthStatus } from "./health.js";
 import type { ProviderContributor } from "./providers/index.js";
 import { existsSync, readFileSync, realpathSync, statSync } from "node:fs";
@@ -3622,9 +3623,10 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 			)?.settingsDeclaration?.();
 			if (declaredSettings !== undefined) {
 				const generated = generateForm(declaredSettings.schema, { idPrefix: slug });
-				const generatedUser = declaredSettings.userSchema === undefined
+				const userSchema = mergedUserSchema(declaredSettings.schema, declaredSettings.userSchema);
+				const generatedUser = userSchema === undefined
 					? undefined
-					: generateForm(declaredSettings.userSchema, { idPrefix: `${slug}-user` });
+					: generateForm(userSchema, { idPrefix: `${slug}-user` });
 				settingsDeclarations.push({
 					extension: slug,
 					decl: declaredSettings,

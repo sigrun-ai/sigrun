@@ -25,11 +25,13 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) await cleanup();
 	reset();
+	vi.restoreAllMocks();
 });
 
 const DECLARING = fixture("fixture-settings-schema-save");
 const RESERVED_USER = fixture("fixture-settings-reserved-user-id");
 const BLANKS = fixture("fixture-settings-blanks");
+const OVERRIDES = fixture("fixture-settings-overrides");
 const SURFACE = "/v1/ext/acme-schema-save/surfaces/settings";
 const USER_SURFACE = "/v1/ext/acme-schema-save/surfaces/user-settings";
 
@@ -48,6 +50,7 @@ async function boot(options: {
 	readonly settings?: Record<string, unknown>;
 	readonly secrets?: Record<string, string>;
 	readonly userSettings?: Record<string, unknown>;
+	readonly userSettingsFile?: string;
 	readonly userSecrets?: Record<string, string>;
 	readonly specifier?: string;
 	readonly env?: Record<string, string | undefined>;
@@ -67,7 +70,10 @@ async function boot(options: {
 	}
 	if (options.userSettings !== undefined) {
 		await mkdir(join(configDir, "user-settings", "alice"), { recursive: true });
-		await writeFile(join(configDir, "user-settings", "alice", "acme-schema-save.json"), JSON.stringify(options.userSettings));
+		await writeFile(
+			join(configDir, "user-settings", "alice", options.userSettingsFile ?? "acme-schema-save.json"),
+			JSON.stringify(options.userSettings),
+		);
 	}
 	if (options.userSecrets !== undefined) {
 		await writeFile(
@@ -165,6 +171,89 @@ const renamedEntry = {
 		headers: { Authorization: { value: "", extra: "channel-only" } },
 	},
 };
+
+describe("extension user overrides", () => {
+	const OVERRIDES_SURFACE = "/v1/ext/acme-settings-overrides/surfaces/user-settings";
+
+	async function overrideFile(rig: Rig): Promise<Record<string, unknown>> {
+		try {
+			return JSON.parse(await readFile(join(
+				rig.configDir,
+				"user-settings",
+				"alice",
+				"acme-settings-overrides.json",
+			), "utf8")) as Record<string, unknown>;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+			throw error;
+		}
+	}
+
+	test("user form data carries systemValues and systemValuesRaw", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		expect(result.body.data).toMatchObject({
+			systemValues: {
+				endpoint: "https://system.example.invalid",
+				tools: "system",
+				"group.threshold": "10",
+			},
+			systemValuesRaw: {
+				endpoint: "https://system.example.invalid",
+				tools: ["system"],
+				"group.threshold": 10,
+			},
+		});
+	});
+
+	test("boolean display values are On and Off", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.body.data).toMatchObject({
+			systemValues: { enabled: "On", paused: "Off" },
+			systemValuesRaw: { enabled: true, paused: false },
+		});
+	});
+
+	test("an absent optional system value displays as not set", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.body.data).toMatchObject({
+			systemValues: { optional: "(not set)" },
+		});
+		const raw = (result.body.data as Record<string, unknown>).systemValuesRaw;
+		expect(Object.hasOwn(raw as Record<string, unknown>, "optional")).toBe(false);
+	});
+
+	test("array display values join entries", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		await writeFile(
+			join(rig.configDir, "settings", "acme-settings-overrides.json"),
+			JSON.stringify({ tools: ["one", "two"] }),
+		);
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.body.data).toMatchObject({
+			systemValues: {
+				endpoint: "https://system.example.invalid",
+				tools: "one, two",
+				"group.threshold": "10",
+			},
+			systemValuesRaw: { tools: ["one", "two"] },
+		});
+	});
+
+	test("null on an inherit field deletes the user override", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			userSettingsFile: "acme-settings-overrides.json",
+			userSettings: { endpoint: "https://user.example.invalid" },
+		});
+		const result = await save(rig, { endpoint: null }, "clear-override", OVERRIDES_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await overrideFile(rig)).toEqual({});
+	});
+});
 
 test("unknown stored keys survive a schema save", async () => {
 	const rig = await boot({ settings: { legacy: { preserve: true }, interval: 30 } });

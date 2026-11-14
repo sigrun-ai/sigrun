@@ -491,6 +491,11 @@ export interface FieldBase {
 	readonly disabled?: boolean;
 	/** §13; settings only. */
 	readonly apply?: "live" | "restart";
+	/** Personal override: system display text and the raw system value. */
+	readonly inherit?: {
+		readonly system: Bindable<string>;
+		readonly raw: Binding;
+	};
 	readonly min?: number;
 	readonly max?: number;
 	readonly minLength?: number;

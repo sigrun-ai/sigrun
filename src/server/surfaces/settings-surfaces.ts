@@ -380,6 +380,8 @@ export interface SettingsSurfaceOptions {
 	 * the RESOLVED caller (the primary admin for a userless superuser).
 	 */
 	readonly extraData?: (user: string | undefined) => Promise<JsonObject>;
+	/** System values behind a personal override, keyed by dotted override path. */
+	readonly systemValues?: () => Promise<{ display: JsonObject; raw: JsonObject }>;
 	/** Live model rosters and the effective defaults behind extension model fields. */
 	readonly models?: {
 		readonly roster: () => Record<ModelKindId, ChoiceOption[]>;
@@ -1204,6 +1206,7 @@ export function schemaSettingsSurfaceFor(
 				generated.secrets,
 				async (key) => statuses.get(key),
 			);
+			const systemValues = await options.systemValues?.();
 			return {
 				tree: generated.form,
 				data: {
@@ -1213,6 +1216,10 @@ export function schemaSettingsSurfaceFor(
 					unknownKeys: Object.keys(stored).filter(
 						(key) => !Object.hasOwn(properties, key) && !(rootTable && key !== ""),
 					),
+					...(systemValues === undefined ? {} : {
+						systemValues: systemValues.display,
+						systemValuesRaw: systemValues.raw,
+					}),
 					...(options.extraData === undefined ? {} : await options.extraData(user)),
 					...(options.models === undefined || modelKinds.size === 0
 						? {}
