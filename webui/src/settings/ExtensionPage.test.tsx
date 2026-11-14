@@ -46,15 +46,22 @@ function form(id: string, title: string, field: string): Tree {
 function makeHarness(init?: {
 	readonly admin?: boolean;
 	readonly providers?: readonly AuthCheckProviderWire[];
+	readonly refreshedProviders?: readonly AuthCheckProviderWire[];
+	readonly onRefresh?: (id: string) => void;
 	readonly sections?: readonly SettingsSectionEntryWire[];
 	readonly stored?: Record<string, unknown>;
 }) {
 	const admin = init?.admin ?? true;
+	let providers = init?.providers ?? [];
 	const fetchImpl: FetchLike = (input, request) => {
 		let status = 200;
 		let body: unknown = {};
 		if (input === "/v1/providers") {
-			body = { providers: init?.providers ?? [] };
+			body = { providers };
+		} else if (request?.method === "POST" && input === "/v1/providers/acme/refresh") {
+			init?.onRefresh?.("acme");
+			providers = init?.refreshedProviders ?? providers;
+			body = providers[0] ?? {};
 		} else if (input === "/v1/extensions/acme-ext/settings") {
 			body = { settings: init?.stored ?? { endpoint: "https://acme.example.invalid", legacy: true }, pendingRestart: [] };
 		} else if (input.startsWith("/v1/ext/acme-ext/surfaces/settings")) {
@@ -77,10 +84,10 @@ function makeHarness(init?: {
 	return createClient({ fetch: fetchImpl, rawFetch: fetchImpl as never });
 }
 
-async function renderPage(init?: Parameters<typeof makeHarness>[0] & { readonly group?: "mine" | "system" }) {
+async function renderPage(init?: Parameters<typeof makeHarness>[0] & { readonly group?: "mine" | "system"; readonly provider?: boolean }) {
 	const client = makeHarness(init);
 	const renderer = await renderAsync(
-		<ExtensionPage client={client} extension={extension} sections={init?.sections ?? sections} admin={init?.admin ?? true} group={init?.group ?? "system"} />,
+		<ExtensionPage client={client} extension={{ ...extension, ...(init?.provider === true ? { provider: true as const } : {}) }} sections={init?.sections ?? sections} admin={init?.admin ?? true} group={init?.group ?? "system"} />,
 	);
 	await act(async () => {
 		await new Promise((resolve) => setTimeout(resolve, 0));
@@ -109,6 +116,38 @@ describe("ExtensionPage", () => {
 		const renderer = await renderPage({ admin: false, group: "mine" });
 		expect(parts(renderer)).toEqual(["user-settings"]);
 		expect(textContent(renderer.toJSON())).not.toContain("not in this version's settings");
+	});
+
+	test("models section is the last part of a provider page", async () => {
+		const renderer = await renderPage({
+			provider: true,
+			providers: [{ provider: "acme", owner: "acme-ext", status: "ready", models: 1, modelIds: ["chat-1"] }],
+		});
+		expect(parts(renderer)).toEqual(["locality", "credentials", "settings", "advanced", "models"]);
+	});
+
+	test("Refresh calls refreshProvider once per distinct provider id and re-renders the list", async () => {
+		const refreshCalls: string[] = [];
+		const renderer = await renderPage({
+			provider: true,
+			providers: [
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1, modelIds: ["chat-1"] },
+				{ provider: "acme", owner: "acme-ext", kind: "embedding", status: "ready", models: 1, modelIds: ["embedding-1"] },
+			],
+			refreshedProviders: [
+				{ provider: "acme", owner: "acme-ext", kind: "chat", status: "ready", models: 1, modelIds: ["chat-2"] },
+				{ provider: "acme", owner: "acme-ext", kind: "embedding", status: "ready", models: 1, modelIds: ["embedding-1"] },
+			],
+			onRefresh: (id) => refreshCalls.push(id),
+		});
+		const button = renderer.root.findByProps({ className: "settings-provider-models-refresh" });
+		await act(async () => {
+			button.props.onClick();
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		expect(refreshCalls).toEqual(["acme"]);
+		expect(textContent(renderer.toJSON())).toContain("acme/chat-2");
+		expect(textContent(renderer.toJSON())).not.toContain("acme/chat-1");
 	});
 
 	test("provider page shows one auth.json key row per provider across chat and decision kinds", async () => {
