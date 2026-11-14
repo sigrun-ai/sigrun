@@ -25,6 +25,8 @@ export function SurfaceView(props: {
 	readonly refreshMs?: number;
 	/** Host visibility gate for the poll (hidden tabs do not poll). */
 	readonly visible?: () => boolean;
+	/** Show submit outcomes in the form instead of as surface toasts. */
+	readonly inlineFeedback?: boolean;
 	/** Additional host cadence (the watcher keepalive). Its full-data
 	 *  refresh applies through the same surface fetch path. */
 	readonly keepaliveMs?: number;
@@ -39,6 +41,7 @@ export function SurfaceView(props: {
 		onNavigate: props.onNavigate,
 		refreshMs: props.refreshMs,
 		visible: props.visible,
+		inlineFeedback: props.inlineFeedback,
 	});
 	const keepaliveMs = props.keepaliveMs;
 	const visible = props.visible;
@@ -89,6 +92,8 @@ export function SurfaceView(props: {
 					: ({} as JsonObject),
 			setView: surface.setView,
 			serverErrors: surface.serverErrors,
+			submitStatus: surface.submitStatus,
+			submitSeq: surface.submitSeq,
 		}),
 		[
 			surface.dispatch,
@@ -97,6 +102,8 @@ export function SurfaceView(props: {
 			surface.view,
 			surface.setView,
 			surface.serverErrors,
+			surface.submitStatus,
+			surface.submitSeq,
 		],
 	);
 	if (surface.status === "loading") {

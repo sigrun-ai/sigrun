@@ -674,6 +674,37 @@ describe("SettingsPanel", () => {
 		).toBe(true);
 	});
 
+	test("a core section save shows Saved", async () => {
+		const harness = makeHarness({ general: { namingModel: "acme/model" } });
+		const renderer = await renderPanelWithPrefs(harness.client, {
+			admin: true,
+			section: "general",
+		});
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await act(async () => {
+			renderer.renderer.root
+				.findByProps({ className: "blk-form-submit" })
+				.props.onClick();
+		});
+		expect(
+			harness.calls.some(
+				(call) =>
+					call.input === "/v1/ext/core/surfaces/general/actions" &&
+					call.method === "POST",
+			),
+		).toBe(true);
+		const saved = renderer.renderer.root.findByProps({
+			role: "status",
+			className: "blk-form-saved",
+		});
+		expect(saved.children).toContain("Saved");
+		expect(
+			renderer.renderer.root.findAllByProps({ className: "blk-surface-toast" }),
+		).toHaveLength(0);
+	});
+
 	test("the pending-restart callout lists keys; the Restart button shows only for a supervised admin", async () => {
 		// Supervised + admin: the button renders and calls the action (General
 		// carries the meta block).

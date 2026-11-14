@@ -36,7 +36,7 @@ function ExtensionSurface(props: {
 			},
 		};
 	}, [client, section.slug, section.id, onData]);
-	return <SurfaceView transport={transport} />;
+	return <SurfaceView transport={transport} inlineFeedback />;
 }
 
 /** One loaded extension's status, credentials, shared settings, personal

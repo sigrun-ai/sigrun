@@ -23,6 +23,7 @@ import {
 	useSurfaceData,
 } from "../context";
 import { BlockView } from "../BlockView";
+import { Icon } from "../icons";
 import { choiceValueText } from "./choiceText";
 import { FieldView } from "./fields";
 import { collectFields, initialValue, validateField } from "./values";
@@ -30,6 +31,9 @@ import { collectFields, initialValue, validateField } from "./values";
 /** The live-mode debounce (spec §5.6: "every change is applied after
  *  300 ms"). */
 export const LIVE_DEBOUNCE_MS = 300;
+
+/** How long the inline confirmation of an accepted save remains visible. */
+const SAVED_FEEDBACK_MS = 4000;
 
 /** The stepper: does this form qualify (several sections each holding
  *  a choice, interaction placement)? (§9.1) */
@@ -81,6 +85,8 @@ export function FormBlockView(props: {
 		return init;
 	});
 	const [errors, setErrors] = useState<Readonly<Record<string, string>>>({});
+	const [dismissedSeq, setDismissedSeq] = useState<number | undefined>();
+	const [savedExpiredSeq, setSavedExpiredSeq] = useState<number | undefined>();
 	const debounce = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const pending = useRef<JsonObject | null>(null);
 
@@ -93,6 +99,20 @@ export function FormBlockView(props: {
 	);
 
 	const readOnly = actions.access !== "write";
+	const feedback =
+		block.mode === "submit" &&
+		actions.submitStatus !== undefined &&
+		actions.submitSeq !== dismissedSeq &&
+		(actions.submitStatus.kind !== "saved" || actions.submitSeq !== savedExpiredSeq)
+			? actions.submitStatus
+			: undefined;
+	const savedSeq =
+		feedback?.kind === "saved" ? actions.submitSeq : undefined;
+	useEffect(() => {
+		if (savedSeq === undefined) return undefined;
+		const timer = setTimeout(() => setSavedExpiredSeq(savedSeq), SAVED_FEEDBACK_MS);
+		return () => clearTimeout(timer);
+	}, [savedSeq]);
 
 	const validate = (next: JsonObject): boolean => {
 		const nextErrors: Record<string, string> = {};
@@ -110,6 +130,7 @@ export function FormBlockView(props: {
 
 	const doSubmit = (next: JsonObject): boolean => {
 		if (!validate(next)) return false;
+		setDismissedSeq(actions.submitSeq);
 		// Disabled fields are read-only presentation state, not edits. In
 		// particular, deployment-managed fields must not ride an otherwise
 		// unrelated save and trigger the server's whole-request refusal.
@@ -133,6 +154,7 @@ export function FormBlockView(props: {
 	};
 
 	const change = (name: string, value: JsonValue): void => {
+		if (actions.submitStatus !== undefined) setDismissedSeq(actions.submitSeq);
 		setValues((current) => {
 			const next = { ...current, [name]: value };
 			if (block.mode === "live") {
@@ -212,11 +234,50 @@ export function FormBlockView(props: {
 				formBind={block.bind}
 			/>
 			{block.mode !== "live" && !readOnly && (
-				<button type="button" className="blk-form-submit" onClick={submit}>
-					{submitLabel}
-				</button>
+				<SubmitFeedback
+					feedback={feedback}
+					submitLabel={submitLabel}
+					onSubmit={submit}
+				/>
 			)}
 		</div>
+	);
+}
+
+/** A rejected save sits immediately above its submit button; an accepted
+ *  save's confirmation shares the button's row. */
+function SubmitFeedback(props: {
+	readonly feedback:
+		| { readonly kind: "saved" }
+		| { readonly kind: "error"; readonly message: string }
+		| undefined;
+	readonly submitLabel: string;
+	readonly onSubmit: () => void;
+}): ReactNode {
+	return (
+		<>
+			{props.feedback?.kind === "error" && (
+				<div role="alert" className="blk-form-error">
+					<Icon name="error" />
+					<span>Not saved: {props.feedback.message}</span>
+				</div>
+			)}
+			<div className="blk-form-submit-row">
+				<button
+					type="button"
+					className="blk-form-submit"
+					onClick={props.onSubmit}
+				>
+					{props.submitLabel}
+				</button>
+				{props.feedback?.kind === "saved" && (
+					<span role="status" className="blk-form-saved">
+						<Icon name="success" />
+						Saved
+					</span>
+				)}
+			</div>
+		</>
 	);
 }
 

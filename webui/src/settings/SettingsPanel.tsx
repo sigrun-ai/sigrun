@@ -655,7 +655,7 @@ function SettingsSurfaceBody(props: {
 				</p>
 			)}
 			<SurfaceMetaProbe transport={transport} onData={handleProbeData} />
-			<SurfaceView transport={transport} />
+			<SurfaceView transport={transport} inlineFeedback />
 		</div>
 	);
 }

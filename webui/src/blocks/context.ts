@@ -51,6 +51,13 @@ export interface SurfaceActionsCtx {
 	 *  `{error: {field}}` from a rejected action surfaces under that
 	 *  field). Empty when no rejection has landed. */
 	readonly serverErrors?: Readonly<Record<string, string>>;
+	/** The latest submit result when the host opted into inline feedback. */
+	readonly submitStatus?:
+		| { readonly kind: "saved" }
+		| { readonly kind: "error"; readonly message: string };
+	/** Increments for each submit result, distinguishing a new result from
+	 *  the one a form already dismissed after a local edit. */
+	readonly submitSeq?: number;
 	/** Write the `/view/` branch (spec §6.2): view-only state the
 	 *  channel owns and never sends to the server. `path` is a JSON
 	 *  pointer under the view branch (no leading `/view/` — the writer

@@ -89,6 +89,10 @@ interface Snapshot {
 	 *  field name the server named (spec §5.6); cleared on the next
 	 *  accepted act or `/view/` edit. */
 	readonly serverErrors: Readonly<Record<string, string>>;
+	readonly submitStatus?:
+		| { readonly kind: "saved" }
+		| { readonly kind: "error"; readonly message: string };
+	readonly submitSeq: number;
 }
 
 /** Immutably write `value` at the `/view/`-relative pointer `path`
@@ -149,6 +153,10 @@ export interface SurfaceState {
 	/** Server-side field errors from rejected actions (spec §5.6),
 	 *  keyed by field name; rendered under the named form field. */
 	readonly serverErrors: Readonly<Record<string, string>>;
+	readonly submitStatus?:
+		| { readonly kind: "saved" }
+		| { readonly kind: "error"; readonly message: string };
+	readonly submitSeq?: number;
 }
 
 /** A move payload's `from`/`to` endpoint (spec §6.3 step 2). */
@@ -321,6 +329,8 @@ export function useSurface(
 		refreshMs?: number;
 		/** Host visibility gate for polling (hidden tabs do not poll). */
 		visible?: () => boolean;
+		/** Show submit outcomes beside the form instead of toasting them. */
+		inlineFeedback?: boolean;
 	},
 ): SurfaceState {
 	const [snapshot, setSnapshotState] = useState<Snapshot>({
@@ -333,6 +343,7 @@ export function useSurface(
 		toasts: [],
 		viewState: {},
 		serverErrors: {},
+		submitSeq: 0,
 	});
 	// Async callbacks read the latest snapshot through this ref. It is
 	// written EAGERLY by every `setSnapshot` (never on render): two async
@@ -359,6 +370,7 @@ export function useSurface(
 	 *  any load/fetch/act answer from an earlier transport is dropped. */
 	const transportRef = useRef(transport);
 	transportRef.current = transport;
+	const inlineFeedback = opts?.inlineFeedback === true;
 	const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 	const toastTimers = useRef(new Set<ReturnType<typeof setTimeout>>());
 
@@ -606,6 +618,7 @@ export function useSurface(
 					else if (result.toast !== undefined) toast(result.toast);
 					return;
 				}
+				const inlineSubmit = inlineFeedback && action.type === "submit";
 				// A move whose entry is already gone (10 s timeout fired, or
 				// an earlier settle dropped it) is STALE: no toast, no ops —
 				// the user already saw the timeout outcome.
@@ -617,10 +630,17 @@ export function useSurface(
 				}
 				if (!result.ok) {
 					if (isMove) dropEntry(actionId);
-					toast(result.error.message);
+					if (inlineSubmit) {
+						setSnapshot((current) => ({
+							...current,
+							submitStatus: { kind: "error", message: result.error.message },
+							submitSeq: current.submitSeq + 1,
+						}));
+					} else {
+						toast(result.error.message);
+					}
 					// §5.6: a rejection naming a field renders its message
-					// under that field (SurfaceActions.serverErrors), in
-					// addition to the global toast.
+					// under that field (SurfaceActions.serverErrors).
 					if (typeof result.error.field === "string") {
 						const field = result.error.field;
 						const message = result.error.message;
@@ -639,19 +659,20 @@ export function useSurface(
 					}
 					return;
 				}
-				// An accepted act supersedes any outstanding server field
-				// error (§5.6).
-				setSnapshot((s) =>
-					Object.keys(s.serverErrors).length > 0
-						? { ...s, serverErrors: {} }
-						: s,
-				);
+				// An accepted act supersedes any outstanding server field error.
+				setSnapshot((current) => ({
+					...current,
+					serverErrors: {},
+					...(inlineSubmit
+						? { submitStatus: { kind: "saved" as const }, submitSeq: current.submitSeq + 1 }
+						: {}),
+				}));
 				// The accept outcome (toast + navigate) lands AFTER the
 				// ops apply below (spec §6.1: the accepted result's
 				// navigate routes through the shell once the data is
 				// current).
 				const finishAccept = (): void => {
-					if (result.toast !== undefined) toast(result.toast);
+					if (!inlineSubmit && result.toast !== undefined) toast(result.toast);
 					if (result.navigate !== undefined && result.navigate.type === "navigate") {
 						const resolved = resolveActionBindings(result.navigate, {
 							data: ref.current.confirmed,
@@ -722,8 +743,17 @@ export function useSurface(
 				}
 			})
 			.catch(() => {
+				const inlineSubmit = inlineFeedback && action.type === "submit";
 				if (isMove) dropEntry(actionId);
-				toast("The action failed");
+				if (inlineSubmit) {
+					setSnapshot((current) => ({
+						...current,
+						submitStatus: { kind: "error", message: "The action failed" },
+						submitSeq: current.submitSeq + 1,
+					}));
+				} else {
+					toast("The action failed");
+				}
 			});
 	};
 
@@ -767,5 +797,7 @@ export function useSurface(
 		refresh,
 		toasts: snapshot.toasts.map((entry) => entry.message),
 		serverErrors: snapshot.serverErrors,
+		submitStatus: snapshot.submitStatus,
+		submitSeq: snapshot.submitSeq,
 	};
 }
