@@ -185,7 +185,9 @@ interface ExpansionServer {
 	configDir: string;
 }
 
-async function bootExpansionServer(): Promise<ExpansionServer> {
+async function bootExpansionServer(
+	modelInput: ["text"] | ["text", "image"] = ["text", "image"],
+): Promise<ExpansionServer> {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-commands-exp-"));
 	const configDir = join(dir, "config");
 	await mkdir(join(dir, "skills", "greet"), { recursive: true });
@@ -207,7 +209,7 @@ async function bootExpansionServer(): Promise<ExpansionServer> {
 	);
 	const faux = fauxProvider({
 		provider: "faux",
-		models: [{ id: "m", contextWindow: 128_000 }],
+		models: [{ id: "m", input: modelInput, contextWindow: 128_000 }],
 	});
 	faux.setResponses([fauxAssistantMessage("ok")]);
 	const contributor: ProviderContributor = {
@@ -285,7 +287,7 @@ describe("expansion at admission (POST .../submissions)", () => {
 			entries: {
 				id: number;
 				kind: string;
-				data?: { typed?: string; command?: string };
+				data?: { typed?: string; command?: string; attachments?: { delivery?: string }[] };
 				model?: { content: { type: string; text?: string }[] }[];
 			}[];
 		};
@@ -369,7 +371,7 @@ describe("expansion at admission (POST .../submissions)", () => {
 	});
 
 	test("an input with attachments expands only the text part", async () => {
-		const { app, opened, workspace } = await bootExpansionServer();
+		const { app, opened, workspace } = await bootExpansionServer(["text"]);
 		await writeFile(join(workspace, "shot.png"), Buffer.from(RED_PNG, "base64"));
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
@@ -390,8 +392,13 @@ describe("expansion at admission (POST .../submissions)", () => {
 		const user = view.entries.find((entry) => entry.kind === "sigrun.user.expanded");
 		const content = user?.model?.[0]?.content ?? [];
 		expect(content[0]).toEqual({ type: "text", text: "Review with focus: api" });
-		// Until Task 3 resolves model support, the image stays in place as a
-		// workspace note rather than an ImageContent block.
+		// This expansion fixture's model is deliberately text-only, so the
+		// image correctly stays a workspace pointer rather than ImageContent.
+		expect(user?.data).toMatchObject({
+			typed: "/review api",
+			command: "review",
+			attachments: [{ delivery: "workspace" }],
+		});
 		expect(content[1]?.type).toBe("text");
 		expect(content[1]?.text).toContain('delivery="workspace"');
 		expect(content[1]?.text).toContain("The file is in your workspace.");

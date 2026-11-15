@@ -6,9 +6,8 @@
  * acting user), and a job fire (the job's owner).
  *
  * The carrier is a SIDE record, the `sigrun.authors` conversation doc:
- * `pi.user` entries are `Entry<never>` (they cannot carry data), and a
- * new input entry kind would have to be taught to every `UserEntry.is`
- * consumer. The doc keys the author two ways:
+ * `pi.user` entries are `Entry<never>` (they cannot carry data). The doc
+ * keys the author two ways:
  *
  * - `byRequest` — written BEFORE `conversation.submit` (the requestId
  *   exists pre-admission, so this never races). An orphan record from a
@@ -25,7 +24,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
-import { defineDoc, UserEntry } from "@earendil-works/pi-durable";
+import { defineDoc } from "@earendil-works/pi-durable";
 import type {
 	Conversation,
 	ConversationId,
@@ -35,8 +34,10 @@ import type {
 	Harness,
 	SubmissionId,
 } from "@earendil-works/pi-durable";
-import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
-import { BlocksAnswerEntry } from "../harness/blocks/entries.js";
+import {
+	BLOCKS_ANSWER_KIND,
+	USER_INPUT_KINDS,
+} from "@sigrun/shared/turns";
 
 /**
  * The authors of a conversation's inputs. A type alias (not an
@@ -63,9 +64,8 @@ export const AuthorsDoc = defineDoc<Authors>({
 
 /** The entry kinds an input submission places (the author carriers). */
 const INPUT_KINDS: ReadonlySet<string> = new Set([
-	UserEntry.kind,
-	EXPANDED_ENTRY_KIND,
-	BlocksAnswerEntry.kind,
+	...USER_INPUT_KINDS,
+	BLOCKS_ANSWER_KIND,
 ]);
 
 /** Whether one entry is a placed user input (any of {@link INPUT_KINDS}). */

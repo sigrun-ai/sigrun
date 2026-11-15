@@ -66,8 +66,12 @@ import type { Context } from "@earendil-works/chord";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type { WorkerStatus } from "@sigrun/shared/views";
 import {
+	entryAttachments,
+	isUserInput,
+	unattachedText,
+} from "@sigrun/shared/turns";
+import {
 	AssistantEntry,
-	UserEntry,
 	defineDoc,
 	type CommitPublication,
 	type ConversationDocToken,
@@ -84,7 +88,6 @@ import {
 	type SubmissionRecord,
 } from "@earendil-works/pi-durable";
 import { SessionMetaDoc } from "../server/session-meta.js";
-import { EXPANDED_ENTRY_KIND } from "../commands/expand.js";
 import { InteractionDoc, TERMINAL as INTERACTION_TERMINAL } from "./interactions.js";
 import { AmbientDoc } from "./ambient.js";
 import { toDurableContext } from "./context.js";
@@ -231,9 +234,8 @@ export type RunSettledEvent = {
 	/** The conversation owner at delivery; absent when the conversation is ownerless. */
 	readonly owner?: string;
 	readonly inputs: readonly SubmissionId[];
-	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
-	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
-	 *  unresolvable/withdrawn → "" at that position. */
+	/** Each input entry's ADMITTED text minus attachment bodies, then one
+	 *  `[attached: <path>]` line per attachment; unresolvable/withdrawn → "". */
 	readonly inputTexts: readonly string[];
 	/** True when a Continue submission belongs to the run. */
 	readonly continued?: boolean;
@@ -2172,10 +2174,8 @@ export class EventBus {
 		}
 	}
 
-	/** The input text of one entry: a `pi.user` (or an expanded input's
-	 *  `sigrun.user.expanded`) entry's `model[0]` text blocks joined — for
-	 *  an expanded input that is the ADMITTED text (what the model
-	 *  received), exactly what `runSettled` hands its handlers. */
+	/** The input text of one user entry: admitted prose without attachment
+	 *  bodies, followed by one attachment-path line per attachment. */
 	async #entryText(
 		conversationId: ConversationId,
 		id: EntryId,
@@ -2183,18 +2183,13 @@ export class EventBus {
 	): Promise<string> {
 		const entry = await this.#readEntry(conversationId, id, context);
 		if (entry === undefined) return "";
-		// An expanded input REPLACES the `pi.user` kind (Task 2c's
-		// `entry: {kind: …}` placement) — both kinds are input entries.
-		if (!UserEntry.is(entry) && entry.kind !== EXPANDED_ENTRY_KIND) {
-			return "";
-		}
-		const message = entry.model?.[0];
-		if (message === undefined || message.role !== "user") return "";
-		if (typeof message.content === "string") return message.content;
-		return message.content
-			.filter((block) => block.type === "text")
-			.map((block) => block.text)
-			.join("");
+		if (!isUserInput(entry)) return "";
+		const text = unattachedText(entry, "");
+		return entryAttachments(entry).reduce(
+			(result, attachment) =>
+				`${result}${result === "" ? "" : "\n"}[attached: ${attachment.path}]`,
+			text,
+		);
 	}
 
 	/**

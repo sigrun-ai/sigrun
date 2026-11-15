@@ -630,6 +630,88 @@ describe("continue submissions", () => {
 	});
 });
 
+describe("settled input text", () => {
+	test("runSettled admits sigrun.user prose and attachment paths", async () => {
+		const { bus, root } = await bootBus({
+			responses: [fauxAssistantMessage("attached answer")],
+		});
+		const events: RunSettledEvent[] = [];
+		bus.registerExtension("fixture-attached-input", {
+			runSettled: (event) => { events.push(event); },
+		});
+		const submission = await root.submit({
+			type: "input",
+			content: [
+				{ type: "text", text: '<attachment path="uploads/7/a.md" type="text/markdown" size="3 B">\nabc\n</attachment>' },
+				{ type: "text", text: "summarise" },
+			],
+			entry: {
+				kind: "sigrun.user",
+				data: { attachments: [{
+					path: "uploads/7/a.md",
+					name: "a.md",
+					mime: "text/markdown",
+					bytes: 3,
+					delivery: "inline",
+					parts: [0],
+				}] },
+			},
+		}, BACKGROUND_CONTEXT);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events.map((event) => event.inputTexts)).toEqual([
+			["summarise\n[attached: uploads/7/a.md]"],
+		]);
+	});
+
+	test("an attachments-only input has no leading newline in inputTexts", async () => {
+		const { bus, root } = await bootBus({
+			responses: [fauxAssistantMessage("attachment-only answer")],
+		});
+		const events: RunSettledEvent[] = [];
+		bus.registerExtension("fixture-attachment-only-input", {
+			runSettled: (event) => { events.push(event); },
+		});
+		const submission = await root.submit({
+			type: "input",
+			content: [{ type: "text", text: '<attachment path="uploads/7/a.md" delivery="workspace"/>' }],
+			entry: {
+				kind: "sigrun.user",
+				data: { attachments: [{
+					path: "uploads/7/a.md",
+					name: "a.md",
+					mime: null,
+					bytes: 3,
+					delivery: "workspace",
+					parts: [0],
+				}] },
+			},
+		}, BACKGROUND_CONTEXT);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events.map((event) => event.inputTexts)).toEqual([
+			["[attached: uploads/7/a.md]"],
+		]);
+	});
+
+	test("plain pi.user input text is unchanged", async () => {
+		const { bus, root } = await bootBus({
+			responses: [fauxAssistantMessage("plain answer")],
+		});
+		const events: RunSettledEvent[] = [];
+		bus.registerExtension("fixture-plain-input", {
+			runSettled: (event) => { events.push(event); },
+		});
+		const submission = await root.submit({
+			type: "input",
+			content: [{ type: "text", text: "first" }, { type: "text", text: "second" }],
+		}, BACKGROUND_CONTEXT);
+		expect((await submission.wait(BACKGROUND_CONTEXT)).status).toBe("done");
+		await bus.drain(10_000, BACKGROUND_CONTEXT);
+		expect(events.map((event) => event.inputTexts)).toEqual([["firstsecond"]]);
+	});
+});
+
 describe("settle detection", () => {
 	test("a settled run emits one SettleGroup with entry + answer ids", async () => {
 		const { bus, root } = await bootBus({

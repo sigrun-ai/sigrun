@@ -19,7 +19,7 @@
  * server.test.ts).
  */
 
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterAll, describe, expect, test } from "vitest";
@@ -69,6 +69,9 @@ async function bootServer(
 		provider: "faux",
 		models: [{ id: "m", contextWindow: 128_000 }],
 	});
+	// The ordinary submission fixture is image-capable; the text-only
+	// capability fallback gets a separate explicit catalog below.
+	faux.provider.getModels = () => faux.models;
 	faux.setResponses([fauxAssistantMessage("ok")]);
 	const contributor: ProviderContributor = {
 		name: "ext-faux",
@@ -228,6 +231,137 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		expect(kinds).toContain("pi.assistant");
 	});
 
+	test("text-only submissions stay plain pi.user entries without data", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const response = await submit(app, root.id, "hello", undefined, 5000);
+		expect(response.statusCode).toBe(202);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		const user = view.entries.find((entry: { kind: string }) => entry.kind === "pi.user");
+		expect(user).toMatchObject({
+			kind: "pi.user",
+			model: [{ content: [{ type: "text", text: "hello" }] }],
+		});
+		expect(Object.hasOwn(user, "data")).toBe(false);
+	});
+
+	test("file and text parts place a sigrun.user entry carrying the inline attachment", async () => {
+		const { app, opened, workspace } = await bootServer();
+		await mkdir(join(workspace, "uploads", "7"), { recursive: true });
+		await writeFile(join(workspace, "uploads", "7", "a.md"), "attachment body");
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		const response = await submit(app, root.id, [
+			{ type: "file", path: "uploads/7/a.md", mime: "text/markdown" },
+			{ type: "text", text: "summarise" },
+		], undefined, 5000);
+		expect(response.statusCode).toBe(202);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		const user = view.entries.find((e: { kind: string }) => e.kind === "sigrun.user");
+		expect(user).toMatchObject({
+			kind: "sigrun.user",
+			data: {
+				attachments: [{
+					path: "uploads/7/a.md",
+					name: "a.md",
+					mime: "text/markdown",
+					bytes: 15,
+					delivery: "inline",
+					parts: [0],
+				}],
+			},
+			model: [{
+				role: "user",
+				content: [
+					{ type: "text", text: '<attachment path="uploads/7/a.md" type="text/markdown" size="15 B">\nattachment body\n</attachment>' },
+					{ type: "text", text: "summarise" },
+				],
+			}],
+		});
+	});
+
+	test("a conversation without a model delivers an image through the workspace", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" } },
+			BACKGROUND_CONTEXT,
+		);
+		expect((await root.agent(BACKGROUND_CONTEXT)).model).toBeUndefined();
+		const response = await submit(app, root.id, [
+			{ type: "image", path: "dot.png", mime: "image/png" },
+		]);
+		expect(response.statusCode).toBe(202);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		expect(view.entries[0]).toMatchObject({
+			kind: "sigrun.user",
+			data: { attachments: [{ path: "dot.png", delivery: "workspace", parts: [0] }] },
+			model: [{ content: [{ type: "text", text: expect.stringContaining('delivery="workspace"') }] }],
+		});
+	});
+
+	test("a served model with no input capability list is text-only", async () => {
+		const { app, opened } = await bootServer();
+		const catalog = fauxProvider({
+			provider: "faux-text",
+			models: [{ id: "m", contextWindow: 128_000 }],
+		});
+		catalog.setResponses([fauxAssistantMessage("ok")]);
+		catalog.provider.getModels = () => catalog.models.map(({ input: _input, ...model }) => model) as never;
+		(opened.models as typeof opened.models & {
+			setProvider: (provider: typeof catalog.provider) => void;
+		}).setProvider(catalog.provider);
+		const root = await opened.harness.createConversation({
+			ownership: { kind: "ownerless" },
+			agent: { model: { provider: "faux-text", modelId: "m" } },
+		}, BACKGROUND_CONTEXT);
+		const response = await submit(app, root.id, [
+			{ type: "image", path: "dot.png", mime: "image/png" },
+		]);
+		expect(response.statusCode).toBe(202);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		expect(view.entries[0]).toMatchObject({
+			kind: "sigrun.user",
+			data: { attachments: [{ path: "dot.png", delivery: "workspace", parts: [0] }] },
+			model: [{ content: [{ type: "text", text: expect.stringContaining('delivery="workspace"') }] }],
+		});
+	});
+
+	test("an image-capable model receives an image part and its attachment record", async () => {
+		const { app, opened } = await bootServer();
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		expect(opened.models.getModel("faux", "m")?.input).toEqual(["text", "image"]);
+		const response = await submit(app, root.id, [
+			{ type: "text", text: "look" },
+			{ type: "image", path: "dot.png", mime: "image/png" },
+		], undefined, 5000);
+		expect(response.statusCode).toBe(202);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		const user = view.entries.find((e: { kind: string }) => e.kind === "sigrun.user");
+		expect(user).toMatchObject({
+			data: { attachments: [{ path: "dot.png", delivery: "image", parts: [1, 2] }] },
+			model: [{ content: [
+				{ type: "text", text: "look" },
+				{ type: "text", text: expect.stringContaining('delivery="image"') },
+				{ type: "image", data: PNG_BASE64, mimeType: "image/png" },
+			] }],
+		});
+	});
+
 	test("text parts submit and reach the transcript verbatim", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
@@ -250,7 +384,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		]);
 	});
 
-	test("image parts use workspace notes until model image support is resolved", async () => {
+	test("image parts deliver image content to the image-capable default model", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
@@ -264,14 +398,15 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
 		const user = view.entries.find(
-			(e: { kind: string }) => e.kind === "pi.user",
+			(e: { kind: string }) => e.kind === "sigrun.user",
 		);
-		expect(user.model[0].content).toHaveLength(2);
-		expect(user.model[0].content[1].type).toBe("text");
-		expect(user.model[0].content[1].text).toContain('delivery="workspace"');
-		expect(user.model[0].content[1].text).toContain(
-			"The file is in your workspace.",
-		);
+		expect(user.model[0].content).toHaveLength(3);
+		expect(user.model[0].content[1].text).toContain('delivery="image"');
+		expect(user.model[0].content[2]).toEqual({
+			type: "image",
+			data: PNG_BASE64,
+			mimeType: "image/png",
+		});
 	});
 
 	test("image parts default the mime type from the extension", async () => {
@@ -287,10 +422,11 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
 		const user = view.entries.find(
-			(e: { kind: string }) => e.kind === "pi.user",
+			(e: { kind: string }) => e.kind === "sigrun.user",
 		);
 		expect(user.model[0].content[0].text).toContain('type="image/png"');
-		expect(user.model[0].content[0].text).toContain('delivery="workspace"');
+		expect(user.model[0].content[0].text).toContain('delivery="image"');
+		expect(user.model[0].content[1].mimeType).toBe("image/png");
 	});
 
 	test("file parts inline as text parts", async () => {
@@ -307,7 +443,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
 		const user = view.entries.find(
-			(e: { kind: string }) => e.kind === "pi.user",
+			(e: { kind: string }) => e.kind === "sigrun.user",
 		);
 		const texts = user.model[0].content.filter(
 			(part: { type: string }) => part.type === "text",
@@ -334,7 +470,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
 		const user = view.entries.find(
-			(e: { kind: string }) => e.kind === "pi.user",
+			(e: { kind: string }) => e.kind === "sigrun.user",
 		);
 		const texts = user.model[0].content.map((part: { text?: string; type?: string }) =>
 			part.type === "text" ? part.text : part.type,
@@ -364,7 +500,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
 		const user = view.entries.find(
-			(e: { kind: string }) => e.kind === "pi.user",
+			(e: { kind: string }) => e.kind === "sigrun.user",
 		);
 		const text = user.model[0].content[0].text;
 		expect(text).toContain("blob.bin");
@@ -780,10 +916,11 @@ describe("POST /v1/conversations/:id/uploads", () => {
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
 		const user = view.entries.find(
-			(e: { kind: string }) => e.kind === "pi.user",
+			(e: { kind: string }) => e.kind === "sigrun.user",
 		);
-		expect(user.model[0].content[0].text).toContain('delivery="workspace"');
-		expect(user.model[0].content[0].text).toContain("The file is in your workspace.");
+		expect(user.model[0].content[0].text).toContain('delivery="image"');
+		expect(user.model[0].content[1].type).toBe("image");
+		expect(user.model[0].content[1].mimeType).toBe("image/png");
 	});
 
 	test("rejects invalid bodies (name, base64) fail-loud", async () => {
@@ -1133,7 +1270,7 @@ describe("oversized file parts", () => {
 		const view = (
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
-		const user = view.entries.find((e: { kind: string }) => e.kind === "pi.user");
+		const user = view.entries.find((e: { kind: string }) => e.kind === "sigrun.user");
 		const texts = user.model[0].content.filter(
 			(p: { type: string }) => p.type === "text",
 		);
@@ -1162,7 +1299,7 @@ describe("oversized file parts", () => {
 		const view = (
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
-		const user = view.entries.find((e: { kind: string }) => e.kind === "pi.user");
+		const user = view.entries.find((e: { kind: string }) => e.kind === "sigrun.user");
 		const texts = user.model[0].content.filter(
 			(p: { type: string }) => p.type === "text",
 		);
@@ -1185,7 +1322,7 @@ describe("oversized file parts", () => {
 		const view = (
 			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
 		).json();
-		const user = view.entries.find((e: { kind: string }) => e.kind === "pi.user");
+		const user = view.entries.find((e: { kind: string }) => e.kind === "sigrun.user");
 		const texts = user.model[0].content.filter(
 			(p: { type: string }) => p.type === "text",
 		);

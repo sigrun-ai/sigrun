@@ -17,6 +17,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { copyJson } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
 import {
 	AgentDoc,
@@ -39,12 +40,14 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { JsonValue } from "@earendil-works/chord";
 import {
 	accessOf,
 	isSharing,
 	type AccessPrincipal,
 	type Sharing,
 } from "@sigrun/shared/access";
+import { USER_KIND } from "@sigrun/shared/turns";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
 import { ContextMarkEntry } from "../harness/context-marks.js";
@@ -636,9 +639,10 @@ export async function submitOp(
 	// immediately usable; still absent → the UnservedModelError carrying
 	// the catalog (the route maps it to 400 unserved_model).
 	const agent = await conversation.agent(BACKGROUND_CONTEXT);
-	if (agent.model !== undefined) {
-		await resolveServedModelRefreshing(opened.models, agent.model);
-	}
+	const servedModel =
+		agent.model === undefined
+			? undefined
+			: await resolveServedModelRefreshing(opened.models, agent.model);
 	// `waitMs` (§7.1) is the opt-in bounded settlement wait for scripts —
 	// a positive integer ≤ 60 000; anything else is a fail-loud client
 	// error BEFORE anything is admitted.
@@ -751,25 +755,31 @@ export async function submitOp(
 		BACKGROUND_CONTEXT,
 		{
 			maxInlineFileBytes: ctx.config.maxInlineFileBytes,
-			// Task 3 resolves this from the conversation's current model.
-			acceptsImages: false,
+			acceptsImages: servedModel?.input?.includes("image") === true,
 		},
 	);
 	const content = resolved.content;
+	const attachments = copyJson(resolved.attachments) as Extract<
+		JsonValue,
+		readonly unknown[]
+	>;
 	const entry: InputEntry | undefined =
 		opts.entry !== undefined
 			? opts.entry
-			: expansion.typed === undefined
-				? undefined
-				: {
+			: expansion.typed !== undefined
+				? {
 						kind: EXPANDED_ENTRY_KIND,
 						data: {
 							typed: expansion.typed,
 							...(expansion.command === undefined
 								? {}
 								: { command: expansion.command }),
+							...(attachments.length === 0 ? {} : { attachments }),
 						},
-					};
+					}
+				: attachments.length > 0
+					? { kind: USER_KIND, data: { attachments } }
+					: undefined;
 	const draft: InputSubmissionDraft = {
 		type: "input",
 		content,

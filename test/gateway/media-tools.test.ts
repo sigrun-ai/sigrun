@@ -81,7 +81,7 @@ async function entries(boot: GatewayBoot, conversationId: number): Promise<reado
 }
 
 describe("gateway media and agent tools e2e (Task 11)", () => {
-	test("an image attachment becomes a workspace note until model image support is resolved", { timeout: 60_000 }, async () => {
+	test("an image attachment reaches an image-capable model as image content", { timeout: 60_000 }, async () => {
 		const boot = await bootGateway({
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)), gatewaySettings: GATEWAY_SETTINGS });
@@ -100,18 +100,20 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 			expect(outcome).toEqual({ outcome: "admitted" });
 			const conversation = await gatewayConversation(boot);
 			await boot.waitFor(async () => (await entries(boot, conversation.id)).some((entry) =>
-				entry.kind === "pi.user" && entry.model?.some((message) =>
+				entry.kind === "sigrun.user" && entry.model?.some((message) =>
 					message.role === "user" && message.content.some((part) =>
-						part.text?.includes('delivery="workspace"') === true,
+						part.type === "image" && part.mimeType === "image/png",
 					),
 				),
 			));
-			const user = (await entries(boot, conversation.id)).find((entry) => entry.kind === "pi.user");
-			const note = user?.model?.flatMap((message) => message.content).find((part) =>
-				part.text?.includes('delivery="workspace"') === true,
-			);
-			expect(note?.text).toContain('type="image/png"');
-			expect(note?.text).toContain("The file is in your workspace.");
+			const user = (await entries(boot, conversation.id)).find((entry) => entry.kind === "sigrun.user");
+			const content = user?.model?.flatMap((message) => message.content) ?? [];
+			expect(content.find((part) => part.type === "image")).toMatchObject({
+				type: "image",
+				mimeType: "image/png",
+				data: "iVBO",
+			});
+			expect(content[0]?.text).toContain('delivery="image"');
 		} finally {
 			await boot.shutdown();
 		}
