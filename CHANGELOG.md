@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.1] - 2026-11-15
+
+> Tag note: the 0.19.0 tag was cut against an uncommitted tree (the release-guard rejected it); the release ships as 0.19.1 with identical content.
+
+### Added
+
+- Settings saves confirm inline: an accepted save shows "Saved" beside the
+  Save button; a rejected save shows an error alert directly above it.
+  Settings surfaces only — other surfaces keep their toasts.
+- Searchable dropdowns: choice fields rendered as a dropdown are now a
+  type-to-filter combobox (every typed term must appear in the option's
+  label or id), with keyboard navigation and the allow-other entry kept.
+- Three-level settings menu: My Settings / System Settings top groups with
+  General, Extensions and (system) Providers sub-groups; the core General
+  section is renamed Behaviour (its id stays `general`).
+- Provider pages: the model list moves to the end of the page, with a
+  Refresh button calling the provider refresh endpoint.
+- Per-user overrides for extension settings: extensions mark system-schema
+  properties `x-sigrun-overridable` (scalars and arrays); core derives the
+  user-facing override form with a "Use system setting" checkbox per field,
+  stores overrides in the extension's per-user file, and exposes
+  `DeclaredSettings.effective(user)` (the user wins where an override is
+  set and valid).
+- Job and tool pickers: the `x-sigrun-job`/`x-sigrun-tool` keywords draw
+  dropdowns bound to live rosters (jobs labelled by name and owner; tools
+  as calls see them), with stored ids the roster lacks kept selectable and
+  marked "(not available)".
+- Warden clearances per user: a job's effective clearances are the system
+  list's entries for it plus its owner's own entries; only the job owner's
+  own list is ever read, so another user's entry is inert.
+
+### Fixed
+
+- Blank optional values are unset at every field type, not just strings:
+  blank numbers, empty lists whose schema requires items (minItems >= 1)
+  and emptied objects no longer fail the save with type errors, and clear
+  a previously stored value.
+- Schema save errors name the form field and its label (dotted field name
+  matching what forms submit) instead of a JSON pointer no client could
+  match, so field errors render under the field.
+
 ## [0.18.1] - 2026-11-15
 
 ### Fixed
