@@ -132,12 +132,10 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 				value={multi ? selectedIds : selectedSingle}
 				placeholder={boundString(data, field.placeholder)}
 				disabled={props.disabled}
-				allowOtherLabel={allowOther ? field.allowOther?.label : undefined}
+				allowOtherLabel={allowOther ? field.allowOther?.label ?? "Type something" : undefined}
 				onChange={(val) => {
 					if (multi) {
-						const picked = Array.isArray(val) ? val.filter((v): v is string => typeof v === "string") : [];
-						const otherPart = other !== "" ? [{ other }] : [];
-						props.onChange(field.name, [...picked, ...otherPart]);
+						props.onChange(field.name, Array.isArray(val) ? val : []);
 					} else {
 						if (typeof val === "string") {
 							setSingle(val);

@@ -39,12 +39,13 @@ test("switching extension pages through the nav saves the new page's own values"
 	await expect(curatorPage.locator("[data-extension-part='user-settings']")).toBeVisible();
 	await expect(curatorPage.locator("[data-extension-part='settings']")).toHaveCount(0);
 	await expect(curatorPage.locator("[data-name='paused'] input")).not.toBeChecked();
-	const idleModel = curatorPage.locator("[data-name='idleModel'] select");
-	await expect(idleModel).toHaveValue("");
+	const idleModel = curatorPage.locator("[data-name='idleModel'] input[role='combobox']");
+	await expect(idleModel).toHaveValue("Use the default (faux/m)");
 	await curatorPage.locator("[data-name='paused'] input").check();
 	// Select the existing faux option; the allow-other text input remains
 	// empty, so the submitted field is a plain model id.
-	await idleModel.selectOption("faux/m");
+	await idleModel.fill("faux/m");
+	await curatorPage.getByRole("option", { name: "faux/m · ext-faux", exact: true }).click();
 	await curatorPage
 		.locator("[data-extension-part='user-settings']")
 		.getByRole("button", { name: "Save" })

@@ -275,9 +275,7 @@ describe("choice: combobox", () => {
 	}
 
 	function optionTexts(renderer: TestRenderer.ReactTestRenderer): string[] {
-		return renderer.root
-			.findAll((node) => node.type === "li" && node.props.role === "option")
-			.map((option) => instanceText(option));
+		return renderer.root.findAllByProps({ role: "option" }).map((option) => instanceText(option));
 	}
 
 	function keyDown(renderer: TestRenderer.ReactTestRenderer, key: string): void {
@@ -366,10 +364,142 @@ describe("choice: combobox", () => {
 		keyDown(renderer, "ArrowDown");
 		keyDown(renderer, "Enter");
 
+		const removeAlpha = renderer.root.findByProps({ "aria-label": "Remove Alpha" });
+		act(() => {
+			removeAlpha.props.onClick();
+		});
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" })).toHaveLength(1);
+
 		submit(renderer);
 		expect(dispatch).toHaveBeenCalledWith(
 			expect.objectContaining({ type: "submit" }),
-			{ rev: 0, values: { models: ["acme/a", "acme/b"] } },
+			{ rev: 0, values: { models: ["acme/b"] } },
+		);
+	});
+
+	test("single displays the selected label and offers the empty value", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+				placeholder: "Choose a model",
+			},
+		]);
+		expect(combobox(renderer).props.value).toBe("");
+		expect(combobox(renderer).props.placeholder).toBe("Choose a model");
+
+		typeText(renderer, "ollama flash");
+		keyDown(renderer, "Enter");
+		expect(combobox(renderer).props.value).toBe("GLM 5.3 Flash (Ollama Cloud)");
+
+		// Re-open without typing: the empty option restores the old clear path.
+		keyDown(renderer, "ArrowDown");
+		expect(optionTexts(renderer)[0]).toBe("Choose a model");
+		keyDown(renderer, "Enter");
+		expect(combobox(renderer).props.value).toBe("");
+		expect(combobox(renderer).props.placeholder).toBe("Choose a model");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { model: "" } },
+		);
+	});
+
+	test("allowOther multi appends {other} after the selected ids", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+				allowOther: {},
+			},
+		]);
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "custom/model");
+		const useOther = renderer.root.findAllByProps({ role: "option" }).find(
+			(node) => instanceText(node).includes("Use"),
+		);
+		expect(combobox(renderer).props.value).toBe("custom/model");
+		expect(combobox(renderer).props["aria-expanded"]).toBe(true);
+		expect(renderer.root.findAllByType("ul").length).toBeGreaterThan(0);
+		expect(optionTexts(renderer)).toContain("Use \"custom/model\"");
+		expect(useOther).toBeDefined();
+		act(() => {
+			useOther!.props.onClick();
+		});
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/a", { other: "custom/model" }] } },
+		);
+	});
+
+	test("typing resets the highlight and zero matches never poison Enter", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		]);
+		typeText(renderer, "glm");
+		keyDown(renderer, "ArrowDown");
+		expect(combobox(renderer).props["aria-activedescendant"]).toBe("blk-combobox-option-1");
+		typeText(renderer, "zzz");
+		expect(combobox(renderer).props["aria-activedescendant"]).toBeUndefined();
+		keyDown(renderer, "ArrowDown");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "PARETO");
+		expect(combobox(renderer).props["aria-activedescendant"]).toBe("blk-combobox-option-0");
+		keyDown(renderer, "Enter");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { model: "pareto/glm-5.3-flash" } },
+		);
+	});
+
+	test("multi picking an already selected option does not duplicate it", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+			},
+		]);
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" })).toHaveLength(1);
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/a"] } },
 		);
 	});
 
@@ -389,8 +519,8 @@ describe("choice: combobox", () => {
 		]);
 
 		typeText(renderer, "custom/model");
-		const useOption = renderer.root.findAll(
-			(node) => node.type === "li" && node.props.role === "option" && instanceText(node).includes("Use"),
+		const useOption = renderer.root.findAllByProps({ role: "option" }).filter(
+			(node) => instanceText(node).includes("Use"),
 		);
 		expect(useOption.length).toBe(1);
 		expect(instanceText(useOption[0]!)).toContain("custom/model");

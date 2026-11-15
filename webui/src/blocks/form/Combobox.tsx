@@ -25,7 +25,9 @@ export function Combobox(props: {
 	readonly placeholder?: string;
 	readonly disabled?: boolean;
 	readonly allowOtherLabel?: string;
-	readonly onChange: (value: string | readonly string[] | { other: string }) => void;
+	readonly onChange: (
+		value: string | readonly (string | { other: string })[] | { other: string },
+	) => void;
 }): ReactNode {
 	const { label, options, multi, value, placeholder, disabled, allowOtherLabel, onChange } = props;
 	const [text, setText] = useState("");
@@ -45,9 +47,10 @@ export function Combobox(props: {
 		return terms.every((term) => haystack.includes(term));
 	});
 
+	const showEmpty = !multi && text.trim() === "";
 	const showOther = allowOtherLabel !== undefined && text.trim() !== "" &&
 		!options.some((o) => o.label === text.trim() || o.id === text.trim());
-	const totalItems = filtered.length + (showOther ? 1 : 0);
+	const totalItems = filtered.length + (showEmpty ? 1 : 0) + (showOther ? 1 : 0);
 
 	function openMenu(): void {
 		setHighlight(0);
@@ -56,23 +59,26 @@ export function Combobox(props: {
 
 	function pickOption(id: string): void {
 		if (multi) {
-			onChange([...selectedIds, id]);
+			if (!selectedIds.includes(id)) onChange([...selectedIds, id]);
 		} else {
 			onChange(id);
 			setOpen(false);
 		}
 		setText("");
+		setHighlight(0);
+		if (multi) setOpen(true);
 	}
 
 	function pickOther(): void {
 		const trimmed = text.trim();
 		if (multi) {
-			onChange([...selectedIds, { other: trimmed }] as readonly string[]);
+			onChange([...selectedIds, { other: trimmed }]);
 		} else {
 			onChange({ other: trimmed });
 			setOpen(false);
 		}
 		setText("");
+		setHighlight(0);
 	}
 
 	function removeChip(id: string): void {
@@ -99,19 +105,24 @@ export function Combobox(props: {
 				break;
 			case "ArrowDown":
 				event.preventDefault();
-				setHighlight((h) => (h + 1) % totalItems);
+				setHighlight((h) => totalItems === 0 ? 0 : (h + 1) % totalItems);
 				break;
 			case "ArrowUp":
 				event.preventDefault();
-				setHighlight((h) => (h - 1 + totalItems) % totalItems);
+				setHighlight((h) => totalItems === 0 ? 0 : (h - 1 + totalItems) % totalItems);
 				break;
 			case "Enter":
 				event.preventDefault();
-				if (highlight < filtered.length) {
-					const opt = filtered[highlight];
-					if (opt !== undefined) pickOption(opt.id);
-				} else if (showOther) {
-					pickOther();
+				if (showEmpty && highlight === 0) {
+					pickOption("");
+				} else {
+					const optionIndex = highlight - (showEmpty ? 1 : 0);
+					const opt = filtered[optionIndex];
+					if (opt !== undefined) {
+						pickOption(opt.id);
+					} else if (showOther) {
+						pickOther();
+					}
 				}
 				break;
 			case "Tab":
@@ -121,6 +132,11 @@ export function Combobox(props: {
 				break;
 		}
 	}
+
+	const selectedLabel = !multi && typeof value === "string"
+		? options.find((option) => option.id === value)?.label ?? value
+		: "";
+	const inputValue = text === "" && !open ? selectedLabel : text;
 
 	return (
 		<div className="blk-combobox" ref={rootRef}>
@@ -155,38 +171,55 @@ export function Combobox(props: {
 				aria-activedescendant={
 					open && totalItems > 0 ? `blk-combobox-option-${highlight}` : undefined
 				}
-				placeholder={placeholder ?? ""}
-				value={text}
+				placeholder={selectedLabel === "" ? placeholder ?? "" : ""}
+				value={inputValue}
 				disabled={disabled}
 				onChange={(event) => {
 					setText(event.target.value);
+					setHighlight(0);
 					if (!open) openMenu();
 				}}
 				onFocus={() => {
+					if (!open && text === "") setText(selectedLabel);
 					if (!open) openMenu();
 				}}
 				onKeyDown={onKeyDown}
 			/>
 			{open && totalItems > 0 && (
 				<ul className="blk-combobox-menu" role="listbox" aria-label={label}>
-					{filtered.map((option, index) => (
+					{showEmpty && (
 						<li
-							key={option.id}
-							id={`blk-combobox-option-${index}`}
+							id="blk-combobox-option-0"
 							role="option"
-							aria-selected={selectedIds.includes(option.id)}
-							data-highlighted={index === highlight || undefined}
+							aria-selected={selectedLabel === ""}
+							data-highlighted={highlight === 0 || undefined}
 							onMouseDown={(event) => event.preventDefault()}
-							onClick={() => pickOption(option.id)}
+							onClick={() => pickOption("")}
 						>
-							{option.label}
+							{placeholder ?? ""}
 						</li>
-					))}
+					)}
+					{filtered.map((option, index) => {
+						const optionIndex = index + (showEmpty ? 1 : 0);
+						return (
+							<li
+								key={option.id}
+								id={`blk-combobox-option-${optionIndex}`}
+								role="option"
+								aria-selected={selectedIds.includes(option.id)}
+								data-highlighted={optionIndex === highlight || undefined}
+								onMouseDown={(event) => event.preventDefault()}
+								onClick={() => pickOption(option.id)}
+							>
+								{option.label}
+							</li>
+						);
+					})}
 					{showOther && (
 						<li
-							id={`blk-combobox-option-${filtered.length}`}
+							id={`blk-combobox-option-${totalItems - 1}`}
 							role="option"
-							data-highlighted={highlight === filtered.length || undefined}
+							data-highlighted={highlight === totalItems - 1 || undefined}
 							onMouseDown={(event) => event.preventDefault()}
 							onClick={() => pickOther()}
 						>
