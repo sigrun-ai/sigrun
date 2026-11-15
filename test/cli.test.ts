@@ -40,6 +40,19 @@ async function tmpConfigDir(): Promise<string> {
 	return dir;
 }
 
+/**
+ * A hermetic env for the CLI entrypoints that resolve a config dir: an
+ * explicit temp dir, so `loadTuiFile` never falls through to the
+ * developer's REAL `~/.config/sigrun/tui.json`. Passing `{}` made these
+ * tests read the workstation's live file — and, in a failure diff, print
+ * its token.
+ */
+async function isolatedEnv(
+	extra: Record<string, string> = {},
+): Promise<Record<string, string>> {
+	return { SIGRUN_CONFIG_DIR: await tmpConfigDir(), ...extra };
+}
+
 describe("parsePort (D1)", () => {
 	test("absent/empty → undefined (the localhost default applies)", () => {
 		expect(parsePort(undefined)).toBeUndefined();
@@ -127,7 +140,14 @@ describe("parseArgs", () => {
 
 describe("loadTuiFile", () => {
 	test("absent config dir → empty file", async () => {
-		expect(await loadTuiFile({})).toEqual({});
+		// Hermetic: an explicit dir that does not exist. A bare `{}` would
+		// fall through to the developer's ~/.config/sigrun and assert against
+		// their live tui.json (printing its token when it fails).
+		expect(
+			await loadTuiFile({
+				SIGRUN_CONFIG_DIR: join(await tmpConfigDir(), "absent"),
+			}),
+		).toEqual({});
 	});
 
 	test("absent tui.json → empty file", async () => {
@@ -399,7 +419,11 @@ describe("cliMain run", () => {
 
 	test("an empty SIGRUN_USER means the user is unset", async () => {
 		const { deps, calls } = stubDeps();
-		const code = await cliMain(["attach"], { SIGRUN_USER: "" }, deps);
+		const code = await cliMain(
+			["attach"],
+			await isolatedEnv({ SIGRUN_USER: "" }),
+			deps,
+		);
 		expect(code).toBe(0);
 		expect(calls.launchTui).toEqual([
 			{ baseUrl: "http://localhost:3000", user: undefined },
@@ -423,7 +447,7 @@ describe("cliMain attach", () => {
 		const { deps, calls } = stubDeps();
 		const code = await cliMain(
 			["attach", "--server", "https://sigrun.example", "--user", "acme-user"],
-			{},
+			await isolatedEnv(),
 			deps,
 		);
 		expect(code).toBe(0);
@@ -436,7 +460,7 @@ describe("cliMain attach", () => {
 
 	test("bare attach defaults to localhost on SIGRUN_PORT (3000 default)", async () => {
 		const { deps, calls } = stubDeps();
-		await cliMain(["attach"], {}, deps);
+		await cliMain(["attach"], await isolatedEnv(), deps);
 		expect(calls.launchTui).toEqual([
 			{ baseUrl: "http://localhost:3000", user: undefined },
 		]);
@@ -444,13 +468,21 @@ describe("cliMain attach", () => {
 
 	test("SIGRUN_PORT shapes the attach default", async () => {
 		const { deps, calls } = stubDeps();
-		await cliMain(["attach"], { SIGRUN_PORT: "4444" }, deps);
+		await cliMain(
+			["attach"],
+			await isolatedEnv({ SIGRUN_PORT: "4444" }),
+			deps,
+		);
 		expect(calls.launchTui[0]?.baseUrl).toBe("http://localhost:4444");
 	});
 
 	test("an invalid SIGRUN_PORT fails loud (exit 1), naming the variable", async () => {
 		const { deps, calls } = stubDeps();
-		const code = await cliMain(["attach"], { SIGRUN_PORT: "abc" }, deps);
+		const code = await cliMain(
+			["attach"],
+			await isolatedEnv({ SIGRUN_PORT: "abc" }),
+			deps,
+		);
 		expect(code).toBe(1);
 		expect(calls.launchTui).toEqual([]);
 	});
