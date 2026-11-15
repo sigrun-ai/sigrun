@@ -19,6 +19,7 @@ import { syncLongtextHeight } from "./longtextHeight";
 function harness(
 	children: FormBlock["children"],
 	data: JsonObject,
+	opts: { readonly access?: "read" | "write" } = {},
 ): {
 	dispatch: ReturnType<typeof vi.fn>;
 	renderer: TestRenderer.ReactTestRenderer;
@@ -41,7 +42,7 @@ function harness(
 				{
 					value: {
 						dispatch,
-						access: "write" as const,
+						access: opts.access ?? ("write" as const),
 						viewState: {},
 						serverErrors: {},
 						submitStatus: undefined,
@@ -477,5 +478,19 @@ describe("use system setting (per-user overrides)", () => {
 			rev: 0,
 			values: { enabled: false },
 		});
+	});
+
+	test("a read-only surface disables the inherit checkbox along with the control", () => {
+		const { renderer } = harness(
+			[enabled as never],
+			{
+				f: {},
+				systemValues: { enabled: "On" },
+				systemValuesRaw: { enabled: true },
+			},
+			{ access: "read" },
+		);
+		expect(inheritCheckbox(renderer).props.disabled).toBe(true);
+		expect(renderer.root.findByProps({ "aria-label": "Enabled" }).props.disabled).toBe(true);
 	});
 });

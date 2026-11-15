@@ -894,4 +894,50 @@ describe("use system setting (per-user overrides)", () => {
 			rev: 0,
 		});
 	});
+
+	test("an inherit list's first edit seeds a copy of the system entries and typing preserves them", () => {
+		const block: FormBlock = {
+			type: "form",
+			bind: "/prefs",
+			mode: "submit",
+			onSubmit: "save",
+			submitLabel: "Save",
+			children: [
+				{ type: "text", name: "nick", label: "Nickname" },
+				{
+					type: "list",
+					name: "tools",
+					label: "Tools",
+					item: { type: "text", name: "tool", label: "Tool" },
+					inherit: {
+						system: { $: "/systemValues/tools" },
+						raw: { $: "/systemValuesRaw/tools" },
+					},
+				},
+			],
+		};
+		const { ctx, captured } = makeCtx({
+			prefs: { nick: "acme" },
+			systemValues: { tools: "one, two" },
+			systemValuesRaw: { tools: ["one", "two"] },
+		});
+		const form = formOf(block, ctx);
+		expect(form.values.tools).toBeNull();
+		form.focusName("tools");
+		// Typing goes into the focused entry's text buffer, then changes
+		// the list's entry value. The seed from raw must NOT wipe the
+		// existing system entries.
+		form.handleInput("X"); // edit the first entry
+		expect(form.values.tools).toEqual(["oneX", "two"]);
+		// Adding still preserves the system entries plus the new one.
+		form.handleInput("a");
+		expect(form.values.tools).toEqual(["oneX", "two", ""]);
+		form.focusSubmit();
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.payload).toEqual({
+			values: { nick: "acme", tools: ["oneX", "two", ""] },
+			rev: 0,
+		});
+	});
 });

@@ -269,6 +269,7 @@ function InheritRow(props: FieldProps): ReactNode {
 					type="checkbox"
 					className="blk-field-inherit"
 					checked={checked}
+					disabled={props.disabled}
 					onChange={(event) => toggle(event.target.checked)}
 				/>{" "}
 				Use system setting ({system})

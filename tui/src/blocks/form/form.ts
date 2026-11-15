@@ -820,10 +820,9 @@ export class FormComponent implements Component {
 
 	/** Route input to the focused field's editor. */
 	#inputField(field: Field, data: string): void {
-		const value = this.#values[field.name];
 		// First edit of an untouched inherit field: seed from the raw
 		// system value. A toggle inverts it (false when absent).
-		if (field.inherit !== undefined && value === null) {
+		if (field.inherit !== undefined && this.#values[field.name] === null) {
 			const raw = resolvePointer(this.#ctx.data, field.inherit.raw.$) as JsonValue | undefined;
 			switch (field.type) {
 				case "toggle":
@@ -842,6 +841,10 @@ export class FormComponent implements Component {
 					break;
 			}
 		}
+		// Re-read AFTER the inherit seed: the type switch must act on the
+		// seeded copy, not the pre-seed null — else list/entries throw the
+		// copied system entries away on the first keypress.
+		const value = this.#values[field.name];
 		switch (field.type) {
 			case "toggle":
 				if (data === "\r" || data === " ") this.#change(field.name, value !== true);
