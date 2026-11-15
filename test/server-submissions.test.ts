@@ -250,7 +250,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		]);
 	});
 
-	test("image parts inline as base64 ImageContent", async () => {
+	test("image parts use workspace notes until model image support is resolved", async () => {
 		const { app, opened } = await bootServer();
 		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
@@ -266,14 +266,12 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		const user = view.entries.find(
 			(e: { kind: string }) => e.kind === "pi.user",
 		);
-		const image = user.model[0].content.find(
-			(part: { type: string }) => part.type === "image",
+		expect(user.model[0].content).toHaveLength(2);
+		expect(user.model[0].content[1].type).toBe("text");
+		expect(user.model[0].content[1].text).toContain('delivery="workspace"');
+		expect(user.model[0].content[1].text).toContain(
+			"The file is in your workspace.",
 		);
-		expect(image).toEqual({
-			type: "image",
-			data: PNG_BASE64,
-			mimeType: "image/png",
-		});
 	});
 
 	test("image parts default the mime type from the extension", async () => {
@@ -291,7 +289,8 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		const user = view.entries.find(
 			(e: { kind: string }) => e.kind === "pi.user",
 		);
-		expect(user.model[0].content[0].mimeType).toBe("image/png");
+		expect(user.model[0].content[0].text).toContain('type="image/png"');
+		expect(user.model[0].content[0].text).toContain('delivery="workspace"');
 	});
 
 	test("file parts inline as text parts", async () => {
@@ -313,10 +312,11 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		const texts = user.model[0].content.filter(
 			(part: { type: string }) => part.type === "text",
 		);
-		expect(texts).toEqual([
-			{ type: "text", text: "read this" },
-			{ type: "text", text: "workspace notes" },
-		]);
+		expect(texts[0]).toEqual({ type: "text", text: "read this" });
+		expect(texts[1].text).toBe(
+			'<attachment path="notes.txt" type="text/plain" size="15 B">\n' +
+				"workspace notes\n</attachment>",
+		);
 	});
 
 	test("a missing path yields an explicit error part, never a silent drop", async () => {
@@ -347,7 +347,7 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		expect(texts[2]).toContain("not_found");
 	});
 
-	test("a non-UTF8 file part becomes an explicit error part", async () => {
+	test("a non-UTF8 file part becomes a workspace note", async () => {
 		const { app, opened, workspace } = await bootServer();
 		await writeFile(
 			join(workspace, "blob.bin"),
@@ -368,7 +368,9 @@ describe("POST /v1/conversations/:id/submissions", () => {
 		);
 		const text = user.model[0].content[0].text;
 		expect(text).toContain("blob.bin");
-		expect(text).toContain("invalid_utf8");
+		expect(text).toContain('delivery="workspace"');
+		expect(text).toContain("The file is in your workspace.");
+		expect(text).not.toContain("invalid_utf8");
 	});
 
 	test("requestId makes a duplicate submit return the same submission", async () => {
@@ -780,7 +782,8 @@ describe("POST /v1/conversations/:id/uploads", () => {
 		const user = view.entries.find(
 			(e: { kind: string }) => e.kind === "pi.user",
 		);
-		expect(user.model[0].content[0].data).toBe(PNG_BASE64);
+		expect(user.model[0].content[0].text).toContain('delivery="workspace"');
+		expect(user.model[0].content[0].text).toContain("The file is in your workspace.");
 	});
 
 	test("rejects invalid bodies (name, base64) fail-loud", async () => {
@@ -1096,7 +1099,7 @@ describe("POST /v1/conversations/:id/compact", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Oversized file parts: inline a head + pointer, never the whole body
+// Oversized file parts: a workspace note, never the whole body
 // ---------------------------------------------------------------------------
 
 /**
@@ -1104,17 +1107,17 @@ describe("POST /v1/conversations/:id/compact", () => {
  * entry reached 6.5 MB (~1.6M tokens — past every catalog model's window)
  * and every consumer that re-read the record paid for it at boot. The cap
  * keeps the model's reach intact — the file already sits in the workspace
- * at the path the part names — and inlines only a head plus a pointer.
+ * at the path the part names — and sends only a workspace note.
  */
 describe("oversized file parts", () => {
-	/** The distinct head/pointer shape the cap emits. */
-	function cappedText(texts: { type: string; text?: string }[]): string {
-		const marker = texts.find((t) => t.text?.includes("[attached file truncated:"));
+	/** The distinct workspace-note shape the cap emits. */
+	function workspaceNote(texts: { type: string; text?: string }[]): string {
+		const marker = texts.find((t) => t.text?.includes('delivery="workspace"'));
 		expect(marker).toBeDefined();
 		return marker!.text!;
 	}
 
-	test("an over-cap file part inlines a head + workspace pointer, not the body", async () => {
+	test("an over-cap file part sends a workspace note, not the body", async () => {
 		const { app, opened, workspace } = await bootServer({ SIGRUN_MAX_INLINE_FILE_BYTES: "1024" });
 		const big = "x".repeat(50_000);
 		await writeFile(join(workspace, "big.html"), big, "utf8");
@@ -1134,17 +1137,17 @@ describe("oversized file parts", () => {
 		const texts = user.model[0].content.filter(
 			(p: { type: string }) => p.type === "text",
 		);
-		const capped = cappedText(texts);
+		const note = workspaceNote(texts);
 		// The body is NOT inlined: the entry stays small.
-		expect(capped.length).toBeLessThan(2_000);
-		expect(capped).not.toContain(big);
-		// The head is real content (the model still sees the start).
-		expect(capped.startsWith("x")).toBe(true);
-		// The pointer names the workspace path and the real size (formatted).
-		expect(capped).toContain("big.html");
-		expect(capped).toContain("48.8 KB");
+		expect(note.length).toBeLessThan(2_000);
+		expect(note).not.toContain(big);
+		// The note names the workspace path and the real size (formatted).
+		expect(note).toContain(
+			'<attachment path="big.html" type="text/html" size="48.8 KB" delivery="workspace"/>',
+		);
+		expect(note).toContain("The file is in your workspace.");
 		// And it tells the model what to do next.
-		expect(capped).toMatch(/read|grep|codemode/i);
+		expect(note).toContain("`read` (with offset/limit), `grep`, `bash`, or codemode");
 	});
 
 	test("an under-cap file part still inlines verbatim (no regression)", async () => {
@@ -1163,10 +1166,11 @@ describe("oversized file parts", () => {
 		const texts = user.model[0].content.filter(
 			(p: { type: string }) => p.type === "text",
 		);
-		expect(texts).toEqual([
-			{ type: "text", text: "read this" },
-			{ type: "text", text: "workspace notes" },
-		]);
+		expect(texts[0]).toEqual({ type: "text", text: "read this" });
+		expect(texts[1].text).toBe(
+			'<attachment path="notes.txt" type="text/plain" size="15 B">\n' +
+				"workspace notes\n</attachment>",
+		);
 	});
 
 	test("the default cap is 50 KiB (no env) and is file-configurable", async () => {
@@ -1185,8 +1189,10 @@ describe("oversized file parts", () => {
 		const texts = user.model[0].content.filter(
 			(p: { type: string }) => p.type === "text",
 		);
-		const capped = cappedText(texts);
-		expect(capped).toContain("over.txt");
-		expect(capped.length).toBeLessThan(60 * 1024);
+		const note = workspaceNote(texts);
+		expect(note).toContain(
+			'<attachment path="over.txt" type="text/plain" size="60.0 KB" delivery="workspace"/>',
+		);
+		expect(note.length).toBeLessThan(60 * 1024);
 	});
 });

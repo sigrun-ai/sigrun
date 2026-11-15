@@ -81,7 +81,7 @@ async function entries(boot: GatewayBoot, conversationId: number): Promise<reado
 }
 
 describe("gateway media and agent tools e2e (Task 11)", () => {
-	test("an image attachment becomes an image part on the submitted entry", { timeout: 60_000 }, async () => {
+	test("an image attachment becomes a workspace note until model image support is resolved", { timeout: 60_000 }, async () => {
 		const boot = await bootGateway({
 		isolationProbe: async () => ({ available: true, abi: 6 }),
 		sandboxLauncher: testLauncher(resolveWorkerEntry(selfPackageRoot()!)), gatewaySettings: GATEWAY_SETTINGS });
@@ -101,13 +101,17 @@ describe("gateway media and agent tools e2e (Task 11)", () => {
 			const conversation = await gatewayConversation(boot);
 			await boot.waitFor(async () => (await entries(boot, conversation.id)).some((entry) =>
 				entry.kind === "pi.user" && entry.model?.some((message) =>
-					message.role === "user" && message.content.some((part) => part.type === "image"),
+					message.role === "user" && message.content.some((part) =>
+						part.text?.includes('delivery="workspace"') === true,
+					),
 				),
 			));
 			const user = (await entries(boot, conversation.id)).find((entry) => entry.kind === "pi.user");
-			const image = user?.model?.flatMap((message) => message.content).find((part) => part.type === "image");
-			expect(image?.mimeType).toBe("image/png");
-			expect(image?.data).toBe(Buffer.from([137, 80, 78]).toString("base64"));
+			const note = user?.model?.flatMap((message) => message.content).find((part) =>
+				part.text?.includes('delivery="workspace"') === true,
+			);
+			expect(note?.text).toContain('type="image/png"');
+			expect(note?.text).toContain("The file is in your workspace.");
 		} finally {
 			await boot.shutdown();
 		}

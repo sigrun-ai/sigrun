@@ -745,12 +745,17 @@ export async function submitOp(
 			);
 		}
 	}
-	const content = await resolvePartsLazy(
+	const resolved = await resolvePartsLazy(
 		expansion.parts,
 		envThunk(),
 		BACKGROUND_CONTEXT,
-		ctx.config.maxInlineFileBytes,
+		{
+			maxInlineFileBytes: ctx.config.maxInlineFileBytes,
+			// Task 3 resolves this from the conversation's current model.
+			acceptsImages: false,
+		},
 	);
+	const content = resolved.content;
 	const entry: InputEntry | undefined =
 		opts.entry !== undefined
 			? opts.entry

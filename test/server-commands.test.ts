@@ -390,7 +390,10 @@ describe("expansion at admission (POST .../submissions)", () => {
 		const user = view.entries.find((entry) => entry.kind === "sigrun.user.expanded");
 		const content = user?.model?.[0]?.content ?? [];
 		expect(content[0]).toEqual({ type: "text", text: "Review with focus: api" });
-		// The image part is untouched, in place.
-		expect(content[1]?.type).toBe("image");
+		// Until Task 3 resolves model support, the image stays in place as a
+		// workspace note rather than an ImageContent block.
+		expect(content[1]?.type).toBe("text");
+		expect(content[1]?.text).toContain('delivery="workspace"');
+		expect(content[1]?.text).toContain("The file is in your workspace.");
 	});
 });
