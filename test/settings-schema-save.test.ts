@@ -237,6 +237,23 @@ describe("extension user overrides", () => {
 		expect(JSON.stringify(data)).not.toContain("https://server-deep-item-env.example.invalid");
 	});
 
+	test("personal surfaces never expose env values through override item $refs", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			env: {
+				ACME_OVERRIDE_REF_ITEM_URL: "https://server-ref-item-env.example.invalid",
+				ACME_OVERRIDE_REF_DEEP_ITEM_URL: "https://server-ref-deep-item-env.example.invalid",
+			},
+		});
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		const data = result.body.data as Record<string, Record<string, unknown>>;
+		expect(Object.hasOwn(data.envFallbacks!, "referencedItemEndpoint")).toBe(false);
+		expect(Object.hasOwn(data.envFallbacks!, "item")).toBe(false);
+		expect(JSON.stringify(data)).not.toContain("https://server-ref-item-env.example.invalid");
+		expect(JSON.stringify(data)).not.toContain("https://server-ref-deep-item-env.example.invalid");
+	});
+
 	test("boolean display values are On and Off", async () => {
 		const rig = await boot({ specifier: OVERRIDES });
 		const result = await call(rig, "GET", OVERRIDES_SURFACE);

@@ -9,7 +9,24 @@ export default function fixture(host) {
 	declared = host.settings.declare({
 		schema: {
 			type: "object",
-			$defs: { Endpoint: { type: "string", minLength: 3 } },
+			$defs: {
+				Endpoint: { type: "string", minLength: 3 },
+				Row: {
+					type: "object",
+					properties: {
+						referencedItemEndpoint: {
+							type: "string",
+							default: "https://system.example.invalid",
+							"x-sigrun-env": "ACME_OVERRIDE_REF_ITEM_URL",
+						},
+						nested: {
+							type: "array",
+							items: { $ref: "#/$defs/NestedItem" },
+						},
+					},
+				},
+				NestedItem: { type: "string", "x-sigrun-env": "ACME_OVERRIDE_REF_DEEP_ITEM_URL" },
+			},
 			properties: {
 				endpoint: { type: "string", default: "https://system.example.invalid", "x-sigrun-overridable": true },
 				tools: { type: "array", items: { type: "string" }, default: ["system"], "x-sigrun-overridable": true },
@@ -35,6 +52,11 @@ export default function fixture(host) {
 							},
 						},
 					},
+					"x-sigrun-overridable": true,
+				},
+				referencedDestinations: {
+					type: "array",
+					items: { $ref: "#/$defs/Row" },
 					"x-sigrun-overridable": true,
 				},
 				group: {

@@ -101,16 +101,21 @@ function stripEnv(node: JsonSchema): JsonSchema {
 	};
 }
 
-/** Merge definition bags; a personal definition wins a name collision. */
+/** Merge definition bags; system wins a name collision. Personal schemas
+ * cannot declare env metadata, so stripping the merged bag closes $ref leaks
+ * without changing personal references. */
 function mergeDefinitions(
 	personal: unknown,
 	system: unknown,
 ): Record<string, unknown> | undefined {
 	if (!isRecord(personal) && !isRecord(system)) return undefined;
-	return {
+	const merged = {
 		...(isRecord(personal) ? personal : {}),
 		...(isRecord(system) ? system : {}),
 	};
+	return Object.fromEntries(Object.entries(merged).map(([name, definition]) =>
+		isRecord(definition) ? [name, stripEnv(definition)] : [name, definition]
+	));
 }
 
 /** TypeBox's detached-leaf context resolves local refs by pointer key. */
