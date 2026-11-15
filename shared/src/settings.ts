@@ -95,6 +95,11 @@ export interface ServerSettings {
 	 */
 	readonly maxFileReadBytes?: number;
 	/**
+	 * `SIGRUN_SQLITE_HEAP_LIMIT_BYTES` — a positive integer. The host applies
+	 * this process-wide SQLite `hard_heap_limit` once at boot. Default 256 MiB.
+	 */
+	readonly sqliteHeapLimitBytes?: number;
+	/**
 	 * `SIGRUN_MAX_INLINE_FILE_BYTES` — a positive integer. A `{type:"file"}`
 	 * submission part larger than this inlines a head plus a workspace
 	 * pointer instead of its body, and an oversized tool result's `details`

@@ -70,7 +70,7 @@ import { seededIdentity } from "./helpers/identity.js";
  * `notifications.runSettled`, `builtinExtensions.{codemode,mcp,
  * toolSearch,oauth,curator}`, `autoEnableCodemode`, and the `server.*` leaves: `port`,
  * `workspacePath`, `storagePath`, `extensionsDir`, `maxUploadBytes`,
- * `maxFileReadBytes`, `dataDir`, `cacheDir`, `stateDir`, `publicUrl`,
+ * `maxFileReadBytes`, `sqliteHeapLimitBytes`, `dataDir`, `cacheDir`, `stateDir`, `publicUrl`,
  * `webui.{enabled,bundle}`, `webuiBundle`, `timezone`,
  * `compaction.{enabled,reserveTokens,keepRecentTokens,backgroundTokens}`,
  * `memorySeam.{hookDeadlineMs,idleThresholdMs,workerDeadlineMs,queueMax}`,
@@ -120,6 +120,7 @@ const EXPECTED_KEYS = [
 	"server.extensionsDir",
 	"server.maxUploadBytes",
 	"server.maxFileReadBytes",
+	"server.sqliteHeapLimitBytes",
 	"server.dataDir",
 	"server.cacheDir",
 	"server.stateDir",
@@ -320,6 +321,7 @@ describe("the core settings registry (spec §13.1)", () => {
 				"builtinExtensions.curator",
 				"server.maxUploadBytes",
 				"server.maxFileReadBytes",
+				"server.sqliteHeapLimitBytes",
 				"server.publicUrl",
 				"server.timezone",
 				"server.compaction.enabled",
@@ -482,6 +484,22 @@ describe("PATCH /v1/settings: applied, pending, pendingRestart", () => {
 			"server.embeddings.timeoutMs",
 		]);
 		expect(body.pending).toEqual([]);
+	});
+
+	test("server.sqliteHeapLimitBytes validates and applies at restart", async () => {
+		const { app } = await bootServer();
+		const response = await patch(app, {
+			server: { sqliteHeapLimitBytes: 1048576 },
+		});
+		expect(response.statusCode).toBe(200);
+		expect(response.json()).toMatchObject({
+			applied: [],
+			pending: ["server.sqliteHeapLimitBytes"],
+			pendingRestart: ["server.sqliteHeapLimitBytes"],
+		});
+		expect(
+			(await patch(app, { server: { sqliteHeapLimitBytes: 0 } })).statusCode,
+		).toBe(400);
 	});
 
 	test("a mixed live+restart PATCH reports which is which (Review Focus 1)", async () => {

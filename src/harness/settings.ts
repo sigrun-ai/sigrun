@@ -651,6 +651,7 @@ function validateServer(server: unknown): void {
 		"extensionsDir",
 		"maxUploadBytes",
 		"maxFileReadBytes",
+		"sqliteHeapLimitBytes",
 		"dataDir",
 		"cacheDir",
 		"stateDir",
@@ -707,6 +708,16 @@ function validateServer(server: unknown): void {
 	) {
 		throw new SettingsValidationError(
 			"server.maxFileReadBytes",
+			"must be a positive integer",
+		);
+	}
+	// The process-wide SQLite heap limit is applied once by the host at boot.
+	if (
+		record.sqliteHeapLimitBytes !== undefined &&
+		!isPositiveInt(record.sqliteHeapLimitBytes)
+	) {
+		throw new SettingsValidationError(
+			"server.sqliteHeapLimitBytes",
 			"must be a positive integer",
 		);
 	}

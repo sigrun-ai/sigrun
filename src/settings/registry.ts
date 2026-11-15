@@ -260,6 +260,11 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "the files/raw cap reads the boot-resolved config value per request",
 	},
 	{
+		key: "server.sqliteHeapLimitBytes",
+		section: "server",
+		reason: "a process-wide SQLite pragma applied once at boot",
+	},
+	{
 		key: "server.dataDir",
 		section: "server",
 		reason: "boot-resolved store root (resolveStoreRoots folds it once)",

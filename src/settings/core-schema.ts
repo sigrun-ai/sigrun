@@ -15,6 +15,7 @@ import {
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
 	DEFAULT_PROVIDER_REFRESH_MINUTES,
+	DEFAULT_SQLITE_HEAP_LIMIT_BYTES,
 	DEFAULT_WEBUI_BUNDLE,
 } from "../config.js";
 import { DEFAULT_JOB_MAX_TURNS } from "../jobs/fire.js";
@@ -244,6 +245,11 @@ export const coreSchema: JsonSchema = {
 			extensionsDir: string("Extensions directory", "Deprecated boot-resolved extension root"),
 			maxUploadBytes: number("Maximum upload bytes", "Raw upload request body limit", DEFAULT_MAX_UPLOAD_BYTES),
 			maxFileReadBytes: number("Maximum file-read bytes", "Raw file-read response cap", DEFAULT_MAX_FILE_READ_BYTES),
+			sqliteHeapLimitBytes: number(
+				"SQLite heap-limit bytes",
+				"Process-wide SQLite hard_heap_limit, applied once at boot",
+				DEFAULT_SQLITE_HEAP_LIMIT_BYTES,
+			),
 			dataDir: string("Data directory", "Boot-resolved durable data root"),
 			cacheDir: string("Cache directory", "Boot-resolved cache root"),
 			stateDir: string("State directory", "Boot-resolved state root"),

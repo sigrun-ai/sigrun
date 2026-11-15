@@ -3198,6 +3198,11 @@ installed package — install only extensions you trust. One user's agent can
 still exhaust CPU, memory, or disk. Outbound network is not restricted.
 macOS and Windows hosts run single-user only.
 
+**SQLite's heap limit is host-owned.** Sigrun applies `hard_heap_limit`
+once at boot (`server.sqliteHeapLimitBytes`, default 256 MiB). It is
+process-wide: extensions must not set or reset `hard_heap_limit`, including
+on their own SQLite connections.
+
 **Shared MCP servers** hand every permitted user's agent the admin's
 credential for that service.
 

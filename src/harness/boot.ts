@@ -24,6 +24,7 @@ import {
 import { openNodeSqliteStorage } from "@earendil-works/pi-durable/storage/sqlite/node";
 import { DECISION_TIMEOUT_ENV, effectiveMethods, parseModelSpec, type Env, type SigrunConfig } from "../config.js";
 import { requiresProxyVouch } from "../server/auth/proxy-only.js";
+import { applySqliteHeapLimit } from "./sqlite-heap-limit.js";
 import { wireActivity } from "./activity.js";
 import {
 	snapshotBeforeDurableUpgrade,
@@ -1200,6 +1201,8 @@ export async function openHarness(
 		}
 		return opened;
 	})();
+	const heapLimitBytes = applySqliteHeapLimit(config.sqliteHeapLimitBytes);
+	console.log(`sqlite: heap limit ${Math.floor(heapLimitBytes / (1024 * 1024))} MiB`);
 	const registry = createRegistry();
 	// Late-filled by the loader: factories publish through the same registry
 	// instance, and selection rewrites read the declared set LIVE.
