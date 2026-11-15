@@ -63,9 +63,17 @@ test("an extension table entry keeps its secret set across save, reload, and ren
 	// The extension now has a personal and a system nav row; this test is
 	// on its system page, so measure the active System-settings row.
 	const extensionNav = page
-		.getByRole("group", { name: "System settings", exact: true })
+		.getByRole("group", { name: "System Settings", exact: true })
 		.locator(".settings-nav-extension[data-ext=acme-settings-page]");
 	await extensionNav.scrollIntoViewIfNeeded();
+	// Chromium's scrolling can finish after the action returns; wait for
+	// the row to be inside the scrollport before measuring it.
+	await expect.poll(async () => {
+		const navRect = await page.locator(".settings-nav").boundingBox();
+		const rowRect = await extensionNav.boundingBox();
+		return navRect !== null && rowRect !== null &&
+			rowRect.x >= navRect.x && rowRect.x + rowRect.width <= navRect.x + navRect.width;
+	}).toBe(true);
 	const navBox = await page.locator(".settings-nav").boundingBox();
 	const extensionBox = await extensionNav.boundingBox();
 	expect(navBox).not.toBeNull();

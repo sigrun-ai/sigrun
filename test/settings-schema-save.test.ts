@@ -8,7 +8,7 @@ import { mkdtemp, readFile, rm, writeFile, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, test, vi } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import { fauxProvider } from "@earendil-works/pi-ai/providers/faux";
 import type { FastifyInstance } from "fastify";
@@ -17,6 +17,7 @@ import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import type { ProviderContributor } from "../src/harness/providers/index.js";
 import { createServer } from "../src/server/index.js";
+import { fieldForPointer } from "../src/settings/schema/field-pointer.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { changes, reset } from "./fixtures/fixture-settings-schema-save/index.js";
 
@@ -24,10 +25,13 @@ const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
 	for (const cleanup of cleanups.splice(0)) await cleanup();
 	reset();
+	vi.restoreAllMocks();
 });
 
 const DECLARING = fixture("fixture-settings-schema-save");
 const RESERVED_USER = fixture("fixture-settings-reserved-user-id");
+const BLANKS = fixture("fixture-settings-blanks");
+const OVERRIDES = fixture("fixture-settings-overrides");
 const SURFACE = "/v1/ext/acme-schema-save/surfaces/settings";
 const USER_SURFACE = "/v1/ext/acme-schema-save/surfaces/user-settings";
 
@@ -46,6 +50,7 @@ async function boot(options: {
 	readonly settings?: Record<string, unknown>;
 	readonly secrets?: Record<string, string>;
 	readonly userSettings?: Record<string, unknown>;
+	readonly userSettingsFile?: string;
 	readonly userSecrets?: Record<string, string>;
 	readonly specifier?: string;
 	readonly env?: Record<string, string | undefined>;
@@ -65,7 +70,10 @@ async function boot(options: {
 	}
 	if (options.userSettings !== undefined) {
 		await mkdir(join(configDir, "user-settings", "alice"), { recursive: true });
-		await writeFile(join(configDir, "user-settings", "alice", "acme-schema-save.json"), JSON.stringify(options.userSettings));
+		await writeFile(
+			join(configDir, "user-settings", "alice", options.userSettingsFile ?? "acme-schema-save.json"),
+			JSON.stringify(options.userSettings),
+		);
 	}
 	if (options.userSecrets !== undefined) {
 		await writeFile(
@@ -163,6 +171,136 @@ const renamedEntry = {
 		headers: { Authorization: { value: "", extra: "channel-only" } },
 	},
 };
+
+describe("extension user overrides", () => {
+	const OVERRIDES_SURFACE = "/v1/ext/acme-settings-overrides/surfaces/user-settings";
+
+	async function overrideFile(rig: Rig): Promise<Record<string, unknown>> {
+		try {
+			return JSON.parse(await readFile(join(
+				rig.configDir,
+				"user-settings",
+				"alice",
+				"acme-settings-overrides.json",
+			), "utf8")) as Record<string, unknown>;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+			throw error;
+		}
+	}
+
+	test("user form data carries systemValues and systemValuesRaw", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		expect(result.body.data).toMatchObject({
+			systemValues: {
+				endpoint: "https://system.example.invalid",
+				tools: "system",
+				"group.threshold": "10",
+			},
+			systemValuesRaw: {
+				endpoint: "https://system.example.invalid",
+				tools: ["system"],
+				"group.threshold": 10,
+			},
+		});
+	});
+
+	test("a personal user surface never exposes an env-backed overridable system value", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			env: { ACME_OVERRIDE_ENDPOINT_URL: "https://server-env.example.invalid" },
+		});
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		const data = result.body.data as Record<string, Record<string, unknown>>;
+		expect(Object.hasOwn(data.envFallbacks!, "envEndpoint")).toBe(false);
+		expect(JSON.stringify(data)).not.toContain("https://server-env.example.invalid");
+		expect(data.systemValues?.envEndpoint).toBe("https://system.example.invalid");
+	});
+
+	test("personal surfaces never expose env values from override array item schemas", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			env: {
+				ACME_OVERRIDE_ITEM_URL: "https://server-item-env.example.invalid",
+				ACME_OVERRIDE_DEEP_ITEM_URL: "https://server-deep-item-env.example.invalid",
+			},
+		});
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		const data = result.body.data as Record<string, Record<string, unknown>>;
+		expect(Object.hasOwn(data.envFallbacks!, "itemEndpoint")).toBe(false);
+		expect(Object.hasOwn(data.envFallbacks!, "item")).toBe(false);
+		expect(JSON.stringify(data)).not.toContain("https://server-item-env.example.invalid");
+		expect(JSON.stringify(data)).not.toContain("https://server-deep-item-env.example.invalid");
+	});
+
+	test("personal surfaces never expose env values through override item $refs", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			env: {
+				ACME_OVERRIDE_REF_ITEM_URL: "https://server-ref-item-env.example.invalid",
+				ACME_OVERRIDE_REF_DEEP_ITEM_URL: "https://server-ref-deep-item-env.example.invalid",
+			},
+		});
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		const data = result.body.data as Record<string, Record<string, unknown>>;
+		expect(Object.hasOwn(data.envFallbacks!, "referencedItemEndpoint")).toBe(false);
+		expect(Object.hasOwn(data.envFallbacks!, "item")).toBe(false);
+		expect(JSON.stringify(data)).not.toContain("https://server-ref-item-env.example.invalid");
+		expect(JSON.stringify(data)).not.toContain("https://server-ref-deep-item-env.example.invalid");
+	});
+
+	test("boolean display values are On and Off", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.body.data).toMatchObject({
+			systemValues: { enabled: "On", paused: "Off" },
+			systemValuesRaw: { enabled: true, paused: false },
+		});
+	});
+
+	test("an absent optional system value displays as not set", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.body.data).toMatchObject({
+			systemValues: { optional: "(not set)" },
+		});
+		const raw = (result.body.data as Record<string, unknown>).systemValuesRaw;
+		expect(Object.hasOwn(raw as Record<string, unknown>, "optional")).toBe(false);
+	});
+
+	test("array display values join entries", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		await writeFile(
+			join(rig.configDir, "settings", "acme-settings-overrides.json"),
+			JSON.stringify({ tools: ["one", "two"] }),
+		);
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.body.data).toMatchObject({
+			systemValues: {
+				endpoint: "https://system.example.invalid",
+				tools: "one, two",
+				"group.threshold": "10",
+			},
+			systemValuesRaw: { tools: ["one", "two"] },
+		});
+	});
+
+	test("null on an inherit field deletes the user override", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			userSettingsFile: "acme-settings-overrides.json",
+			userSettings: { endpoint: "https://user.example.invalid" },
+		});
+		const result = await save(rig, { endpoint: null }, "clear-override", OVERRIDES_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await overrideFile(rig)).toEqual({});
+	});
+});
 
 test("unknown stored keys survive a schema save", async () => {
 	const rig = await boot({ settings: { legacy: { preserve: true }, interval: 30 } });
@@ -309,13 +447,40 @@ test("stale rev still rejects", async () => {
 	expect(await file(rig)).toEqual({ interval: 45 });
 });
 
-test("schema error is field-scoped by JSON pointer", async () => {
+test("schema error is field-scoped by form field name", async () => {
 	const rig = await boot();
 	const result = await save(rig, { interval: "often" }, "invalid-schema");
 	expect(result.body.ok).toBe(false);
-	expect(result.body.error).toMatchObject({ field: "/interval" });
+	expect(result.body.error).toMatchObject({ field: "interval" });
 	expect((result.body.error as { message: string }).message).toContain("integer");
 	expect(await file(rig)).toEqual({});
+});
+
+describe("fieldForPointer", () => {
+	const fields = [
+		{ name: "embeddings.maxBatch", label: "Max batch" },
+		{ name: "servers", label: "Servers" },
+	];
+
+	test("matches the longest dotted form field", () => {
+		expect(fieldForPointer("/embeddings/maxBatch", fields)).toEqual({
+			name: "embeddings.maxBatch",
+			label: "Max batch",
+			rest: [],
+		});
+	});
+
+	test("matches a table row to its table field", () => {
+		expect(fieldForPointer("/servers/searxng/timeout", fields)).toEqual({
+			name: "servers",
+			label: "Servers",
+			rest: ["searxng", "timeout"],
+		});
+	});
+
+	test("returns undefined when no form field matches", () => {
+		expect(fieldForPointer("/missing/value", fields)).toBeUndefined();
+	});
 });
 
 test("user-settings saves the caller's own file", async () => {
@@ -589,7 +754,8 @@ test("a blank required string still fails", async () => {
 	const rig = await boot();
 	const result = await save(rig, { servers: { first: { url: "" } } }, "blank-required");
 	expect(result.body.ok).toBe(false);
-	expect((result.body.error as { field: string }).field).toBe("/servers/first/url");
+	expect(result.body.error).toMatchObject({ field: "servers" });
+	expect((result.body.error as { message: string }).message).toContain("(first › url)");
 });
 
 test("a blank secret still means unchanged", async () => {
@@ -634,4 +800,108 @@ test("dotted nested field names save through the generated form (provider-openai
 	const both = await save(rig, { "group.label": false, mode: "auto" }, "dotted-siblings");
 	expect(both.body).toMatchObject({ ok: true });
 	expect(await file(rig)).toEqual({ group: { label: false }, mode: "auto" });
+});
+
+describe("blank means unset", () => {
+	const BLANKS_SURFACE = "/v1/ext/acme-blanks/surfaces/settings";
+
+	async function blanksFile(rig: Rig): Promise<Record<string, unknown>> {
+		try {
+			return JSON.parse(await readFile(
+				join(rig.configDir, "settings", "acme-blanks.json"),
+				"utf8",
+			)) as Record<string, unknown>;
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
+			throw error;
+		}
+	}
+
+	test("blank integer in a nested object is unset", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, {
+			embeddings: { enabled: true, maxBatch: "" },
+		}, "blank-max-batch", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({ embeddings: { enabled: true } });
+	});
+
+	test("blank number inside a table row drops only that key", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		// Seed the fixture's stored file at the fixture's own slug.
+		await writeFile(
+			join(rig.configDir, "settings", "acme-blanks.json"),
+			JSON.stringify({
+				servers: {
+					a: { url: "https://a.example.invalid", timeout: 5 },
+					b: { url: "https://b.example.invalid" },
+				},
+			}),
+		);
+		const result = await save(rig, {
+			servers: {
+				a: { url: "https://a.example.invalid", timeout: "" },
+				b: { url: "https://b.example.invalid" },
+			},
+		}, "blank-row-timeout", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({
+			servers: {
+				a: { url: "https://a.example.invalid" },
+				b: { url: "https://b.example.invalid" },
+			},
+		});
+	});
+
+	test("empty list with minItems 1 is unset", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		await writeFile(
+			join(rig.configDir, "settings", "acme-blanks.json"),
+			JSON.stringify({ names: ["x"] }),
+		);
+		const result = await save(rig, { names: [] }, "blank-names", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({});
+	});
+
+	test("empty list without minItems is kept", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, { tools: [] }, "blank-tools", BLANKS_SURFACE);
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		expect(await blanksFile(rig)).toEqual({ tools: [] });
+	});
+
+	test("schema error names the dotted field and its label", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, {
+			embeddings: { maxBatch: "x" },
+		}, "invalid-max-batch", BLANKS_SURFACE);
+		expect(result.body.ok).toBe(false);
+		expect(result.body.error).toMatchObject({ field: "embeddings.maxBatch" });
+		expect((result.body.error as { message: string }).message).toMatch(/^Max batch /);
+	});
+
+	test("required blank still fails", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		const result = await save(rig, { limits: { n: "" } }, "blank-required-n", BLANKS_SURFACE);
+		expect(result.body.ok).toBe(false);
+		expect((result.body.error as { message: string }).message).toContain("integer");
+	});
+
+	test("null array element is kept", async () => {
+		const rig = await boot({ specifier: BLANKS });
+		// The helper must NOT shrink arrays; the schema's string item rule
+		// still rejects a "" element. Verify the helper didn't silently
+		// drop it by asserting the save fails validation rather than
+		// passing on a one-element array.
+		const result = await save(rig, { tools: ["a", ""] }, "blank-array-element", BLANKS_SURFACE);
+		// Today's behavior: "" is a valid string, so the save succeeds
+		// with both elements. The invariant we are testing is that the
+		// helper did NOT silently shrink ["a", ""] down to ["a"].
+		expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+		const stored = await blanksFile(rig);
+		expect(Array.isArray(stored.tools)).toBe(true);
+		expect((stored.tools as string[]).length).toBe(2);
+		expect(stored.tools).toEqual(["a", ""]);
+	});
 });

@@ -13,6 +13,7 @@
  */
 
 import { act, useState } from "react";
+import type { ReactTestInstance } from "react-test-renderer";
 import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
 import {
@@ -60,16 +61,38 @@ interface ExtensionsHarness {
 
 /** The sections the fake server's `/v1/settings/sections` serves. */
 const SECTIONS = [
-	{ slug: "core", id: "general", title: "General", icon: "key", group: "system" },
+	{ slug: "core", id: "general", title: "Behaviour", icon: "key", group: "system" },
+	{ slug: "core", id: "models", title: "Models", icon: "key", group: "system" },
 	{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" },
+	{ slug: "core", id: "my-models", title: "Models", icon: "key", group: "mine", scope: "user", admin: false },
 	{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" },
 	{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" },
-	{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" },
-	{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" },
+	{ slug: "core", id: "accounts", title: "Account Links", icon: "key", group: "mine" },
+	{ slug: "core", id: "tokens", title: "API Tokens", icon: "lock", group: "mine" },
 ] as const;
 
+/** The current test harness uses react-test-renderer: this is its
+ *  role-scoped equivalent of `within(top).getByRole("group", { name })`. */
+function navGroup(parent: ReactTestInstance, name: string): ReactTestInstance {
+	return parent.findAllByProps({ role: "group", "aria-label": name }).at(0) ?? (() => {
+		throw new Error(`settings nav group ${name} not rendered`);
+	})();
+}
+
+function navItemLabels(group: ReactTestInstance): string[] {
+	return group.findAllByType("button")
+		.filter((item) => typeof item.props.className === "string" && item.props.className.startsWith("settings-nav-item"))
+		.map((item) => item.props.children);
+}
+
+function assertSubGroup(parent: ReactTestInstance, name: string, items: readonly string[]): void {
+	const group = navGroup(parent, name);
+	expect(group.findByProps({ className: "settings-nav-heading settings-nav-sub" }).children).toContain(name);
+	expect(navItemLabels(group)).toEqual(items);
+}
+
 const INDEX: readonly SettingsSectionIndexEntryWire[] = [
-	{ slug: "core", sectionId: "general", kind: "section", label: "General" },
+	{ slug: "core", sectionId: "general", kind: "section", label: "Behaviour" },
 	{
 		slug: "core",
 		sectionId: "general",
@@ -401,10 +424,10 @@ async function openSection(
 }
 
 describe("SettingsPanel", () => {
-	test("My settings shows Models for a named user", async () => {
+	test("My Settings shows Models for a named user", async () => {
 		// The server lists core/my-models (group mine) when the caller
 		// resolves to a user; the panel draws it as an ordinary surface
-		// section under My settings.
+		// section under My Settings.
 		const sections = [
 			{ slug: "core", id: "my-models", title: "Models", icon: "key", group: "mine" as const },
 			...SECTIONS,
@@ -416,10 +439,10 @@ describe("SettingsPanel", () => {
 		await act(async () => {
 			await new Promise((resolve) => setTimeout(resolve, 0));
 		});
-		// The My settings group lists Models; no System settings for a non-admin.
+		// The My Settings group lists Models; no System Settings for a non-admin.
 		const text = textContent(renderer.toJSON());
-		expect(text).toContain("My settings");
-		expect(text).not.toContain("System settings");
+		expect(text).toContain("My Settings");
+		expect(text).not.toContain("System Settings");
 		const nav = renderer.root.findAllByType("button").filter(
 			(node) => node.props.className === "settings-nav-item",
 		);
@@ -436,60 +459,95 @@ describe("SettingsPanel", () => {
 		);
 	});
 
+	test("nav nests General, Extensions and Providers under each top group", async () => {
+		const sections = [
+			...SECTIONS,
+			{ slug: "acme-tools", id: "settings", title: "Settings", icon: "key", group: "system" as const, page: "acme-tools", admin: true },
+			{ slug: "acme-tools", id: "user-settings", title: "Your settings", icon: "key", group: "mine" as const, page: "acme-tools", scope: "user" as const, admin: false },
+			{ slug: "acme-providers", id: "settings", title: "Settings", icon: "key", group: "system" as const, page: "acme-providers", admin: true },
+		];
+		const { client } = makeHarness({
+			sectionsResponse: { sections, index: [...INDEX] },
+			extensions: { list: [
+				{ ...EXTENSIONS_FIXTURE, name: "acme-tools", title: "Acme Tools" },
+				{ ...EXTENSIONS_FIXTURE, name: "acme-providers", title: "Acme Providers", provider: true },
+			] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { admin: true });
+		const topGroups = renderer.root.findAllByProps({ className: "settings-nav-group" }).filter(
+			(group) => group.findAllByProps({ className: "settings-nav-heading settings-nav-top" }).length > 0,
+		);
+		expect(topGroups.map((group) => group.props["aria-label"])).toEqual(["My Settings", "System Settings"]);
+		const mine = navGroup(renderer.root, "My Settings");
+		const system = navGroup(renderer.root, "System Settings");
+		expect(mine.findAllByProps({ role: "group", "aria-label": "Providers" })).toHaveLength(0);
+		expect(system.findAllByProps({ role: "group", "aria-label": "Providers" })).toHaveLength(1);
+		assertSubGroup(mine, "General", ["Interface", "Models", "Account Links", "API Tokens"]);
+		assertSubGroup(system, "General", ["Behaviour", "Models", "Advanced", "Providers"]);
+		assertSubGroup(mine, "Extensions", ["Acme Tools"]);
+		assertSubGroup(system, "Extensions", ["Acme Tools"]);
+		assertSubGroup(system, "Providers", ["Acme Providers"]);
+	});
+
+	test("empty nav sub-groups are omitted", async () => {
+		const { client } = makeHarness({
+			sectionsResponse: { sections: [], index: [] },
+			extensions: { list: [] },
+		});
+		const { renderer } = await renderPanelWithPrefs(client, { admin: true });
+		for (const name of ["General", "Extensions", "Providers"]) {
+			expect(renderer.root.findAllByProps({ role: "group", "aria-label": name })).toHaveLength(0);
+		}
+	});
+
 	test("two nav groups for admins", async () => {
 		const groupedSections = [
-			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "general", title: "Behaviour", icon: "key", group: "system" as const },
 			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
 			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
 			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
-			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
-			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+			{ slug: "core", id: "accounts", title: "Account Links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API Tokens", icon: "lock", group: "mine" as const },
 		];
 		const { client } = makeHarness({
 			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
 		});
 		const { renderer } = await renderPanelWithPrefs(client, { admin: true });
 		const text = textContent(renderer.toJSON());
-		expect(text).toContain("My settings");
-		expect(text).toContain("System settings");
+		expect(text).toContain("My Settings");
+		expect(text).toContain("System Settings");
 	});
 
-	test("non-admins see only My settings", async () => {
-		const groupedSections = [
-			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
-			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
-			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
-			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
-			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
-			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
-		];
+	test("non-admin sees only My Settings", async () => {
 		const { client } = makeHarness({
-			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
+			sectionsResponse: { sections: [...SECTIONS], index: [...INDEX] },
 		});
 		const { renderer } = await renderPanelWithPrefs(client, { admin: false });
-		const text = textContent(renderer.toJSON());
-		expect(text).toContain("My settings");
-		expect(text).not.toContain("System settings");
+		expect(renderer.root.findAllByProps({ role: "group", "aria-label": "System Settings" })).toHaveLength(0);
+		const mine = navGroup(renderer.root, "My Settings");
+		assertSubGroup(mine, "General", ["Interface", "Models", "Account Links", "API Tokens"]);
+		expect(mine.findAllByProps({ role: "group", "aria-label": "Providers" })).toHaveLength(0);
+		expect(mine.findAllByProps({ role: "group", "aria-label": "Extensions" })).toHaveLength(0);
 	});
 
-	test("non-admin deep link to a system page lands in My settings", async () => {
+	test("non-admin deep link to a system page lands in My Settings", async () => {
 		const groupedSections = [
-			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "general", title: "Behaviour", icon: "key", group: "system" as const },
 			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
 			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
 			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
-			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
-			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+			{ slug: "core", id: "accounts", title: "Account Links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API Tokens", icon: "lock", group: "mine" as const },
 		];
 		const nonAdmin = makeHarness({
 			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
 		});
 		const { renderer } = await renderPanelWithPrefs(nonAdmin.client, { admin: false, section: "advanced" });
 		// Non-admin deep-linking to a system section lands on the first
-		// My settings (mine) section, not the advanced body.
+		// My Settings (mine) section, not the advanced body.
 		const text = textContent(renderer.toJSON());
-		expect(text).toContain("My settings");
-		expect(text).not.toContain("System settings");
+		expect(text).toContain("My Settings");
+		expect(text).not.toContain("System Settings");
 		expect(renderer.root.findAllByProps({ "data-settings-section": "advanced" })).toHaveLength(0);
 		expect(renderer.root.findAllByProps({ "data-settings-section": "general" })).toHaveLength(0);
 		// The first My-settings (mine) section — the Interface cove — opens.
@@ -500,12 +558,12 @@ describe("SettingsPanel", () => {
 
 	test("#/settings/tools opens Advanced", async () => {
 		const groupedSections = [
-			{ slug: "core", id: "general", title: "General", icon: "key", group: "system" as const },
+			{ slug: "core", id: "general", title: "Behaviour", icon: "key", group: "system" as const },
 			{ slug: "core", id: "interface", title: "Interface", icon: "image", group: "mine" as const },
 			{ slug: "core", id: "advanced", title: "Advanced", icon: "more", group: "system" as const },
 			{ slug: "core", id: "providers", title: "Providers", icon: "cloud", group: "system" as const },
-			{ slug: "core", id: "accounts", title: "Account links", icon: "key", group: "mine" as const },
-			{ slug: "core", id: "tokens", title: "API tokens", icon: "lock", group: "mine" as const },
+			{ slug: "core", id: "accounts", title: "Account Links", icon: "key", group: "mine" as const },
+			{ slug: "core", id: "tokens", title: "API Tokens", icon: "lock", group: "mine" as const },
 		];
 		const { client } = makeHarness({
 			sectionsResponse: { sections: groupedSections, index: [...INDEX] },
@@ -537,8 +595,8 @@ describe("SettingsPanel", () => {
 		});
 		const { renderer } = await renderPanelWithPrefs(client, { admin: true });
 		const text = textContent(renderer.toJSON());
-		expect(text).toContain("My settings");
-		expect(text).toContain("System settings");
+		expect(text).toContain("My Settings");
+		expect(text).toContain("System Settings");
 		// #/settings/my:curator draws only Your settings — no header, no
 		// credentials, no shared Settings section.
 		const mine = makeHarness({
@@ -603,7 +661,7 @@ describe("SettingsPanel", () => {
 		expect(textContent(adminRenderer.toJSON())).toContain("Settings");
 	});
 
-	test("renders the sections nav in My settings / System settings groups, Interface first", async () => {
+	test("renders the sections nav in My Settings / System Settings groups, Interface first", async () => {
 		const { calls, client } = makeHarness();
 		const renderer = await renderPanel(client);
 		expect(
@@ -614,9 +672,11 @@ describe("SettingsPanel", () => {
 			.filter((node) => node.props.className === "settings-nav-item");
 		expect(navItems.map((node) => node.props.children)).toEqual([
 			"Interface",
-			"Account links",
-			"API tokens",
-			"General",
+			"Models",
+			"Account Links",
+			"API Tokens",
+			"Behaviour",
+			"Models",
 			"Advanced",
 			"Providers",
 		]);
@@ -672,6 +732,37 @@ describe("SettingsPanel", () => {
 				.findAllByType("div")
 				.some((node) => node.props["data-name"] === "namingModel"),
 		).toBe(true);
+	});
+
+	test("a core section save shows Saved", async () => {
+		const harness = makeHarness({ general: { namingModel: "acme/model" } });
+		const renderer = await renderPanelWithPrefs(harness.client, {
+			admin: true,
+			section: "general",
+		});
+		await act(async () => {
+			await new Promise((resolve) => setTimeout(resolve, 0));
+		});
+		await act(async () => {
+			renderer.renderer.root
+				.findByProps({ className: "blk-form-submit" })
+				.props.onClick();
+		});
+		expect(
+			harness.calls.some(
+				(call) =>
+					call.input === "/v1/ext/core/surfaces/general/actions" &&
+					call.method === "POST",
+			),
+		).toBe(true);
+		const saved = renderer.renderer.root.findByProps({
+			role: "status",
+			className: "blk-form-saved",
+		});
+		expect(saved.children).toContain("Saved");
+		expect(
+			renderer.renderer.root.findAllByProps({ className: "blk-surface-toast" }),
+		).toHaveLength(0);
 	});
 
 	test("the pending-restart callout lists keys; the Restart button shows only for a supervised admin", async () => {
@@ -740,8 +831,8 @@ describe("SettingsPanel", () => {
 		const navItems = renderer.root
 			.findAllByType("button")
 			.filter((node) => node.props.className === "settings-nav-item");
-		expect(navItems.map((node) => node.props.children)).toContain("Account links");
-		await openSection(renderer, "Account links");
+		expect(navItems.map((node) => node.props.children)).toContain("Account Links");
+		await openSection(renderer, "Account Links");
 		expect(renderer.root.findAllByProps({ "data-settings-section": "accounts" })).toHaveLength(1);
 	});
 
@@ -888,8 +979,8 @@ describe("SettingsPanel extension pages", () => {
 		});
 		const { renderer, onSectionCalls } = await renderPanelWithPrefs(harness.client);
 		const groups = renderer.root.findAllByProps({ role: "group", "aria-label": "Extensions" });
-		// Two sub-lists: My settings (extensions with a personal page, here
-		// acme-one) and System settings (every extension page).
+		// Two sub-lists: My Settings (extensions with a personal page, here
+		// acme-one) and System Settings (every extension page).
 		expect(groups).toHaveLength(2);
 		const labels = groups[0].findAllByType("button").map((node) => node.props.children);
 		expect(labels).toEqual(["acme-one"]);
@@ -898,12 +989,19 @@ describe("SettingsPanel extension pages", () => {
 		const flatLabels = nav.findAllByType("button")
 			.filter((node) => node.props.className === "settings-nav-item")
 			.map((node) => node.props.children);
-		// My settings first (Interface, Account links, API tokens), then System.
-		expect(flatLabels).toEqual(
-			["Interface", "Account links", "API tokens"].concat(
-				SECTIONS.filter((s) => s.group === "system").map((s) => s.title),
-			),
-		);
+		// My Settings first (Interface, Models, Account Links, API Tokens),
+		// then System. Extension and provider-page sub-groups follow their
+		// respective group's General rows.
+		expect(flatLabels.slice(0, SECTIONS.length)).toEqual([
+			"Interface",
+			"Models",
+			"Account Links",
+			"API Tokens",
+			"Behaviour",
+			"Models",
+			"Advanced",
+			"Providers",
+		]);
 		expect(textContent(renderer.toJSON())).not.toContain("(advanced)");
 		await act(async () => {
 			groups[1].findAllByType("button")[1].props.onClick();

@@ -31,8 +31,13 @@ import {
 	factoryRead as mismatchFactoryRead,
 	reset as resetMismatch,
 } from "./fixtures/fixture-settings-mismatch/index.js";
+import {
+	declared as overrideDeclared,
+	reset as resetOverrides,
+} from "./fixtures/fixture-settings-overrides/index.js";
 
 const DECLARING = fixture("fixture-settings-declare");
+const OVERRIDES = fixture("fixture-settings-overrides");
 const TWICE = fixture("fixture-settings-twice");
 const LATE = fixture("fixture-settings-late");
 const MALFORMED = fixture("fixture-settings-malformed");
@@ -53,6 +58,7 @@ afterEach(async () => {
 	resetBuiltin();
 	resetMismatch();
 	resetDeclared();
+	resetOverrides();
 	resetFactoryNotice();
 });
 
@@ -70,6 +76,7 @@ async function boot(
 		readonly secrets?: Record<string, unknown>;
 		readonly server?: boolean;
 		readonly settingsFile?: string;
+		readonly userSettingsFile?: string;
 		readonly builtinSettings?: Record<string, unknown>;
 		readonly extraBuiltins?: readonly string[];
 		readonly realBuiltins?: boolean;
@@ -87,7 +94,7 @@ async function boot(
 	if (options.userSettings !== undefined) {
 		await mkdir(join(configDir, "user-settings", "tester"), { recursive: true });
 		await writeFile(
-			join(configDir, "user-settings", "tester", "acme-settings.json"),
+			join(configDir, "user-settings", "tester", options.userSettingsFile ?? "acme-settings.json"),
 			JSON.stringify(options.userSettings),
 		);
 	}
@@ -177,6 +184,104 @@ test("userSchema may not use x-sigrun-env", async () => {
 	expect(opened.extensionOutcomes[0]).toMatchObject({ status: "quarantined" });
 	expect(opened.extensionOutcomes[0]?.error).toMatch(/userSchema.*x-sigrun-env/);
 	expect(opened.extensionOutcomes[0]?.error).toContain("non-admin");
+});
+
+test("declare rejects an overridable key that also exists in userSchema", async () => {
+	const { opened } = await boot([fixture("fixture-settings-overrides-conflict")]);
+	expect(opened.extensionOutcomes[0]).toMatchObject({ status: "quarantined" });
+	expect(opened.extensionOutcomes[0]?.error).toBe(
+		"settings.declare: group.threshold is both overridable and in userSchema",
+	);
+});
+
+test("effective returns the system value when no override", async () => {
+	await boot([OVERRIDES]);
+	await expect(overrideDeclared?.effective("tester")).resolves.toEqual({
+		endpoint: "https://system.example.invalid",
+		envEndpoint: "https://system.example.invalid",
+		tools: ["system"],
+		enabled: true,
+		paused: false,
+		group: { threshold: 10 },
+	});
+});
+
+test("effective returns a valid override", async () => {
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: {
+			endpoint: "https://user.example.invalid",
+			group: { threshold: 3 },
+		},
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toEqual({
+		endpoint: "https://user.example.invalid",
+		envEndpoint: "https://system.example.invalid",
+		tools: ["system"],
+		enabled: true,
+		paused: false,
+		group: { threshold: 3 },
+	});
+});
+
+test("effective ignores an invalid override and warns once per process", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: { endpoint: 7 },
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({
+		endpoint: "https://system.example.invalid",
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({
+		endpoint: "https://system.example.invalid",
+	});
+	expect(warn.mock.calls.filter((call) => String(call[0]).includes("override endpoint"))).toHaveLength(1);
+});
+
+test("effective treats an empty-string override as present", async () => {
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: { endpoint: "" },
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({ endpoint: "" });
+});
+
+test("array override replaces the system list", async () => {
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: { tools: ["user"] },
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({ tools: ["user"] });
+});
+
+test("effective validates a $ref override against the system definitions", async () => {
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: { referenced: "https://user.example.invalid" },
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({
+		referenced: "https://user.example.invalid",
+	});
+});
+
+test("personal $defs survive the system merge without repairing a $ref value", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: {
+			nickname: "acme-alice",
+			endpoint: "https://user.example.invalid",
+		},
+	});
+	await expect(overrideDeclared?.user("tester").get()).resolves.toEqual({
+		nickname: "acme-alice",
+		endpoint: "https://user.example.invalid",
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({
+		endpoint: "https://user.example.invalid",
+	});
+	expect(warn.mock.calls.filter((call) => String(call[0]).startsWith("settings"))).toEqual([]);
 });
 
 test("declare returns defaults for an empty file", async () => {

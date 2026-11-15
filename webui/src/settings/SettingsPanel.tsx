@@ -371,25 +371,9 @@ export function SettingsPanel(props: {
 				{load.status === "ready" && (
 				<div className="settings-layout">
 					<nav className="settings-nav" aria-label="settings sections">
-						<div className="settings-nav-group" role="group" aria-label="My settings">
-							<div className="settings-nav-heading">My settings</div>
-							{navSections.filter((section) => section.slug === "core" && section.group === "mine").map((section) => (
-								<button
-									key={`${section.slug}/${section.id}`}
-									type="button"
-									className="settings-nav-item"
-									data-active={
-										open?.kind === "section" &&
-										open.entry.slug === section.slug &&
-										open.entry.id === section.id
-											? ""
-											: undefined
-									}
-									onClick={() => onSection(section.id)}
-								>
-									{section.title}
-								</button>
-							))}
+						<div className="settings-nav-group" role="group" aria-label="My Settings">
+							<div className="settings-nav-heading settings-nav-top">My Settings</div>
+							<CoreSectionsNav sections={navSections} open={open} group="mine" onOpen={onSection} />
 							<ExtensionPagesNav
 								extensions={extensions}
 								sections={navSections}
@@ -400,25 +384,9 @@ export function SettingsPanel(props: {
 							/>
 						</div>
 						{admin !== false && (
-						<div className="settings-nav-group" role="group" aria-label="System settings">
-							<div className="settings-nav-heading">System settings</div>
-							{navSections.filter((section) => section.slug === "core" && section.group === "system").map((section) => (
-								<button
-									key={`${section.slug}/${section.id}`}
-									type="button"
-									className="settings-nav-item"
-									data-active={
-										open?.kind === "section" &&
-										open.entry.slug === section.slug &&
-										open.entry.id === section.id
-											? ""
-											: undefined
-									}
-									onClick={() => onSection(section.id)}
-								>
-									{section.title}
-								</button>
-							))}
+						<div className="settings-nav-group" role="group" aria-label="System Settings">
+							<div className="settings-nav-heading settings-nav-top">System Settings</div>
+							<CoreSectionsNav sections={navSections} open={open} group="system" onOpen={onSection} />
 							<ExtensionPagesNav
 								extensions={extensions}
 								sections={navSections}
@@ -485,6 +453,42 @@ export function SettingsPanel(props: {
 	);
 }
 
+/** The core pages form the General sub-group under each top-level
+ *  ownership group. Keeping the Providers cove here is deliberate: the
+ *  separate Providers sub-group below lists contributor-owned pages. */
+function CoreSectionsNav(props: {
+	readonly sections: readonly SettingsSectionEntryWire[];
+	readonly open: OpenSection | null;
+	readonly group: "mine" | "system";
+	readonly onOpen: (section: string) => void;
+}): React.ReactElement | null {
+	const { sections, open, group, onOpen } = props;
+	const listed = sections.filter((section) => section.slug === "core" && section.group === group);
+	if (listed.length === 0) return null;
+	return (
+		<div className="settings-nav-group" role="group" aria-label="General">
+			<div className="settings-nav-heading settings-nav-sub">General</div>
+			{listed.map((section) => (
+				<button
+					key={`${section.slug}/${section.id}`}
+					type="button"
+					className="settings-nav-item"
+					data-active={
+						open?.kind === "section" &&
+						open.entry.slug === section.slug &&
+						open.entry.id === section.id
+							? ""
+							: undefined
+					}
+					onClick={() => onOpen(section.id)}
+				>
+					{section.title}
+				</button>
+			))}
+		</div>
+	);
+}
+
 function ProviderPagesNav(props: {
 	readonly extensions: readonly ExtensionInfoWire[] | null;
 	readonly open: OpenSection | null;
@@ -497,7 +501,7 @@ function ProviderPagesNav(props: {
 	if (listed.length === 0) return null;
 	return (
 		<div className="settings-nav-group" role="group" aria-label="Providers">
-			<div className="settings-nav-heading">Providers</div>
+			<div className="settings-nav-heading settings-nav-sub">Providers</div>
 			{listed.map((extension) => (
 				<button key={extension.name} type="button" className="settings-nav-item settings-nav-extension" data-ext={extension.name}
 					data-active={open?.kind === "extension" && open.slug === extension.name && open.group === "system" ? "" : undefined}
@@ -529,7 +533,7 @@ function ExtensionPagesNav(props: {
 	if (listed.length === 0) return null;
 	return (
 		<div className="settings-nav-group" role="group" aria-label="Extensions">
-			<div className="settings-nav-heading">Extensions</div>
+			<div className="settings-nav-heading settings-nav-sub">Extensions</div>
 			{listed.map((extension) => (
 				<button
 					key={extension.name}
@@ -655,7 +659,7 @@ function SettingsSurfaceBody(props: {
 				</p>
 			)}
 			<SurfaceMetaProbe transport={transport} onData={handleProbeData} />
-			<SurfaceView transport={transport} />
+			<SurfaceView transport={transport} inlineFeedback />
 		</div>
 	);
 }

@@ -16,6 +16,8 @@ export const SUMMARY_KEYWORD = "x-sigrun-summary";
 export const KEY_KEYWORD = "x-sigrun-key";
 export const ENV_KEYWORD = "x-sigrun-env";
 export const OVERRIDABLE_KEYWORD = "x-sigrun-overridable";
+/** Internal: a merged personal-schema leaf inherits the system setting when unset. */
+export const INHERIT_KEYWORD = "x-sigrun-inherit";
 export const MODEL_KEYWORD = "x-sigrun-model";
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
@@ -101,7 +103,14 @@ export function propertiesOf(
 	if (!isRecord(properties)) return [];
 	const result: [string, JsonSchema][] = [];
 	for (const [name, child] of Object.entries(properties)) {
-		if (isRecord(child)) result.push([name, deref(root, child)]);
+		if (!isRecord(child)) continue;
+		const resolved = deref(root, child);
+		result.push([
+			name,
+			child[OVERRIDABLE_KEYWORD] === true
+				? { ...resolved, [OVERRIDABLE_KEYWORD]: true }
+				: resolved,
+		]);
 	}
 	return result;
 }

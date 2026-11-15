@@ -25,6 +25,7 @@ import {
 import {
 	APPLY_KEYWORD,
 	ENV_KEYWORD,
+	INHERIT_KEYWORD,
 	KEY_KEYWORD,
 	MODEL_KEYWORD,
 	SUMMARY_KEYWORD,
@@ -219,6 +220,7 @@ function baseProps(schema: JsonSchema, name: string, required: boolean): FieldBa
 		help?: string;
 		placeholder?: string;
 		apply?: Apply;
+		inherit?: FieldBase["inherit"];
 		minLength?: number;
 		maxLength?: number;
 		pattern?: string;
@@ -233,6 +235,12 @@ function baseProps(schema: JsonSchema, name: string, required: boolean): FieldBa
 	if (required) base.required = true;
 	if (typeof schema.description === "string" && schema.description !== "") base.help = schema.description;
 	if (schema[APPLY_KEYWORD] !== undefined) base.apply = applyOf(schema);
+	if (schema[INHERIT_KEYWORD] === true) {
+		base.inherit = {
+			system: { $: `/systemValues/${name}` },
+			raw: { $: `/systemValuesRaw/${name}` },
+		};
+	}
 	if (schema.default !== undefined && typeof schema.default !== "object") {
 		base.placeholder = String(schema.default);
 	}
@@ -697,8 +705,11 @@ function checkNode(root: JsonSchema, schema: JsonSchema, pointer: string): Schem
 		if (schema[OVERRIDABLE_KEYWORD] !== true) {
 			return fail(`${OVERRIDABLE_KEYWORD} must be true`);
 		}
-		if (schema.type === "object" || schema.type === "array" || isRecord(schema.properties)) {
-			return fail(`${OVERRIDABLE_KEYWORD} is valid only on leaf properties (not object/array)`);
+		if (schema.writeOnly === true) {
+			return fail(`${OVERRIDABLE_KEYWORD} is not valid on writeOnly (secret) properties`);
+		}
+		if (schema.type === "object" || isRecord(schema.properties)) {
+			return fail(`${OVERRIDABLE_KEYWORD} is valid only on scalar or array properties`);
 		}
 	}
 

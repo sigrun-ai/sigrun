@@ -37,6 +37,11 @@ import type {
 } from "../extension.js";
 import { checkSchema, generateForm } from "../settings/schema/generate.js";
 import { checkStoredSettings } from "../settings/schema/defaults.js";
+import {
+	applyOverrides,
+	mergedUserSchema,
+	userDeclaredOverridableKeys,
+} from "../settings/effective.js";
 import { ENV_KEYWORD, envOf, isRecord } from "../settings/schema/keywords.js";
 import { fillSecrets } from "../settings/schema/secrets.js";
 import { NOTICE_LIMITS } from "@sigrun/shared/notices";
@@ -448,11 +453,13 @@ export function createSeamHost(
 	let invalidNoticePosted = false;
 	let noticePost = settingsNotice;
 	const warnedPaths = new Set<string>();
+	const invalidOverrideWarnings = new Set<string>();
 	const declaredSettings = <S, U>(decl: SettingsDeclaration): DeclaredSettings<S, U> => {
 		const generated = generateForm(decl.schema, { idPrefix: identity.name });
-		const generatedUser = decl.userSchema === undefined
+		const userSchema = mergedUserSchema(decl.schema, decl.userSchema);
+		const generatedUser = userSchema === undefined
 			? undefined
-			: generateForm(decl.userSchema, { idPrefix: identity.name });
+			: generateForm(userSchema, { idPrefix: identity.name });
 		const read = async (
 			schema: SettingsDeclaration["schema"],
 			form: typeof generated,
@@ -540,19 +547,40 @@ export function createSeamHost(
 			user: (user: string) => ({
 				get: async () => {
 					if (!sealed) factoryRead = true;
-					if (decl.userSchema === undefined) {
+					if (userSchema === undefined) {
 						throw new Error(`settings.userSchema is not declared by ${identity.name}`);
 					}
 					const scoped = stores.user(user);
 					if (generatedUser === undefined) throw new Error("unreachable");
 					return (await read(
-						decl.userSchema,
+						userSchema,
 						generatedUser,
 						await scoped.settings.get(),
 						scoped.secrets,
 					)) as U;
 				},
 			}),
+			effective: async (user: string) => {
+				if (!sealed) factoryRead = true;
+				const system = await read(
+					decl.schema,
+					generated,
+					await stores.settings.get(),
+					stores.secrets,
+				);
+				return applyOverrides(
+					decl.schema,
+					system,
+					await stores.user(user).settings.get(),
+					(key) => {
+						if (invalidOverrideWarnings.has(key)) return;
+						invalidOverrideWarnings.add(key);
+						console.warn(
+							`settings: ${identity.name}: override ${key} is invalid; using the system value`,
+						);
+					},
+				) as S;
+			},
 		};
 	};
 	const ambientKinds = new Set(kinds.ambient ?? []);
@@ -669,6 +697,12 @@ export function createSeamHost(
 					if (schema === undefined) continue;
 					const checked = checkSchema(schema);
 					if (!checked.ok) throw new Error(checked.error);
+				}
+				const conflict = decl.userSchema === undefined
+					? undefined
+					: userDeclaredOverridableKeys(decl.schema, decl.userSchema)[0];
+				if (conflict !== undefined) {
+					throw new Error(`settings.declare: ${conflict} is both overridable and in userSchema`);
 				}
 				declaration = decl;
 				return declaredSettings<S, U>(decl);

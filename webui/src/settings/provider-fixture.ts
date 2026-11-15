@@ -75,7 +75,7 @@ export function makeProviderFixture(input?: {
     {
       slug: "core",
       id: "general",
-      title: "General",
+      title: "Behaviour",
       icon: "key",
       group: "system" as const,
     },

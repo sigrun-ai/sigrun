@@ -11,6 +11,8 @@ import {
 	checkSchema,
 	overridableKeys,
 	overridesSchema,
+	mergedUserSchema,
+	applyOverrides,
 	createEffectiveSettings,
 } from "../src/settings/effective.js";
 import type { JsonSchema } from "../src/settings/schema/keywords.js";
@@ -43,7 +45,7 @@ const testSchema = objectSchema({
 // ─── 1. the marker is accepted only on leaves ───────────────────────────
 
 describe("checkSchema with OVERRIDABLE_KEYWORD", () => {
-	it("the marker is accepted only on leaves", () => {
+	it("accepts scalar and array properties but rejects objects and secrets", () => {
 		// A leaf (string) with the marker should pass
 		const leaf = objectSchema({
 			model: { type: "string", [OVERRIDABLE_KEYWORD]: true },
@@ -61,11 +63,11 @@ describe("checkSchema with OVERRIDABLE_KEYWORD", () => {
 		const objResult = checkSchema(obj);
 		expect(objResult.ok).toBe(false);
 		if (!objResult.ok) {
-			expect(objResult.error).toContain("/nested");
-			expect(objResult.error).toContain(OVERRIDABLE_KEYWORD);
+			expect(objResult.error).toBe(
+				"settings schema /nested: x-sigrun-overridable is valid only on scalar or array properties",
+			);
 		}
 
-		// An array with the marker should fail
 		const arr = objectSchema({
 			tags: {
 				type: "array",
@@ -73,12 +75,15 @@ describe("checkSchema with OVERRIDABLE_KEYWORD", () => {
 				items: { type: "string" },
 			},
 		});
-		const arrResult = checkSchema(arr);
-		expect(arrResult.ok).toBe(false);
-		if (!arrResult.ok) {
-			expect(arrResult.error).toContain("/tags");
-			expect(arrResult.error).toContain(OVERRIDABLE_KEYWORD);
-		}
+		expect(checkSchema(arr)).toEqual({ ok: true });
+
+		const secret = objectSchema({
+			token: { type: "string", writeOnly: true, [OVERRIDABLE_KEYWORD]: true },
+		});
+		expect(checkSchema(secret)).toEqual({
+			ok: false,
+			error: "settings schema /token: x-sigrun-overridable is not valid on writeOnly (secret) properties",
+		});
 
 		// A non-true value should fail
 		const bad = objectSchema({
@@ -173,7 +178,208 @@ describe("overridableKeys", () => {
 	});
 });
 
-// ─── 4-9. createEffectiveSettings ───────────────────────────────────────
+// ─── 4. extension effective values ──────────────────────────────────────
+
+describe("applyOverrides", () => {
+	const schema = objectSchema({
+		endpoint: { type: "string", default: "https://system.example.invalid", [OVERRIDABLE_KEYWORD]: true },
+		tools: { type: "array", items: { type: "string" }, default: ["system"], [OVERRIDABLE_KEYWORD]: true },
+		group: {
+			type: "object",
+			properties: {
+				threshold: { type: "integer", default: 10, [OVERRIDABLE_KEYWORD]: true },
+			},
+		},
+	});
+
+	it("effective returns the system value when no override", () => {
+		expect(applyOverrides(schema, { endpoint: "https://system.example.invalid", tools: ["system"] }, {})).toEqual({
+			endpoint: "https://system.example.invalid",
+			tools: ["system"],
+		});
+	});
+
+	it("effective returns a valid override", () => {
+		expect(applyOverrides(schema, { endpoint: "https://system.example.invalid" }, {
+			endpoint: "https://user.example.invalid",
+		})).toEqual({ endpoint: "https://user.example.invalid" });
+	});
+
+	it("effective ignores an invalid override", () => {
+		expect(applyOverrides(schema, { endpoint: "https://system.example.invalid" }, {
+			endpoint: 7,
+		})).toEqual({ endpoint: "https://system.example.invalid" });
+	});
+
+	it("effective treats an empty-string override as present", () => {
+		expect(applyOverrides(schema, { endpoint: "https://system.example.invalid" }, {
+			endpoint: "",
+		})).toEqual({ endpoint: "" });
+	});
+
+	it("array override replaces the system list", () => {
+		expect(applyOverrides(schema, { tools: ["system", "other"] }, {
+			tools: ["user"],
+		})).toEqual({ tools: ["user"] });
+		expect(applyOverrides(schema, { tools: ["system"] }, { tools: [] })).toEqual({ tools: [] });
+	});
+
+	it("effective reads nested overrides", () => {
+		expect(applyOverrides(schema, { group: { threshold: 10 } }, {
+			group: { threshold: 3 },
+		})).toEqual({ group: { threshold: 3 } });
+	});
+
+	it("an absent or null override retains the system value", () => {
+		expect(applyOverrides(schema, { endpoint: "https://system.example.invalid" }, {
+			endpoint: null,
+		})).toEqual({ endpoint: "https://system.example.invalid" });
+	});
+
+	it("uses root definitions to validate a $ref override", () => {
+		const system = {
+			...objectSchema({
+				endpoint: { $ref: "#/$defs/Endpoint", [OVERRIDABLE_KEYWORD]: true },
+			}),
+			$defs: { Endpoint: { type: "string", minLength: 3 } },
+		};
+		expect(applyOverrides(system, {}, { endpoint: "https://user.example.invalid" })).toEqual({
+			endpoint: "https://user.example.invalid",
+		});
+		expect(applyOverrides(system, { endpoint: "https://system.example.invalid" }, { endpoint: "x" })).toEqual({
+			endpoint: "https://system.example.invalid",
+		});
+	});
+});
+
+describe("mergedUserSchema", () => {
+	it("marks override leaves and keeps the userSchema root open", () => {
+		const merged = mergedUserSchema(
+			objectSchema({
+				endpoint: { type: "string", default: "https://system.example.invalid", [OVERRIDABLE_KEYWORD]: true },
+				group: {
+					type: "object",
+					properties: {
+						threshold: { type: "integer", default: 10, [OVERRIDABLE_KEYWORD]: true },
+					},
+				},
+			}),
+			objectSchema({
+				nickname: { type: "string", default: "tester" },
+				group: {
+					type: "object",
+					properties: { note: { type: "string", default: "personal" } },
+				},
+			}),
+		);
+		expect(merged).toEqual({
+			type: "object",
+			properties: {
+				nickname: { type: "string", default: "tester" },
+				endpoint: { type: "string", "x-sigrun-inherit": true },
+				group: {
+					type: "object",
+					properties: {
+						note: { type: "string", default: "personal" },
+						threshold: { type: "integer", "x-sigrun-inherit": true },
+					},
+				},
+			},
+		});
+		expect(merged?.additionalProperties).toBeUndefined();
+	});
+
+	it("preserves personal object keywords and stored table rows", async () => {
+		const merged = mergedUserSchema(
+			objectSchema({
+				group: {
+					type: "object",
+					properties: {
+						threshold: { type: "integer", [OVERRIDABLE_KEYWORD]: true },
+					},
+				},
+			}),
+			objectSchema({
+				group: {
+					type: "object",
+					title: "Personal group",
+					description: "Personal settings",
+					required: ["note"],
+					properties: { note: { type: "string", default: "personal" } },
+					additionalProperties: { type: "string" },
+				},
+			}),
+		);
+		const group = (merged?.properties as Record<string, JsonSchema>).group!;
+		expect(group).toMatchObject({
+			title: "Personal group",
+			description: "Personal settings",
+			required: ["note"],
+			additionalProperties: { type: "string" },
+		});
+		const { checkStoredSettings } = await import("../src/settings/schema/defaults.js");
+		const checked = checkStoredSettings(merged!, {
+			group: { note: "personal", acme: "keep me", threshold: 3 },
+		});
+		expect(checked.repairs).toEqual([]);
+		expect(checked.value).toEqual({
+			group: { note: "personal", acme: "keep me", threshold: 3 },
+		});
+	});
+
+	it("carries system $defs and strips server env fallbacks from override leaves", () => {
+		const system = {
+			...objectSchema({
+				endpoint: {
+					$ref: "#/$defs/Endpoint",
+					[OVERRIDABLE_KEYWORD]: true,
+				},
+				envEndpoint: {
+					type: "string",
+					"x-sigrun-env": "ACME_PERSONAL_URL",
+					[OVERRIDABLE_KEYWORD]: true,
+				},
+			}),
+			$defs: { Endpoint: { type: "string", minLength: 3 } },
+		};
+		const merged = mergedUserSchema(system, undefined);
+		expect(merged?.$defs).toEqual(system.$defs);
+		expect(merged?.properties).toMatchObject({
+			endpoint: { type: "string", minLength: 3, "x-sigrun-inherit": true },
+			envEndpoint: { type: "string", "x-sigrun-inherit": true },
+		});
+		expect((merged?.properties as Record<string, JsonSchema>).envEndpoint).not.toHaveProperty("x-sigrun-env");
+	});
+
+	it("merges personal and system definition bags", () => {
+		const merged = mergedUserSchema(
+			{
+				...objectSchema({ endpoint: { type: "string", [OVERRIDABLE_KEYWORD]: true } }),
+				$defs: { SystemEndpoint: { type: "string" } },
+				definitions: { SystemEndpoint: { type: "string" } },
+			},
+			{
+				...objectSchema({ nickname: { $ref: "#/$defs/PersonalName" } }),
+				$defs: { PersonalName: { type: "string", minLength: 3 } },
+				definitions: { PersonalName: { type: "string", minLength: 3 } },
+			},
+		);
+		expect(merged?.$defs).toEqual({
+			PersonalName: { type: "string", minLength: 3 },
+			SystemEndpoint: { type: "string" },
+		});
+		expect(merged?.definitions).toEqual({
+			PersonalName: { type: "string", minLength: 3 },
+			SystemEndpoint: { type: "string" },
+		});
+	});
+
+	it("is undefined when neither schema has properties", () => {
+		expect(mergedUserSchema(objectSchema({}), undefined)).toBeUndefined();
+	});
+});
+
+// ─── 5-10. core effective settings ──────────────────────────────────────
 
 describe("createEffectiveSettings", () => {
 	it("a user's override wins for that user only", async () => {

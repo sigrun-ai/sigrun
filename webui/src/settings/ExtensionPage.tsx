@@ -36,7 +36,7 @@ function ExtensionSurface(props: {
 			},
 		};
 	}, [client, section.slug, section.id, onData]);
-	return <SurfaceView transport={transport} />;
+	return <SurfaceView transport={transport} inlineFeedback />;
 }
 
 /** One loaded extension's status, credentials, shared settings, personal
@@ -55,6 +55,7 @@ export function ExtensionPage(props: {
 	const [stored, setStored] = useState<Record<string, unknown>>({});
 	const [unknownKeys, setUnknownKeys] = useState<readonly string[]>([]);
 	const [loadError, setLoadError] = useState<string>();
+	const [refreshingModels, setRefreshingModels] = useState(false);
 	const providerPage = extension.provider === true || extension.name === "core";
 	const ownedByPage = useCallback((provider: AuthCheckProviderWire): boolean =>
 		extension.name === "core" ? provider.owner === undefined : provider.owner === extension.name,
@@ -107,6 +108,19 @@ export function ExtensionPage(props: {
 			setLoadError(cause instanceof Error ? cause.message : String(cause));
 		}
 	};
+	const refreshModels = async (): Promise<void> => {
+		setRefreshingModels(true);
+		try {
+			for (const provider of credentials) await client.refreshProvider(provider.provider);
+			const response = await client.listProviders();
+			setProviders(response.providers.filter(ownedByPage));
+			setLoadError(undefined);
+		} catch (cause: unknown) {
+			setLoadError(cause instanceof Error ? cause.message : String(cause));
+		} finally {
+			setRefreshingModels(false);
+		}
+	};
 	return (
 		<div className="settings-body settings-extension-page" data-extension-page={extension.name}>
 			{systemPage && (
@@ -127,21 +141,6 @@ export function ExtensionPage(props: {
 						<input type="checkbox" className="settings-provider-local" checked={locality} onChange={(event) => void toggleLocality(event.target.checked)} />
 						<span className="settings-label">Runs locally</span>
 					</label>
-				</section>
-			)}
-			{systemPage && admin && providers.length > 0 && providerPage && (
-				<section data-extension-part="models" aria-label="Models">
-					<h3>Models</h3>
-					{(["chat", "decision", "embedding"] as const).map((kind) => {
-						const rows = providers.filter((provider) => (provider.kind ?? "chat") === kind);
-						if (rows.length === 0) return null;
-						return (
-							<div key={kind} data-model-kind={kind}>
-								<h4>{kind}</h4>
-								<ul>{rows.flatMap((provider) => (provider.modelIds ?? []).map((model) => <li key={`${provider.provider}/${model}`}>{provider.provider}/{model}</li>))}</ul>
-							</div>
-						);
-					})}
 				</section>
 			)}
 			{systemPage && admin && extension.name !== "core" && credentials.length > 0 && (
@@ -170,6 +169,24 @@ export function ExtensionPage(props: {
 					{visibleUnknownKeys.length > 0 && <p className="settings-note">{visibleUnknownKeys.join(", ")} — not in this version's settings</p>}
 					<pre>{JSON.stringify(stored, null, 2)}</pre>
 				</details>
+			)}
+			{systemPage && admin && providers.length > 0 && providerPage && (
+				<section data-extension-part="models" aria-label="Models">
+					<div className="settings-provider-models-heading">
+						<h3>Models</h3>
+						<button type="button" className="settings-provider-models-refresh" disabled={refreshingModels} onClick={() => void refreshModels()}>{refreshingModels ? "Refreshing…" : "Refresh"}</button>
+					</div>
+					{(["chat", "decision", "embedding"] as const).map((kind) => {
+						const rows = providers.filter((provider) => (provider.kind ?? "chat") === kind);
+						if (rows.length === 0) return null;
+						return (
+							<div key={kind} data-model-kind={kind}>
+								<h4>{kind}</h4>
+								<ul>{rows.flatMap((provider) => (provider.modelIds ?? []).map((model) => <li key={`${provider.provider}/${model}`}>{provider.provider}/{model}</li>))}</ul>
+							</div>
+						);
+					})}
+				</section>
 			)}
 		</div>
 	);

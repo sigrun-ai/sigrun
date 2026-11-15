@@ -13,7 +13,7 @@ export {
 	type SettingsRepair,
 } from "./defaults.js";
 
-export { dropBlankOptionalStrings } from "./blanks.js";
+export { dropBlankUnsets, dropBlankOptionalStrings } from "./blanks.js";
 
 export { ENV_KEYWORD, envOf, MODEL_KEYWORD, OVERRIDABLE_KEYWORD } from "./keywords.js";
 

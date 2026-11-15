@@ -22,7 +22,7 @@ import type {
 	JsonObject,
 	SectionBlock,
 } from "@sigrun/shared/blocks";
-import { findButton, render, textContent } from "../../test-utils";
+import { findButton, instanceText, render, textContent } from "../../test-utils";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
 import { FormBlockView } from "./Form";
 
@@ -38,6 +38,10 @@ function makeHarness(
 		readonly viewState?: JsonObject;
 		readonly access?: "read" | "write";
 		readonly serverErrors?: Readonly<Record<string, string>>;
+		readonly submitStatus?:
+			| { readonly kind: "saved" }
+			| { readonly kind: "error"; readonly message: string };
+		readonly submitSeq?: number;
 		readonly interaction?: boolean;
 	},
 ): Harness {
@@ -54,6 +58,8 @@ function makeHarness(
 						access: init?.access ?? "write",
 						viewState: init?.viewState ?? {},
 						serverErrors: init?.serverErrors ?? {},
+						submitStatus: init?.submitStatus,
+						submitSeq: init?.submitSeq,
 					},
 				},
 				h(FormBlockView, {
@@ -194,6 +200,55 @@ describe("form mode: submit", () => {
 		expect(textContent(long.renderer.toJSON())).toContain(
 			"at most 4 characters",
 		);
+	});
+});
+
+describe("form inline save feedback", () => {
+	test("error status renders above the submit button", () => {
+		const { renderer } = makeHarness(registrationForm(), {
+			data: { registration: { name: "Acme Co" } },
+			submitStatus: { kind: "error", message: "Max batch must be integer" },
+			submitSeq: 1,
+		});
+		const alert = renderer.root.findByProps({
+			role: "alert",
+			className: "blk-form-error",
+		});
+		expect(instanceText(alert)).toContain(
+			"Not saved: Max batch must be integer",
+		);
+		const button = findButton(renderer, "Register");
+		const inDomOrder = renderer.root.findAll(
+			(node) => node === alert || node === button,
+		);
+		expect(inDomOrder).toEqual([alert, button]);
+	});
+
+	test("saved status renders beside the button", () => {
+		const { renderer } = makeHarness(registrationForm(), {
+			submitStatus: { kind: "saved" },
+			submitSeq: 1,
+		});
+		const saved = renderer.root.findByProps({
+			role: "status",
+			className: "blk-form-saved",
+		});
+		expect(instanceText(saved)).toBe("Saved");
+		expect(saved.parent).toBe(findButton(renderer, "Register").parent);
+	});
+
+	test("an edit after the result clears it", () => {
+		const { renderer } = makeHarness(registrationForm(), {
+			submitStatus: { kind: "error", message: "Max batch must be integer" },
+			submitSeq: 1,
+		});
+		expect(
+			renderer.root.findAllByProps({ className: "blk-form-error" }),
+		).toHaveLength(1);
+		typeInto(renderer, "Handle", "acme");
+		expect(
+			renderer.root.findAllByProps({ className: "blk-form-error" }),
+		).toHaveLength(0);
 	});
 });
 

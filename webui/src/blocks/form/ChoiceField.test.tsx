@@ -12,6 +12,7 @@ import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
 import type { FormBlock, JsonObject } from "@sigrun/shared/blocks";
 import { findButton, instanceText, render, textContent } from "../../test-utils";
+import { Combobox } from "./Combobox";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
 import { WidthContext } from "../width";
 import { FormBlockView } from "./Form";
@@ -81,7 +82,7 @@ function submit(renderer: TestRenderer.ReactTestRenderer): void {
 }
 
 describe("choice: presentation", () => {
-	test("dropdown presentation renders a select with two options", () => {
+	test("dropdown presentation renders a combobox", () => {
 		const { renderer } = harness([
 			{
 				type: "choice",
@@ -94,7 +95,12 @@ describe("choice: presentation", () => {
 				presentation: "dropdown",
 			},
 		]);
-		expect(renderer.root.findAllByType("select")).toHaveLength(1);
+		expect(renderer.root.findAllByType("select")).toHaveLength(0);
+		expect(
+			renderer.root.findAll(
+				(node) => node.type === "input" && node.props.role === "combobox",
+			),
+		).toHaveLength(1);
 		expect(
 			renderer.root.findAll(
 				(node) => node.type === "input" && node.props.type === "radio",
@@ -102,7 +108,7 @@ describe("choice: presentation", () => {
 		).toHaveLength(0);
 	});
 
-	test("a dropdown renders its bound placeholder in the empty option", () => {
+	test("a dropdown renders its bound placeholder in the combobox", () => {
 		const { renderer } = harness([
 			{
 				type: "choice",
@@ -113,11 +119,10 @@ describe("choice: presentation", () => {
 				placeholder: { $: "/systemDefault" },
 			},
 		], { data: { systemDefault: "System default (acme/runtime-default)" } });
-		const empty = renderer.root.findAll(
-			(node) => node.type === "option" && node.props.value === "",
-		);
-		expect(empty).toHaveLength(1);
-		expect(instanceText(empty[0]!)).toBe("System default (acme/runtime-default)");
+		const combobox = renderer.root.findAll(
+			(node) => node.type === "input" && node.props.role === "combobox",
+		)[0];
+		expect(combobox?.props.placeholder).toBe("System default (acme/runtime-default)");
 	});
 
 	test("multi choice ignores dropdown presentation", () => {
@@ -204,7 +209,7 @@ describe("choice: value shapes (§5.6)", () => {
 		});
 	});
 
-	test('a dropdown without a placeholder keeps its empty option blank', () => {
+	test('a dropdown without a placeholder has an empty combobox placeholder', () => {
 		const { renderer } = harness([
 			{
 				type: "choice",
@@ -214,12 +219,10 @@ describe("choice: value shapes (§5.6)", () => {
 				presentation: "dropdown",
 			},
 		]);
-		const empty = renderer.root.findAll(
-			(node) => node.type === "option" && node.props.value === "",
-		);
-
-		expect(empty).toHaveLength(1);
-		expect(instanceText(empty[0]!)).toBe("");
+		const combobox = renderer.root.findAll(
+			(node) => node.type === "input" && node.props.role === "combobox",
+		)[0];
+		expect(combobox?.props.placeholder).toBe("");
 	});
 
 	test('the allowOther row carries the "Type something" placeholder', () => {
@@ -248,6 +251,418 @@ describe("choice: value shapes (§5.6)", () => {
 			rev: 0,
 			values: { pick: ["a"] },
 		});
+	});
+});
+
+describe("choice: combobox", () => {
+	const SEARCH_OPTIONS = [
+		{ id: "ollama-cloud/glm-5.3-flash", label: "GLM 5.3 Flash (Ollama Cloud)" },
+		{ id: "inferhub-openai/glm-5.3", label: "GLM 5.3 (InferHub)" },
+		{ id: "pareto/glm-5.3-flash", label: "GLM 5.3 Flash (Pareto)" },
+	];
+
+	function combobox(renderer: TestRenderer.ReactTestRenderer): TestRenderer.ReactTestInstance {
+		const input = renderer.root.findAll(
+			(node) => node.type === "input" && node.props.role === "combobox",
+		)[0];
+		if (input === undefined) throw new Error("no combobox");
+		return input;
+	}
+
+	function typeText(renderer: TestRenderer.ReactTestRenderer, text: string): void {
+		act(() => {
+			combobox(renderer).props.onChange({ target: { value: text } });
+		});
+	}
+
+	function optionTexts(renderer: TestRenderer.ReactTestRenderer): string[] {
+		return renderer.root.findAllByProps({ role: "option" }).map((option) => instanceText(option));
+	}
+
+	function keyDown(renderer: TestRenderer.ReactTestRenderer, key: string): void {
+		act(() => {
+			combobox(renderer).props.onKeyDown({
+				key,
+				preventDefault: () => {},
+			});
+		});
+	}
+
+	test("typing filters by every term over label or id", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		]);
+
+		typeText(renderer, "ollama flash");
+		expect(optionTexts(renderer)).toEqual(["GLM 5.3 Flash (Ollama Cloud)"]);
+
+		typeText(renderer, "glm-5.3-flash");
+		expect(optionTexts(renderer)).toHaveLength(2);
+
+		typeText(renderer, "PARETO");
+		expect(optionTexts(renderer)).toEqual(["GLM 5.3 Flash (Pareto)"]);
+
+		typeText(renderer, "zzz");
+		expect(optionTexts(renderer)).toHaveLength(0);
+	});
+
+	test("Enter picks the highlighted option", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		]);
+
+		typeText(renderer, "ollama flash");
+		keyDown(renderer, "ArrowDown");
+		keyDown(renderer, "Enter");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { model: "ollama-cloud/glm-5.3-flash" } },
+		);
+	});
+
+	test("multi keeps chips and removes on chip click", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+			},
+		]);
+
+		// Type to filter and select via Enter.
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "ArrowDown");
+		keyDown(renderer, "Enter");
+
+		// A chip should appear and the list should stay open.
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" }).length).toBe(1);
+		expect(optionTexts(renderer).length).toBeGreaterThan(0);
+
+		// Select another option.
+		typeText(renderer, "Beta");
+		keyDown(renderer, "ArrowDown");
+		keyDown(renderer, "Enter");
+
+		const removeAlpha = renderer.root.findByProps({ "aria-label": "Remove Alpha" });
+		act(() => {
+			removeAlpha.props.onClick();
+		});
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" })).toHaveLength(1);
+
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/b"] } },
+		);
+	});
+
+	test("single displays the selected label and offers the empty value", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+				placeholder: "Choose a model",
+			},
+		]);
+		expect(combobox(renderer).props.value).toBe("");
+		expect(combobox(renderer).props.placeholder).toBe("Choose a model");
+
+		typeText(renderer, "ollama flash");
+		keyDown(renderer, "Enter");
+		expect(combobox(renderer).props.value).toBe("GLM 5.3 Flash (Ollama Cloud)");
+
+		// Re-open without typing: the empty option restores the old clear path.
+		keyDown(renderer, "ArrowDown");
+		expect(optionTexts(renderer)[0]).toBe("Choose a model");
+		keyDown(renderer, "Enter");
+		expect(combobox(renderer).props.value).toBe("");
+		expect(combobox(renderer).props.placeholder).toBe("Choose a model");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { model: "" } },
+		);
+	});
+
+	test("allowOther multi appends {other} after the selected ids", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+				allowOther: {},
+			},
+		]);
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "custom/model");
+		const useOther = renderer.root.findAllByProps({ role: "option" }).find(
+			(node) => instanceText(node).includes("Use"),
+		);
+		expect(combobox(renderer).props.value).toBe("custom/model");
+		expect(combobox(renderer).props["aria-expanded"]).toBe(true);
+		expect(renderer.root.findAllByType("ul").length).toBeGreaterThan(0);
+		expect(optionTexts(renderer)).toContain("Use \"custom/model\"");
+		expect(useOther).toBeDefined();
+		act(() => {
+			useOther!.props.onClick();
+		});
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/a", { other: "custom/model" }] } },
+		);
+	});
+
+	test("multi preserves {other} as the last entry across later picks", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+				allowOther: {},
+			},
+		]);
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "custom/model");
+		const useOther = renderer.root.findAllByProps({ role: "option" }).find(
+			(node) => instanceText(node) === "Use \"custom/model\"",
+		);
+		act(() => {
+			useOther?.props.onClick();
+		});
+		typeText(renderer, "Beta");
+		keyDown(renderer, "Enter");
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" })).toHaveLength(2);
+		const otherInput = renderer.root.findAll(
+			(node) => node.type === "input" && node.props["aria-label"] === "Models other text",
+		)[0];
+		expect(otherInput?.props.value).toBe("custom/model");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/a", "acme/b", { other: "custom/model" }] } },
+		);
+	});
+
+	test("typing resets the highlight and zero matches never poison Enter", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		]);
+		typeText(renderer, "glm");
+		keyDown(renderer, "ArrowDown");
+		expect(combobox(renderer).props["aria-activedescendant"]).toBe("blk-combobox-option-1");
+		typeText(renderer, "zzz");
+		expect(combobox(renderer).props["aria-activedescendant"]).toBeUndefined();
+		keyDown(renderer, "ArrowDown");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "PARETO");
+		expect(combobox(renderer).props["aria-activedescendant"]).toBe("blk-combobox-option-0");
+		keyDown(renderer, "Enter");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { model: "pareto/glm-5.3-flash" } },
+		);
+	});
+
+	test("the clear row does not duplicate a roster empty option", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: [
+					{ id: "", label: "Use the default (acme/default)" },
+					{ id: "acme/a", label: "Alpha" },
+				],
+				presentation: "dropdown",
+				placeholder: "Choose a model",
+			},
+		]);
+		keyDown(renderer, "ArrowDown");
+		expect(optionTexts(renderer)).toEqual(["Use the default (acme/default)", "Alpha"]);
+	});
+
+	test("a synthetic clear row is labeled when no placeholder exists", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		]);
+		keyDown(renderer, "ArrowDown");
+		expect(optionTexts(renderer)[0]).toBe("(none)");
+	});
+
+	test("Escape and Tab restore the selected label", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		], { data: { f: { model: "pareto/glm-5.3-flash" } } });
+		expect(combobox(renderer).props.value).toBe("GLM 5.3 Flash (Pareto)");
+
+		for (const key of ["Escape", "Tab"]) {
+			typeText(renderer, "zzz");
+			keyDown(renderer, key);
+			expect(combobox(renderer).props.value).toBe("GLM 5.3 Flash (Pareto)");
+			expect(combobox(renderer).props["aria-expanded"]).toBe(false);
+		}
+
+		vi.unstubAllGlobals();
+	});
+
+	test("outside dismissal clears the search text", () => {
+		const listeners = new Map<string, Set<(event: unknown) => void>>();
+		vi.stubGlobal("document", {
+			addEventListener(type: string, listener: (event: unknown) => void) {
+				const existing = listeners.get(type) ?? new Set<(event: unknown) => void>();
+				existing.add(listener);
+				listeners.set(type, existing);
+			},
+			removeEventListener(type: string, listener: (event: unknown) => void) {
+				listeners.get(type)?.delete(listener);
+			},
+		});
+		const renderer = render(h(Combobox, {
+			label: "Model",
+			options: SEARCH_OPTIONS,
+			multi: false,
+			value: "pareto/glm-5.3-flash",
+			onChange: () => {},
+		}));
+		const input = renderer.root.findByProps({ role: "combobox" });
+		act(() => {
+			input.props.onFocus();
+			input.props.onChange({ target: { value: "zzz" } });
+		});
+		expect(listeners.get("pointerdown")?.size).toBe(1);
+		act(() => {
+			for (const listener of listeners.get("pointerdown") ?? []) {
+				listener({ target: {} });
+			}
+		});
+		expect(input.props.value).toBe("GLM 5.3 Flash (Pareto)");
+		expect(input.props["aria-expanded"]).toBe(false);
+		vi.unstubAllGlobals();
+	});
+
+	test("multi picking an already selected option does not duplicate it", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+			},
+		]);
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" })).toHaveLength(1);
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/a"] } },
+		);
+	});
+
+	test("allowOther offers Use text and submits {other}", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: [
+					{ id: "acme/alpha", label: "Alpha" },
+					{ id: "acme/beta", label: "Beta" },
+				],
+				presentation: "dropdown",
+				allowOther: { label: "Custom model" },
+			},
+		]);
+
+		typeText(renderer, "custom/model");
+		const useOption = renderer.root.findAllByProps({ role: "option" }).filter(
+			(node) => instanceText(node).includes("Use"),
+		);
+		expect(useOption.length).toBe(1);
+		expect(instanceText(useOption[0]!)).toContain("custom/model");
+
+		keyDown(renderer, "ArrowDown");
+		keyDown(renderer, "Enter");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { model: { other: "custom/model" } } },
+		);
 	});
 });
 

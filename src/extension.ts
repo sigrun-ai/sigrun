@@ -1412,6 +1412,8 @@ export interface SettingsDeclaration {
 export interface DeclaredSettings<S, U> {
 	/** settings/<slug>.json: defaults applied and secrets filled, fresh per call. */
 	get(): Promise<S>;
+	/** System settings with this user's valid, present overrides applied. */
+	effective(user: string): Promise<S>;
 	/** One directory user's settings under userSchema (throws when none was declared). */
 	user(user: string): { get(): Promise<U> };
 }

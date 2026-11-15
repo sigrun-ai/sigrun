@@ -188,6 +188,11 @@ const FieldBase = {
 	disabled: Type.Optional(Type.Boolean()),
 	/** §13; settings only. */
 	apply: Type.Optional(Type.Unsafe({ type: "string", enum: ["live", "restart"] })),
+	/** Personal override: system display text and the raw system value. */
+	inherit: Type.Optional(Type.Object({
+		system: BindableString,
+		raw: Type.Ref("Binding"),
+	})),
 	min: Type.Optional(Type.Number()),
 	max: Type.Optional(Type.Number()),
 	minLength: Type.Optional(Type.Integer()),
