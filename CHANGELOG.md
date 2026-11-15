@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.1] - 2026-11-15
+
+### Fixed
+
+- A large attachment no longer inlines its whole body. A `{type:"file"}`
+  submission part over `server.maxInlineFileBytes` (default 50 KiB, one
+  `read` page) inlines a head plus a pointer to the workspace path, where
+  the agent's own `read`/`grep`/`bash`/codemode reach the whole file. Before
+  this, two pasted HTML pages became a 6.5 MB conversation entry — roughly
+  1.6M tokens, past every catalog model's context window — so the turn could
+  never have succeeded even without the crash it caused.
+- A tool result's `details` is bounded. `details` is the one result channel
+  pi-durable does not limit (it never reaches the model), and an MCP tool
+  that mirrors its raw protocol payload into it stored 8.5 MB beside 7.2 KB
+  of model-visible text. The new hooks-only core extension
+  `sigrun.tool-result-cap` replaces an oversized `details` with a marker
+  naming its byte size and JSON kind; smaller details pass through
+  untouched. It is installed with the other core-owned entries and cannot be
+  opted out of by a narrowed host default.
+
+### Added
+
+- `SIGRUN_MAX_INLINE_FILE_BYTES` / `server.maxInlineFileBytes` — the shared
+  cap for both bounds above. A positive integer, 50 KiB by default, listed
+  in the settings registry.
+
 ## [0.18.0] - 2026-11-14
 
 ### Added
