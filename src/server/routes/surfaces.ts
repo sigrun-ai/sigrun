@@ -33,12 +33,13 @@
  */
 
 import { PassThrough } from "node:stream";
+import { Socket } from "node:net";
+import type { Server } from "node:http";
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import type { JsonObject, JsonValue } from "@sigrun/shared/blocks";
 import type { Principal } from "../auth/principal.js";
 import type { ServerContext } from "../context.js";
-import { instanceKey } from "../surfaces/instance.js";
 import {
 	ActionRateLimitedError,
 	SurfaceFailedError,
@@ -87,6 +88,51 @@ interface UploadGate {
 /** The per-request gate record (preParsing → handler). */
 type UploadCaps = WeakMap<FastifyRequest, UploadGate>;
 
+interface UploadSocketGate {
+	readonly cap: number;
+	received: number;
+	tripped: boolean;
+	replied: boolean;
+}
+
+const uploadSockets = new WeakMap<Socket, UploadSocketGate>();
+const guardedServers = new WeakSet<Server>();
+
+/**
+ * llhttp rejects a malformed chunk and emits the server's clientError BEFORE
+ * the request payload's error handler can reply. This one guard is installed
+ * by the upload route only; it honors that route's 413 contract after bytes
+ * have arrived. Every unmarked or zero-byte socket keeps the original handler.
+ */
+function guardUploadClientErrors(server: Server): void {
+	if (guardedServers.has(server)) return;
+	guardedServers.add(server);
+	const original = server.listeners("clientError");
+	for (const listener of original) server.off("clientError", listener);
+	server.on("clientError", (cause, socket) => {
+		if (!(socket instanceof Socket)) {
+			for (const listener of original) listener(cause, socket);
+			return;
+		}
+		const gate = uploadSockets.get(socket);
+		if (gate === undefined || gate.received === 0) {
+			for (const listener of original) listener(cause, socket);
+			return;
+		}
+		if (!gate.replied && !gate.tripped) {
+			gate.replied = true;
+			const body = JSON.stringify({ error: "too_large", maxBytes: gate.cap });
+			socket.write(
+				"HTTP/1.1 413 Payload Too Large\r\n" +
+					"Content-Type: application/json\r\n" +
+					`Content-Length: ${Buffer.byteLength(body)}\r\n` +
+					"Connection: close\r\n\r\n" + body,
+			);
+		}
+		socket.destroy(cause);
+	});
+}
+
 /** The not-found body — shared by unknown ids and `access: "none"`. */
 const NOT_FOUND = { error: "surface_not_found" } as const;
 
@@ -127,6 +173,7 @@ export function registerSurfaceRoutes(
 ): void {
 	const { surfaces } = ctx;
 	const uploadCaps: UploadCaps = new WeakMap();
+	guardUploadClientErrors(app.server);
 
 	/** The shared failure mapping (logged; errors only under server.dev). */
 	const failureReply = async (
@@ -419,12 +466,21 @@ export function registerSurfaceRoutes(
 					return payload;
 				}
 				let received = 0;
+				const socketGate: UploadSocketGate = {
+					cap: gate.cap,
+					received: 0,
+					tripped: false,
+					replied: false,
+				};
+				uploadSockets.set(request.raw.socket, socketGate);
 				const capped = new PassThrough();
 				payload.on("data", (chunk: Buffer) => {
+					socketGate.received += chunk.byteLength;
 					if (gate.tripped) return;
 					received += chunk.byteLength;
 					if (received > gate.cap) {
 						gate.tripped = true;
+						socketGate.tripped = true;
 						// The reply first, then the socket: destroying the
 						// request stream before the reply lands makes Node drop
 						// the response entirely.
@@ -442,7 +498,10 @@ export function registerSurfaceRoutes(
 					}
 					capped.write(chunk);
 				});
-				payload.on("end", () => capped.end());
+				payload.on("end", () => {
+					uploadSockets.delete(request.raw.socket);
+					capped.end();
+				});
 				payload.on("error", () => capped.end());
 				return capped;
 			},

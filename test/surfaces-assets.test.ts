@@ -259,6 +259,81 @@ describe("the surface upload route (U3 Task 3)", () => {
 		expect(result.socketClosedBeforeEnd).toBe(true);
 	});
 
+	test("a chunked body that errors after sending bytes → 413 too_large", async () => {
+		const { app, aliceToken, listenUrl } = await server();
+		await warmBoard(app, aliceToken);
+		const port = Number(new URL(listenUrl).port);
+		const response = await new Promise<string>((resolvePromise, rejectPromise) => {
+			const socket = createConnection({ port, host: "127.0.0.1" }, () => {
+				socket.write(
+					"PUT /v1/ext/fixture-surfaces/surfaces/board/uploads/attachment/truncated.bin HTTP/1.1\r\n" +
+						`Host: 127.0.0.1:${port}\r\n` +
+						`authorization: Bearer ${aliceToken}\r\n` +
+						"content-type: application/octet-stream\r\n" +
+						"transfer-encoding: chunked\r\n" +
+						"connection: close\r\n" +
+						"\r\n",
+				);
+			});
+			let text = "";
+			socket.on("data", (data) => {
+				text += data.toString("latin1");
+			});
+			socket.on("error", () => {
+				// The server may close with the response already buffered.
+			});
+			socket.on("close", () => resolvePromise(text));
+			socket.setTimeout(10_000, () => {
+				socket.destroy();
+				rejectPromise(new Error("socket test timed out"));
+			});
+			// Two valid, under-cap chunks then malformed chunk framing: the
+			// parser dies mid-upload instead of reaching the declared cap.
+			setTimeout(() => {
+				socket.write(`100\r\n${"a".repeat(256)}\r\n`);
+				setTimeout(() => {
+					socket.write(`100\r\n${"b".repeat(256)}\r\n`);
+					setTimeout(() => socket.write("not-a-chunk-size\r\n"), 5);
+				}, 5);
+			}, 5);
+		});
+		expect(response).toContain("HTTP/1.1 413");
+		expect(response).toContain('{"error":"too_large","maxBytes":1024}');
+		expect(/connection: close/i.test(response)).toBe(true);
+	});
+
+	test("a chunked body that errors before any bytes → 400 Bad Request", async () => {
+		const { app, aliceToken, listenUrl } = await server();
+		await warmBoard(app, aliceToken);
+		const port = Number(new URL(listenUrl).port);
+		const response = await new Promise<string>((resolvePromise, rejectPromise) => {
+			const socket = createConnection({ port, host: "127.0.0.1" }, () => {
+				socket.write(
+					"PUT /v1/ext/fixture-surfaces/surfaces/board/uploads/attachment/malformed.bin HTTP/1.1\r\n" +
+						`Host: 127.0.0.1:${port}\r\n` +
+						`authorization: Bearer ${aliceToken}\r\n` +
+						"content-type: application/octet-stream\r\n" +
+						"transfer-encoding: chunked\r\n" +
+						"connection: close\r\n" +
+						"\r\n" +
+						"not-a-chunk-size\r\n",
+				);
+			});
+			let text = "";
+			socket.on("data", (data) => {
+				text += data.toString("latin1");
+			});
+			socket.on("error", (cause) => rejectPromise(cause));
+			socket.on("close", () => resolvePromise(text));
+			socket.setTimeout(10_000, () => {
+				socket.destroy();
+				rejectPromise(new Error("socket test timed out"));
+			});
+		});
+		expect(response).toContain("HTTP/1.1 400");
+		expect(response).toContain('"error":"Bad Request"');
+	});
+
 	test("read access → 403 on the upload route, before the body is read", async () => {
 		const { app, aliceToken } = await server();
 		await warmBoard(app, aliceToken);
