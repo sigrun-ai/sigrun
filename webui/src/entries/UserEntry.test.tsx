@@ -12,8 +12,10 @@ import { act, createElement as h } from "react";
 import { describe, expect, test, vi } from "vitest";
 import {
 	findButton,
+	instanceText,
 	makeEntry,
 	render,
+	stubClipboard,
 	textContent,
 	textMessage,
 	userTurnEntry,
@@ -22,6 +24,33 @@ import { MessageActions } from "./MessageActions";
 import { UserEntry, userText } from "./UserEntry";
 
 const noop = (): void => {};
+
+function notesAttachment() {
+	return {
+		path: "uploads/7/notes.md",
+		name: "notes.md",
+		mime: "text/markdown",
+		bytes: 12,
+		delivery: "inline",
+		parts: [0],
+	};
+}
+
+function attachmentTurnEntry() {
+	return makeEntry(
+		"sigrun.user",
+		[
+			{
+				role: "user",
+				content: [
+					{ type: "text", text: '<attachment path="uploads/7/notes.md">BODY</attachment>' },
+					{ type: "text", text: "what's in here?" },
+				],
+			},
+		],
+		{ data: { attachments: [notesAttachment()] } },
+	);
+}
 
 describe("UserEntry", () => {
 	test("renders the user's text parts as right-aligned bubbles", () => {
@@ -34,6 +63,44 @@ describe("UserEntry", () => {
 		expect(text).toContain("first part");
 		expect(text).toContain("second message");
 		renderer.unmount();
+	});
+
+	test("an attachment input shows only its typed text and file chips", () => {
+		const entry = attachmentTurnEntry();
+		const renderer = render(h(UserEntry, { entry, onFork: noop, onEdit: noop }));
+		const text = textContent(renderer.toJSON());
+		expect(text).toContain("what's in here?");
+		expect(text).not.toContain("BODY");
+		const chips = renderer.root.findAll(
+			(node) => node.props.className === "entry-attachment entry-attachment-chip",
+		);
+		expect(chips).toHaveLength(1);
+		expect(chips[0]?.props.title).toBe("inline");
+		expect(instanceText(chips[0]!)).toContain("notes.md");
+		expect(instanceText(chips[0]!)).toContain("12 B");
+		renderer.unmount();
+	});
+
+	test("Copy writes the typed text without an attachment body", async () => {
+		const writeText = stubClipboard();
+		const renderer = render(
+			h(UserEntry, { entry: attachmentTurnEntry(), onFork: noop, onEdit: noop }),
+		);
+		await act(async () => {
+			findButton(renderer, "Copy").props.onClick();
+		});
+		expect(writeText).toHaveBeenCalledWith("what's in here?");
+		renderer.unmount();
+	});
+
+	test("userText never substitutes attachment names for blank typed text", () => {
+		expect(userText(attachmentTurnEntry())).toBe("what's in here?");
+		const only = makeEntry(
+			"sigrun.user",
+			[{ role: "user", content: [{ type: "text", text: "BODY" }] }],
+			{ data: { attachments: [notesAttachment()] } },
+		);
+		expect(userText(only)).toBe("");
 	});
 
 	test("non-text parts render as path markers alongside the text", () => {

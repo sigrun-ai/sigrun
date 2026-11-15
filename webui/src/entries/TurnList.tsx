@@ -9,8 +9,9 @@
  *   turn — then `onNavigate(fork.id)`.
  * - Edit (user turns only): find the entry IMMEDIATELY BEFORE the user
  *   entry; if one exists fork at it, else `client.createConversation()`;
- *   then `patchConversationMeta(newId, { draft: { text } })` and
- *   navigate — the composer's draft restore fills the textarea. The
+ *   then `patchConversationMeta(newId, { draft: { text, attachments } })` and
+ *   navigate — the composer's draft restore fills the textarea and restores
+ *   the entry's delivered attachment paths. The
  *   ORIGINAL conversation is never touched.
  *
  * The streaming partial (`pi.live.generation.message`) MERGES into the
@@ -28,8 +29,10 @@ import type {
 	ToolSlotWire,
 } from "../api";
 import {
+	entryAttachments,
 	groupTurns,
 	toolPreview,
+	typedText,
 	type TimelineEvent,
 	type ToolCall,
 	type Turn,
@@ -38,7 +41,7 @@ import { AssistantTurn } from "./AssistantTurn";
 import { CompactionEntry } from "./CompactionEntry";
 import { ContextMarkEntry } from "./ContextMarkEntry";
 import { SystemEntry } from "./SystemEntry";
-import { UserEntry, userText } from "./UserEntry";
+import { UserEntry } from "./UserEntry";
 import { messageText, thinkingTexts } from "./content";
 import { liveGenerationPartial, liveToolSlots } from "./liveDoc";
 
@@ -256,11 +259,16 @@ function UserTurn(props: {
 			previous === undefined
 				? client.createConversation()
 				: client.fork(conversationId, previous.id);
+		const attachments = entryAttachments(entry).filter(
+			(attachment) => attachment.delivery !== "error",
+		);
 		created
 			.then(async (conversation) => {
-				await client.patchConversationMeta(conversation.id, {
-					draft: { text: userText(entry) },
-				});
+				const draft = {
+					text: typedText(entry),
+					attachments: attachments.map((attachment) => attachment.path),
+				};
+				await client.patchConversationMeta(conversation.id, { draft });
 				onNavigate(conversation.id);
 			})
 			.catch((cause: unknown) =>

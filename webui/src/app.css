@@ -1290,6 +1290,25 @@ body {
 	margin-left: 0.4rem;
 }
 
+.entry-attachment-chips {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 0.35rem;
+	margin-top: 0.5rem;
+}
+
+.entry-attachment-chip {
+	display: inline-flex;
+	align-items: center;
+	max-width: 100%;
+	margin-left: 0;
+	padding: 0.2rem 0.5rem;
+	border: 1px solid var(--border);
+	border-radius: 999px;
+	background: var(--surface-2);
+	overflow-wrap: anywhere;
+}
+
 /* ── the message action row (B4): Copy / Edit / Fork from here ──────── */
 
 /* Hidden by OPACITY until the turn is hovered or focused within — the

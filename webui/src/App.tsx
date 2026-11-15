@@ -31,7 +31,11 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactElement } 
 import { displayName } from "@sigrun/shared/conversations";
 import type { CoreTarget, JsonObject } from "@sigrun/shared/blocks";
 import { canonicalJson } from "@sigrun/shared/blocks";
-import { groupTurns } from "@sigrun/shared/turns";
+import {
+	attachmentNames,
+	groupTurns,
+	typedText,
+} from "@sigrun/shared/turns";
 import {
 	ApiError,
 	createClient,
@@ -43,7 +47,6 @@ import {
 } from "./api";
 import { Composer } from "./composer/Composer";
 import { TurnList } from "./entries/TurnList";
-import { userText } from "./entries/UserEntry";
 import {
 	liveCompactionFailure,
 	liveRunFailure,
@@ -880,7 +883,10 @@ function AppShell(options: AppOptions = {}) {
 		const items: { entryId: number; text: string }[] = [];
 		for (const turn of groupTurns(view?.entries ?? [])) {
 			if (turn.kind === "user") {
-				items.push({ entryId: turn.entry.id, text: userText(turn.entry) });
+				items.push({
+					entryId: turn.entry.id,
+					text: typedText(turn.entry) || attachmentNames(turn.entry),
+				});
 			}
 		}
 		return items;
