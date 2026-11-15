@@ -24,16 +24,13 @@
  * is `EXPANDED_ENTRY_KIND` in `src/commands/expand.ts`.
  */
 
-/** The plain user-message entry kind pi-durable places. */
-export const USER_KIND = "pi.user";
-
 /** The user-entry kind a submission carrying ATTACHMENTS is placed as
  *  (attachments workstream): `data.attachments` is an
  *  {@link EntryAttachment} list and the first model message's text
  *  parts at each attachment's `parts` indexes are the inline markers,
  *  not user prose — {@link typedText} and {@link unattachedText}
- *  exclude them. Grouping treats it exactly like {@link USER_KIND}. */
-export const ATTACHED_USER_KIND = "sigrun.user";
+ *  exclude them. Grouping treats it exactly like a plain `pi.user`. */
+export const USER_KIND = "sigrun.user";
 
 /** The user-entry kind an expanded `/skill:` or template input is placed
  *  as (see the module doc); grouping treats it exactly like `pi.user`. */
@@ -44,8 +41,8 @@ export const EXPANDED_USER_KIND = "sigrun.user.expanded";
  *  {@link isUserInput}, never a hand-rolled kind comparison — the set
  *  grows as new input shapes land. */
 export const USER_INPUT_KINDS: ReadonlySet<string> = new Set([
+	"pi.user",
 	USER_KIND,
-	ATTACHED_USER_KIND,
 	EXPANDED_USER_KIND,
 ]);
 
@@ -57,10 +54,17 @@ export function isUserInput(entry: { readonly kind: string }): boolean {
 	return USER_INPUT_KINDS.has(entry.kind);
 }
 
+const ATTACHMENT_DELIVERIES = [
+	"inline",
+	"workspace",
+	"image",
+	"error",
+] as const;
+
 /** How one attachment reached the model: `inline` (text parts in the
  *  message), `workspace` (a workspace path reference), `image` (an image
  *  part), `error` (delivery failed; `error` says why). */
-export type AttachmentDelivery = "inline" | "workspace" | "image" | "error";
+export type AttachmentDelivery = (typeof ATTACHMENT_DELIVERIES)[number];
 
 /** One attachment carried by a user-input entry's `data.attachments`.
  *  `parts` lists the first model message's part indexes the attachment
@@ -76,12 +80,9 @@ export interface EntryAttachment {
 	readonly error?: string;
 }
 
-const ATTACHMENT_DELIVERIES: ReadonlySet<string> = new Set([
-	"inline",
-	"workspace",
-	"image",
-	"error",
-]);
+const ATTACHMENT_DELIVERY_SET: ReadonlySet<string> = new Set(
+	ATTACHMENT_DELIVERIES,
+);
 
 /** The attachments of a `sigrun.user` / `sigrun.user.expanded` entry —
  *  reads `data.attachments`, dropping malformed items (a partial record
@@ -91,7 +92,7 @@ export function entryAttachments(entry: {
 	readonly data?: unknown;
 }): readonly EntryAttachment[] {
 	if (
-		entry.kind !== ATTACHED_USER_KIND &&
+		entry.kind !== USER_KIND &&
 		entry.kind !== EXPANDED_USER_KIND
 	) {
 		return [];
@@ -112,7 +113,7 @@ export function entryAttachments(entry: {
 			!(typeof record.mime === "string" || record.mime === null) ||
 			!(typeof record.bytes === "number" || record.bytes === null) ||
 			typeof record.delivery !== "string" ||
-			!ATTACHMENT_DELIVERIES.has(record.delivery) ||
+			!ATTACHMENT_DELIVERY_SET.has(record.delivery) ||
 			!Array.isArray(record.parts) ||
 			!record.parts.every((part) => typeof part === "number")
 		) {
@@ -171,8 +172,9 @@ export function unattachedText(
 	return texts.join(joiner);
 }
 
-/** The text the USER TYPED: an expanded entry's `data.typed`; every
- *  other kind falls through to {@link unattachedText}. */
+/** The text the USER TYPED: an expanded entry's `data.typed`, or `""`
+ *  when that payload is missing or malformed (never its expanded skill
+ *  body); every other kind falls through to {@link unattachedText}. */
 export function typedText(
 	entry: {
 		readonly kind: string;
@@ -182,8 +184,10 @@ export function typedText(
 	joiner = "\n\n",
 ): string {
 	if (entry.kind === EXPANDED_USER_KIND) {
-		const expanded = expandedUserEntry(entry);
-		if (expanded !== undefined) return expanded.typed;
+		const data = entry.data;
+		if (typeof data !== "object" || data === null) return "";
+		const typed = (data as { readonly typed?: unknown }).typed;
+		return typeof typed === "string" ? typed : "";
 	}
 	return unattachedText(entry, joiner);
 }

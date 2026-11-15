@@ -455,12 +455,12 @@ every method — the routes' 404 analog.
 A user submission lands in the entry stream under one of THREE kinds,
 all exported from `@sigrun/shared/turns`:
 
-- `USER_KIND` (`"pi.user"`) — a plain text message.
-- `ATTACHED_USER_KIND` (`"sigrun.user"`) — a message carrying
-  attachments; `data.attachments` is an `EntryAttachment[]`, each
-  `{path, name, mime, bytes, delivery, parts, error?}` where `delivery`
-  is `"inline" | "workspace" | "image" | "error"` and `parts` lists the
-  first model message's part indexes the attachment occupies.
+- A plain text message uses the `"pi.user"` kind.
+- `USER_KIND` (`"sigrun.user"`) — a message carrying attachments;
+  `data.attachments` is an `EntryAttachment[]`, each `{path, name, mime,
+  bytes, delivery, parts, error?}` where `delivery` is `"inline" |
+  "workspace" | "image" | "error"` and `parts` lists the first model
+  message's part indexes the attachment occupies.
 - `EXPANDED_USER_KIND` (`"sigrun.user.expanded"`) — a `/skill:` or
   template expansion; `data` carries `{typed, command}` plus any
   `attachments`.

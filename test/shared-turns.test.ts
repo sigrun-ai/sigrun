@@ -14,7 +14,6 @@
 import { describe, expect, it } from "vitest";
 import {
 	activityLabel,
-	ATTACHED_USER_KIND,
 	attachmentNames,
 	BLOCKS_ANSWER_KIND,
 	BLOCKS_KIND,
@@ -30,6 +29,7 @@ import {
 	typedText,
 	unattachedText,
 	USER_INPUT_KINDS,
+	USER_KIND,
 	type ContextMarkData,
 	type ToolCall,
 	type TurnBlock,
@@ -703,7 +703,7 @@ describe("input kinds and attachment helpers", () => {
 
 	it("isUserInput is true for the three user-input kinds", () => {
 		expect(isUserInput({ kind: "pi.user" })).toBe(true);
-		expect(isUserInput({ kind: ATTACHED_USER_KIND })).toBe(true);
+		expect(isUserInput({ kind: USER_KIND })).toBe(true);
 		expect(isUserInput({ kind: EXPANDED_USER_KIND })).toBe(true);
 	});
 
@@ -716,7 +716,7 @@ describe("input kinds and attachment helpers", () => {
 
 	it("entryAttachments returns the records of a sigrun.user entry", () => {
 		const entry = {
-			kind: ATTACHED_USER_KIND,
+			kind: USER_KIND,
 			data: { attachments: [attachedNotes] },
 		};
 		expect(entryAttachments(entry)).toEqual([attachedNotes]);
@@ -725,9 +725,9 @@ describe("input kinds and attachment helpers", () => {
 	it("entryAttachments is [] for pi.user and unrelated kinds", () => {
 		expect(entryAttachments({ kind: "pi.user" })).toEqual([]);
 		expect(entryAttachments({ kind: "pi.assistant" })).toEqual([]);
-		expect(entryAttachments({ kind: ATTACHED_USER_KIND })).toEqual([]);
+		expect(entryAttachments({ kind: USER_KIND })).toEqual([]);
 		expect(
-			entryAttachments({ kind: ATTACHED_USER_KIND, data: {} }),
+			entryAttachments({ kind: USER_KIND, data: {} }),
 		).toEqual([]);
 	});
 
@@ -741,7 +741,7 @@ describe("input kinds and attachment helpers", () => {
 
 	it("entryAttachments drops malformed items", () => {
 		const entry = {
-			kind: ATTACHED_USER_KIND,
+			kind: USER_KIND,
 			data: {
 				attachments: [
 					attachedNotes,
@@ -763,7 +763,7 @@ describe("input kinds and attachment helpers", () => {
 
 	it("typedText of a sigrun.user entry excludes attachment parts", () => {
 		const entry = {
-			kind: ATTACHED_USER_KIND,
+			kind: USER_KIND,
 			model: [
 				{
 					role: "user",
@@ -780,7 +780,7 @@ describe("input kinds and attachment helpers", () => {
 
 	it("typedText of an attachments-only entry is the empty string", () => {
 		const entry = {
-			kind: ATTACHED_USER_KIND,
+			kind: USER_KIND,
 			model: [
 				{
 					role: "user",
@@ -807,6 +807,46 @@ describe("input kinds and attachment helpers", () => {
 			],
 		};
 		expect(typedText(entry)).toBe("/skill:greet hej");
+	});
+
+	it("typedText of an expanded entry with empty or missing typed yields an empty string", () => {
+		const model = [
+			{
+				role: "user",
+				content: [{ type: "text", text: "<skill name=\"greet\">body</skill>" }],
+			},
+		];
+		expect(
+			typedText({ kind: EXPANDED_USER_KIND, data: { typed: "" }, model }),
+		).toBe("");
+		expect(typedText({ kind: EXPANDED_USER_KIND, data: {}, model })).toBe("");
+		expect(typedText({ kind: EXPANDED_USER_KIND, model })).toBe("");
+	});
+
+	it.each([
+		["unknown delivery", { delivery: "carrier-pigeon" }],
+		["wrong-typed mime", { mime: 42 }],
+		["wrong-typed bytes", { bytes: "512" }],
+		["non-numeric parts element", { parts: ["0"] }],
+	])("entryAttachments drops a record with %s", (_label, patch) => {
+		const entry = {
+			kind: USER_KIND,
+			data: { attachments: [{ ...attachedNotes, ...patch }] },
+		};
+		expect(entryAttachments(entry)).toEqual([]);
+	});
+
+	it("entryAttachments passes through an error on a valid record", () => {
+		const failed = {
+			...attachedNotes,
+			delivery: "error",
+			error: "workspace upload refused",
+		};
+		const entry = {
+			kind: USER_KIND,
+			data: { attachments: [failed] },
+		};
+		expect(entryAttachments(entry)).toEqual([failed]);
 	});
 
 	it("typedText of a pi.user joins every text part with the joiner", () => {
@@ -859,7 +899,7 @@ describe("input kinds and attachment helpers", () => {
 			parts: [1],
 		};
 		const entry = {
-			kind: ATTACHED_USER_KIND,
+			kind: USER_KIND,
 			data: { attachments: [attachedNotes, second] },
 		};
 		expect(attachmentNames(entry)).toBe("notes.md, plan.md");
@@ -872,7 +912,7 @@ describe("input kinds and attachment helpers", () => {
 			assistantEntry(1, [{ type: "text", text: "Earlier answer." }]),
 			{
 				id: 2,
-				kind: ATTACHED_USER_KIND,
+				kind: USER_KIND,
 				model: [
 					{
 						role: "user",
