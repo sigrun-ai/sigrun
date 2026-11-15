@@ -55,6 +55,10 @@ import type { OpenedHarness } from "../harness/boot.js";
 import { cleanTitle } from "../harness/naming.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
 import {
+	LEAN_RETRY_EXTENSION,
+	appendNameIfAbsent,
+} from "../harness/lean-retry.js";
+import {
 	ensureRequestId,
 	recordAuthor,
 } from "../curation/attribution.js";
@@ -228,8 +232,16 @@ function resolveAgentSelection(
 		tools?: readonly ToolRegistration[];
 	} = {};
 	if (agent.extensions !== undefined) {
+		// The lean-retry crash guard is force-appended to EVERY exact
+		// selection: stored-array selections bypass the host-default getter
+		// entirely (pi-durable `selectExtensions` takes a stored array
+		// verbatim), so without this append the guard's `afterResponse`
+		// clear would never run for this conversation and the lean state
+		// would be unbounded. The tool-result cap keeps its documented
+		// opt-out seam — only lean retry rides every exact selection.
+		const names = appendNameIfAbsent(agent.extensions, LEAN_RETRY_EXTENSION);
 		const extensions: Extension[] = [];
-		for (const name of agent.extensions) {
+		for (const name of names) {
 			const extension = snapshot.extension(name);
 			if (extension === undefined) {
 				throw new ConversationOpError({
@@ -1079,7 +1091,16 @@ export async function configureOp(
 			...(extensions === undefined
 				? {}
 				: {
-						extensions: extensions.map((name) => ({
+						// Lean retry is force-appended to EVERY exact selection,
+						// including this edit: pi-durable's `selectExtensions`
+						// resolves stored arrays verbatim (no host getter), so
+						// the crash guard's `afterResponse` clear must ride the
+						// resulting list. The tool-result cap keeps its
+						// documented opt-out seam and is NOT appended.
+						extensions: appendNameIfAbsent(
+							extensions,
+							LEAN_RETRY_EXTENSION,
+						).map((name) => ({
 							name,
 						})),
 					}),
@@ -1262,7 +1283,14 @@ export async function forkOp(
 	// Extension-shaped names and maps them back to strings; looking names
 	// up in the registry would silently drop unresolved/late-install names.
 	const inheritedExtensions = Array.isArray(inheritedSelection)
-		? inheritedSelection.map((name) => ({ name }))
+		// Lean retry is force-appended when inheriting an exact stored
+		// selection: a pin that rides into the fork must still select the
+		// crash guard so its `afterResponse` clear runs. The tool-result
+		// cap's opt-out is preserved verbatim (an unforked exact array
+		// without the cap keeps it out).
+		? appendNameIfAbsent(inheritedSelection, LEAN_RETRY_EXTENSION).map(
+				(name) => ({ name }),
+			)
 		: inheritedSelection === undefined
 			? undefined
 			: {

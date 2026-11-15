@@ -40,6 +40,9 @@ import {
 	TOOL_RESULT_CAP_EXTENSION,
 	createToolResultCapExtension,
 } from "../src/harness/tool-result-cap.js";
+import { LEAN_RETRY_EXTENSION } from "../src/harness/lean-retry.js";
+import { createConversationOp, configureOp } from "../src/server/conversation-ops.js";
+import type { ServerContext } from "../src/server/context.js";
 import { seededIdentity } from "./helpers/identity.js";
 
 const FIXTURE_SPECIFIER = pathToFileURL(
@@ -183,18 +186,21 @@ describe("the tool-result details cap", () => {
 		expect((details as { capped?: boolean }).capped).toBe(true);
 	});
 
-	test("boot's DEFAULT selection carries the cap — no conversation opts in", { timeout: 20_000 }, async () => {
+	test("boot's DEFAULT selection carries the cap AND lean retry — no conversation opts in", { timeout: 20_000 }, async () => {
 		const opened = await boot();
 		// A plain root conversation (no explicit extension list): the host
-		// default must already include the cap, which is the whole point of
-		// a host-owned invariant rather than an optional extension.
+		// default must already include BOTH core-owned invariant names,
+		// which is the whole point of a host-owned invariant rather than an
+		// optional extension. Lean retry (attachments Task 5) is the second
+		// name — its `afterResponse` clear runs only where it is selected,
+		// so default-presence is load-bearing for crash recovery.
 		const conversation = await opened.harness.root(BACKGROUND_CONTEXT, {
 			agent: { model: opened.defaultModel },
 		});
 		const agent = await conversation.agent(BACKGROUND_CONTEXT);
-		expect(agent.extensions.map((one) => one.name)).toContain(
-			TOOL_RESULT_CAP_EXTENSION,
-		);
+		const names = agent.extensions.map((one) => one.name);
+		expect(names).toContain(TOOL_RESULT_CAP_EXTENSION);
+		expect(names).toContain(LEAN_RETRY_EXTENSION);
 	});
 
 	test("the extension is installed by boot and is hooks-only", () => {
@@ -207,28 +213,35 @@ describe("the tool-result details cap", () => {
 });
 
 describe("the cap and explicit selections", () => {
-	test("a caller-supplied HOST default still gets the cap appended", { timeout: 20_000 }, async () => {
+	test("a caller-supplied HOST default still gets BOTH core-owned names appended", { timeout: 20_000 }, async () => {
 		// The host default (`settings.extensions`) resolves through boot's
-		// getter, which appends the cap when a caller-supplied list omits
-		// it — so an operator narrowing the default selection cannot
-		// accidentally unbound `details` for every conversation.
+		// getter, which appends the cap AND lean retry when the
+		// caller-supplied list omits either — an operator narrowing the
+		// default selection cannot accidentally unbound `details` nor
+		// disable the crash-recovery hook for every conversation.
 		const opened = await boot();
 		const agent = await opened.harness
 			.root(BACKGROUND_CONTEXT, { agent: { model: opened.defaultModel } })
 			.then((conversation) => conversation.agent(BACKGROUND_CONTEXT));
-		expect(agent.extensions.map((one) => one.name)).toContain(
-			TOOL_RESULT_CAP_EXTENSION,
-		);
+		const names = agent.extensions.map((one) => one.name);
+		expect(names).toContain(TOOL_RESULT_CAP_EXTENSION);
+		expect(names).toContain(LEAN_RETRY_EXTENSION);
 	});
 
-	test("an EXACT conversation selection stays exact (documented contract)", { timeout: 20_000 }, async () => {
+	test("an EXACT conversation selection stays exact (cap-only opt-out)", { timeout: 20_000 }, async () => {
 		const opened = await boot();
 		const fixture = opened.registry
 			.snapshot()
 			.extension("fixture-big-details");
 		if (fixture === undefined) throw new Error("fixture extension missing");
-		// An exact array is the deliberate opt-out seam; boot never widens
-		// it. Named here so the boundary is explicit rather than assumed.
+		// An exact array is the deliberate opt-out seam FOR THE CAP —
+		// bounded consequences (details unbounded, nothing else). Named
+		// here so the boundary is explicit rather than assumed.
+		// NOTE the deliberate asymmetry: the lean-retry crash guard has
+		// NO such opt-out. It is force-appended to every exact selection
+		// the server resolution path produces (see the cases below); the
+		// raw `harness.createConversation` shape exercised here remains a
+		// direct harness call and does not route through that path.
 		const conversation = await opened.harness.createConversation(
 			{
 				ownership: { kind: "ownerless" },
@@ -240,5 +253,51 @@ describe("the cap and explicit selections", () => {
 		expect(agent.extensions.map((one) => one.name)).toEqual([
 			"fixture-big-details",
 		]);
+	});
+
+	test("an exact selection through createConversationOp gains lean retry but NOT the cap", { timeout: 20_000 }, async () => {
+		// The server create op (`POST /v1/conversations` with
+		// `agent.extensions`) is one of the exact-array entry points named
+		// by the crash-guard ruling. Lean retry MUST ride the resolved
+		// selection or its afterResponse clear never runs for this
+		// conversation and the marker lingers forever. The cap stays
+		// host-default-only — an exact pin opts out of it deliberately.
+		const opened = await boot();
+		const ctx = { opened } as unknown as ServerContext;
+		const created = await createConversationOp(ctx, {
+			agent: { extensions: ["fixture-big-details"] },
+		});
+		const conversation = await opened.harness.conversation(
+			created.id as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		if (conversation === undefined) throw new Error("conversation missing");
+		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		const names = agent.extensions.map((one) => one.name);
+		expect(names).toContain(LEAN_RETRY_EXTENSION);
+		expect(names).toContain("fixture-big-details");
+		expect(names).not.toContain(TOOL_RESULT_CAP_EXTENSION);
+	});
+
+	test("an exact selection through configureOp gains lean retry but NOT the cap", { timeout: 20_000 }, async () => {
+		// `POST /v1/conversations/:id/configure` with `extensions` — the
+		// exact-array edit the host bridge's `conversations.configure`
+		// also funnels through (host-bridge.ts calls configureOp).
+		const opened = await boot();
+		const ctx = { opened } as unknown as ServerContext;
+		const created = await createConversationOp(ctx, {});
+		const conversation = await opened.harness.conversation(
+			created.id as ConversationId,
+			BACKGROUND_CONTEXT,
+		);
+		if (conversation === undefined) throw new Error("conversation missing");
+		await configureOp(ctx, conversation, {
+			extensions: ["fixture-big-details"],
+		});
+		const agent = await conversation.agent(BACKGROUND_CONTEXT);
+		const names = agent.extensions.map((one) => one.name);
+		expect(names).toContain(LEAN_RETRY_EXTENSION);
+		expect(names).toContain("fixture-big-details");
+		expect(names).not.toContain(TOOL_RESULT_CAP_EXTENSION);
 	});
 });

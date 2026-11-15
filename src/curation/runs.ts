@@ -64,6 +64,10 @@ import { isInternal, markInternal } from "./internal.js";
 import { curationRun, CurationRunDoc } from "./run-doc.js";
 import { CURATION_GATE_EXTENSION } from "./gate.js";
 import {
+	LEAN_RETRY_EXTENSION,
+	appendNameIfAbsent,
+} from "../harness/lean-retry.js";
+import {
 	excludeInteractiveTools,
 	withoutInteractive,
 } from "../harness/interactive-tools.js";
@@ -171,8 +175,15 @@ export function rebuildAgentWithGate(
 		// later default change into this run).
 		rebuiltExtensions = { add: [gate] };
 	} else if (Array.isArray(extensions)) {
+		// Lean retry rides every exact selection (the crash-guard ruling):
+		// stored arrays bypass pi-durable's host-default getter, so the
+		// rebuild must append the lean-retry name itself — otherwise the
+		// run conversation would never clear its marker.
 		rebuiltExtensions = [
-			...(extensions as string[]).map(named),
+			...appendNameIfAbsent(
+				extensions as string[],
+				LEAN_RETRY_EXTENSION,
+			).map(named),
 			gate,
 		];
 	} else {

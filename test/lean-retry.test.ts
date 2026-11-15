@@ -32,11 +32,16 @@
  */
 
 import { mkdtemp, rm, mkdir, writeFile, readFile, readdir } from "node:fs/promises";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
 import {
+	openNodeSqliteStorage,
+} from "@earendil-works/pi-durable/storage/sqlite/node";
+import {
+	Harness,
 	GenerationTask,
 	hook,
 	defineExtension,
@@ -49,9 +54,16 @@ import {
 	type TaskInspection,
 } from "@earendil-works/pi-durable";
 import {
-	createLeanRetry,
-	LEAN_RETRY_EXTENSION,
-} from "../src/harness/lean-retry.js";
+	fauxAssistantMessage,
+	fauxProvider,
+} from "@earendil-works/pi-ai/providers/faux";
+import { createModels } from "@earendil-works/pi-ai/models";
+import { createLeanRetry, LEAN_RETRY_EXTENSION } from "../src/harness/lean-retry.js";
+import { createRegistry } from "../src/harness/registry.js";
+import { loadConfig } from "../src/config.js";
+import { openHarness } from "../src/harness/boot.js";
+import type { ProviderContributor } from "../src/harness/providers/index.js";
+import { seededIdentity } from "./helpers/identity.js";
 
 let dir: string;
 beforeEach(async () => {
@@ -150,7 +162,6 @@ describe("the record and its clear", () => {
 	test("the wrapped beforeRequest writes the record BEFORE the extension handler runs", async () => {
 		const lean = createLeanRetry({ dir });
 		let sawMarker = false;
-		let calledOrder: Array<"record" | "handler"> = [];
 		const cid = 101 as ConversationId;
 		const tid = 7 as TaskId;
 		const extension = defineExtension({
@@ -158,7 +169,6 @@ describe("the record and its clear", () => {
 			hooks: [
 				hook(GenerationTask, {
 					beforeRequest() {
-						calledOrder.push("handler");
 						sawMarker = existsSync(join(dir, `${cid}.json`));
 						return undefined;
 					},
@@ -174,10 +184,7 @@ describe("the record and its clear", () => {
 				api: HookApi,
 			) => unknown;
 		}).beforeRequest;
-		// Spy the record write order by reading the file via the handler.
-		if (existsSync(join(dir, `${cid}.json`))) calledOrder.push("record");
 		await handler({ messages: [] }, hookApi(cid, tid));
-		expect(calledOrder).toEqual(["handler"]);
 		expect(sawMarker).toBe(true);
 		expect(readMarker(cid)).toMatchObject({
 			conversationId: cid,
@@ -225,13 +232,11 @@ describe("the record and its clear", () => {
 			) => unknown;
 		};
 		await handlers.beforeRequest({ messages: [] }, hookApi(cid, tid));
-		const firstAt = readMarker(cid).at;
 		// Bump the marker's at to a sentinel, then re-run the hook: a same-task
 		// re-entry must leave the sentinel alone (only taskId re-stamps).
 		await writeMarker(cid, tid, 999_999);
 		await handlers.beforeRequest({ messages: [] }, hookApi(cid, tid));
 		expect(readMarker(cid).at).toBe(999_999);
-		void firstAt;
 	});
 
 	test("a NEW taskId re-stamps the record", async () => {
@@ -469,15 +474,12 @@ describe("the core extension shape", () => {
 		expect(lean.extension.hooks![0].task).toBe("pi.generation");
 	});
 
-	test("the marker dir exists after boot-style construction (mkdirSync)", async () => {
-		// The factory itself does not create the dir (boot owns that), but
-		// the wrapper's write path must tolerate the dir being created
-		// lazily — boot does `mkdirSync(dir, { recursive: true })` before
-		// wrapping anything, so the file writes become plain file I/O.
+	test("the marker dir's first write succeeds once boot has created it", async () => {
+		// The factory itself does NOT create the dir (boot owns that with
+		// `mkdirSync(dir, { recursive: true })`); this pins the wrapper's
+		// write-after-boot-mkdir contract on a freshly-created nested root.
 		const lazyDir = join(dir, "lazy", "nested");
 		const lean = createLeanRetry({ dir: lazyDir });
-		// We don't expect the constructor to create it, but the first
-		// record write must succeed under recursive dir creation.
 		await mkdir(lazyDir, { recursive: true });
 		const cid = 401 as ConversationId;
 		const wrapped = lean.wrapExtension(
@@ -521,5 +523,360 @@ describe("the core extension shape", () => {
 		expect(parsed.conversationId).toBe(cid);
 		expect(parsed.taskId).toBe(tid);
 		expect(typeof parsed.at).toBe("number");
+	});
+});
+
+describe("the wrapper's disk and binding contracts (review minors 3-7)", () => {
+	test("the marker write is ATOMIC: content lands via tmp+renameSync, never torn", async () => {
+		// The complete file is in place before/after; there is no window
+		// where a reader sees a half-written record. Atomic tmp+rename makes
+		// a mid-write crash leave either the OLD record or the NEW one.
+		const lean = createLeanRetry({ dir });
+		const cid = 501 as ConversationId;
+		const wrapped = lean.wrapExtension(
+			defineExtension({
+				name: "fixture-atomic",
+				hooks: [hook(GenerationTask, { beforeRequest() { return undefined; } })],
+			}),
+		);
+		const handlers = wrapped.hooks![0].handlers as {
+			beforeRequest: (
+				request: { readonly messages: readonly unknown[] },
+				api: HookApi,
+			) => unknown;
+		};
+		await handlers.beforeRequest({ messages: [] }, hookApi(cid, 1 as TaskId));
+		// No left-over tmp siblings: the directory contains ONLY the final
+		// marker file. (The tmp file must never survive a successful write.)
+		expect(readdirSync(dir).sort()).toEqual([`${cid}.json`]);
+		// And the final file is a COMPLETE record (never truncated).
+		const parsed = JSON.parse(readFileSync(join(dir, `${cid}.json`), "utf8"));
+		expect(parsed).toMatchObject({ conversationId: cid, taskId: 1 });
+		expect(typeof parsed.at).toBe("number");
+	});
+
+	test("record write failure FAILS OPEN: the handler is still invoked", async () => {
+		const lean = createLeanRetry({ dir: join(dir, "does-not-exist") });
+		let called = 0;
+		const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			const wrapped = lean.wrapExtension(
+				defineExtension({
+					name: "fixture-fail-open",
+					hooks: [
+						hook(GenerationTask, {
+							beforeRequest(request: { readonly messages: readonly unknown[] }) {
+								called++;
+								return request as never;
+							},
+						}),
+					],
+				}),
+			);
+			const handlers = wrapped.hooks![0].handlers as {
+				beforeRequest: (
+					request: { readonly messages: readonly unknown[] },
+					api: HookApi,
+				) => unknown;
+			};
+			const result = await handlers.beforeRequest(
+				{ messages: [] },
+				hookApi(502 as ConversationId, 1 as TaskId),
+			);
+			// The handler ran, and the caller sees its result — a disk hiccup
+			// must not eat the request.
+			expect(called).toBe(1);
+			expect(result).toEqual({ messages: [] });
+			// The failure was observed (a console.warn), not swallowed.
+			expect(warn).toHaveBeenCalled();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("both wrapped request handlers preserve the caller-provided receiver", async () => {
+		// pi-durable binds a hook to the handlers bag before invoking it
+		// (`handler.bind(handlers)`, dist/harness/scheduler.js:2459).
+		// A synthetic receiver exercises that binding without tying the
+		// wrapper to one fixed registration bag; this assertion only checks
+		// that the wrapper forwards the receiver.
+		// Both `beforeRequest` and `beforeProviderRequest` must behave
+		// identically, since either can be the first hook of an attempt.
+		const lean = createLeanRetry({ dir });
+		const observed: unknown[] = [];
+		const handlers = {
+			beforeRequest(request: { readonly messages: readonly unknown[] }) {
+				observed.push(this);
+				return request as never;
+			},
+			beforeProviderRequest(request: { readonly payload: unknown }) {
+				observed.push(this);
+				return { payload: request.payload };
+			},
+		};
+		const registration = hook(GenerationTask, handlers);
+		const extension = defineExtension({ name: "fixture-this", hooks: [registration] });
+		const wrapped = lean.wrapExtension(extension);
+		const boundHandlers = wrapped.hooks![0].handlers as {
+			beforeRequest: (
+				this: unknown,
+				request: { readonly messages: readonly unknown[] },
+				api: HookApi,
+			) => unknown;
+			beforeProviderRequest: (
+				this: unknown,
+				request: { readonly model: unknown; readonly payload: unknown },
+				api: HookApi,
+			) => unknown;
+		};
+		// A synthetic receiver stands in for the runtime's bound handlers
+		// bag, so the assertions cannot accidentally rely on the handler
+		// bag being identical to the ORIGINAL registration's.
+		const syntheticReceiver = { tag: "hook-runtime-receiver" };
+		await boundHandlers.beforeRequest.call(
+			syntheticReceiver,
+			{ messages: [] },
+			hookApi(503 as ConversationId, 1 as TaskId),
+		);
+		await boundHandlers.beforeProviderRequest.call(
+			syntheticReceiver,
+			{ model: { id: "m", api: "openai" }, payload: {} },
+			hookApi(503 as ConversationId, 1 as TaskId),
+		);
+		expect(observed).toEqual([syntheticReceiver, syntheticReceiver]);
+	});
+
+	test("EVERY pi.generation registration is wrapped, not only the first", async () => {
+		const lean = createLeanRetry({ dir });
+		const counts = { a: 0, b: 0 };
+		const extension = defineExtension({
+			name: "fixture-two-registrations",
+			hooks: [
+				hook(GenerationTask, {
+					beforeRequest() { counts.a++; return undefined; },
+				}),
+				hook(GenerationTask, {
+					beforeRequest() { counts.b++; return undefined; },
+				}),
+			],
+		});
+		const wrapped = lean.wrapExtension(extension);
+		expect(wrapped).not.toBe(extension);
+		// Both registrations' beforeRequest must write the same marker and
+		// must independently observe the lean state.
+		const cid = 504 as ConversationId;
+		for (const registration of wrapped.hooks!) {
+			const handlers = registration.handlers as {
+				beforeRequest: (
+					request: { readonly messages: readonly unknown[] },
+					api: HookApi,
+				) => unknown;
+			};
+			expect(typeof handlers.beforeRequest).toBe("function");
+			await handlers.beforeRequest({ messages: [] }, hookApi(cid, 1 as TaskId));
+		}
+		expect(counts).toEqual({ a: 1, b: 1 });
+		// After lean, NEITHER registration's beforeRequest runs.
+		lean.recover(inspectionOf([{ conversationId: cid }]));
+		for (const registration of wrapped.hooks!) {
+			const handlers = registration.handlers as {
+				beforeRequest: (
+					request: { readonly messages: readonly unknown[] },
+					api: HookApi,
+				) => unknown;
+			};
+			const result = await handlers.beforeRequest(
+				{ messages: [] },
+				hookApi(cid, 1 as TaskId),
+			);
+			expect(result).toBeUndefined();
+		}
+		expect(counts).toEqual({ a: 1, b: 1 });
+	});
+
+	test("recover keys the lean set by the record CONTENT's conversationId, not the filename", async () => {
+		// A non-numeric filename must not produce NaN in the lean set. The
+		// record's own conversationId is the authority.
+		await mkdir(dir, { recursive: true });
+		await writeFile(
+			join(dir, "bogus-name.json"),
+			JSON.stringify({ conversationId: 601, taskId: 1, at: 1_700_000_000_000 }),
+		);
+		const lean = createLeanRetry({ dir });
+		const cid = 601 as ConversationId;
+		const recovered = lean.recover(inspectionOf([{ conversationId: cid }]));
+		expect(recovered).toEqual([cid]);
+		expect(recovered.every((one) => typeof one === "number" && !Number.isNaN(one))).toBe(true);
+		expect(lean.isLean(cid)).toBe(true);
+	});
+
+	test("a torn file (half-written record from the pre-atomic era) recovers as no-record", async () => {
+		// Forward-compat for any write path that pre-dates tmp+rename: a
+		// file whose content is truncated JSON is treated as absence of
+		// evidence — deleted, not kept lean on a phantom conversation.
+		await mkdir(dir, { recursive: true });
+		await writeFile(join(dir, "602.json"), "{\"conversationId\":602,\"taskId\":");
+		const lean = createLeanRetry({ dir });
+		const recovered = lean.recover(
+			inspectionOf([{ conversationId: 602 as ConversationId }]),
+		);
+		expect(recovered).toEqual([]);
+		expect(existsSync(join(dir, "602.json"))).toBe(false);
+	});
+
+	test("a marker whose content's conversationId is non-numeric is deleted, not kept", async () => {
+		await mkdir(dir, { recursive: true });
+		await writeFile(
+			join(dir, "603.json"),
+			JSON.stringify({ conversationId: "not-a-number", taskId: 1, at: 1 }),
+		);
+		const lean = createLeanRetry({ dir });
+		const recovered = lean.recover(
+			inspectionOf([{ conversationId: 603 as ConversationId }]),
+		);
+		expect(recovered).toEqual([]);
+		expect(existsSync(join(dir, "603.json"))).toBe(false);
+	});
+});
+
+describe("boot-level recovery: marker + a real pending pi.generation task (minor 9)", () => {
+	test("openHarness recovers the marker conversation into leanRetries and logs the count", { timeout: 20_000 }, async () => {
+		const bootDir = await mkdtemp(join(tmpdir(), "sigrun-lean-boot-"));
+		const storagePath = join(bootDir, "sigrun.db");
+		let rawHarness: Harness | undefined;
+		let rootId: ConversationId = 0 as ConversationId;
+		try {
+			// Seed a REAL pending pi.generation task for the root conversation
+			// WITHOUT ever resuming the scheduler, then close. The next boot's
+			// `inspect` will see this as an unfinished generation.
+			const storage = await openNodeSqliteStorage(storagePath);
+			rawHarness = await Harness.open(
+				storage,
+				{
+					registry: createRegistry(),
+					// An empty Models object: the scheduler never runs while
+					// this seed harness is open, so no model lookup happens.
+					models: createModels(),
+				},
+				BACKGROUND_CONTEXT,
+			);
+			const root = await rawHarness.root(BACKGROUND_CONTEXT);
+			rootId = root.id;
+			await root.commit(async (tx) => {
+				await tx.createTask(GenerationTask, {}, {
+					ownership: { kind: "conversation" },
+				});
+			}, BACKGROUND_CONTEXT);
+			// Inspect BEFORE close to confirm the seeded task is pending (the
+			// scheduler never ran it).
+			const inspection = await rawHarness.inspect(BACKGROUND_CONTEXT);
+			const tasks = inspection.tasks.filter(
+				(t) => t.record.kind === "pi.generation" && t.record.conversationId === rootId,
+			);
+			expect(tasks).toHaveLength(1);
+			expect(tasks[0]!.state.kind).toBe("pending");
+			await rawHarness.close(BACKGROUND_CONTEXT);
+			rawHarness = undefined;
+			// Plant the marker file under the stateDir layout boot expects
+			// (`<stateDir>/core/inflight-requests`).
+			const markerDir = join(bootDir, "state", "core", "inflight-requests");
+			mkdirSync(markerDir, { recursive: true });
+			await writeFile(
+				join(markerDir, `${rootId}.json`),
+				JSON.stringify({ conversationId: rootId, taskId: 1, at: Date.now() }),
+			);
+			// Boot sigrun normally: recover must find the marker + live task.
+			const faux = fauxProvider({
+				provider: "faux",
+				models: [{ id: "m", contextWindow: 128_000 }],
+			});
+			faux.setResponses([fauxAssistantMessage("idle")]);
+			const contributor: ProviderContributor = {
+				name: "ext-faux",
+				providers: [{ provider: faux.provider }],
+			};
+			const config = loadConfig({
+				SIGRUN_DEFAULT_MODEL: "faux/m",
+				SIGRUN_STORAGE_PATH: storagePath,
+				SIGRUN_WORKSPACE_PATH: bootDir,
+				SIGRUN_STATE_DIR: join(bootDir, "state"),
+			});
+			await writeFile(join(bootDir, "settings.json"), '{"namingModel": false}');
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			let opened: Awaited<ReturnType<typeof openHarness>> | undefined;
+			try {
+				opened = await openHarness(config, {
+					identity: await seededIdentity(bootDir),
+					extensions: [contributor],
+					builtins: false,
+					env: {},
+					settingsDir: bootDir,
+				});
+				// The recovered root conversation is in leanRetries.
+				expect(opened.leanRetries).toEqual([rootId]);
+				// And the recovery was LOGGED (minor 9: the unsolicited log is
+				// observable behavior and is pinned here).
+				const leanLogs = logSpy.mock.calls.filter((args) =>
+					typeof args[0] === "string" && args[0].startsWith("lean retry:"),
+				);
+				expect(leanLogs).toHaveLength(1);
+				expect(String(leanLogs[0]![0])).toContain("1 conversation(s)");
+			} finally {
+				logSpy.mockRestore();
+				if (opened !== undefined) {
+					await opened.harness.close(BACKGROUND_CONTEXT);
+				}
+			}
+		} finally {
+			if (rawHarness !== undefined) {
+				await rawHarness.close(BACKGROUND_CONTEXT);
+			}
+			await rm(bootDir, { recursive: true, force: true });
+		}
+	});
+
+	test("a clean boot leaves leanRetries empty and emits no lean log", { timeout: 20_000 }, async () => {
+		const bootDir = await mkdtemp(join(tmpdir(), "sigrun-lean-boot-"));
+		try {
+			const faux = fauxProvider({
+				provider: "faux",
+				models: [{ id: "m", contextWindow: 128_000 }],
+			});
+			faux.setResponses([fauxAssistantMessage("idle")]);
+			const contributor: ProviderContributor = {
+				name: "ext-faux",
+				providers: [{ provider: faux.provider }],
+			};
+			const config = loadConfig({
+				SIGRUN_DEFAULT_MODEL: "faux/m",
+				SIGRUN_STORAGE_PATH: join(bootDir, "sigrun.db"),
+				SIGRUN_WORKSPACE_PATH: bootDir,
+				SIGRUN_STATE_DIR: join(bootDir, "state"),
+			});
+			await writeFile(join(bootDir, "settings.json"), '{"namingModel": false}');
+			const logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+			let opened: Awaited<ReturnType<typeof openHarness>> | undefined;
+			try {
+				opened = await openHarness(config, {
+					identity: await seededIdentity(bootDir),
+					extensions: [contributor],
+					builtins: false,
+					env: {},
+					settingsDir: bootDir,
+				});
+				expect(opened.leanRetries).toEqual([]);
+				const leanLogs = logSpy.mock.calls.filter((args) =>
+					typeof args[0] === "string" && args[0].startsWith("lean retry:"),
+				);
+				expect(leanLogs).toHaveLength(0);
+			} finally {
+				logSpy.mockRestore();
+				if (opened !== undefined) {
+					await opened.harness.close(BACKGROUND_CONTEXT);
+				}
+			}
+		} finally {
+			await rm(bootDir, { recursive: true, force: true });
+		}
 	});
 });

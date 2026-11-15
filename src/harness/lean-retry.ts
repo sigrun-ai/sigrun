@@ -35,6 +35,7 @@ import {
 	existsSync,
 	readFileSync,
 	readdirSync,
+	renameSync,
 	rmSync,
 	writeFileSync,
 } from "node:fs";
@@ -49,6 +50,31 @@ import {
 	type HookApi,
 	type TaskId,
 } from "@earendil-works/pi-durable";
+
+/**
+ * Resolve the lean-retry name for an exact (array) selection.
+ *
+ * WHY THIS EXISTS. The lean-retry clear runs only where the core
+ * extension is SELECTED. Host-default selections get the name appended
+ * by boot's `settings.extensions` getter, but a conversation whose
+ * stored `pi.agent.extensions` is an EXACT array is resolved verbatim
+ * by pi-durable (`selectExtensions`, dist/harness/agent.js) — no host
+ * getter call — so without this helper an exact-array conversation
+ * would never clear its marker and the lean state would be unbounded.
+ *
+ * The tool-result cap deliberately keeps its exact-array opt-out seam;
+ * the lean-retry crash guard has NO such opt-out — it is force-appended
+ * to every exact selection the server's resolution paths produce
+ * (create op, configure op, fork inheritance, curation's internal-run
+ * rebuild). Callers must use THIS helper rather than re-implementing
+ * the append, so the invariant stays single-sourced.
+ */
+export function appendNameIfAbsent(
+	names: readonly string[],
+	name: string,
+): readonly string[] {
+	return names.includes(name) ? names : [...names, name];
+}
 
 /** The lean-retry extension's registered name. */
 export const LEAN_RETRY_EXTENSION = "sigrun.lean-retry";
@@ -88,7 +114,15 @@ export function createLeanRetry(options: { readonly dir: string }): LeanRetry {
 
 	function writeRecord(conversationId: ConversationId, taskId: TaskId): void {
 		const record: InflightRecord = { conversationId, taskId, at: Date.now() };
-		writeFileSync(recordPath(conversationId), JSON.stringify(record), "utf8");
+		// Atomic write (tmp + rename): a host crash mid-`writeFileSync`
+		// would otherwise leave a torn JSON file at the FINAL path that
+		// `recover` would misread as absence-of-evidence. A tmp write +
+		// atomic rename means a crash leaves either the OLD record
+		// complete or ABSENT — never a half-written marker.
+		const path = recordPath(conversationId);
+		const tmp = `${path}.tmp`;
+		writeFileSync(tmp, JSON.stringify(record), "utf8");
+		renameSync(tmp, path);
 	}
 
 	function clearRecord(conversationId: ConversationId): void {
@@ -116,6 +150,22 @@ export function createLeanRetry(options: { readonly dir: string }): LeanRetry {
 		writeRecord(conversationId, taskId);
 	}
 
+	/** Best-effort record write: a marker miss must not eat the request. */
+	function tryEnsureRecord(conversationId: ConversationId, taskId: TaskId): void {
+		try {
+			ensureRecord(conversationId, taskId);
+		} catch (error) {
+			// Fail open (review minor 7): the crash guard is best-effort; a
+			// disk error must not skip the extension's request hook. Boot's
+			// `mkdirSync(dir, { recursive: true })` makes this unlikely (the
+			// dir exists before any wrap can fire) — this guard catches
+			// genuine filesystem errors (quota, readonly remount, …).
+			console.warn(
+				`lean retry: marker write failed for conversation ${conversationId}: ${String(error)} — the next attempt does NOT learn the crash guard`,
+			);
+		}
+	}
+
 	const coreExtension = defineExtension({
 		name: LEAN_RETRY_EXTENSION,
 		hooks: [
@@ -137,68 +187,75 @@ export function createLeanRetry(options: { readonly dir: string }): LeanRetry {
 			return leanConversations.has(conversationId);
 		},
 		wrapExtension(extension: Extension): Extension {
-			// No extension hooks, or none on pi.generation: identity wrap.
+			// No hook registrations: identity wrap.
 			if (extension.hooks === undefined) return extension;
 			const registrations = extension.hooks;
 			const generationKind = GenerationTask.definition.name;
-			const generation = registrations.find((r) => r.task === generationKind);
-			if (generation === undefined) return extension;
-
-			const handlers = generation.handlers as Record<string, unknown>;
-			type Handler = (
-				request: unknown,
-				api: HookApi,
-				context: unknown,
-			) => unknown;
-			const originalBeforeRequest = handlers.beforeRequest as Handler | undefined;
-			const originalBeforeProviderRequest = handlers.beforeProviderRequest as
-				| Handler
-				| undefined;
-
-			if (
-				originalBeforeRequest === undefined &&
-				originalBeforeProviderRequest === undefined
-			) {
-				return extension;
-			}
-
-			// Wrap ONLY these two handlers; everything else passes through
-			// by identity (the `onYield`, `afterResponse`, etc. keys on the
-			// wrapped handlers object are the SAME references).
-			const wrappedHandlers: Record<string, unknown> = { ...handlers };
-
-			if (originalBeforeRequest !== undefined) {
-				const beforeRequest: Handler = function wrappedBeforeRequest(
-					request,
-					api,
-					context,
+			let changed = false;
+			const nextRegistrations = registrations.map((registration) => {
+				if (registration.task !== generationKind) return registration;
+				const handlers = registration.handlers as Record<string, unknown>;
+				type Handler = (
+					this: unknown,
+					request: unknown,
+					api: HookApi,
+					context: unknown,
+				) => unknown;
+				const originalBeforeRequest = handlers.beforeRequest as Handler | undefined;
+				const originalBeforeProviderRequest = handlers.beforeProviderRequest as
+					| Handler
+					| undefined;
+				if (
+					originalBeforeRequest === undefined &&
+					originalBeforeProviderRequest === undefined
 				) {
-					if (shouldSkip(api.conversationId)) return undefined;
-					ensureRecord(api.conversationId, api.taskId);
-					return originalBeforeRequest(request, api, context);
-				};
-				wrappedHandlers.beforeRequest = beforeRequest;
-			}
-			if (originalBeforeProviderRequest !== undefined) {
-				const beforeProviderRequest: Handler = function wrappedBeforeProviderRequest(
-					request,
-					api,
-					context,
-				) {
-					if (shouldSkip(api.conversationId)) return undefined;
-					ensureRecord(api.conversationId, api.taskId);
-					return originalBeforeProviderRequest(request, api, context);
-				};
-				wrappedHandlers.beforeProviderRequest = beforeProviderRequest;
-			}
-
+					return registration;
+				}
+				changed = true;
+				// Wrap ONLY these two handlers; everything else passes through
+				// by identity (the `onYield`, `afterResponse`, etc. keys on the
+				// wrapped handlers object are the SAME references). EARLY
+				// registrations on the same task are permitted (the loader
+				// installs one `defineExtension` per package, whose hooks array
+				// may register the same task more than once) — EVERY
+				// pi.generation registration gets the wrap (review minor 5),
+				// not only the first.
+				const wrappedHandlers: Record<string, unknown> = { ...handlers };
+				if (originalBeforeRequest !== undefined) {
+					const wrappedBeforeRequest: Handler = function (
+						this: unknown,
+						request,
+						api,
+						context,
+					) {
+						if (shouldSkip(api.conversationId)) return undefined;
+						tryEnsureRecord(api.conversationId, api.taskId);
+						// Pi-durable binds the receiver when invoking an
+						// extension handler. Forward the same receiver rather
+						// than replacing it with the captured handlers bag.
+						return originalBeforeRequest.call(this, request, api, context);
+					};
+					wrappedHandlers.beforeRequest = wrappedBeforeRequest;
+				}
+				if (originalBeforeProviderRequest !== undefined) {
+					const wrappedBeforeProviderRequest: Handler = function (
+						this: unknown,
+						request,
+						api,
+						context,
+					) {
+						if (shouldSkip(api.conversationId)) return undefined;
+						tryEnsureRecord(api.conversationId, api.taskId);
+						return originalBeforeProviderRequest.call(this, request, api, context);
+					};
+					wrappedHandlers.beforeProviderRequest = wrappedBeforeProviderRequest;
+				}
+				return { ...registration, handlers: wrappedHandlers };
+			});
+			if (!changed) return extension;
 			return {
 				...extension,
-				hooks: registrations.map((registration) =>
-					registration === generation
-						? { ...registration, handlers: wrappedHandlers }
-						: registration,
-				),
+				hooks: nextRegistrations,
 			};
 		},
 		recover(inspection: HarnessInspection): readonly ConversationId[] {
@@ -216,21 +273,33 @@ export function createLeanRetry(options: { readonly dir: string }): LeanRetry {
 			const recovered: ConversationId[] = [];
 			const names = readdirSync(dir).filter((name) => name.endsWith(".json"));
 			for (const name of names) {
-				const conversationId = Number(
-					name.slice(0, -".json".length),
-				) as ConversationId;
 				const path = join(dir, name);
+				let record: InflightRecord | undefined;
 				let keep = false;
 				try {
-					const record = JSON.parse(readFileSync(path, "utf8")) as InflightRecord;
-					keep = liveGenerationConversations.has(record.conversationId);
+					record = JSON.parse(readFileSync(path, "utf8")) as InflightRecord;
 				} catch {
-					// Unreadable marker: conservative delete (no evidence of live
-					// work, so no lean attempt — matching the no-live-task case).
-					keep = false;
+					// Torn or unreadable marker (review minor 3: a pre-atomic-
+					// era crash could leave half-written JSON at the final
+					// path): no parseable evidence of live work → conservative
+					// delete, no lean attempt. Match the no-live-task posture.
+					record = undefined;
 				}
-				if (keep) {
-					recovered.push(conversationId);
+				// Key by the record's CONTENT (review minor 6), not the
+				// filename: a stray non-numeric filename must not decode as
+				// NaN into the lean set; a mismatched name-for-content file
+				// still recovers the right conversation. A record whose
+				// conversationId is not a finite number is not usable either.
+				if (
+					record !== undefined &&
+					typeof record.conversationId === "number" &&
+					Number.isFinite(record.conversationId) &&
+					liveGenerationConversations.has(record.conversationId)
+				) {
+					keep = true;
+				}
+				if (keep && record !== undefined) {
+					recovered.push(record.conversationId);
 				} else {
 					rmSync(path, { force: true });
 				}
