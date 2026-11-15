@@ -9,11 +9,13 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { Models } from "@earendil-works/pi-ai/models";
 import {
 	Harness,
 	type AgentChange,
+	type ConversationId,
 	type ConversationStreamOptions,
 	type HarnessSettings,
 	type ModelRef,
@@ -97,6 +99,10 @@ import {
 	createToolResultCapExtension,
 	TOOL_RESULT_CAP_EXTENSION,
 } from "./tool-result-cap.js";
+import {
+	createLeanRetry,
+	LEAN_RETRY_EXTENSION,
+} from "./lean-retry.js";
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { createJobStateExtension } from "./sections/job-state.js";
@@ -283,7 +289,7 @@ export interface OpenedHarness {
 	/** Selection edits applied during owner writes (shared with server ops). */
 	readonly rewriteUserSelection: (
 		tx: import("@earendil-works/pi-durable").Tx,
-		conversationId: import("@earendil-works/pi-durable").ConversationId,
+		conversationId: ConversationId,
 		from: string | undefined,
 		to: string | undefined,
 	) => Promise<void>;
@@ -334,6 +340,15 @@ export interface OpenedHarness {
 	 * `GET /v1/meta` (Task 9) renders this as `extensions[].status`.
 	 */
 	readonly extensionOutcomes: readonly ExtensionOutcome[];
+	/**
+	 * Lean retry (attachments Task 5, spec §4.6): the conversation ids
+	 * whose NEXT request attempt skips extension `pi.generation` request
+	 * hooks — the set recovered from `<stateDir>/core/inflight-requests`
+	 * markers at boot, before `harness.resume()`. Empty on a clean boot.
+	 * Lean state is per CONVERSATION and ends when a provider response
+	 * arrives; this snapshot reflects boot-time recovery only.
+	 */
+	readonly leanRetries: readonly ConversationId[];
 	/** Validated external identity providers, qualified as `login:<slug>:<id>`. */
 	readonly loginProviders: readonly LoginProviderBinding[];
 	/**
@@ -1501,6 +1516,20 @@ export async function openHarness(
 	// with the other core-owned entries. Its `afterTool` is a pure
 	// substitution on the result: no tools, no sections, no prompt bytes.
 	registry.install(createToolResultCapExtension(config.maxInlineFileBytes));
+	// Lean retry (attachments Task 5, spec §4.6): the crash guard that makes
+	// the NEXT attempt of a crash-interrupted request skip extension
+	// `pi.generation` request hooks. The marker dir lives under
+	// `<stateDir>/core/inflight-requests`; boot creates it before anything
+	// can write into it. Core-owned extensions (this one, the cap, skills,
+	// decisions, …) are installed HERE, NOT through the loader, so they are
+	// deliberately NOT wrapped — only user/loaded extensions pay the
+	// lean-retry wrap (the loader's `registry.install` site is the wrap
+	// site). The core extension itself only clears records on
+	// `afterResponse`; the loader-side wrap is what writes them.
+	const leanRetryDir = join(config.stateDir, "core", "inflight-requests");
+	mkdirSync(leanRetryDir, { recursive: true });
+	const leanRetry = createLeanRetry({ dir: leanRetryDir });
+	registry.install(leanRetry.extension);
 	// The decision tool (warden Task 7): installed HERE with an empty
 	// tool list — the placeholder holding the core `sigrun.decisions`
 	// name — because the decision declarations are only known AFTER the
@@ -1702,6 +1731,9 @@ export async function openHarness(
 			// Curator A8 (P9): the wrap feed — the loader grows it with each
 			// validated target tool and wraps those tools at their install.
 			curationFeed,
+			// Lean retry (attachments Task 5, spec §4.6): wrap loaded
+			// extensions' pi.generation request hooks with the marker writer.
+			leanRetry,
 			hostContextFactory: (extensionName, kinds, priorHost, settingsSlug) => {
 				// Two-phase, revised for the provisional identity (provider
 				// plugins Task 9 P1): the loader's PRE-import call passes the
@@ -2394,16 +2426,27 @@ export async function openHarness(
 					// caller-supplied list (a fixed-selection job or an internal
 					// run) must not be able to opt out of the tool-result cap, or
 					// `details` goes unbounded in exactly the conversations nobody
-					// is watching. Append it when absent — the installed extension
-					// is the same object the registry hands out, so a caller that
-					// already lists it is unaffected.
-					if (kept.some((entry) => entry.name === TOOL_RESULT_CAP_EXTENSION)) {
-						return kept;
+					// is watching. Lean retry (attachments Task 5, spec §4.6) is
+					// the same class of core-owned invariant: a host crash during
+					// request preparation cannot be allowed to re-run the
+					// extension hook on every attempt without bound. Append BOTH
+					// core-owned names when absent — the installed extensions
+					// are the same objects the registry hands out, so a caller
+					// that already lists them is unaffected.
+					const result: typeof kept = [...kept];
+					if (!result.some((entry) => entry.name === TOOL_RESULT_CAP_EXTENSION)) {
+						const cap = registry
+							.snapshot()
+							.extension(TOOL_RESULT_CAP_EXTENSION);
+						if (cap !== undefined) result.push(cap);
 					}
-					const cap = registry
-						.snapshot()
-						.extension(TOOL_RESULT_CAP_EXTENSION);
-					return cap === undefined ? kept : [...kept, cap];
+					if (!result.some((entry) => entry.name === LEAN_RETRY_EXTENSION)) {
+						const lean = registry
+							.snapshot()
+							.extension(LEAN_RETRY_EXTENSION);
+						if (lean !== undefined) result.push(lean);
+					}
+					return result;
 				},
 				toolExecution: callerSettings?.toolExecution,
 				// pi-durable 1.5.0: restart-limited tasks END instead of parking
@@ -2837,9 +2880,24 @@ export async function openHarness(
 			},
 		);
 	});
+	// Lean retry (attachments Task 5, spec §4.6): BEFORE resume, collect the
+	// conversations whose unfinished `pi.generation` task pairs with an
+	// inflight marker left by a crash during request preparation. The next
+	// attempt in those conversations runs WITHOUT extension request hooks
+	// (see `createLeanRetry`). `inspect` is a committed reader: it neither
+	// resumes scheduling nor runs task code, so this is safe pre-resume.
+	const leanRetries = leanRetry.recover(
+		await harness.inspect(BACKGROUND_CONTEXT),
+	);
+	if (leanRetries.length > 0) {
+		console.log(
+			`lean retry: ${leanRetries.length} conversation(s) skip extension request hooks on their next attempt`,
+		);
+	}
 	harness.resume();
 	return {
 		harness,
+		leanRetries,
 		isolation,
 		isolationState,
 		osUsers,

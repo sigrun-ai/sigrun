@@ -2787,6 +2787,17 @@ export interface LoadExtensionsOptions {
 	 * (the direct `loadExtensions` test seam).
 	 */
 	readonly curationFeed?: Set<string>;
+	/**
+	 * Lean-retry (attachments Task 5, spec §4.6): a host-owned wrapper
+	 * applied to every loaded extension AFTER the curation wrap. The
+	 * wrapper intercepts each `pi.generation` hook registration's
+	 * `beforeRequest`/`beforeProviderRequest` handlers so the NEXT
+	 * attempt of a crash-interrupted request can skip them. Core-owned
+	 * extensions (installed in boot, never through this loader) are NOT
+	 * wrapped — boot installs the lean-retry core extension itself.
+	 * Absent = no wrapping (the direct `loadExtensions` test seam).
+	 */
+	readonly leanRetry?: import("./lean-retry.js").LeanRetry;
 	/** Optional context: the gitDir for the sync step's logging. */
 	readonly gitDir?: string;
 	/** A load failure stops any services this extension had previously started. */
@@ -3439,9 +3450,16 @@ let quarantineSlug = slugifyName(label ?? entry ?? "");
 							for (const tool of target.tools) options.curationFeed.add(tool);
 						}
 					}
-					registry.install(
-						wrapExtensionCurationTools(extension, options.curationFeed),
-					);
+					let installed = wrapExtensionCurationTools(extension, options.curationFeed);
+					// Lean retry (attachments Task 5, spec §4.6): intercept
+					// request-prepare hooks AFTER the curation wrap so a
+					// crash in a request hook marks the conversation for
+					// lean retry. Core-owned extensions never reach this
+					// loader — boot installs them directly and is not wrapped.
+					if (options.leanRetry !== undefined) {
+						installed = options.leanRetry.wrapExtension(installed);
+					}
+					registry.install(installed);
 				}
 				if (resolved.perUserTools === true) perUserSlugs.push(slug);
 				// Only a LOADED extension or contributor claims its slug — a
