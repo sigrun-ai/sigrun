@@ -20,6 +20,7 @@ import { createServer } from "../src/server/index.js";
 import { fieldForPointer } from "../src/settings/schema/field-pointer.js";
 import { seededIdentity } from "./helpers/identity.js";
 import { changes, reset } from "./fixtures/fixture-settings-schema-save/index.js";
+import { declared as overridesDeclared } from "./fixtures/fixture-settings-overrides/index.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => {
@@ -288,6 +289,39 @@ describe("extension user overrides", () => {
 			},
 			systemValuesRaw: { tools: ["one", "two"] },
 		});
+	});
+
+	test("first save of an untouched personal page writes no override", async () => {
+		const rig = await boot({ specifier: OVERRIDES });
+		const rendered = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(rendered.status).toBe(200);
+		const tree = (rendered.body as { tree: { root?: unknown } }).tree;
+		// Find the inherit field's name from the shared block contract.
+		const fields: { name: string; inherit?: unknown }[] = [];
+		const walk = (node: unknown): void => {
+			if (typeof node !== "object" || node === null) return;
+			const record = node as Record<string, unknown>;
+			if (typeof record.name === "string" && record.inherit !== undefined) {
+				fields.push(record as { name: string; inherit: unknown });
+			}
+			if (Array.isArray(record.children)) record.children.forEach(walk);
+			if (Array.isArray(record.fields)) record.fields.forEach(walk);
+			if (record.root !== undefined) walk(record.root);
+		};
+		walk(tree);
+		expect(fields.map((field) => field.name)).toContain("enabled");
+		// The webui form's initial value for an inherit field with no stored
+		// override is null — the save sends null for it (and every other
+		// overridable field) along with the personal fields' own defaults.
+		const values: Record<string, unknown> = Object.fromEntries(
+			fields.map((field) => [field.name, null]),
+		);
+		values.nickname = "acme-tester";
+		const saved = await save(rig, values, "first-untouched-save", OVERRIDES_SURFACE);
+		expect(saved.body, JSON.stringify(saved.body)).toMatchObject({ ok: true });
+		const stored = await overrideFile(rig);
+		expect(Object.hasOwn(stored, "enabled")).toBe(false);
+		expect(await overridesDeclared!.effective("alice")).toMatchObject({ enabled: true });
 	});
 
 	test("null on an inherit field deletes the user override", async () => {
