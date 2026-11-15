@@ -60,6 +60,11 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 
 	const selectedSingle = typeof props.value === "string" ? props.value : "";
 	const selectedIds = optionIdList(props.value);
+	const comboboxValue = Array.isArray(props.value)
+		? props.value.filter((entry): entry is string | { other: string } =>
+			typeof entry === "string" ||
+			(typeof entry === "object" && entry !== null && !Array.isArray(entry) && typeof entry.other === "string"))
+		: [];
 	const other = otherText(props.value);
 	const otherSelected = multi ? otherText(props.value) !== "" : typeof props.value === "object" && props.value !== null && !Array.isArray(props.value);
 
@@ -129,7 +134,7 @@ export function FieldView(props: FieldProps<ChoiceField>): ReactNode {
 				label={label}
 				options={options.map((o) => ({ id: o.id, label: boundString(data, o.label) }))}
 				multi={multi}
-				value={multi ? selectedIds : selectedSingle}
+				value={multi ? comboboxValue : selectedSingle}
 				placeholder={boundString(data, field.placeholder)}
 				disabled={props.disabled}
 				allowOtherLabel={allowOther ? field.allowOther?.label ?? "Type something" : undefined}

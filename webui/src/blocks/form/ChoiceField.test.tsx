@@ -12,6 +12,7 @@ import type TestRenderer from "react-test-renderer";
 import { describe, expect, test, vi } from "vitest";
 import type { FormBlock, JsonObject } from "@sigrun/shared/blocks";
 import { findButton, instanceText, render, textContent } from "../../test-utils";
+import { Combobox } from "./Combobox";
 import { SurfaceActionsContext, SurfaceDataContext } from "../context";
 import { WidthContext } from "../width";
 import { FormBlockView } from "./Form";
@@ -447,6 +448,47 @@ describe("choice: combobox", () => {
 		);
 	});
 
+	test("multi preserves {other} as the last entry across later picks", () => {
+		const { dispatch, renderer } = harness([
+			{
+				type: "choice",
+				name: "models",
+				label: "Models",
+				options: [
+					{ id: "acme/a", label: "Alpha" },
+					{ id: "acme/b", label: "Beta" },
+					{ id: "acme/c", label: "Gamma" },
+					{ id: "acme/d", label: "Delta" },
+					{ id: "acme/e", label: "Epsilon" },
+					{ id: "acme/f", label: "Zeta" },
+				],
+				multi: true,
+				allowOther: {},
+			},
+		]);
+		typeText(renderer, "Alpha");
+		keyDown(renderer, "Enter");
+		typeText(renderer, "custom/model");
+		const useOther = renderer.root.findAllByProps({ role: "option" }).find(
+			(node) => instanceText(node) === "Use \"custom/model\"",
+		);
+		act(() => {
+			useOther?.props.onClick();
+		});
+		typeText(renderer, "Beta");
+		keyDown(renderer, "Enter");
+		expect(renderer.root.findAllByProps({ className: "blk-combobox-chip" })).toHaveLength(2);
+		const otherInput = renderer.root.findAll(
+			(node) => node.type === "input" && node.props["aria-label"] === "Models other text",
+		)[0];
+		expect(otherInput?.props.value).toBe("custom/model");
+		submit(renderer);
+		expect(dispatch).toHaveBeenCalledWith(
+			expect.objectContaining({ type: "submit" }),
+			{ rev: 0, values: { models: ["acme/a", "acme/b", { other: "custom/model" }] } },
+		);
+	});
+
 	test("typing resets the highlight and zero matches never poison Enter", () => {
 		const { dispatch, renderer } = harness([
 			{
@@ -472,6 +514,95 @@ describe("choice: combobox", () => {
 			expect.objectContaining({ type: "submit" }),
 			{ rev: 0, values: { model: "pareto/glm-5.3-flash" } },
 		);
+	});
+
+	test("the clear row does not duplicate a roster empty option", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: [
+					{ id: "", label: "Use the default (acme/default)" },
+					{ id: "acme/a", label: "Alpha" },
+				],
+				presentation: "dropdown",
+				placeholder: "Choose a model",
+			},
+		]);
+		keyDown(renderer, "ArrowDown");
+		expect(optionTexts(renderer)).toEqual(["Use the default (acme/default)", "Alpha"]);
+	});
+
+	test("a synthetic clear row is labeled when no placeholder exists", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		]);
+		keyDown(renderer, "ArrowDown");
+		expect(optionTexts(renderer)[0]).toBe("(none)");
+	});
+
+	test("Escape and Tab restore the selected label", () => {
+		const { renderer } = harness([
+			{
+				type: "choice",
+				name: "model",
+				label: "Model",
+				options: SEARCH_OPTIONS,
+				presentation: "dropdown",
+			},
+		], { data: { f: { model: "pareto/glm-5.3-flash" } } });
+		expect(combobox(renderer).props.value).toBe("GLM 5.3 Flash (Pareto)");
+
+		for (const key of ["Escape", "Tab"]) {
+			typeText(renderer, "zzz");
+			keyDown(renderer, key);
+			expect(combobox(renderer).props.value).toBe("GLM 5.3 Flash (Pareto)");
+			expect(combobox(renderer).props["aria-expanded"]).toBe(false);
+		}
+
+		vi.unstubAllGlobals();
+	});
+
+	test("outside dismissal clears the search text", () => {
+		const listeners = new Map<string, Set<(event: unknown) => void>>();
+		vi.stubGlobal("document", {
+			addEventListener(type: string, listener: (event: unknown) => void) {
+				const existing = listeners.get(type) ?? new Set<(event: unknown) => void>();
+				existing.add(listener);
+				listeners.set(type, existing);
+			},
+			removeEventListener(type: string, listener: (event: unknown) => void) {
+				listeners.get(type)?.delete(listener);
+			},
+		});
+		const renderer = render(h(Combobox, {
+			label: "Model",
+			options: SEARCH_OPTIONS,
+			multi: false,
+			value: "pareto/glm-5.3-flash",
+			onChange: () => {},
+		}));
+		const input = renderer.root.findByProps({ role: "combobox" });
+		act(() => {
+			input.props.onFocus();
+			input.props.onChange({ target: { value: "zzz" } });
+		});
+		expect(listeners.get("pointerdown")?.size).toBe(1);
+		act(() => {
+			for (const listener of listeners.get("pointerdown") ?? []) {
+				listener({ target: {} });
+			}
+		});
+		expect(input.props.value).toBe("GLM 5.3 Flash (Pareto)");
+		expect(input.props["aria-expanded"]).toBe(false);
+		vi.unstubAllGlobals();
 	});
 
 	test("multi picking an already selected option does not duplicate it", () => {

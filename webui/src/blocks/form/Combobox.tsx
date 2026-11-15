@@ -21,7 +21,7 @@ export function Combobox(props: {
 	readonly label: string;
 	readonly options: readonly ComboboxOption[];
 	readonly multi: boolean;
-	readonly value: string | readonly string[];
+	readonly value: string | readonly (string | { other: string })[];
 	readonly placeholder?: string;
 	readonly disabled?: boolean;
 	readonly allowOtherLabel?: string;
@@ -34,11 +34,20 @@ export function Combobox(props: {
 	const [open, setOpen] = useState(false);
 	const [highlight, setHighlight] = useState(0);
 	const rootRef = useRef<HTMLDivElement | null>(null);
-	useDismiss(open, () => setOpen(false), rootRef);
+	function dismiss(): void {
+		setOpen(false);
+		setText("");
+		setHighlight(0);
+	}
+	useDismiss(open, dismiss, rootRef);
 
 	const selectedIds = multi
 		? (Array.isArray(value) ? value.filter((v): v is string => typeof v === "string") : [])
 		: typeof value === "string" && value !== "" ? [value] : [];
+	const otherValue = multi && Array.isArray(value)
+		? value.find((entry): entry is { other: string } =>
+			typeof entry === "object" && entry !== null && typeof entry.other === "string")
+		: undefined;
 
 	const filtered = options.filter((option) => {
 		if (text.trim() === "") return true;
@@ -47,7 +56,7 @@ export function Combobox(props: {
 		return terms.every((term) => haystack.includes(term));
 	});
 
-	const showEmpty = !multi && text.trim() === "";
+	const showEmpty = !multi && text.trim() === "" && !options.some((option) => option.id === "");
 	const showOther = allowOtherLabel !== undefined && text.trim() !== "" &&
 		!options.some((o) => o.label === text.trim() || o.id === text.trim());
 	const totalItems = filtered.length + (showEmpty ? 1 : 0) + (showOther ? 1 : 0);
@@ -59,7 +68,7 @@ export function Combobox(props: {
 
 	function pickOption(id: string): void {
 		if (multi) {
-			if (!selectedIds.includes(id)) onChange([...selectedIds, id]);
+			if (!selectedIds.includes(id)) onChange([...selectedIds, id, ...(otherValue === undefined ? [] : [otherValue])]);
 		} else {
 			onChange(id);
 			setOpen(false);
@@ -82,7 +91,7 @@ export function Combobox(props: {
 	}
 
 	function removeChip(id: string): void {
-		onChange(selectedIds.filter((v) => v !== id));
+		onChange([...selectedIds.filter((v) => v !== id), ...(otherValue === undefined ? [] : [otherValue])]);
 	}
 
 	function onKeyDown(event: KeyboardEvent): void {
@@ -101,7 +110,7 @@ export function Combobox(props: {
 		switch (event.key) {
 			case "Escape":
 				event.preventDefault();
-				setOpen(false);
+				dismiss();
 				break;
 			case "ArrowDown":
 				event.preventDefault();
@@ -126,7 +135,7 @@ export function Combobox(props: {
 				}
 				break;
 			case "Tab":
-				setOpen(false);
+				dismiss();
 				break;
 			default:
 				break;
@@ -196,7 +205,7 @@ export function Combobox(props: {
 							onMouseDown={(event) => event.preventDefault()}
 							onClick={() => pickOption("")}
 						>
-							{placeholder ?? ""}
+							{placeholder || "(none)"}
 						</li>
 					)}
 					{filtered.map((option, index) => {
