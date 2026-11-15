@@ -83,6 +83,36 @@ export function overridesSchema(schema: JsonSchema): JsonSchema {
 
 // ─── extension overrides ────────────────────────────────────────────────
 
+/** Remove server env metadata from every drawable descendant of a leaf. */
+function stripEnv(node: JsonSchema): JsonSchema {
+	const { [ENV_KEYWORD]: _serverEnv, ...stripped } = node;
+	const properties = isRecord(node.properties)
+		? Object.fromEntries(Object.entries(node.properties).map(([name, child]) =>
+			isRecord(child) ? [name, stripEnv(child)] : [name, child]
+		))
+		: undefined;
+	return {
+		...stripped,
+		...(properties === undefined ? {} : { properties }),
+		...(isRecord(node.items) ? { items: stripEnv(node.items) } : {}),
+		...(isRecord(node.additionalProperties)
+			? { additionalProperties: stripEnv(node.additionalProperties) }
+			: {}),
+	};
+}
+
+/** Merge definition bags; a personal definition wins a name collision. */
+function mergeDefinitions(
+	personal: unknown,
+	system: unknown,
+): Record<string, unknown> | undefined {
+	if (!isRecord(personal) && !isRecord(system)) return undefined;
+	return {
+		...(isRecord(personal) ? personal : {}),
+		...(isRecord(system) ? system : {}),
+	};
+}
+
 /** TypeBox's detached-leaf context resolves local refs by pointer key. */
 function refContext(schema: JsonSchema): Record<PropertyKey, JsonSchema> {
 	const context: Record<PropertyKey, JsonSchema> = {};
@@ -190,8 +220,7 @@ export function mergedUserSchema(
 			}
 			return { ...(personal ?? node), properties };
 		}
-		const { [ENV_KEYWORD]: _serverEnv, ...personalLeaf } = node;
-		return { ...personalLeaf, [INHERIT_KEYWORD]: true };
+		return { ...stripEnv(node), [INHERIT_KEYWORD]: true };
 	}
 	const inherited = Object.fromEntries(
 		Object.entries(overrideProperties).flatMap(([name, property]) => {
@@ -200,10 +229,12 @@ export function mergedUserSchema(
 			return [[name, inheritLeaves(property, isRecord(personal) ? personal : undefined)]];
 		}),
 	);
+	const $defs = mergeDefinitions(userSchema?.$defs, schema.$defs);
+	const definitions = mergeDefinitions(userSchema?.definitions, schema.definitions);
 	return {
 		...(userSchema ?? { type: "object" }),
-		...(isRecord(schema.$defs) ? { $defs: schema.$defs } : {}),
-		...(isRecord(schema.definitions) ? { definitions: schema.definitions } : {}),
+		...($defs === undefined ? {} : { $defs }),
+		...(definitions === undefined ? {} : { definitions }),
 		properties: { ...userProperties, ...inherited },
 	};
 }

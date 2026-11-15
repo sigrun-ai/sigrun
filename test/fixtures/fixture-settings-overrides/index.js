@@ -23,6 +23,20 @@ export default function fixture(host) {
 					"x-sigrun-env": "ACME_OVERRIDE_ENDPOINT_URL",
 					"x-sigrun-overridable": true,
 				},
+				destinations: {
+					type: "array",
+					items: {
+						type: "object",
+						properties: {
+							itemEndpoint: { type: "string", "x-sigrun-env": "ACME_OVERRIDE_ITEM_URL" },
+							nested: {
+								type: "array",
+								items: { type: "string", "x-sigrun-env": "ACME_OVERRIDE_DEEP_ITEM_URL" },
+							},
+						},
+					},
+					"x-sigrun-overridable": true,
+				},
 				group: {
 					type: "object",
 					properties: {
@@ -33,7 +47,8 @@ export default function fixture(host) {
 		},
 		userSchema: {
 			type: "object",
-			properties: { nickname: { type: "string", default: "tester" } },
+			$defs: { PersonalName: { type: "string", pattern: "^acme-" } },
+			properties: { nickname: { $ref: "#/$defs/PersonalName", default: "acme-tester" } },
 		},
 	});
 	return { extension: defineExtension({ name: "acme-settings-overrides" }) };

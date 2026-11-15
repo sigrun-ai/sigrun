@@ -220,6 +220,23 @@ describe("extension user overrides", () => {
 		expect(data.systemValues?.envEndpoint).toBe("https://system.example.invalid");
 	});
 
+	test("personal surfaces never expose env values from override array item schemas", async () => {
+		const rig = await boot({
+			specifier: OVERRIDES,
+			env: {
+				ACME_OVERRIDE_ITEM_URL: "https://server-item-env.example.invalid",
+				ACME_OVERRIDE_DEEP_ITEM_URL: "https://server-deep-item-env.example.invalid",
+			},
+		});
+		const result = await call(rig, "GET", OVERRIDES_SURFACE);
+		expect(result.status, JSON.stringify(result.body)).toBe(200);
+		const data = result.body.data as Record<string, Record<string, unknown>>;
+		expect(Object.hasOwn(data.envFallbacks!, "itemEndpoint")).toBe(false);
+		expect(Object.hasOwn(data.envFallbacks!, "item")).toBe(false);
+		expect(JSON.stringify(data)).not.toContain("https://server-item-env.example.invalid");
+		expect(JSON.stringify(data)).not.toContain("https://server-deep-item-env.example.invalid");
+	});
+
 	test("boolean display values are On and Off", async () => {
 		const rig = await boot({ specifier: OVERRIDES });
 		const result = await call(rig, "GET", OVERRIDES_SURFACE);

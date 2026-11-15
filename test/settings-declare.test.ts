@@ -265,6 +265,25 @@ test("effective validates a $ref override against the system definitions", async
 	});
 });
 
+test("personal $defs survive the system merge without repairing a $ref value", async () => {
+	const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+	await boot([OVERRIDES], {
+		userSettingsFile: "acme-settings-overrides.json",
+		userSettings: {
+			nickname: "acme-alice",
+			endpoint: "https://user.example.invalid",
+		},
+	});
+	await expect(overrideDeclared?.user("tester").get()).resolves.toEqual({
+		nickname: "acme-alice",
+		endpoint: "https://user.example.invalid",
+	});
+	await expect(overrideDeclared?.effective("tester")).resolves.toMatchObject({
+		endpoint: "https://user.example.invalid",
+	});
+	expect(warn.mock.calls.filter((call) => String(call[0]).startsWith("settings"))).toEqual([]);
+});
+
 test("declare returns defaults for an empty file", async () => {
 	const { opened } = await boot([DECLARING]);
 	await expect(declared?.get()).resolves.toEqual({ interval: 60, group: { label: "acme" } });

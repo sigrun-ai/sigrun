@@ -351,15 +351,27 @@ describe("mergedUserSchema", () => {
 		expect((merged?.properties as Record<string, JsonSchema>).envEndpoint).not.toHaveProperty("x-sigrun-env");
 	});
 
-	it("carries legacy system definitions", () => {
+	it("merges personal and system definition bags", () => {
 		const merged = mergedUserSchema(
 			{
 				...objectSchema({ endpoint: { type: "string", [OVERRIDABLE_KEYWORD]: true } }),
-				definitions: { Endpoint: { type: "string" } },
+				$defs: { SystemEndpoint: { type: "string" } },
+				definitions: { SystemEndpoint: { type: "string" } },
 			},
-			undefined,
+			{
+				...objectSchema({ nickname: { $ref: "#/$defs/PersonalName" } }),
+				$defs: { PersonalName: { type: "string", minLength: 3 } },
+				definitions: { PersonalName: { type: "string", minLength: 3 } },
+			},
 		);
-		expect(merged?.definitions).toEqual({ Endpoint: { type: "string" } });
+		expect(merged?.$defs).toEqual({
+			PersonalName: { type: "string", minLength: 3 },
+			SystemEndpoint: { type: "string" },
+		});
+		expect(merged?.definitions).toEqual({
+			PersonalName: { type: "string", minLength: 3 },
+			SystemEndpoint: { type: "string" },
+		});
 	});
 
 	it("is undefined when neither schema has properties", () => {
