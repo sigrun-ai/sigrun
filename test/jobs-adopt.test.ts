@@ -41,6 +41,8 @@ const CHANNEL_SPECIFIER = pathToFileURL(
 
 interface TestServer {
 	readonly opened: OpenedHarness;
+	/** The resolved config (submitOp reads server knobs off the context). */
+	readonly config: ReturnType<typeof loadConfig>;
 	readonly faux: FauxProviderHandle;
 	readonly app: Awaited<ReturnType<typeof createServer>>;
 	readonly aliceToken: string;
@@ -98,7 +100,7 @@ async function bootServer(options?: {
 		"alice-cli",
 		"alice",
 	);
-	return { opened, faux, app, aliceToken };
+	return { opened, config, faux, app, aliceToken };
 }
 
 function channelHost(opened: OpenedHarness): SeamHost & SigrunHost {
@@ -184,7 +186,7 @@ async function listRows(server: TestServer) {
 describe("adoption of a job-run conversation", () => {
 	test("a user message adopts a job-run conversation", async () => {
 		const server = await bootServer();
-		const { opened, faux } = server;
+		const { opened, faux, config } = server;
 		const job = await opened.jobs.createApi(jobSpec(), "alice");
 		faux.setResponses([fauxAssistantMessage("job done")]);
 		const fire = await opened.jobs.runNow(job.id);
@@ -226,7 +228,7 @@ describe("adoption of a job-run conversation", () => {
 
 	test("a block answer adopts too", async () => {
 		const server = await bootServer();
-		const { opened, faux } = server;
+		const { opened, faux, config } = server;
 		const job = await opened.jobs.createApi(jobSpec(), "alice");
 		faux.setResponses([fauxAssistantMessage("job done")]);
 		const fire = await opened.jobs.runNow(job.id);
@@ -240,7 +242,7 @@ describe("adoption of a job-run conversation", () => {
 		);
 		if (conversation === undefined) throw new Error("run conversation not found");
 		const { submitOp } = await import("../src/server/conversation-ops.js");
-		const ctx = { opened } as unknown as Parameters<typeof submitOp>[0];
+		const ctx = { opened, config } as unknown as Parameters<typeof submitOp>[0];
 		faux.setResponses([fauxAssistantMessage("answer turn done")]);
 		await submitOp(ctx, conversation, "Submitted 'Ranking': 1. Acme", {
 			user: "alice",

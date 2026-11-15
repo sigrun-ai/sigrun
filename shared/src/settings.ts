@@ -95,6 +95,14 @@ export interface ServerSettings {
 	 */
 	readonly maxFileReadBytes?: number;
 	/**
+	 * `SIGRUN_MAX_INLINE_FILE_BYTES` — a positive integer. A `{type:"file"}`
+	 * submission part larger than this inlines a head plus a workspace
+	 * pointer instead of its body, and an oversized tool result's `details`
+	 * is bounded the same way. Default 50 KiB (one `read` page): the file
+	 * already sits in the workspace where the agent's own tools reach it.
+	 */
+	readonly maxInlineFileBytes?: number;
+	/**
 	 * `SIGRUN_DATA_DIR` — a non-empty path. Applied where the env var is
 	 * absent; the env-or-file value wins VERBATIM (no `/sigrun` suffix),
 	 * exactly like the stores resolver's explicit tier. The DB default
