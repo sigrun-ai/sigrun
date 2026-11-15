@@ -14,20 +14,38 @@
 import { describe, expect, it } from "vitest";
 import {
 	activityLabel,
+	ATTACHED_USER_KIND,
+	attachmentNames,
 	BLOCKS_ANSWER_KIND,
 	BLOCKS_KIND,
 	BLOCKS_NOTE_KIND,
 	CONTEXT_MARK_KIND,
+	entryAttachments,
 	EXPANDED_USER_KIND,
 	expandedUserEntry,
 	groupTurns,
+	isUserInput,
 	previewArgument,
 	toolPreview,
+	typedText,
+	unattachedText,
+	USER_INPUT_KINDS,
 	type ContextMarkData,
 	type ToolCall,
 	type TurnBlock,
 	type TurnEntry,
 } from "@sigrun/shared/turns";
+
+/** Synthetic attachment record used across the helpers' tests: a
+ *  workspace-delivered markdown upload covering model part 0. */
+const attachedNotes = {
+	path: "uploads/7/notes.md",
+	name: "notes.md",
+	mime: "text/markdown",
+	bytes: 512,
+	delivery: "workspace",
+	parts: [0],
+} as const;
 
 const userEntry = (id: number, text: string): TurnEntry => ({
 	id,
@@ -673,6 +691,202 @@ describe("previewArgument", () => {
 		expect(previewArgument("bash", {})).toBeUndefined();
 		expect(previewArgument("mystery", { count: 2 })).toBeUndefined();
 		expect(previewArgument("read", undefined)).toBeUndefined();
+	});
+});
+
+describe("input kinds and attachment helpers", () => {
+	it("USER_INPUT_KINDS pins the three user-input entry kinds", () => {
+		expect([...USER_INPUT_KINDS].sort()).toEqual(
+			["pi.user", "sigrun.user", "sigrun.user.expanded"].sort(),
+		);
+	});
+
+	it("isUserInput is true for the three user-input kinds", () => {
+		expect(isUserInput({ kind: "pi.user" })).toBe(true);
+		expect(isUserInput({ kind: ATTACHED_USER_KIND })).toBe(true);
+		expect(isUserInput({ kind: EXPANDED_USER_KIND })).toBe(true);
+	});
+
+	it("isUserInput is false for non-user-input kinds", () => {
+		expect(isUserInput({ kind: BLOCKS_ANSWER_KIND })).toBe(false);
+		expect(isUserInput({ kind: "pi.assistant" })).toBe(false);
+		expect(isUserInput({ kind: "pi.tool-result" })).toBe(false);
+		expect(isUserInput({ kind: "pi.compaction" })).toBe(false);
+	});
+
+	it("entryAttachments returns the records of a sigrun.user entry", () => {
+		const entry = {
+			kind: ATTACHED_USER_KIND,
+			data: { attachments: [attachedNotes] },
+		};
+		expect(entryAttachments(entry)).toEqual([attachedNotes]);
+	});
+
+	it("entryAttachments is [] for pi.user and unrelated kinds", () => {
+		expect(entryAttachments({ kind: "pi.user" })).toEqual([]);
+		expect(entryAttachments({ kind: "pi.assistant" })).toEqual([]);
+		expect(entryAttachments({ kind: ATTACHED_USER_KIND })).toEqual([]);
+		expect(
+			entryAttachments({ kind: ATTACHED_USER_KIND, data: {} }),
+		).toEqual([]);
+	});
+
+	it("entryAttachments reads sigrun.user.expanded data too", () => {
+		const entry = {
+			kind: EXPANDED_USER_KIND,
+			data: { typed: "/x", attachments: [attachedNotes] },
+		};
+		expect(entryAttachments(entry)).toEqual([attachedNotes]);
+	});
+
+	it("entryAttachments drops malformed items", () => {
+		const entry = {
+			kind: ATTACHED_USER_KIND,
+			data: {
+				attachments: [
+					attachedNotes,
+					// Missing parts — dropped.
+					{
+						path: "uploads/7/broken.md",
+						name: "broken.md",
+						mime: null,
+						bytes: null,
+						delivery: "workspace",
+					},
+					// Non-object — dropped.
+					"junk",
+				],
+			},
+		};
+		expect(entryAttachments(entry)).toEqual([attachedNotes]);
+	});
+
+	it("typedText of a sigrun.user entry excludes attachment parts", () => {
+		const entry = {
+			kind: ATTACHED_USER_KIND,
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "[Attached: uploads/7/notes.md]" },
+						{ type: "text", text: "what's in here?" },
+					],
+				},
+			],
+			data: { attachments: [attachedNotes] },
+		};
+		expect(typedText(entry)).toBe("what's in here?");
+	});
+
+	it("typedText of an attachments-only entry is the empty string", () => {
+		const entry = {
+			kind: ATTACHED_USER_KIND,
+			model: [
+				{
+					role: "user",
+					content: [{ type: "text", text: "[Attached: uploads/7/notes.md]" }],
+				},
+			],
+			data: { attachments: [attachedNotes] },
+		};
+		expect(typedText(entry)).toBe("");
+	});
+
+	it("typedText of an expanded entry is data.typed", () => {
+		const entry = {
+			kind: EXPANDED_USER_KIND,
+			data: { typed: "/skill:greet hej", attachments: [attachedNotes] },
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "[Attached: uploads/7/notes.md]" },
+						{ type: "text", text: "<skill name=\"greet\">…</skill>" },
+					],
+				},
+			],
+		};
+		expect(typedText(entry)).toBe("/skill:greet hej");
+	});
+
+	it("typedText of a pi.user joins every text part with the joiner", () => {
+		const entry = {
+			kind: "pi.user",
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "first part" },
+						{ type: "text", text: "second part" },
+					],
+				},
+			],
+		};
+		expect(typedText(entry)).toBe("first part\n\nsecond part");
+		expect(unattachedText(entry, " / ")).toBe("first part / second part");
+	});
+
+	it("unattachedText of an expanded entry is the admitted text minus attachment parts", () => {
+		const entry = {
+			kind: EXPANDED_USER_KIND,
+			data: { typed: "/x", attachments: [attachedNotes] },
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "[Attached: uploads/7/notes.md]" },
+						{ type: "text", text: "admitted text" },
+					],
+				},
+			],
+		};
+		expect(unattachedText(entry)).toBe("admitted text");
+	});
+
+	it("unattachedText returns string content as-is", () => {
+		const entry = {
+			kind: "pi.user",
+			model: [{ role: "user", content: "plain string body" }],
+		};
+		expect(unattachedText(entry)).toBe("plain string body");
+	});
+
+	it("attachmentNames joins the attachment names with the joiner", () => {
+		const second = {
+			...attachedNotes,
+			path: "uploads/7/plan.md",
+			name: "plan.md",
+			parts: [1],
+		};
+		const entry = {
+			kind: ATTACHED_USER_KIND,
+			data: { attachments: [attachedNotes, second] },
+		};
+		expect(attachmentNames(entry)).toBe("notes.md, plan.md");
+		expect(attachmentNames(entry, " ")).toBe("notes.md plan.md");
+		expect(attachmentNames({ kind: "pi.user" })).toBe("");
+	});
+
+	it("groupTurns puts a sigrun.user entry in a user turn", () => {
+		const turns = groupTurns([
+			assistantEntry(1, [{ type: "text", text: "Earlier answer." }]),
+			{
+				id: 2,
+				kind: ATTACHED_USER_KIND,
+				model: [
+					{
+						role: "user",
+						content: [
+							{ type: "text", text: "[Attached: uploads/7/notes.md]" },
+							{ type: "text", text: "what's in here?" },
+						],
+					},
+				],
+				data: { attachments: [attachedNotes] },
+			},
+		]);
+		expect(turns.map((turn) => turn.kind)).toEqual(["assistant", "user"]);
+		expect(turns[1]).toMatchObject({ kind: "user", entry: { id: 2 } });
 	});
 });
 
