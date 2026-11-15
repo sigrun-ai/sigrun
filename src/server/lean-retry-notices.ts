@@ -44,6 +44,10 @@ export async function noticeLeanRetries(deps: {
 			id,
 			BACKGROUND_CONTEXT,
 		);
+		if (meta?.internal === true) {
+			log(`lean retry: conversation ${id} is internal; no notice posted`);
+			continue;
+		}
 		const name = meta?.name ?? meta?.autoName ?? `conversation ${id}`;
 		const body =
 			`The server restarted while preparing a reply in "${name}", so the reply was retried without extension request hooks. ` +

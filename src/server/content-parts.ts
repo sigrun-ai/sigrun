@@ -288,10 +288,12 @@ async function resolveAttachment(
 	}
 
 	const text =
-		part.type === "image" || mime?.startsWith("image/") === true
+		bytes > options.maxInlineFileBytes ||
+		part.type === "image" ||
+		mime?.startsWith("image/") === true
 			? undefined
 			: decodeStrictUtf8(read.value);
-	if (text !== undefined && bytes <= options.maxInlineFileBytes) {
+	if (text !== undefined) {
 		return {
 			content: [
 				{

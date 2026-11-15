@@ -143,7 +143,7 @@ async function boot(
 async function setMeta(
 	opened: OpenedHarness,
 	id: ConversationId,
-	patch: { readonly name?: string; readonly autoName?: string; readonly owner?: string },
+	patch: { readonly name?: string; readonly autoName?: string; readonly owner?: string; readonly internal?: true },
 ): Promise<void> {
 	const conversation = await opened.harness.conversation(id, BACKGROUND_CONTEXT);
 	expect(conversation).toBeDefined();
@@ -152,6 +152,7 @@ async function setMeta(
 		if (patch.name !== undefined) draft.name = patch.name;
 		if (patch.autoName !== undefined) draft.autoName = patch.autoName;
 		if (patch.owner !== undefined) draft.owner = patch.owner;
+		if (patch.internal !== undefined) draft.internal = patch.internal;
 	}, BACKGROUND_CONTEXT);
 }
 
@@ -216,6 +217,28 @@ describe("noticeLeanRetries (unit: real harness, injected post/log)", () => {
 		expect(logged).toHaveLength(1);
 		expect(logged[0]).toContain("lean retry");
 		expect(logged[0]).toContain("Unclaimed");
+	});
+
+	test("an internal lean conversation posts no notice and logs a skip", async () => {
+		const dir = await mkdtemp(join(tmpdir(), "sigrun-lean-notice-"));
+		rigs.push(() => rm(dir, { recursive: true, force: true, maxRetries: 3 }));
+		const { opened } = await boot(dir);
+		const root = await opened.harness.root(BACKGROUND_CONTEXT);
+		await setMeta(opened, root.id, {
+			name: "Internal curator review",
+			owner: "tester",
+			internal: true,
+		});
+		const { posts, post } = recordingPosts();
+		const logged: string[] = [];
+		await noticeLeanRetries({
+			opened: { ...opened, leanRetries: [root.id] },
+			notices: { post },
+			log: (line: string) => void logged.push(line),
+		});
+		expect(posts).toEqual([]);
+		expect(logged).toHaveLength(1);
+		expect(logged[0]).toContain(`lean retry: conversation ${root.id} is internal`);
 	});
 
 	test("two lean conversations post two notices (autoName then id fallback)", async () => {
