@@ -96,6 +96,10 @@ export function initialValue(field: Field, bound: Record<string, JsonValue>): Js
 	// bound lookup so the status string never lands in the input.
 	if (field.type === "secret") return "";
 	const value = bound[field.name];
+	// Personal override: absent → null (the checkbox reads null as
+	// "use the system setting" and a save sends null → delete). A stored
+	// value (even an empty one) is the user's own override.
+	if (field.inherit !== undefined) return value === undefined ? null : value;
 	if (field.type === "entries") return initialEntries(field, value);
 	if (field.type === "variant") return initialVariant(field, value);
 	if (value !== undefined) return value;

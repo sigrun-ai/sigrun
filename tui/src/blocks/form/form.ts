@@ -376,6 +376,10 @@ export class FormComponent implements Component {
 		const submitted = Object.fromEntries(
 			this.#fields
 				.filter((field) => field.disabled !== true)
+				// An untouched inherit field's null value means "use the
+				// system setting": drop it from the submission so the save
+				// neither writes nor clears an override.
+				.filter((field) => !(field.inherit !== undefined && this.#values[field.name] === null))
 				.map((field) => [field.name, this.#values[field.name]]),
 		);
 		this.#ctx.dispatch(
@@ -533,6 +537,12 @@ export class FormComponent implements Component {
 		const value = this.#values[field.name];
 		const compact = widthClassOf(width) === "compact";
 		const indent = compact && fieldLabel(field, this.#ctx) !== "" ? "  " : "";
+		// An untouched inherit field displays its system value, marked
+		// (system). Editing seeds from the raw system value.
+		if (field.inherit !== undefined && value === null) {
+			const display = bindText(field.inherit.system, this.#ctx);
+			return [`${indent}${focused ? "> " : "  "}${display} (system)`];
+		}
 		switch (field.type) {
 			case "toggle": {
 				const box = value === true ? (this.#ctx.unicode ? "[x]" : "[x]") : "[ ]";
@@ -810,6 +820,30 @@ export class FormComponent implements Component {
 
 	/** Route input to the focused field's editor. */
 	#inputField(field: Field, data: string): void {
+		// First edit of an untouched inherit field: seed from the raw
+		// system value. A toggle inverts it (false when absent).
+		if (field.inherit !== undefined && this.#values[field.name] === null) {
+			const raw = resolvePointer(this.#ctx.data, field.inherit.raw.$) as JsonValue | undefined;
+			switch (field.type) {
+				case "toggle":
+					if (data === "\r" || data === " ") {
+						this.#change(field.name, raw === undefined ? true : !raw);
+					}
+					return;
+				case "choice":
+				case "list":
+				case "entries":
+				case "variant":
+					this.#change(field.name, Array.isArray(raw) ? [...raw] : (raw ?? (field.type === "variant" ? {} : [])));
+					break;
+				default:
+					this.#text.set(field.name, { buffer: new EditBuffer(typeof raw === "string" || typeof raw === "number" ? String(raw) : "") });
+					break;
+			}
+		}
+		// Re-read AFTER the inherit seed: the type switch must act on the
+		// seeded copy, not the pre-seed null — else list/entries throw the
+		// copied system entries away on the first keypress.
 		const value = this.#values[field.name];
 		switch (field.type) {
 			case "toggle":

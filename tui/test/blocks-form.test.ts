@@ -814,3 +814,130 @@ describe("review fixes (the fix round's covering tests)", () => {
 		expect(captured).toHaveLength(1);
 	});
 });
+
+describe("use system setting (per-user overrides)", () => {
+	function inheritForm(): FormBlock {
+		return {
+			type: "form",
+			bind: "/prefs",
+			mode: "submit",
+			onSubmit: "save",
+			submitLabel: "Save",
+			children: [
+				{ type: "text", name: "nick", label: "Nickname" },
+				{
+					type: "toggle",
+					name: "enabled",
+					label: "Enabled",
+					inherit: {
+						system: { $: "/systemValues/enabled" },
+						raw: { $: "/systemValuesRaw/enabled" },
+					},
+				},
+				{
+					type: "text",
+					name: "endpoint",
+					label: "Endpoint",
+					inherit: {
+						system: { $: "/systemValues/endpoint" },
+						raw: { $: "/systemValuesRaw/endpoint" },
+					},
+				},
+			],
+		};
+	}
+
+	test("an inherit field's initial value is null and an untouched save submits nothing for it", () => {
+		const { ctx, captured } = makeCtx({
+			prefs: { nick: "acme" },
+			systemValues: { enabled: "On", endpoint: "https://system.example.invalid" },
+			systemValuesRaw: { enabled: true, endpoint: "https://system.example.invalid" },
+		});
+		const form = formOf(inheritForm(), ctx);
+		expect(form.values).toEqual({ nick: "acme", enabled: null, endpoint: null });
+		form.focusSubmit();
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.payload).toEqual({ values: { nick: "acme" }, rev: 0 });
+	});
+
+	test("an untouched inherit field renders as its system display text marked (system)", () => {
+		const { ctx } = makeCtx({
+			prefs: { nick: "acme" },
+			systemValues: { enabled: "On", endpoint: "https://system.example.invalid" },
+			systemValuesRaw: { enabled: true, endpoint: "https://system.example.invalid" },
+		});
+		const form = formOf(inheritForm(), ctx);
+		const rendered = form.render(100).join("\n");
+		expect(rendered).toContain("On (system)");
+		expect(rendered).toContain("https://system.example.invalid (system)");
+	});
+
+	test("editing an inherited text field seeds from the raw system value and submits the edit", () => {
+		const { ctx, captured } = makeCtx({
+			prefs: { nick: "acme" },
+			systemValues: { enabled: "On", endpoint: "https://system.example.invalid" },
+			systemValuesRaw: { enabled: true, endpoint: "https://system.example.invalid" },
+		});
+		const form = formOf(inheritForm(), ctx);
+		form.focusName("enabled");
+		form.handleInput(" "); // toggle: system true → override false
+		expect(form.values.enabled).toBe(false);
+		form.focusName("endpoint");
+		form.handleInput("!"); // text: seeds from the raw value, then the edit appends
+		expect(form.values.endpoint).toBe("https://system.example.invalid!");
+		form.focusSubmit();
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.payload).toEqual({
+			values: { nick: "acme", enabled: false, endpoint: "https://system.example.invalid!" },
+			rev: 0,
+		});
+	});
+
+	test("an inherit list's first edit seeds a copy of the system entries and typing preserves them", () => {
+		const block: FormBlock = {
+			type: "form",
+			bind: "/prefs",
+			mode: "submit",
+			onSubmit: "save",
+			submitLabel: "Save",
+			children: [
+				{ type: "text", name: "nick", label: "Nickname" },
+				{
+					type: "list",
+					name: "tools",
+					label: "Tools",
+					item: { type: "text", name: "tool", label: "Tool" },
+					inherit: {
+						system: { $: "/systemValues/tools" },
+						raw: { $: "/systemValuesRaw/tools" },
+					},
+				},
+			],
+		};
+		const { ctx, captured } = makeCtx({
+			prefs: { nick: "acme" },
+			systemValues: { tools: "one, two" },
+			systemValuesRaw: { tools: ["one", "two"] },
+		});
+		const form = formOf(block, ctx);
+		expect(form.values.tools).toBeNull();
+		form.focusName("tools");
+		// Typing goes into the focused entry's text buffer, then changes
+		// the list's entry value. The seed from raw must NOT wipe the
+		// existing system entries.
+		form.handleInput("X"); // edit the first entry
+		expect(form.values.tools).toEqual(["oneX", "two"]);
+		// Adding still preserves the system entries plus the new one.
+		form.handleInput("a");
+		expect(form.values.tools).toEqual(["oneX", "two", ""]);
+		form.focusSubmit();
+		form.handleInput(ENTER);
+		expect(captured).toHaveLength(1);
+		expect(captured[0]?.payload).toEqual({
+			values: { nick: "acme", tools: ["oneX", "two", ""] },
+			rev: 0,
+		});
+	});
+});

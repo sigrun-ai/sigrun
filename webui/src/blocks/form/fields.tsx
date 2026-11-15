@@ -11,16 +11,17 @@
  */
 
 import { useLayoutEffect, useRef, type ReactNode } from "react";
-import type {
-	DateField,
-	DatetimeField,
-	Field,
-	FieldBase,
-	JsonValue,
-	LongtextField,
-	NumberField,
-	TextField,
-	ToggleField,
+import {
+	resolvePointer,
+	type DateField,
+	type DatetimeField,
+	type Field,
+	type FieldBase,
+	type JsonValue,
+	type LongtextField,
+	type NumberField,
+	type TextField,
+	type ToggleField,
 } from "@sigrun/shared/blocks";
 import { boundString, useSurfaceData } from "../context";
 import { FieldView as ChoiceFieldView } from "./ChoiceField";
@@ -222,10 +223,71 @@ function DatetimeFieldView(props: FieldProps<DatetimeField>): ReactNode {
 	);
 }
 
+/** The raw system value becomes the user's initial override on uncheck:
+ *  a toggle inverts it (false when absent), a list copies it ([] when
+ *  absent), anything else takes it verbatim ("" when absent). */
+function rawSeed(field: Field, raw: JsonValue | undefined): JsonValue {
+	if (field.type === "toggle") return raw === undefined ? false : !raw;
+	if (field.type === "list" || field.type === "entries") {
+		return Array.isArray(raw) ? [...raw] : [];
+	}
+	return raw === undefined ? "" : raw;
+}
+
+/** Personal override chrome: the "Use system setting" checkbox wraps the
+ *  control. Checked (value null) → disabled control showing the system
+ *  display text; unchecked → the control holds the user's override. */
+function InheritRow(props: FieldProps): ReactNode {
+	const { field } = props;
+	const data = useSurfaceData();
+	const inherit = field.inherit;
+	if (inherit === undefined) return null;
+	const system = boundString(data, inherit.system);
+	const checked = props.value === null;
+	// The displayed control value: the raw system value when inherited.
+	let display: JsonValue = props.value;
+	if (checked) {
+		const raw = resolve(inherit.raw);
+		if (field.type === "toggle") display = raw === true;
+		else if (field.type === "list" || field.type === "entries") display = Array.isArray(raw) ? raw : [];
+		else display = raw ?? "";
+	}
+	const toggle = (next: boolean): void => {
+		if (next) {
+			props.onChange(field.name, null);
+			return;
+		}
+		props.onChange(field.name, rawSeed(field, resolve(inherit.raw)));
+	};
+	function resolve(binding: { readonly $: string }): JsonValue | undefined {
+		return resolvePointer(data.data, binding.$) as JsonValue | undefined;
+	}
+	return (
+		<>
+			<label>
+				<input
+					type="checkbox"
+					className="blk-field-inherit"
+					checked={checked}
+					disabled={props.disabled}
+					onChange={(event) => toggle(event.target.checked)}
+				/>{" "}
+				Use system setting ({system})
+			</label>
+			<FieldViewField {...props} field={field} value={display} disabled={props.disabled || checked} />
+		</>
+);
+}
+
 /** The field dispatch (one component per field type). */
 export function FieldView(props: FieldProps): ReactNode {
-	const field = props.field;
-	switch (field.type) {
+		if (props.field.inherit !== undefined) return <InheritRow {...props} />;
+		return <FieldViewField {...props} />;
+}
+
+function FieldViewField(props: FieldProps): ReactNode {
+		const field = props.field;
+		switch (field.type) {
 		case "text":
 			return <TextFieldView {...props} field={field} />;
 		case "longtext":

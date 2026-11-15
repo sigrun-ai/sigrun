@@ -19,6 +19,7 @@ import { syncLongtextHeight } from "./longtextHeight";
 function harness(
 	children: FormBlock["children"],
 	data: JsonObject,
+	opts: { readonly access?: "read" | "write" } = {},
 ): {
 	dispatch: ReturnType<typeof vi.fn>;
 	renderer: TestRenderer.ReactTestRenderer;
@@ -39,7 +40,14 @@ function harness(
 			h(
 				SurfaceActionsContext.Provider,
 				{
-					value: { dispatch, access: "write" as const, viewState: {}, serverErrors: {} },
+					value: {
+						dispatch,
+						access: opts.access ?? ("write" as const),
+						viewState: {},
+						serverErrors: {},
+						submitStatus: undefined,
+						submitSeq: 0,
+					},
 				},
 				h(FormBlockView, { block }),
 			),
@@ -370,5 +378,119 @@ describe("daterange (§5.6)", () => {
 			rev: 0,
 			values: { window: { start, end } },
 		});
+	});
+});
+
+describe("use system setting (per-user overrides)", () => {
+	const enabled = {
+		type: "toggle",
+		name: "enabled",
+		label: "Enabled",
+		inherit: {
+			system: { $: "/systemValues/enabled" },
+			raw: { $: "/systemValuesRaw/enabled" },
+		},
+	} as const;
+
+	function inheritCheckbox(
+		renderer: TestRenderer.ReactTestRenderer,
+	): TestRenderer.ReactTestInstance {
+		return renderer.root.findByProps({ className: "blk-field-inherit" });
+	}
+
+	function save(renderer: TestRenderer.ReactTestRenderer): void {
+		act(() => {
+			findButton(renderer, "Save").props.onClick();
+		});
+	}
+
+	test("an inherit field starts checked when no override is stored", () => {
+		const { renderer, dispatch } = harness([enabled as never], {
+			f: {},
+			systemValues: { enabled: "On" },
+			systemValuesRaw: { enabled: true },
+		});
+		expect(inheritCheckbox(renderer).props.checked).toBe(true);
+		expect(textContent(renderer.toJSON())).toContain("Use system setting (On)");
+		// checked → the control is disabled showing the system display text
+		const toggle = renderer.root.findByProps({ "aria-label": "Enabled" });
+		expect(toggle.props.disabled).toBe(true);
+		expect(toggle.props.checked).toBe(true);
+		// an untouched save sends null → the server keeps/deletes the override
+		save(renderer);
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
+			values: { enabled: null },
+		});
+	});
+
+	test("unchecking a toggle starts from the opposite of the system value", () => {
+		const { renderer, dispatch } = harness([enabled as never], {
+			f: {},
+			systemValues: { enabled: "On" },
+			systemValuesRaw: { enabled: true },
+		});
+		act(() => {
+			inheritCheckbox(renderer).props.onChange({ target: { checked: false } });
+		});
+		const toggle = renderer.root.findByProps({ "aria-label": "Enabled" });
+		expect(toggle.props.disabled).toBe(false);
+		expect(toggle.props.checked).toBe(false);
+		save(renderer);
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
+			values: { enabled: false },
+		});
+	});
+
+	test("checking again submits null", () => {
+		const { renderer, dispatch } = harness([enabled as never], {
+			f: { enabled: false },
+			systemValues: { enabled: "On" },
+			systemValuesRaw: { enabled: true },
+		});
+		// a stored override → unchecked, editable
+		expect(inheritCheckbox(renderer).props.checked).toBe(false);
+		expect(renderer.root.findByProps({ "aria-label": "Enabled" }).props.checked).toBe(false);
+		act(() => {
+			inheritCheckbox(renderer).props.onChange({ target: { checked: true } });
+		});
+		expect(renderer.root.findByProps({ "aria-label": "Enabled" }).props.disabled).toBe(true);
+		save(renderer);
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
+			values: { enabled: null },
+		});
+	});
+
+	test("an absent raw value seeds a toggle from its opposite (false)", () => {
+		const { renderer, dispatch } = harness([enabled as never], {
+			f: {},
+			systemValues: { enabled: "(not set)" },
+			systemValuesRaw: {},
+		});
+		act(() => {
+			inheritCheckbox(renderer).props.onChange({ target: { checked: false } });
+		});
+		expect(renderer.root.findByProps({ "aria-label": "Enabled" }).props.checked).toBe(false);
+		save(renderer);
+		expect(dispatch).toHaveBeenCalledWith(expect.objectContaining({ type: "submit" }), {
+			rev: 0,
+			values: { enabled: false },
+		});
+	});
+
+	test("a read-only surface disables the inherit checkbox along with the control", () => {
+		const { renderer } = harness(
+			[enabled as never],
+			{
+				f: {},
+				systemValues: { enabled: "On" },
+				systemValuesRaw: { enabled: true },
+			},
+			{ access: "read" },
+		);
+		expect(inheritCheckbox(renderer).props.disabled).toBe(true);
+		expect(renderer.root.findByProps({ "aria-label": "Enabled" }).props.disabled).toBe(true);
 	});
 });

@@ -99,6 +99,9 @@ function initialVariant(field: VariantField, value: JsonValue | undefined): Json
 export function initialValue(field: Field, bound: Record<string, JsonValue>): JsonValue {
 	if (field.type === "secret") return "";
 	const value = bound[field.name];
+	// Personal override: absent → null (never written on an untouched
+	// save). A stored value (even empty) is the user's own override.
+	if (field.inherit !== undefined) return value === undefined ? null : value;
 	if (field.type === "entries") return initialEntries(field, value);
 	if (field.type === "variant") return initialVariant(field, value);
 	if (value !== undefined) return value;
