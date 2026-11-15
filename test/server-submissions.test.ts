@@ -1094,3 +1094,99 @@ describe("POST /v1/conversations/:id/compact", () => {
 		expect(compaction?.data?.reason).toBe("manual");
 	}, 60_000);
 });
+
+// ---------------------------------------------------------------------------
+// Oversized file parts: inline a head + pointer, never the whole body
+// ---------------------------------------------------------------------------
+
+/**
+ * A 4 MB attachment used to inline its ENTIRE body as a text block: the
+ * entry reached 6.5 MB (~1.6M tokens — past every catalog model's window)
+ * and every consumer that re-read the record paid for it at boot. The cap
+ * keeps the model's reach intact — the file already sits in the workspace
+ * at the path the part names — and inlines only a head plus a pointer.
+ */
+describe("oversized file parts", () => {
+	/** The distinct head/pointer shape the cap emits. */
+	function cappedText(texts: { type: string; text?: string }[]): string {
+		const marker = texts.find((t) => t.text?.includes("[attached file truncated:"));
+		expect(marker).toBeDefined();
+		return marker!.text!;
+	}
+
+	test("an over-cap file part inlines a head + workspace pointer, not the body", async () => {
+		const { app, opened, workspace } = await bootServer({ SIGRUN_MAX_INLINE_FILE_BYTES: "1024" });
+		const big = "x".repeat(50_000);
+		await writeFile(join(workspace, "big.html"), big, "utf8");
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		expect(
+			(await submit(app, root.id, [
+				{ type: "text", text: "summarize" },
+				{ type: "file", path: "big.html" },
+			])).statusCode,
+		).toBe(202);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		const user = view.entries.find((e: { kind: string }) => e.kind === "pi.user");
+		const texts = user.model[0].content.filter(
+			(p: { type: string }) => p.type === "text",
+		);
+		const capped = cappedText(texts);
+		// The body is NOT inlined: the entry stays small.
+		expect(capped.length).toBeLessThan(2_000);
+		expect(capped).not.toContain(big);
+		// The head is real content (the model still sees the start).
+		expect(capped.startsWith("x")).toBe(true);
+		// The pointer names the workspace path and the real size (formatted).
+		expect(capped).toContain("big.html");
+		expect(capped).toContain("48.8 KB");
+		// And it tells the model what to do next.
+		expect(capped).toMatch(/read|grep|codemode/i);
+	});
+
+	test("an under-cap file part still inlines verbatim (no regression)", async () => {
+		const { app, opened } = await bootServer({ SIGRUN_MAX_INLINE_FILE_BYTES: "1024" });
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		await submit(app, root.id, [
+			{ type: "text", text: "read this" },
+			{ type: "file", path: "notes.txt" },
+		]);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		const user = view.entries.find((e: { kind: string }) => e.kind === "pi.user");
+		const texts = user.model[0].content.filter(
+			(p: { type: string }) => p.type === "text",
+		);
+		expect(texts).toEqual([
+			{ type: "text", text: "read this" },
+			{ type: "text", text: "workspace notes" },
+		]);
+	});
+
+	test("the default cap is 50 KiB (no env) and is file-configurable", async () => {
+		const { app, opened, workspace } = await bootServer();
+		// Just over one read page: capped at the default.
+		const big = "y".repeat(60 * 1024);
+		await writeFile(join(workspace, "over.txt"), big, "utf8");
+		const root = await opened.harness.root(BACKGROUND_CONTEXT, {
+			agent: { model: opened.defaultModel },
+		});
+		await submit(app, root.id, [{ type: "file", path: "over.txt" }]);
+		const view = (
+			await app.inject({ method: "GET", url: `/v1/conversations/${root.id}` })
+		).json();
+		const user = view.entries.find((e: { kind: string }) => e.kind === "pi.user");
+		const texts = user.model[0].content.filter(
+			(p: { type: string }) => p.type === "text",
+		);
+		const capped = cappedText(texts);
+		expect(capped).toContain("over.txt");
+		expect(capped.length).toBeLessThan(60 * 1024);
+	});
+});

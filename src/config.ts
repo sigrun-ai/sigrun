@@ -233,6 +233,19 @@ export interface SigrunConfig {
 	 */
 	maxFileReadBytes: number;
 	/**
+	 * The inline-attachment cap (defensive-inputs hardening):
+	 * `SIGRUN_MAX_INLINE_FILE_BYTES` over the file's
+	 * `server.maxInlineFileBytes` over {@link DEFAULT_MAX_INLINE_FILE_BYTES}
+	 * (50 KiB, one `read` page). A `{type:"file"}` submission part larger
+	 * than this inlines a head plus a workspace pointer instead of its
+	 * body: the file is already in the workspace where the agent's own
+	 * tools reach it, so the whole body buys nothing but a context window
+	 * the model cannot hold. The same cap bounds an oversized tool
+	 * result's `details`, the other way a single entry grows without
+	 * limit.
+	 */
+	maxInlineFileBytes: number;
+	/**
 	 * The resolved store roots (extension-config-surfaces spec §4): the
 	 * data, cache, and state directories, resolved once here through the
 	 * one `resolveStoreRoots` chain (`SIGRUN_{DATA,CACHE,STATE}_DIR` over
@@ -484,6 +497,31 @@ export const MAX_FILE_READ_BYTES_ENV = "SIGRUN_MAX_FILE_READ_BYTES";
 
 /** The raw file-read cap's default (spec §7.8): 16 MiB. */
 export const DEFAULT_MAX_FILE_READ_BYTES = 16 * 1024 * 1024;
+
+/** The env var carrying the inline-attachment cap (defensive inputs). */
+export const MAX_INLINE_FILE_BYTES_ENV = "SIGRUN_MAX_INLINE_FILE_BYTES";
+
+/**
+ * The inline-attachment cap's default: 50 KiB — one `read` page
+ * (`DEFAULT_MAX_BYTES` in pi-durable's truncate), so an inlined attachment
+ * is never larger than one page the agent could have read itself.
+ */
+export const DEFAULT_MAX_INLINE_FILE_BYTES = 50 * 1024;
+
+/**
+ * Parse `SIGRUN_MAX_INLINE_FILE_BYTES` — the same strict positive-integer
+ * posture as the other knobs: `""` counts as unset, anything non-integer or
+ * ≤ 0 fails loud naming the variable. The file's
+ * `server.maxInlineFileBytes` applies where the env var is absent; the
+ * 50 KiB default last.
+ */
+function parseMaxInlineFileBytes(env: Env, file?: number): number {
+	return (
+		parsePositiveIntEnv(env, MAX_INLINE_FILE_BYTES_ENV) ??
+		file ??
+		DEFAULT_MAX_INLINE_FILE_BYTES
+	);
+}
 
 /**
  * Parse `SIGRUN_MAX_FILE_READ_BYTES` (spec §7.8) — the strict
@@ -1331,6 +1369,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_BACKUP_*` | `backup` |
  * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
  * | `SIGRUN_MAX_FILE_READ_BYTES` | `maxFileReadBytes` |
+ * | `SIGRUN_MAX_INLINE_FILE_BYTES` | `maxInlineFileBytes` |
  * | `SIGRUN_PUBLIC_URL` | `publicUrl` |
  */
 export function envServerSection(env: Env): ServerSettings {
@@ -1682,6 +1721,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		models,
 		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
 		maxFileReadBytes: parseMaxFileReadBytes(env, server?.maxFileReadBytes),
+		maxInlineFileBytes: parseMaxInlineFileBytes(
+			env,
+			server?.maxInlineFileBytes,
+		),
 		// W5 Task 2 (spec §9.2): the deployment's absolute base URL — env
 		// parsed first (fail loud on an invalid env value even when the
 		// file carries a valid one), the file's `server.publicUrl` next,

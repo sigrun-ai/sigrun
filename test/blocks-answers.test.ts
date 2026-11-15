@@ -158,6 +158,8 @@ const QUIET_FORM_TREE: Tree = {
 interface TestServer {
 	readonly app: FastifyInstance;
 	readonly opened: OpenedHarness;
+	/** The resolved config (submitOp reads server knobs off the context). */
+	readonly config: ReturnType<typeof loadConfig>;
 	readonly faux: FauxProviderHandle;
 	readonly aliceToken: string;
 	readonly carolToken: string;
@@ -220,7 +222,7 @@ async function bootServer(): Promise<TestServer> {
 		await opened.harness.close(BACKGROUND_CONTEXT);
 		await rm(dir, { recursive: true, force: true });
 	});
-	return { app, opened, faux, aliceToken, carolToken, dir };
+	return { app, opened, config, faux, aliceToken, carolToken, dir };
 }
 
 function toolRound(
@@ -615,9 +617,10 @@ describe("the entry disjunction in submitOp (the brief's enforced invariant)", (
 		// skip is observable at the entry boundary (expandInput is a module
 		// import inside submitOp, so the ENTRY KIND is the evidence).
 		server.faux.setResponses([fauxAssistantMessage("answer run")]);
-		const ctx = { opened: server.opened } as unknown as Parameters<
-			typeof submitOp
-		>[0];
+		const ctx = {
+			opened: server.opened,
+			config: server.config,
+		} as unknown as Parameters<typeof submitOp>[0];
 		const answerRecord = await submitOp(ctx, conversation!, "Submitted 'Ranking': 1. Clair de Lune", {
 			entry: {
 				kind: BlocksAnswerEntry.kind,

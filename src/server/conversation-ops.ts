@@ -745,7 +745,12 @@ export async function submitOp(
 			);
 		}
 	}
-	const content = await resolvePartsLazy(expansion.parts, envThunk(), BACKGROUND_CONTEXT);
+	const content = await resolvePartsLazy(
+		expansion.parts,
+		envThunk(),
+		BACKGROUND_CONTEXT,
+		ctx.config.maxInlineFileBytes,
+	);
 	const entry: InputEntry | undefined =
 		opts.entry !== undefined
 			? opts.entry

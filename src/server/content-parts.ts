@@ -121,11 +121,50 @@ function decodeStrictUtf8(bytes: Uint8Array): string | undefined {
 	}
 }
 
+/** A human byte count for the cap's pointer line (`4.2 MB`, `812 KB`). */
+function formatBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
+ * The head + pointer text for an attachment too large to inline.
+ *
+ * The file is NOT discarded: `uploadOp` already wrote it into the
+ * conversation's workspace at `path`, which is the agent's own cwd, so the
+ * model reaches the whole thing with its existing tools. What it gets
+ * inline is the start (so it can tell what the file is) plus the pointers
+ * it needs to continue.
+ *
+ * The head stops at a line boundary when the slice has one, so the model
+ * never sees a half-written line presented as complete — the same rule
+ * pi-durable's `truncateHead` applies to its own reads.
+ */
+export function cappedFilePartText(
+	path: string,
+	text: string,
+	maxBytes: number,
+): string {
+	const buffer = Buffer.from(text, "utf8");
+	let head = buffer.subarray(0, Math.max(0, maxBytes));
+	const lastNewline = head.lastIndexOf(0x0a);
+	if (lastNewline > 0) head = head.subarray(0, lastNewline + 1);
+	const headText = head.toString("utf8");
+	return (
+		`${headText}\n` +
+		`[attached file truncated: ${path} — ${formatBytes(buffer.length)} total, ` +
+		`first ${formatBytes(head.length)} shown. The whole file is in the workspace: ` +
+		`use \`read\` (with offset/limit), \`grep\`, \`bash\`, or codemode to inspect the rest.]`
+	);
+}
+
 /** Resolve one wire part against the conversation's env. */
 async function resolvePart(
 	part: SubmissionPart,
 	env: ExecutionEnv,
 	context: Context,
+	maxInlineFileBytes: number,
 ): Promise<InlinePart> {
 	if (part.type === "text") return { type: "text", text: part.text };
 	const read: Result<Uint8Array, FileError> = await env.readBinaryFile(
@@ -155,6 +194,16 @@ async function resolvePart(
 	if (text === undefined) {
 		return errorPart(part.path, "invalid_utf8");
 	}
+	// Defensive inputs: an oversized attachment is a workspace FILE, not a
+	// wall of context. Inline a head plus a pointer — the file is already at
+	// `part.path` where the agent's own tools read it — instead of a body
+	// no model window can hold.
+	if (read.value.byteLength > maxInlineFileBytes) {
+		return {
+			type: "text",
+			text: cappedFilePartText(part.path, text, maxInlineFileBytes),
+		};
+	}
 	return { type: "text", text };
 }
 
@@ -171,10 +220,13 @@ export async function resolveParts(
 	parts: readonly SubmissionPart[],
 	env: ExecutionEnv,
 	context: Context,
+	maxInlineFileBytes: number,
 ): Promise<InlinePart[]> {
 	const resolved: InlinePart[] = [];
 	for (const part of parts) {
-		resolved.push(await resolvePart(part, env, context));
+		resolved.push(
+			await resolvePart(part, env, context, maxInlineFileBytes),
+		);
 	}
 	return resolved;
 }

@@ -92,6 +92,10 @@ import {
 	buildDecisionEvaluateTool,
 	createDecisionsExtension,
 } from "./decision-tool.js";
+import {
+	createToolResultCapExtension,
+	TOOL_RESULT_CAP_EXTENSION,
+} from "./tool-result-cap.js";
 import type { HostBridge } from "../server/host-bridge.js";
 import { contextFilesExtension } from "./sections/context-files.js";
 import { createJobStateExtension } from "./sections/job-state.js";
@@ -1486,6 +1490,14 @@ export async function openHarness(
 	// can show and update interactive block surfaces in chat — the same
 	// core-owned slot as the coding/search tools, never quarantined.
 	registry.install(blocksToolsExtension);
+	// Defensive inputs: a tool result's `details` is the one channel
+	// pi-durable does not bound (it does not reach the model), so a tool
+	// that mirrors a protocol payload into it can store megabytes beside
+	// kilobytes of text. Core caps it at `server.maxInlineFileBytes` — the
+	// same knob the attachment cap uses — and installs the extension here
+	// with the other core-owned entries. Its `afterTool` is a pure
+	// substitution on the result: no tools, no sections, no prompt bytes.
+	registry.install(createToolResultCapExtension(config.maxInlineFileBytes));
 	// The decision tool (warden Task 7): installed HERE with an empty
 	// tool list — the placeholder holding the core `sigrun.decisions`
 	// name — because the decision declarations are only known AFTER the
@@ -2370,11 +2382,25 @@ export async function openHarness(
 					// curator-run gate (A8) is filtered the same way: it is selected
 					// ONLY in the internal run conversations A9's producer creates.
 					const selected = callerSettings?.extensions ?? registry.snapshot().installed();
-					return selected.filter(
+					const kept = selected.filter(
 						(entry) =>
 							!isUserEntryName(entry.name) &&
 							entry.name !== CURATION_GATE_EXTENSION,
 					);
+					// Defensive inputs is a HOST INVARIANT, not a choice: a leftover
+					// caller-supplied list (a fixed-selection job or an internal
+					// run) must not be able to opt out of the tool-result cap, or
+					// `details` goes unbounded in exactly the conversations nobody
+					// is watching. Append it when absent — the installed extension
+					// is the same object the registry hands out, so a caller that
+					// already lists it is unaffected.
+					if (kept.some((entry) => entry.name === TOOL_RESULT_CAP_EXTENSION)) {
+						return kept;
+					}
+					const cap = registry
+						.snapshot()
+						.extension(TOOL_RESULT_CAP_EXTENSION);
+					return cap === undefined ? kept : [...kept, cap];
 				},
 				toolExecution: callerSettings?.toolExecution,
 				// pi-durable 1.5.0: restart-limited tasks END instead of parking
