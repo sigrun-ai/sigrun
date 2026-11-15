@@ -1,3 +1,7 @@
+## [0.18.1] - 2026-11-15
+
+- Version-locked bump with the 0.18.1 core line (no changes).
+
 ## [0.18.0] - 2026-11-14
 
 - Version-locked bump with the 0.18.0 core line (no changes).
