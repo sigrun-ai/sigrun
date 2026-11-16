@@ -66,7 +66,7 @@ function lockPackage(path: string): LockPackage {
 }
 
 const PUBLISH_CONFIG = { access: "public", provenance: true };
-const NODE_ENGINE = ">=22.19.0";
+const NODE_ENGINE = ">=26.13.0";
 
 /** The published family members and their exact-version dep specs. */
 const FAMILY = ["@sigrun/shared", "@sigrun/tui", "@sigrun/ext-codemode", "@sigrun/ext-gateway", "@sigrun/ext-mcp", "@sigrun/ext-tool-search", "@sigrun/oauth"] as const;

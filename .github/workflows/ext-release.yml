@@ -255,7 +255,7 @@ jobs:
             }}
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "26"
       - name: Build core and the built-in siblings (file:-linked repos)
         if: inputs.needs-core
         run: |

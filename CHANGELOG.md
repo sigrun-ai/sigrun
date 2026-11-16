@@ -5,6 +5,38 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-11-15
+
+The attachments and crash-guards release.
+
+- **New `sigrun.user` entry kind**: an input carrying file/image parts is
+  recorded with `data.attachments` (path, name, mime, bytes, delivery,
+  parts, error). Extension authors classify inputs with the shared
+  `isUserInput` helper — `pi.user` entries are unchanged and every
+  attachment-free message stays byte-identical.
+- **Attachments delivered by kind, decided at send time**: large text,
+  archives and other binaries become a workspace note (the model is told
+  the file exists, what it is, and where); small text inlines as a marked
+  section; images pass through to image-capable models (<= 5 MiB).
+  Binary files no longer error; oversized files are no longer inlined.
+- **Recall hardening** (companion @sigrun/recall 0.6.0): the automatic
+  recall query is bounded (<= 32 tokens, <= 64 chars each, OR-matched)
+  and built from the typed text, so a message with a large attachment
+  can no longer OOM the server through a runaway FTS5 query.
+- **Process-wide SQLite heap limit**: `server.sqliteHeapLimitBytes` /
+  `SIGRUN_SQLITE_HEAP_LIMIT_BYTES` (default 256 MiB) applies
+  `PRAGMA hard_heap_limit` at boot; a query that would exceed it fails
+  as an error instead of killing the process. NOTE: enforcement requires
+  a Node build whose SQLite honors the pragma (verified on 26.13.0;
+  22.x and 24.x report but do not enforce it) — the base image moves to
+  node:26-bookworm-slim in this release.
+- **Lean retry**: a request whose preparation killed the host is retried
+  once without extension request hooks (attribution-free); the
+  conversation's owner gets an informational notice.
+- The outline, bubbles, Edit (files survive), the event-bus input text,
+  the warden's judges and the curator's digests all favour the typed
+  text over attachment bodies.
+
 ## [0.19.1] - 2026-11-15
 
 > Tag note: the 0.19.0 tag was cut against an uncommitted tree (the release-guard rejected it); the release ships as 0.19.1 with identical content.

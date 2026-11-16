@@ -37,7 +37,7 @@
 # the packages dir on persistent storage), and glibc is the safe side of
 # the prebuild lottery — better-sqlite3, onnxruntime, tree-sitter are
 # the exact class pi-ecosystem extensions depend on.
-FROM node:22-bookworm-slim AS base
+FROM node:26-bookworm-slim AS base
 WORKDIR /app
 
 # OCI metadata: where the image comes from, and what is inside it. The

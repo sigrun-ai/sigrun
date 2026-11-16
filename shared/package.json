@@ -1,7 +1,7 @@
 {
 	"name": "@sigrun/shared",
-	"version": "0.19.1",
-	"description": "sigrun shared leaf package — theme tokens, turn/conversation shaping, and the channel wire types (pure leaf, zero dependencies)",
+	"version": "0.20.0",
+	"description": "sigrun shared leaf package \u2014 theme tokens, turn/conversation shaping, and the channel wire types (pure leaf, zero dependencies)",
 	"type": "module",
 	"exports": {
 		"./themes": {
@@ -97,7 +97,7 @@
 		"typescript": "^7.0.2"
 	},
 	"engines": {
-		"node": ">=22.19.0"
+		"node": ">=26.13.0"
 	},
 	"files": [
 		"dist",

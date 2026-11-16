@@ -717,7 +717,7 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(workflow().jobs["image-build"]?.if).toBeUndefined();
 	});
 
-	test("the test job runs npm ci, the suite, and typecheck on node 22", () => {
+	test("the test job runs npm ci, the suite, and typecheck on node 26", () => {
 		const { jobs } = workflow();
 		const runs = (jobs.test?.steps ?? []).map(runOf).join("\n");
 		expect(runs).toContain("npm ci");
@@ -726,7 +726,7 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		const nodeVersion = (jobs.test?.steps ?? [])
 			.find((s) => s.uses?.startsWith("actions/setup-node@"))
 			?.with as { "node-version"?: string } | undefined;
-		expect(nodeVersion?.["node-version"]).toBe("22");
+		expect(nodeVersion?.["node-version"]).toBe("26");
 	});
 
 	test("image-build: the registry-mode dance uses the explicit-specs lock regen", () => {

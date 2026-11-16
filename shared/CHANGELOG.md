@@ -1,3 +1,10 @@
+## [0.20.0] - 2026-11-15
+
+- New user-input helpers: `USER_KIND` (`sigrun.user`), `USER_INPUT_KINDS`,
+  `isUserInput`, `AttachmentDelivery`/`EntryAttachment`, `entryAttachments`,
+  `unattachedText`, `typedText`, `attachmentNames`. `groupTurns` groups the
+  new kind as a user turn.
+
 ## [0.19.1] - 2026-11-15
 
 - Version-locked bump with the 0.19.1 core line (no changes).

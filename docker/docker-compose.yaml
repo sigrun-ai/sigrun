@@ -17,7 +17,7 @@ services:
     # local checkout instead, comment the image line and uncomment the
     # build stanza below:
     #   docker build -t sigrun:local .
-    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.19.1}
+    image: ghcr.io/sigrun-ai/sigrun:${SIGRUN_IMAGE_TAG:-0.20.0}
     # build:
     #   context: ..
     #   dockerfile: Dockerfile
@@ -148,7 +148,7 @@ services:
       - /cache:uid=1000
     healthcheck:
       # Same /healthz liveness probe as deploy/base/deployment.yaml. The
-      # node:22-slim image ships no curl/wget, so a node one-liner fetch.
+      # node:26-slim image ships no curl/wget, so a node one-liner fetch.
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/healthz').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 30s
       timeout: 5s

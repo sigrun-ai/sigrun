@@ -30,7 +30,7 @@ jobs:
       - uses: ./sigrun/.github/actions/family-checkout
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "26"
           cache: npm
           cache-dependency-path: sigrun/package-lock.json
       # The manifests suites run `helm` from PATH to render charts/sigrun.
@@ -86,7 +86,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "26"
           cache: npm
           cache-dependency-path: sigrun/package-lock.json
       # Each built-in is a `file:` link, so core's npm ci points at the
@@ -193,7 +193,7 @@ jobs:
           fi
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "26"
       - uses: docker/setup-buildx-action@v3
       # The Dockerfile's build precondition: registry-shaped manifest +
       # lock. The lock regen must name the built-ins explicitly — a bare

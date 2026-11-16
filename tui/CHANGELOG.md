@@ -1,3 +1,8 @@
+## [0.20.0] - 2026-11-15
+
+- A `sigrun.user` entry renders its typed text plus one marker per
+  attachment (from the record); inline bodies no longer render.
+
 ## [0.19.1] - 2026-11-15
 
 - Version-locked bump with the 0.19.1 core line (no changes).

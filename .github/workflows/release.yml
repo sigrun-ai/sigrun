@@ -206,7 +206,7 @@ jobs:
       - uses: ./sigrun/.github/actions/family-checkout
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "26"
       # npm 11.21+ is the OIDC trusted-publishing-capable line; the
       # runner's bundled npm may be older.
       - name: Upgrade npm for trusted publishing
@@ -516,7 +516,7 @@ jobs:
           echo "VERSION=${version}" >> "$GITHUB_ENV"
       - uses: actions/setup-node@v5
         with:
-          node-version: "22"
+          node-version: "26"
       # QEMU: the arm64 half of the multi-arch build.
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
