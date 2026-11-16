@@ -76,6 +76,7 @@ import { registerOnboardingRoutes } from "./routes/onboarding.js";
 import { registerProbeRoutes } from "./routes/probes.js";
 import { registerProviderRoutes } from "./routes/providers.js";
 import { noticeLocalityMigration } from "./locality-migration.js";
+import { noticeLeanRetries } from "./lean-retry-notices.js";
 import { registerSettingsRoutes } from "./routes/settings.js";
 import { registerSettingsSectionsRoutes } from "./routes/settings-sections.js";
 import { registerStreamRoutes } from "./routes/stream.js";
@@ -330,6 +331,23 @@ export async function createServer(
 	} catch (cause) {
 		console.warn(
 			`settings: locality migration notice failed: ${cause instanceof Error ? cause.message : String(cause)}`,
+		);
+	}
+	// Attachments Task 6 (spec §4.6): the lean-retry recovery ran in
+	// openHarness (before resume); the NOTICE is deferred to here, where
+	// the notices service exists. One core-owned notice per recovered
+	// conversation, keyed for idempotent replace. INFORMATIONAL side
+	// report only: a snapshot read that fails logs-and-continues rather
+	// than refuse server creation (per-post failures log inside).
+	try {
+		await noticeLeanRetries({
+			opened,
+			notices: noticesService,
+			log: (line) => console.info(line),
+		});
+	} catch (cause) {
+		console.warn(
+			`lean retry: notice failed: ${cause instanceof Error ? cause.message : String(cause)}`,
 		);
 	}
 	// The chat-surface seam's unsubscribe (filled in just below, after

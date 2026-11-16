@@ -528,7 +528,7 @@ describe("TurnList actions", () => {
 		expect(fork).not.toHaveBeenCalled();
 		expect(createConversation).toHaveBeenCalledTimes(1);
 		expect(patchConversationMeta).toHaveBeenCalledWith(11, {
-			draft: { text: "What is at the filesystem root?" },
+			draft: { text: "What is at the filesystem root?", attachments: [] },
 		});
 		expect(onNavigate).toHaveBeenCalledWith(11);
 		renderer.unmount();
@@ -561,9 +561,41 @@ describe("TurnList actions", () => {
 		expect(createConversation).not.toHaveBeenCalled();
 		expect(fork).toHaveBeenCalledWith(1, 2);
 		expect(patchConversationMeta).toHaveBeenCalledWith(9, {
-			draft: { text: "second question" },
+			draft: { text: "second question", attachments: [] },
 		});
 		expect(onNavigate).toHaveBeenCalledWith(9);
+		renderer.unmount();
+	});
+
+	test("Edit restores typed text and delivered attachment paths, excluding delivery errors", async () => {
+		const { client, createConversation, patchConversationMeta } = makeTurnClient();
+		const entry = makeEntry(
+			"sigrun.user",
+			[{ role: "user", content: [
+				{ type: "text", text: '<attachment path="uploads/7/notes.md">BODY</attachment>' },
+				{ type: "text", text: "what's in here?" },
+				{ type: "text", text: '[part error] uploads/7/broken.txt: not_found' },
+			] }],
+			{ id: 4, conversationId: 1, data: { attachments: [
+				{ path: "uploads/7/notes.md", name: "notes.md", mime: "text/markdown", bytes: 12, delivery: "inline", parts: [0] },
+				{ path: "uploads/7/broken.txt", name: "broken.txt", mime: "text/plain", bytes: null, delivery: "error", parts: [2], error: "not_found" },
+			] } },
+		);
+		const onNavigate = vi.fn();
+		const renderer = render(h(TurnList, {
+			view: makeView({ id: 1, entries: [entry] }),
+			showThinking: true,
+			onNavigate,
+			client,
+		}));
+		await act(async () => {
+			findButton(renderer, "Edit").props.onClick();
+		});
+		expect(createConversation).toHaveBeenCalledTimes(1);
+		expect(patchConversationMeta).toHaveBeenCalledWith(11, {
+			draft: { text: "what's in here?", attachments: ["uploads/7/notes.md"] },
+		});
+		expect(onNavigate).toHaveBeenCalledWith(11);
 		renderer.unmount();
 	});
 

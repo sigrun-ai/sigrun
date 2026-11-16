@@ -17,6 +17,7 @@
  */
 
 import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { copyJson } from "@earendil-works/chord";
 import type { Context } from "@earendil-works/chord";
 import {
 	AgentDoc,
@@ -39,18 +40,24 @@ import type {
 } from "@earendil-works/pi-durable";
 import type { ModelThinkingLevel } from "@earendil-works/pi-ai";
 import type { ExecutionEnv } from "@earendil-works/pi-durable/env";
+import type { JsonValue } from "@earendil-works/chord";
 import {
 	accessOf,
 	isSharing,
 	type AccessPrincipal,
 	type Sharing,
 } from "@sigrun/shared/access";
+import { USER_KIND } from "@sigrun/shared/turns";
 import { extname } from "node:path";
 import { touchActivity } from "../harness/activity.js";
 import { ContextMarkEntry } from "../harness/context-marks.js";
 import type { OpenedHarness } from "../harness/boot.js";
 import { cleanTitle } from "../harness/naming.js";
 import { excludeInteractiveTools } from "../harness/interactive-tools.js";
+import {
+	LEAN_RETRY_EXTENSION,
+	appendNameIfAbsent,
+} from "../harness/lean-retry.js";
 import {
 	ensureRequestId,
 	recordAuthor,
@@ -225,8 +232,16 @@ function resolveAgentSelection(
 		tools?: readonly ToolRegistration[];
 	} = {};
 	if (agent.extensions !== undefined) {
+		// The lean-retry crash guard is force-appended to EVERY exact
+		// selection: stored-array selections bypass the host-default getter
+		// entirely (pi-durable `selectExtensions` takes a stored array
+		// verbatim), so without this append the guard's `afterResponse`
+		// clear would never run for this conversation and the lean state
+		// would be unbounded. The tool-result cap keeps its documented
+		// opt-out seam — only lean retry rides every exact selection.
+		const names = appendNameIfAbsent(agent.extensions, LEAN_RETRY_EXTENSION);
 		const extensions: Extension[] = [];
-		for (const name of agent.extensions) {
+		for (const name of names) {
 			const extension = snapshot.extension(name);
 			if (extension === undefined) {
 				throw new ConversationOpError({
@@ -636,9 +651,10 @@ export async function submitOp(
 	// immediately usable; still absent → the UnservedModelError carrying
 	// the catalog (the route maps it to 400 unserved_model).
 	const agent = await conversation.agent(BACKGROUND_CONTEXT);
-	if (agent.model !== undefined) {
-		await resolveServedModelRefreshing(opened.models, agent.model);
-	}
+	const servedModel =
+		agent.model === undefined
+			? undefined
+			: await resolveServedModelRefreshing(opened.models, agent.model);
 	// `waitMs` (§7.1) is the opt-in bounded settlement wait for scripts —
 	// a positive integer ≤ 60 000; anything else is a fail-loud client
 	// error BEFORE anything is admitted.
@@ -745,26 +761,37 @@ export async function submitOp(
 			);
 		}
 	}
-	const content = await resolvePartsLazy(
+	const resolved = await resolvePartsLazy(
 		expansion.parts,
 		envThunk(),
 		BACKGROUND_CONTEXT,
-		ctx.config.maxInlineFileBytes,
+		{
+			maxInlineFileBytes: ctx.config.maxInlineFileBytes,
+			acceptsImages: servedModel?.input?.includes("image") === true,
+		},
 	);
+	const content = resolved.content;
+	const attachments = copyJson(resolved.attachments) as Extract<
+		JsonValue,
+		readonly unknown[]
+	>;
 	const entry: InputEntry | undefined =
 		opts.entry !== undefined
 			? opts.entry
-			: expansion.typed === undefined
-				? undefined
-				: {
+			: expansion.typed !== undefined
+				? {
 						kind: EXPANDED_ENTRY_KIND,
 						data: {
 							typed: expansion.typed,
 							...(expansion.command === undefined
 								? {}
 								: { command: expansion.command }),
+							...(attachments.length === 0 ? {} : { attachments }),
 						},
-					};
+					}
+				: attachments.length > 0
+					? { kind: USER_KIND, data: { attachments } }
+					: undefined;
 	const draft: InputSubmissionDraft = {
 		type: "input",
 		content,
@@ -1064,7 +1091,16 @@ export async function configureOp(
 			...(extensions === undefined
 				? {}
 				: {
-						extensions: extensions.map((name) => ({
+						// Lean retry is force-appended to EVERY exact selection,
+						// including this edit: pi-durable's `selectExtensions`
+						// resolves stored arrays verbatim (no host getter), so
+						// the crash guard's `afterResponse` clear must ride the
+						// resulting list. The tool-result cap keeps its
+						// documented opt-out seam and is NOT appended.
+						extensions: appendNameIfAbsent(
+							extensions,
+							LEAN_RETRY_EXTENSION,
+						).map((name) => ({
 							name,
 						})),
 					}),
@@ -1247,7 +1283,14 @@ export async function forkOp(
 	// Extension-shaped names and maps them back to strings; looking names
 	// up in the registry would silently drop unresolved/late-install names.
 	const inheritedExtensions = Array.isArray(inheritedSelection)
-		? inheritedSelection.map((name) => ({ name }))
+		// Lean retry is force-appended when inheriting an exact stored
+		// selection: a pin that rides into the fork must still select the
+		// crash guard so its `afterResponse` clear runs. The tool-result
+		// cap's opt-out is preserved verbatim (an unforked exact array
+		// without the cap keeps it out).
+		? appendNameIfAbsent(inheritedSelection, LEAN_RETRY_EXTENSION).map(
+				(name) => ({ name }),
+			)
 		: inheritedSelection === undefined
 			? undefined
 			: {

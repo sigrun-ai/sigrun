@@ -233,6 +233,11 @@ export interface SigrunConfig {
 	 */
 	maxFileReadBytes: number;
 	/**
+	 * The process-wide SQLite heap limit: `SIGRUN_SQLITE_HEAP_LIMIT_BYTES`
+	 * over `server.sqliteHeapLimitBytes` over {@link DEFAULT_SQLITE_HEAP_LIMIT_BYTES}.
+	 */
+	sqliteHeapLimitBytes: number;
+	/**
 	 * The inline-attachment cap (defensive-inputs hardening):
 	 * `SIGRUN_MAX_INLINE_FILE_BYTES` over the file's
 	 * `server.maxInlineFileBytes` over {@link DEFAULT_MAX_INLINE_FILE_BYTES}
@@ -497,6 +502,24 @@ export const MAX_FILE_READ_BYTES_ENV = "SIGRUN_MAX_FILE_READ_BYTES";
 
 /** The raw file-read cap's default (spec §7.8): 16 MiB. */
 export const DEFAULT_MAX_FILE_READ_BYTES = 16 * 1024 * 1024;
+
+/** The env var carrying the process-wide SQLite heap limit. */
+export const SQLITE_HEAP_LIMIT_BYTES_ENV = "SIGRUN_SQLITE_HEAP_LIMIT_BYTES";
+
+/** The process-wide SQLite heap limit's default: 256 MiB. */
+export const DEFAULT_SQLITE_HEAP_LIMIT_BYTES = 256 * 1024 * 1024;
+
+/**
+ * Parse the process-wide SQLite heap limit with the same strict
+ * positive-integer posture as the other byte knobs.
+ */
+function parseSqliteHeapLimitBytes(env: Env, file?: number): number {
+	return (
+		parsePositiveIntEnv(env, SQLITE_HEAP_LIMIT_BYTES_ENV) ??
+		file ??
+		DEFAULT_SQLITE_HEAP_LIMIT_BYTES
+	);
+}
 
 /** The env var carrying the inline-attachment cap (defensive inputs). */
 export const MAX_INLINE_FILE_BYTES_ENV = "SIGRUN_MAX_INLINE_FILE_BYTES";
@@ -1369,6 +1392,7 @@ export function resolvedServerSection(config: SigrunConfig): ServerSettings {
  * | `SIGRUN_BACKUP_*` | `backup` |
  * | `SIGRUN_MAX_UPLOAD_BYTES` | `maxUploadBytes` |
  * | `SIGRUN_MAX_FILE_READ_BYTES` | `maxFileReadBytes` |
+ * | `SIGRUN_SQLITE_HEAP_LIMIT_BYTES` | `sqliteHeapLimitBytes` |
  * | `SIGRUN_MAX_INLINE_FILE_BYTES` | `maxInlineFileBytes` |
  * | `SIGRUN_PUBLIC_URL` | `publicUrl` |
  */
@@ -1393,6 +1417,10 @@ export function envServerSection(env: Env): ServerSettings {
 	const maxFileReadBytes = parsePositiveIntEnv(env, MAX_FILE_READ_BYTES_ENV);
 	if (maxFileReadBytes !== undefined) {
 		section.maxFileReadBytes = maxFileReadBytes;
+	}
+	const sqliteHeapLimitBytes = parsePositiveIntEnv(env, SQLITE_HEAP_LIMIT_BYTES_ENV);
+	if (sqliteHeapLimitBytes !== undefined) {
+		section.sqliteHeapLimitBytes = sqliteHeapLimitBytes;
 	}
 	const publicUrl = parsePublicUrl(env[PUBLIC_URL_ENV], PUBLIC_URL_ENV);
 	if (publicUrl !== undefined) section.publicUrl = publicUrl;
@@ -1510,6 +1538,7 @@ export function effectiveServerSection(
 	emit("storagePath", config.storagePath, ["storagePath"]);
 	emit("maxUploadBytes", config.maxUploadBytes, ["maxUploadBytes"]);
 	emit("maxFileReadBytes", config.maxFileReadBytes, ["maxFileReadBytes"]);
+	emit("sqliteHeapLimitBytes", config.sqliteHeapLimitBytes, ["sqliteHeapLimitBytes"]);
 	emit("dataDir", config.dataDir, ["dataDir"]);
 	emit("cacheDir", config.cacheDir, ["cacheDir"]);
 	emit("stateDir", config.stateDir, ["stateDir"]);
@@ -1721,6 +1750,10 @@ export function loadConfig(env: Env, settingsFile?: SettingsFile): SigrunConfig 
 		models,
 		maxUploadBytes: parseMaxUploadBytes(env, server?.maxUploadBytes),
 		maxFileReadBytes: parseMaxFileReadBytes(env, server?.maxFileReadBytes),
+		sqliteHeapLimitBytes: parseSqliteHeapLimitBytes(
+			env,
+			server?.sqliteHeapLimitBytes,
+		),
 		maxInlineFileBytes: parseMaxInlineFileBytes(
 			env,
 			server?.maxInlineFileBytes,

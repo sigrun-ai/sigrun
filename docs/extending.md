@@ -450,6 +450,40 @@ effects are identical by construction:
 An unknown conversation id throws (`conversation <id> not found`) on
 every method — the routes' 404 analog.
 
+### User input kinds and attachments in the transcript
+
+A user submission lands in the entry stream under one of THREE kinds,
+all exported from `@sigrun/shared/turns`:
+
+- A plain text message uses the `"pi.user"` kind.
+- `USER_KIND` (`"sigrun.user"`) — a message carrying attachments;
+  `data.attachments` is an `EntryAttachment[]`, each `{path, name, mime,
+  bytes, delivery, parts, error?}` where `delivery` is `"inline" |
+  "workspace" | "image" | "error"` and `parts` lists the first model
+  message's part indexes the attachment occupies.
+- `EXPANDED_USER_KIND` (`"sigrun.user.expanded"`) — a `/skill:` or
+  template expansion; `data` carries `{typed, command}` plus any
+  `attachments`.
+
+**Always classify with `isUserInput(entry)`** (or test
+`USER_INPUT_KINDS`), never a hand-rolled `entry.kind === ...`
+comparison — the set grows as new input shapes land, and a hard-coded
+kind silently drops the new shape from your extension's rendering.
+
+Read an entry's user-facing pieces through the shared helpers instead
+of re-slicing the model message yourself:
+
+- `entryAttachments(entry)` — the validated attachment list (malformed
+  items are dropped); `[]` for kinds that carry none.
+- `unattachedText(entry, joiner?)` — the admitted prose: the first
+  model message's text parts minus every attachment-covered part.
+- `typedText(entry, joiner?)` — what the user actually typed: an
+  expanded entry's `data.typed`, else `unattachedText(entry)`.
+- `attachmentNames(entry, joiner?)` — the attachment names joined for
+  a chip row or subtitle.
+
+`groupTurns` already groups every user-input kind as a `user` turn.
+
 ### The host bridge: fail-fast when no server runs
 
 The bridged host members (`conversations`, `users`, `accounts`, `access`,
@@ -3163,6 +3197,11 @@ processes outside its jail.
 installed package — install only extensions you trust. One user's agent can
 still exhaust CPU, memory, or disk. Outbound network is not restricted.
 macOS and Windows hosts run single-user only.
+
+**SQLite's heap limit is host-owned.** Sigrun applies `hard_heap_limit`
+once at boot (`server.sqliteHeapLimitBytes`, default 256 MiB). It is
+process-wide: extensions must not set or reset `hard_heap_limit`, including
+on their own SQLite connections.
 
 **Shared MCP servers** hand every permitted user's agent the admin's
 credential for that service.

@@ -60,8 +60,10 @@ import {
 import { liveRunFailure } from "@sigrun/shared/live";
 import {
 	activityLabel,
+	entryAttachments,
 	expandedUserEntry,
 	groupTurns,
+	typedText,
 	type Turn,
 } from "@sigrun/shared/turns";
 import type { SurfaceTransport } from "@sigrun/shared/blocks";
@@ -154,6 +156,28 @@ function userModelText(entry: EntryShape): string {
 		...attachmentMarkers(message),
 	]);
 	return parts.filter((part) => part !== "").join("\n");
+}
+
+/** The record-turn body: only the typed prose and its attachment markers. */
+function recordUserText(entry: EntryShape): string {
+	return [typedText(entry), ...recordAttachmentMarkers(entry)]
+		.filter((part) => part !== "")
+		.join("\n");
+}
+
+/** Byte sizes match the webui's attachment chips (B, then one-decimal KB/MB). */
+function formatAttachmentBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/** Record-derived markers: one per attachment, without any admitted body. */
+function recordAttachmentMarkers(entry: EntryShape): readonly string[] {
+	return entryAttachments(entry).map(
+		(attachment) =>
+			`[attachment: ${attachment.name}${attachment.bytes === null ? "" : ` · ${formatAttachmentBytes(attachment.bytes)}`}]`,
+	);
 }
 
 /** The markdown theme rides the TuiTheme's token colours. */
@@ -362,7 +386,9 @@ export class ConversationPane implements Component {
 				// wrote — re-submitting it re-expands server-side).
 				const expanded = expandedUserEntry(turn.entry);
 				if (expanded !== undefined) return expanded.typed;
-				return userModelText(turn.entry);
+				return turn.entry.kind === "sigrun.user"
+					? recordUserText(turn.entry)
+					: userModelText(turn.entry);
 			}
 			case "assistant":
 				return turn.text;

@@ -13,15 +13,16 @@
  * explicit error text part addressed to the model (it stays visible in the
  * transcript, and the model can react), and any other `FileError`
  * (permission denied, aborted, …) fails the whole request loud — the repo
- * rule "fail-loud on workspace read errors except not_found". A binary file
- * part that is not valid UTF-8 also becomes an explicit error part
- * (`invalid_utf8`) rather than mojibake text.
+ * rule "fail-loud on workspace read errors except not_found". Attachment
+ * records identify each resolved part's delivery and its indexes in the
+ * returned content, so readers never need to parse model-facing markers.
  */
 
 import type { Context } from "@earendil-works/chord";
 import type { ExecutionEnv, Result } from "@earendil-works/pi-durable/env";
 import type { FileError } from "@earendil-works/pi-durable/env";
 import type { TextContent, ImageContent } from "@earendil-works/pi-ai";
+import type { EntryAttachment } from "@sigrun/shared/turns";
 
 /** One wire part of a submission `input` array. */
 export type SubmissionPart =
@@ -40,18 +41,42 @@ export type SubmissionPart =
 /** Inline content block after path resolution. */
 export type InlinePart = TextContent | ImageContent;
 
+/** The strictest common provider per-image limit (5 MiB). */
+export const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+export interface ResolveOptions {
+	readonly maxInlineFileBytes: number;
+	readonly acceptsImages: boolean;
+}
+
+export interface ResolvedInput {
+	readonly content: InlinePart[];
+	readonly attachments: EntryAttachment[];
+}
+
 /** The explicit error-part marker for a part that could not be resolved. */
 function errorPart(path: string, reason: string): TextContent {
 	return { type: "text", text: `[part error] ${path}: ${reason}` };
 }
 
-/** Extension → mime type for image parts without an explicit `mime`. */
-const IMAGE_MIME_BY_EXTENSION: Record<string, string> = {
+/** Extension → mime type for attachments without an explicit `mime`. */
+const MIME_BY_EXTENSION: Record<string, string> = {
 	png: "image/png",
 	jpg: "image/jpeg",
 	jpeg: "image/jpeg",
 	gif: "image/gif",
 	webp: "image/webp",
+	txt: "text/plain",
+	md: "text/markdown",
+	html: "text/html",
+	htm: "text/html",
+	json: "application/json",
+	csv: "text/csv",
+	xml: "application/xml",
+	yaml: "application/yaml",
+	yml: "application/yaml",
+	pdf: "application/pdf",
+	zip: "application/zip",
 };
 
 /**
@@ -121,90 +146,58 @@ function decodeStrictUtf8(bytes: Uint8Array): string | undefined {
 	}
 }
 
-/** A human byte count for the cap's pointer line (`4.2 MB`, `812 KB`). */
+/** A human byte count for an attachment marker (`4.2 MB`, `812 KB`). */
 function formatBytes(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
 	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
 	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-/**
- * The head + pointer text for an attachment too large to inline.
- *
- * The file is NOT discarded: `uploadOp` already wrote it into the
- * conversation's workspace at `path`, which is the agent's own cwd, so the
- * model reaches the whole thing with its existing tools. What it gets
- * inline is the start (so it can tell what the file is) plus the pointers
- * it needs to continue.
- *
- * The head stops at a line boundary when the slice has one, so the model
- * never sees a half-written line presented as complete — the same rule
- * pi-durable's `truncateHead` applies to its own reads.
- */
-export function cappedFilePartText(
+function escapeAttribute(value: string): string {
+	return value.replaceAll("&", "&amp;").replaceAll('"', "&quot;");
+}
+
+function attachmentAttributes(
 	path: string,
-	text: string,
-	maxBytes: number,
+	mime: string | null,
+	bytes: number,
 ): string {
-	const buffer = Buffer.from(text, "utf8");
-	let head = buffer.subarray(0, Math.max(0, maxBytes));
-	const lastNewline = head.lastIndexOf(0x0a);
-	if (lastNewline > 0) head = head.subarray(0, lastNewline + 1);
-	const headText = head.toString("utf8");
 	return (
-		`${headText}\n` +
-		`[attached file truncated: ${path} — ${formatBytes(buffer.length)} total, ` +
-		`first ${formatBytes(head.length)} shown. The whole file is in the workspace: ` +
-		`use \`read\` (with offset/limit), \`grep\`, \`bash\`, or codemode to inspect the rest.]`
+		`path="${escapeAttribute(path)}"` +
+		(mime === null ? "" : ` type="${escapeAttribute(mime)}"`) +
+		` size="${formatBytes(bytes)}"`
 	);
 }
 
-/** Resolve one wire part against the conversation's env. */
-async function resolvePart(
-	part: SubmissionPart,
-	env: ExecutionEnv,
-	context: Context,
-	maxInlineFileBytes: number,
-): Promise<InlinePart> {
-	if (part.type === "text") return { type: "text", text: part.text };
-	const read: Result<Uint8Array, FileError> = await env.readBinaryFile(
-		part.path,
-		context,
+/** A marked section carrying a complete inline text attachment body. */
+export function inlineAttachmentText(
+	path: string,
+	mime: string | null,
+	bytes: number,
+	body: string,
+): string {
+	return `<attachment ${attachmentAttributes(path, mime, bytes)}>\n${body}\n</attachment>`;
+}
+
+/** A pointer to an attachment the model reads through its workspace tools. */
+export function workspaceAttachmentText(
+	path: string,
+	mime: string | null,
+	bytes: number,
+): string {
+	return (
+		`<attachment ${attachmentAttributes(path, mime, bytes)} delivery="workspace"/>\n` +
+		"The file is in your workspace. Use `read` (with offset/limit), `grep`, `bash`, or codemode to inspect it."
 	);
-	if (!read.ok) {
-		if (read.error.code === "not_found") {
-			// Review Focus #1: explicit error part, never a silent drop.
-			return errorPart(part.path, "not_found");
-		}
-		// Every other workspace failure is a server-side fault: fail loud.
-		throw read.error;
-	}
-	if (part.type === "image") {
-		const mime =
-			part.mime ??
-			IMAGE_MIME_BY_EXTENSION[extensionOf(part.path)] ??
-			"application/octet-stream";
-		return {
-			type: "image",
-			data: Buffer.from(read.value).toString("base64"),
-			mimeType: mime,
-		};
-	}
-	const text = decodeStrictUtf8(read.value);
-	if (text === undefined) {
-		return errorPart(part.path, "invalid_utf8");
-	}
-	// Defensive inputs: an oversized attachment is a workspace FILE, not a
-	// wall of context. Inline a head plus a pointer — the file is already at
-	// `part.path` where the agent's own tools read it — instead of a body
-	// no model window can hold.
-	if (read.value.byteLength > maxInlineFileBytes) {
-		return {
-			type: "text",
-			text: cappedFilePartText(part.path, text, maxInlineFileBytes),
-		};
-	}
-	return { type: "text", text };
+}
+
+/** The marker immediately preceding a delivered image part. */
+export function imageAttachmentText(
+	path: string,
+	mime: string | null,
+	bytes: number,
+): string {
+	return `<attachment ${attachmentAttributes(path, mime, bytes)} delivery="image"/>`;
 }
 
 function extensionOf(path: string): string {
@@ -212,21 +205,140 @@ function extensionOf(path: string): string {
 	return dot === -1 ? "" : path.slice(dot + 1).toLowerCase();
 }
 
+function fileName(path: string): string {
+	return path.slice(path.lastIndexOf("/") + 1);
+}
+
+interface ResolvedAttachment {
+	readonly content: readonly InlinePart[];
+	readonly attachment: EntryAttachment;
+}
+
+function attachmentRecord(
+	part: Exclude<SubmissionPart, { readonly type: "text" }>,
+	mime: string | null,
+	bytes: number | null,
+	delivery: EntryAttachment["delivery"],
+	partIndexes: readonly number[],
+	error?: string,
+): EntryAttachment {
+	return {
+		path: part.path,
+		name: fileName(part.path),
+		mime,
+		bytes,
+		delivery,
+		parts: partIndexes,
+		...(error === undefined ? {} : { error }),
+	};
+}
+
+/** Resolve one attachment against the conversation's env. */
+async function resolveAttachment(
+	part: Exclude<SubmissionPart, { readonly type: "text" }>,
+	env: ExecutionEnv,
+	context: Context,
+	options: ResolveOptions,
+	firstPartIndex: number,
+): Promise<ResolvedAttachment> {
+	const mime = part.mime ?? MIME_BY_EXTENSION[extensionOf(part.path)] ?? null;
+	const read: Result<Uint8Array, FileError> = await env.readBinaryFile(
+		part.path,
+		context,
+	);
+	if (!read.ok) {
+		if (read.error.code === "not_found") {
+			// Review Focus #1: explicit error part, never a silent drop.
+			return {
+				content: [errorPart(part.path, "not_found")],
+				attachment: attachmentRecord(
+					part,
+					mime,
+					null,
+					"error",
+					[firstPartIndex],
+					"not_found",
+				),
+			};
+		}
+		// Every other workspace failure is a server-side fault: fail loud.
+		throw read.error;
+	}
+
+	const bytes = read.value.byteLength;
+	if (
+		(part.type === "image" || mime?.startsWith("image/") === true) &&
+		options.acceptsImages &&
+		bytes <= MAX_IMAGE_BYTES
+	) {
+		return {
+			content: [
+				{ type: "text", text: imageAttachmentText(part.path, mime, bytes) },
+				{
+					type: "image",
+					data: Buffer.from(read.value).toString("base64"),
+					mimeType: mime ?? "application/octet-stream",
+				},
+			],
+			attachment: attachmentRecord(part, mime, bytes, "image", [
+				firstPartIndex,
+				firstPartIndex + 1,
+			]),
+		};
+	}
+
+	const text =
+		bytes > options.maxInlineFileBytes ||
+		part.type === "image" ||
+		mime?.startsWith("image/") === true
+			? undefined
+			: decodeStrictUtf8(read.value);
+	if (text !== undefined) {
+		return {
+			content: [
+				{
+					type: "text",
+					text: inlineAttachmentText(part.path, mime, bytes, text),
+				},
+			],
+			attachment: attachmentRecord(part, mime, bytes, "inline", [firstPartIndex]),
+		};
+	}
+
+	return {
+		content: [
+			{ type: "text", text: workspaceAttachmentText(part.path, mime, bytes) },
+		],
+		attachment: attachmentRecord(part, mime, bytes, "workspace", [firstPartIndex]),
+	};
+}
+
 /**
- * Resolve a validated parts array to inline content. Rejects (throws the
- * `FileError`) on any non-`not_found` workspace failure — fail-loud.
+ * Resolve a validated parts array to content and attachment records. Rejects
+ * (throws the `FileError`) on any non-`not_found` workspace failure.
  */
 export async function resolveParts(
 	parts: readonly SubmissionPart[],
 	env: ExecutionEnv,
 	context: Context,
-	maxInlineFileBytes: number,
-): Promise<InlinePart[]> {
-	const resolved: InlinePart[] = [];
+	options: ResolveOptions,
+): Promise<ResolvedInput> {
+	const content: InlinePart[] = [];
+	const attachments: EntryAttachment[] = [];
 	for (const part of parts) {
-		resolved.push(
-			await resolvePart(part, env, context, maxInlineFileBytes),
+		if (part.type === "text") {
+			content.push({ type: "text", text: part.text });
+			continue;
+		}
+		const resolved = await resolveAttachment(
+			part,
+			env,
+			context,
+			options,
+			content.length,
 		);
+		content.push(...resolved.content);
+		attachments.push(resolved.attachment);
 	}
-	return resolved;
+	return { content, attachments };
 }

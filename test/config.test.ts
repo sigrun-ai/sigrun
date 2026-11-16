@@ -34,6 +34,7 @@ import {
 	DEFAULT_MAX_UPLOAD_BYTES,
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
+	DEFAULT_SQLITE_HEAP_LIMIT_BYTES,
 	DEFAULT_PROVIDER_REFRESH_MINUTES,
 	STORAGE_FILE_NAME,
 	defaultWorkspacePath,
@@ -783,6 +784,48 @@ describe("envServerSection (the env-only bootstrap projection, ruling 5)", () =>
 		const fromFile = loadConfig({ ...MODEL_ENV }, bootstrapped);
 		expect(fromFile.port).toBe(4080);
 		expect(fromFile.backup).toEqual({ target: "s3", bucket: "b" });
+	});
+});
+
+describe("the server.sqliteHeapLimitBytes knob", () => {
+	test("SIGRUN_SQLITE_HEAP_LIMIT_BYTES is strict: non-positive/non-integer values fail loud naming the variable", () => {
+		for (const bad of ["0", "x"]) {
+			expect(() =>
+				loadConfig({ ...MODEL_ENV, SIGRUN_SQLITE_HEAP_LIMIT_BYTES: bad }),
+			).toThrow(/SIGRUN_SQLITE_HEAP_LIMIT_BYTES/);
+		}
+	});
+
+	test("the default is 256 MiB; env wins; the file value applies when env is absent", () => {
+		expect(loadConfig({ ...MODEL_ENV }).sqliteHeapLimitBytes).toBe(
+			DEFAULT_SQLITE_HEAP_LIMIT_BYTES,
+		);
+		expect(
+			loadConfig({ ...MODEL_ENV, SIGRUN_SQLITE_HEAP_LIMIT_BYTES: "1048576" })
+				.sqliteHeapLimitBytes,
+		).toBe(1048576);
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{ server: { sqliteHeapLimitBytes: 2097152 } },
+			).sqliteHeapLimitBytes,
+		).toBe(2097152);
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_SQLITE_HEAP_LIMIT_BYTES: "1048576" },
+				{ server: { sqliteHeapLimitBytes: 2097152 } },
+			).sqliteHeapLimitBytes,
+		).toBe(1048576);
+		expect(
+			envServerSection({ SIGRUN_SQLITE_HEAP_LIMIT_BYTES: "1048576" }),
+		).toEqual({ sqliteHeapLimitBytes: 1048576 });
+		expect(
+			effectiveServerSection(
+				{ SIGRUN_SQLITE_HEAP_LIMIT_BYTES: "1048576" },
+				undefined,
+				loadConfig({ ...MODEL_ENV, SIGRUN_SQLITE_HEAP_LIMIT_BYTES: "1048576" }),
+			)["server.sqliteHeapLimitBytes"],
+		).toEqual({ value: 1048576, source: "env" });
 	});
 });
 

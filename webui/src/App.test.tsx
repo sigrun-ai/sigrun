@@ -996,6 +996,44 @@ describe("App shell", () => {
 		renderer.unmount();
 	});
 
+	test("outline leads with typed attachment text and falls back to names for attachments-only turns", async () => {
+		const { client, createEventSource, sources } = makeHarness();
+		const renderer = await renderAsync(
+			<App client={client} createEventSource={createEventSource} />,
+		);
+		const attachments = [
+			{ path: "uploads/7/notes.md", name: "notes.md", mime: "text/markdown", bytes: 12, delivery: "inline", parts: [0] },
+			{ path: "uploads/7/a.html", name: "a.html", mime: "text/html", bytes: 18, delivery: "inline", parts: [0] },
+			{ path: "uploads/7/b.html", name: "b.html", mime: "text/html", bytes: 20, delivery: "workspace", parts: [1] },
+		];
+		act(() => {
+			sources[1]?.source.emit(
+				"snapshot",
+				JSON.stringify(makeView({
+					id: 1,
+					entries: [
+						makeEntry("sigrun.user", [{ role: "user", content: [
+							{ type: "text", text: '<attachment path="uploads/7/notes.md">BODY</attachment>' },
+							{ type: "text", text: "what's in here?" },
+						] }], { id: 10, conversationId: 1, data: { attachments: [attachments[0]] } }),
+						makeEntry("sigrun.user", [{ role: "user", content: [
+							{ type: "text", text: '<attachment path="uploads/7/a.html">A BODY</attachment>' },
+							{ type: "text", text: '<attachment path="uploads/7/b.html"/>' },
+						] }], { id: 12, conversationId: 1, data: { attachments: attachments.slice(1) } }),
+					],
+				})),
+			);
+		});
+		await clickPanel(renderer, "outline");
+		const panel = renderer.root.findByProps({ className: "right-panel" });
+		const items = panel.findAllByProps({ className: "outline-item" });
+		expect(items.map((item) => item.props.title)).toEqual([
+			"what's in here?",
+			"a.html, b.html",
+		]);
+		renderer.unmount();
+	});
+
 	test("a shell error clears when a later action succeeds", async () => {
 		const { client, createEventSource } = makeHarness({
 			failFirstMetaPatch: true,

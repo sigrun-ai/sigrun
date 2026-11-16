@@ -367,6 +367,42 @@ describe("message attribution (curator P1)", () => {
 		expect(record.requestId).toMatch(/^sigrun:[0-9a-f-]{36}$/);
 	});
 
+	test("a sigrun.user attachment entry is recognised as an input", { timeout: 20_000 }, async () => {
+		const server = await bootServer([fauxAssistantMessage("attached answer")]);
+		const conversation = await server.opened.harness.createConversation(
+			{ ownership: { kind: "ownerless" }, agent: { model: server.opened.defaultModel } },
+			BACKGROUND_CONTEXT,
+		);
+		// Raw admission isolates the attribution reader: without the new kind
+		// in its input set the entry is absent, even though the run settles.
+		const submission = await conversation.submit({
+			type: "input",
+			content: [
+				{ type: "text", text: '<attachment path="uploads/7/a.md">\nabc\n</attachment>' },
+				{ type: "text", text: "summarise" },
+			],
+			entry: {
+				kind: "sigrun.user",
+				data: { attachments: [{
+					path: "uploads/7/a.md",
+					name: "a.md",
+					mime: null,
+					bytes: 3,
+					delivery: "inline",
+					parts: [0],
+				}] },
+			},
+		}, BACKGROUND_CONTEXT);
+		const settled = await submission.wait(BACKGROUND_CONTEXT);
+		const authors = await authorsOfEntries(
+			server.opened.harness,
+			conversation.id,
+			BACKGROUND_CONTEXT,
+		);
+		expect(authors.has(settled.entry!)).toBe(true);
+		expect(authors.get(settled.entry!)).toBeUndefined();
+	});
+
 	test("entries before attribution read as unattributed", { timeout: 20_000 }, async () => {
 		const server = await bootServer([fauxAssistantMessage("raw answer")]);
 		const conversation = await server.opened.harness.createConversation(

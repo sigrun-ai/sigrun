@@ -312,7 +312,14 @@ describe("owner writes rewrite selections in the same commits", () => {
 				if (fork === undefined) throw new Error("fork missing");
 				expect(await names(fork)).toContain("acme@bob");
 			} else {
-				expect(stored).toEqual(["unresolved-late-entry"]);
+				// The lean-retry invariant is force-appended on the
+				// exact-selection inheritance (attachments Task 5); the
+				// per-user loss assertion stays on the equality-with-extras
+				// check above (`@alice` is gone from the serialized sample).
+				expect(stored).toEqual([
+					"unresolved-late-entry",
+					"sigrun.lean-retry",
+				]);
 			}
 		}
 	});
@@ -333,7 +340,14 @@ describe("owner writes rewrite selections in the same commits", () => {
 			const before = await storedSelection(opened, sourceId);
 			const forked = await forkOp(app.sigrunContext, sourceConversation, { owner: "alice" });
 			const forkedId = forked.id as ConversationId;
-			expect(await storedSelection(opened, forkedId)).toEqual(before);
+			// The stored selection is preserved VERBATIM plus the
+			// force-appended lean-retry invariant (attachments Task 5) for
+			// exact-array selections. The object shape keeps its edit
+			// shape (lean retry rides the host default, not the edit).
+			const expected = Array.isArray(before)
+				? [...before, "sigrun.lean-retry"]
+				: before;
+			expect(await storedSelection(opened, forkedId)).toEqual(expected);
 			const fork = await opened.harness.conversation(forkedId, BACKGROUND_CONTEXT);
 			if (fork === undefined) throw new Error("fork missing");
 			expect(await names(fork)).toContain("acme@alice");

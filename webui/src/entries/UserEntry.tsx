@@ -17,7 +17,13 @@
  */
 
 import { useState } from "react";
-import { expandedUserEntry, type ExpandedUserEntryData } from "@sigrun/shared/turns";
+import {
+	entryAttachments,
+	typedText,
+	type EntryAttachment,
+	type ExpandedUserEntryData,
+	expandedUserEntry,
+} from "@sigrun/shared/turns";
 import type { ConversationEntryWire } from "../api";
 import { Markdown } from "./Markdown";
 import { MessageActions } from "./MessageActions";
@@ -72,11 +78,36 @@ function admittedText(entry: ConversationEntryWire): string {
 		.join("\n\n");
 }
 
-/** The entry's user-facing source text — the TYPED command for an
- *  expanded input (Copy/Edit/outline read this: Edit re-sends the
- *  command and the server re-expands), else the admitted text. */
+/** The text the user wrote, not expanded or inlined attachment content. */
 export function userText(entry: ConversationEntryWire): string {
-	return expandedUserEntry(entry)?.typed ?? admittedText(entry);
+	return typedText(entry);
+}
+
+function formatAttachmentBytes(bytes: number): string {
+	if (bytes < 1024) return `${bytes} B`;
+	if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
+	return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function AttachmentChips(props: {
+	readonly attachments: readonly EntryAttachment[];
+}) {
+	return (
+		<div className="entry-attachment-chips">
+			{props.attachments.map((attachment) => (
+				<span
+					className="entry-attachment entry-attachment-chip"
+					key={attachment.path}
+					title={attachment.delivery}
+				>
+					{attachment.name}
+					{attachment.bytes === null
+						? ""
+						: ` · ${formatAttachmentBytes(attachment.bytes)}`}
+				</span>
+			))}
+		</div>
+	);
 }
 
 /** The disclosure chip under an expanded bubble: names the command,
@@ -131,6 +162,7 @@ export function UserEntry(props: {
 				);
 	const answerTitle =
 		answerBlock === undefined ? undefined : blocksTitle(answerBlock.data);
+	const attachments = entryAttachments(entry);
 	return (
 		<div
 			className="turn turn-user"
@@ -138,7 +170,12 @@ export function UserEntry(props: {
 			data-entry-id={entry.id}
 		>
 			<div className="entry-user">
-				{expanded !== undefined ? (
+				{attachments.length > 0 ? (
+					<div className="entry-user-message">
+						<Markdown source={userText(entry)} variant="bubble" />
+						<AttachmentChips attachments={attachments} />
+					</div>
+				) : expanded !== undefined ? (
 					// The expanded turn: the TYPED text is the bubble (R2), the
 					// admitted text waits behind the chip. Attachments ride the
 					// admitted message's parts either way.

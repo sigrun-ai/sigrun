@@ -149,9 +149,8 @@ export type RunSettledEvent = {
 	/** The conversation owner at delivery; absent when the conversation is ownerless. */
 	readonly owner?: string;
 	readonly inputs: readonly SubmissionId[];
-	/** Text blocks of each input's entry (`pi.user`, or an expanded input's
-	 *  `sigrun.user.expanded` — the ADMITTED text), concatenated;
-	 *  unresolvable/withdrawn → "" at that position. */
+	/** Each input entry's ADMITTED text minus attachment bodies, then one
+	 *  `[attached: <path>]` line per attachment; unresolvable/withdrawn → "". */
 	readonly inputTexts: readonly string[];
 	/** True when a Continue submission belongs to the run. */
 	readonly continued?: boolean;

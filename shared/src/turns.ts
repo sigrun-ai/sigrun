@@ -24,9 +24,184 @@
  * is `EXPANDED_ENTRY_KIND` in `src/commands/expand.ts`.
  */
 
+/** The user-entry kind a submission carrying ATTACHMENTS is placed as
+ *  (attachments workstream): `data.attachments` is an
+ *  {@link EntryAttachment} list and the first model message's text
+ *  parts at each attachment's `parts` indexes are the inline markers,
+ *  not user prose — {@link typedText} and {@link unattachedText}
+ *  exclude them. Grouping treats it exactly like a plain `pi.user`. */
+export const USER_KIND = "sigrun.user";
+
 /** The user-entry kind an expanded `/skill:` or template input is placed
  *  as (see the module doc); grouping treats it exactly like `pi.user`. */
 export const EXPANDED_USER_KIND = "sigrun.user.expanded";
+
+/** Every entry kind that carries a USER INPUT (plain, attachment-
+ *  bearing, expanded). Classification must always go through
+ *  {@link isUserInput}, never a hand-rolled kind comparison — the set
+ *  grows as new input shapes land. */
+export const USER_INPUT_KINDS: ReadonlySet<string> = new Set([
+	"pi.user",
+	USER_KIND,
+	EXPANDED_USER_KIND,
+]);
+
+/** True when the entry is any user-input kind (see
+ *  {@link USER_INPUT_KINDS}). `sigrun.blocks.answer` is deliberately NOT
+ *  in the set: it is an interaction answer, grouped as a user turn but
+ *  carrying no attachments or typed/model text split. */
+export function isUserInput(entry: { readonly kind: string }): boolean {
+	return USER_INPUT_KINDS.has(entry.kind);
+}
+
+const ATTACHMENT_DELIVERIES = [
+	"inline",
+	"workspace",
+	"image",
+	"error",
+] as const;
+
+/** How one attachment reached the model: `inline` (text parts in the
+ *  message), `workspace` (a workspace path reference), `image` (an image
+ *  part), `error` (delivery failed; `error` says why). */
+export type AttachmentDelivery = (typeof ATTACHMENT_DELIVERIES)[number];
+
+/** One attachment carried by a user-input entry's `data.attachments`.
+ *  `parts` lists the first model message's part indexes the attachment
+ *  occupies (its inline markers / image parts), so the prose helpers
+ *  can subtract them. */
+export interface EntryAttachment {
+	readonly path: string;
+	readonly name: string;
+	readonly mime: string | null;
+	readonly bytes: number | null;
+	readonly delivery: AttachmentDelivery;
+	readonly parts: readonly number[];
+	readonly error?: string;
+}
+
+const ATTACHMENT_DELIVERY_SET: ReadonlySet<string> = new Set(
+	ATTACHMENT_DELIVERIES,
+);
+
+/** The attachments of a `sigrun.user` / `sigrun.user.expanded` entry —
+ *  reads `data.attachments`, dropping malformed items (a partial record
+ *  must never crash a renderer). `[]` for every other kind. */
+export function entryAttachments(entry: {
+	readonly kind: string;
+	readonly data?: unknown;
+}): readonly EntryAttachment[] {
+	if (
+		entry.kind !== USER_KIND &&
+		entry.kind !== EXPANDED_USER_KIND
+	) {
+		return [];
+	}
+	const data = entry.data;
+	if (typeof data !== "object" || data === null) return [];
+	const list = (data as { readonly attachments?: unknown }).attachments;
+	if (!Array.isArray(list)) return [];
+	const attachments: EntryAttachment[] = [];
+	for (const item of list as readonly unknown[]) {
+		if (typeof item !== "object" || item === null || Array.isArray(item)) {
+			continue;
+		}
+		const record = item as Record<string, unknown>;
+		if (
+			typeof record.path !== "string" ||
+			typeof record.name !== "string" ||
+			!(typeof record.mime === "string" || record.mime === null) ||
+			!(typeof record.bytes === "number" || record.bytes === null) ||
+			typeof record.delivery !== "string" ||
+			!ATTACHMENT_DELIVERY_SET.has(record.delivery) ||
+			!Array.isArray(record.parts) ||
+			!record.parts.every((part) => typeof part === "number")
+		) {
+			continue;
+		}
+		const attachment: EntryAttachment = {
+			path: record.path,
+			name: record.name,
+			mime: record.mime,
+			bytes: record.bytes,
+			delivery: record.delivery as AttachmentDelivery,
+			parts: record.parts as readonly number[],
+		};
+		if (typeof record.error === "string") {
+			attachments.push({ ...attachment, error: record.error });
+		} else {
+			attachments.push(attachment);
+		}
+	}
+	return attachments;
+}
+
+/** The first model message's TEXT parts whose index appears in no
+ *  attachment's `parts`, joined with `joiner` — the admitted text minus
+ *  the inline attachment markers. String content is returned as-is;
+ *  an entry with no model message (or only attachment parts) yields
+ *  `""`. Works on any kind, so an expanded entry's admitted prose is
+ *  readable without unwrapping `data`. */
+export function unattachedText(
+	entry: {
+		readonly kind: string;
+		readonly data?: unknown;
+		readonly model?: readonly unknown[];
+	},
+	joiner = "\n\n",
+): string {
+	const message = entry.model?.[0];
+	if (typeof message !== "object" || message === null) return "";
+	const content = (message as { readonly content?: unknown }).content;
+	if (typeof content === "string") return content;
+	if (!Array.isArray(content)) return "";
+	const covered = new Set<number>();
+	for (const attachment of entryAttachments(entry)) {
+		for (const part of attachment.parts) covered.add(part);
+	}
+	const texts: string[] = [];
+	(content as readonly unknown[]).forEach((block, index) => {
+		if (covered.has(index)) return;
+		if (typeof block !== "object" || block === null) return;
+		const candidate = block as { readonly type?: unknown; readonly text?: unknown };
+		if (candidate.type !== "text" || typeof candidate.text !== "string") {
+			return;
+		}
+		texts.push(candidate.text);
+	});
+	return texts.join(joiner);
+}
+
+/** The text the USER TYPED: an expanded entry's `data.typed`, or `""`
+ *  when that payload is missing or malformed (never its expanded skill
+ *  body); every other kind falls through to {@link unattachedText}. */
+export function typedText(
+	entry: {
+		readonly kind: string;
+		readonly data?: unknown;
+		readonly model?: readonly unknown[];
+	},
+	joiner = "\n\n",
+): string {
+	if (entry.kind === EXPANDED_USER_KIND) {
+		const data = entry.data;
+		if (typeof data !== "object" || data === null) return "";
+		const typed = (data as { readonly typed?: unknown }).typed;
+		return typeof typed === "string" ? typed : "";
+	}
+	return unattachedText(entry, joiner);
+}
+
+/** The attachment `name`s of an entry, joined with `joiner` — the
+ *  composer's chip row and the user-turn subtitle both render this. */
+export function attachmentNames(
+	entry: { readonly kind: string; readonly data?: unknown },
+	joiner = ", ",
+): string {
+	return entryAttachments(entry)
+		.map((attachment) => attachment.name)
+		.join(joiner);
+}
 
 /** The chat-blocks entry kinds (UI-blocks U5, spec §8.2/§8.3/§8.4) the
  *  grouping recognises. The server-side twins live in
@@ -323,11 +498,7 @@ export function groupTurns<E extends TurnEntry>(entries: readonly E[]): Turn<E>[
 		}
 
 		flush();
-		if (
-			entry.kind === "pi.user" ||
-			entry.kind === EXPANDED_USER_KIND ||
-			entry.kind === BLOCKS_ANSWER_KIND
-		) {
+		if (isUserInput(entry) || entry.kind === BLOCKS_ANSWER_KIND) {
 			turns.push({ kind: "user", entry });
 		} else {
 			turns.push({ kind: "other", entry });

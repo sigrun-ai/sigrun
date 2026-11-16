@@ -334,6 +334,82 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		expect(pane.entryIdOf(1)).toBe(4); // assistant lastEntryId
 	});
 
+	test("sigrun.user renders typed text and record attachment markers, never the inline body", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "sigrun.user",
+					data: {
+						attachments: [
+							{
+								path: "/workspace/acme/notes.txt",
+								name: "notes.txt",
+								mime: "text/plain",
+								bytes: 18,
+								delivery: "inline",
+								parts: [1, 2, 3],
+							},
+							{
+								path: "/workspace/acme/diagram.png",
+								name: "diagram.png",
+								mime: "image/png",
+								bytes: 2048,
+								delivery: "image",
+								parts: [4],
+							},
+						],
+					},
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "Review these notes." },
+								{ type: "text", text: "[attachment:start notes.txt]" },
+								{ type: "text", text: "INLINE ATTACHMENT BODY, NOT USER PROSE" },
+								{ type: "text", text: "[attachment:end notes.txt]" },
+								{ type: "image", path: "/workspace/acme/diagram.png" },
+							],
+						},
+					],
+				},
+			]),
+		);
+		const rendered = pane.render(100).join("\n");
+		expect(rendered).toContain("▎ Review these notes.");
+		expect(rendered).toContain("[attachment: notes.txt · 18 B]");
+		expect(rendered).toContain("[attachment: diagram.png · 2.0 KB]");
+		expect(rendered.match(/\[attachment:/g)).toHaveLength(2);
+		expect(rendered).not.toContain("INLINE ATTACHMENT BODY, NOT USER PROSE");
+		expect(rendered).not.toContain("[attachment:start notes.txt]");
+		expect(rendered).not.toContain("[image:");
+	});
+
+	test("a legacy pi.user upload keeps its model-block marker unchanged", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "pi.user",
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "Read the legacy upload." },
+								{ type: "file", path: "/workspace/acme/legacy.txt" },
+							],
+						},
+					],
+				},
+			]),
+		);
+		const rendered = pane.render(100).join("\n");
+		expect(rendered).toContain("Read the legacy upload.");
+		expect(rendered).toContain("[file: /workspace/acme/legacy.txt]");
+	});
+
 	// ── Task 2c: the expanded-user chip ──────────────────────────────
 	// An expanded submission is ONE entry (kind `sigrun.user.expanded`,
 	// `data {typed, command}`, the EXPANDED text on `model`): the pane
