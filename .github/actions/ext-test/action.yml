@@ -94,7 +94,7 @@ runs:
         ref: ${{ inputs.ref }}
     - uses: actions/setup-node@v5
       with:
-        node-version: "22"
+        node-version: "26"
     - name: Reject sibling links without the family layout
       if: inputs.needs-core != 'true'
       working-directory: ${{ inputs.package-dir }}

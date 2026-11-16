@@ -5,7 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.20.1] - 2026-11-15
+## [0.20.2] - 2026-11-15
+
+- Re-cut of 0.20.1: the registry smoke ran in a node:22 container,
+  whose npm 10 engine-skips the optional sandbox packages now that the
+  family declares engines >= 26.13.0 — the smoke's container moves to
+  node:26-bookworm-slim (the rest of the Node 26 move).
 
 - Re-cut of 0.20.0 (the v0.20.0 tag's publish failed before anything
   shipped: npm's registry-mode install could not resolve a built-in's

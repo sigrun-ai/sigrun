@@ -1,4 +1,4 @@
-## [0.20.1] - 2026-11-15
+## [0.20.2] - 2026-11-15
 
 - New user-input helpers: `USER_KIND` (`sigrun.user`), `USER_INPUT_KINDS`,
   `isUserInput`, `AttachmentDelivery`/`EntryAttachment`, `entryAttachments`,

@@ -1,7 +1,7 @@
 #!/bin/sh
 # Registry-install smoke (release workstream Task 2.3): prove the
 # PUBLISHED tarball installs and boots from the registry — never a local
-# path. Inside `docker run --rm node:22-bookworm-slim`:
+# path. Inside `docker run --rm node:26-bookworm-slim`:
 #
 #   1. npm i -g @sigrun/sigrun@<version>     (REGISTRY only)
 #   2. boot `sigrun serve` on 127.0.0.1 with the pi-ai built-in provider
@@ -21,7 +21,7 @@
 #
 # The docker image ships node, so polling and assertions stay inside the
 # one container — no bind-mounted state. (The header once claimed curl
-# too: node:22-bookworm-slim ships NO curl, and the old curl poll loop
+# too: node:26-bookworm-slim ships NO curl, and the old curl poll loop
 # exited 127 under `set -eu` — which `docker run --rm` swallowed, making
 # the whole script a false-green. Probes are `node -e fetch` now, and
 # the container's output is never hidden.)
@@ -39,7 +39,7 @@ if [ "$#" -ne 1 ]; then
 fi
 
 version="$1"
-image="node:22-bookworm-slim"
+image="node:26-bookworm-slim"
 
 # The built-in slug list is a HOST derivation (the container has no
 # sibling checkouts to re-derive from): publish-deps.mjs's BUILTINS map
