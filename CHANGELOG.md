@@ -5,7 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.20.0] - 2026-11-15
+## [0.20.1] - 2026-11-15
+
+- Re-cut of 0.20.0 (the v0.20.0 tag's publish failed before anything
+  shipped: npm's registry-mode install could not resolve a built-in's
+  `@sigrun/sigrun >= 0.20.0` peer against the not-yet-published core;
+  the publish step now installs with `--legacy-peer-deps` for the
+  ephemeral registry-mode lock). No code change beyond the version.
 
 The attachments and crash-guards release.
 

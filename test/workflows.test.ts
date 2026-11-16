@@ -456,9 +456,12 @@ describe(".github/workflows/release.yml (image-workflow §3, release half)", () 
 		const body = core ?? "";
 		// Anchor on the COMMAND, not the substring: the comment above the
 		// dance names `npm ci` in prose, which would match first.
+		// --legacy-peer-deps (0.20.1): the ephemeral registry-mode lock
+		// cannot resolve a built-in's @sigrun/sigrun peer against the
+		// registry while this publish is what puts that version there.
 		const ci = body
 			.split("\n")
-			.findIndex((line) => line.trim() === "npm ci");
+			.findIndex((line) => line.trim() === "npm ci --legacy-peer-deps");
 		const regenLine = body
 			.split("\n")
 			.findIndex((line) => line.trim() === "node scripts/publish-deps.mjs registry");

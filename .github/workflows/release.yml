@@ -405,8 +405,14 @@ jobs:
           # needs it.
           node scripts/publish-deps.mjs registry
           pins="$(node scripts/publish-deps.mjs pins)"
-          npm install --save-exact ${pins} --package-lock-only
-          npm ci
+          # --legacy-peer-deps: the ephemeral registry-mode lock (never
+          # committed; postpublish restores file: mode) cannot resolve a
+          # built-in's `@sigrun/sigrun >= <this version>` peer against the
+          # registry while this very publish is what puts that version on
+          # the registry (0.20.0's tag died on exactly that ETARGET). The
+          # committed lockfile is never generated with this flag.
+          npm install --save-exact ${pins} --package-lock-only --legacy-peer-deps
+          npm ci --legacy-peer-deps
           if [ "${DRY}" = "true" ]; then
             case "${CORE_VERSION}" in
               *-*) npm publish --access public --tag next --dry-run ;;
