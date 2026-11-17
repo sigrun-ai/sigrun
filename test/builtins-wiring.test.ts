@@ -163,19 +163,31 @@ function gatewayAcceptsCoreShared(core: MinimalManifest, gateway: MinimalManifes
 }
 
 /**
- * The released ext-gateway line's @sigrun/shared peer acceptance,
- * derived from BOTH facts the sibling manifest carries — its version
- * AND its declared peer range — never the version alone. Part A shipped
- * 0.1.3 with an exact 0.2.1 peer; 0.1.4 widened it to
- * "0.2.1 || 0.3.0" (the 0.3.0 core family) and 0.1.5 widened it again
- * to "0.3.0 || 0.4.0" (the 0.4.0 family, still co-installing with 0.3.0).
- * A declaration is accepted when it honestly installs against core's
- * own pin (the range CONTAINS `own`), or inside the documented Part A
- * transitional window (core 0.3.0 against the published 0.1.3/0.1.4
- * line still peering 0.2.1). A version bumped past its peer — e.g. a
- * 0.1.5 still declaring "0.2.1 || 0.3.0" against core 0.4.0 — accepts
- * NOTHING (that pairing is uninstallable: ERESOLVE), and every other
- * sibling keeps the exact-version default branch.
+ * A built-in's `@sigrun/shared` peer acceptance, derived from BOTH facts
+ * the sibling manifest carries — its version AND its declared peer range —
+ * never the version alone. Part A shipped 0.1.3 with an exact 0.2.1 peer;
+ * 0.1.4 widened it to "0.2.1 || 0.3.0" (the 0.3.0 core family) and the
+ * `||` ladder then grew an arm per core minor.
+ *
+ * That ladder is GONE (C5): built-in shared peers are OPEN FLOORS now
+ * (`>=0.4.2` on the gateway, `>=0.20.0` elsewhere), so a core bump needs
+ * no extension bump unless that extension adopts a newer shared export or
+ * seam — and then that extension raises its floor in the same change.
+ *
+ * A declaration is accepted when it honestly installs against core's own
+ * pin: the range CONTAINS `own` (literally, or via `satisfies`), or inside
+ * the documented Part A transitional window (core 0.3.0 against the
+ * published 0.1.3/0.1.4 line still peering 0.2.1). An unparseable range
+ * accepts NOTHING — `satisfies` throwing is the skew this test names, so
+ * fail the expectation, not the loop. A floor ABOVE core's pin — a
+ * 0.1.5 still declaring "0.2.1 || 0.3.0" against core 0.4.0, or " >=0.21.0"
+ * against 0.20.2 — accepts NOTHING too: that pairing is uninstallable
+ * (ERESOLVE).
+ *
+ * The returned set is BOTH readings of "accepted": the declared literals
+ * that install against core's pin (what the per-module assertion below
+ * intersects with) and `own` itself when the declaration covers it (the
+ * plain "does this declaration accept core's pin" question).
  */
 function acceptedSharedPeers(
 	name: string,
@@ -186,22 +198,33 @@ function acceptedSharedPeers(
 	const declared = new Set(
 		(declaredPeer ?? "").split("||").map((part) => part.trim()).filter(Boolean),
 	);
-	if (name !== "@sigrun/ext-gateway") return new Set([own]);
-	// The honest case: the declared range itself installs against core's
-	// pin (this is the reviewer-pairing assertion — a 0.1.5+ line must
-	// DECLARE the core line it claims to support, not just be versioned
-	// for it).
-	if (declared.has(own)) return declared;
-	// The Part A transitional window: core 0.3.0 with the PUBLISHED
-	// gateway line still peering 0.2.1 (integration may move the sibling
-	// directly to the family version; until then the exact 0.2.1 peer is
-	// the published reality). Exactly the two released declarations.
+	const accept = (): Set<string> => new Set([...declared, own]);
+	// The honest exact literal: the declaration itself installs against
+	// core's pin (this is the reviewer-pairing assertion — a bumped line
+	// must DECLARE the core line it claims to support, not just be
+	// versioned for it).
+	if (declared.has(own)) return accept();
+	// The open floor: core's pin falls inside the declared range.
+	if (typeof declaredPeer === "string" && declaredPeer.trim() !== "") {
+		try {
+			if (satisfies(own, declaredPeer)) return accept();
+		} catch {
+			// An invalid range accepts nothing (mirrors the peer-skew
+			// branch below): the skew IS the finding.
+		}
+	}
+	// The Part A transitional window, gateway-only: core 0.3.0 with the
+	// PUBLISHED gateway line still peering 0.2.1 (integration may move the
+	// sibling directly to the family version; until then the exact 0.2.1
+	// peer is the published reality). Exactly the two released
+	// declarations.
 	if (
+		name === "@sigrun/ext-gateway" &&
 		own === "0.3.0" &&
 		/^0\.1\.[3-4]$/.test(siblingVersion ?? "") &&
 		(declaredPeer === "0.2.1" || declaredPeer === "0.2.1 || 0.3.0")
 	) {
-		return declared;
+		return accept();
 	}
 	return new Set();
 }
@@ -362,6 +385,21 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 		).toBe(false);
 		expect(acceptedSharedPeers("@sigrun/ext-mcp", "0.1.2", "0.3.0", "0.3.0").has("0.2.1")).toBe(
 			false,
+		);
+	});
+
+	test("an open-floor shared peer is accepted when core's pin satisfies it", () => {
+		// Built-in shared peers are OPEN FLOORS (C5 of the release
+		// follow-ups): `>=0.4.2` and `>=0.20.0` instead of a growing
+		// `||` ladder. A floor whose lower bound core's pin clears is
+		// honest — it installs — so it accepts that pin whatever the
+		// extension's own version says.
+		expect(
+			acceptedSharedPeers("@sigrun/ext-gateway", "0.1.48", ">=0.3.0", "0.20.2").has("0.20.2"),
+		).toBe(true);
+		// …and a floor ABOVE core's pin is still skew: nothing accepts.
+		expect(acceptedSharedPeers("@sigrun/ext-gateway", "0.1.48", ">=0.21.0", "0.20.2").size).toBe(
+			0,
 		);
 	});
 
