@@ -518,6 +518,22 @@ describe("SettingsStore", () => {
 		expect(store.read().defaultModel).toBeUndefined();
 	});
 
+	test("server.maxInlineFileBytes accepts positive integers and rejects zero", () => {
+		const { store } = freshStore();
+		store.update({ server: { maxInlineFileBytes: 65536 } });
+		expect(store.read().server?.maxInlineFileBytes).toBe(65536);
+
+		let rejected: SettingsValidationError | undefined;
+		try {
+			store.update({ server: { maxInlineFileBytes: 0 } });
+		} catch (error) {
+			if (error instanceof SettingsValidationError) rejected = error;
+			else throw error;
+		}
+		expect(rejected).toBeInstanceOf(SettingsValidationError);
+		expect(rejected!.field).toBe("server.maxInlineFileBytes");
+	});
+
 	test("server PATCHes sub-merge: the bootstrap fields survive a port PATCH", () => {
 		const { store } = freshStore();
 		store.bootstrap({

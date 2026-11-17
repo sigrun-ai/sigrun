@@ -242,9 +242,9 @@ export interface SigrunConfig {
 	 * `SIGRUN_MAX_INLINE_FILE_BYTES` over the file's
 	 * `server.maxInlineFileBytes` over {@link DEFAULT_MAX_INLINE_FILE_BYTES}
 	 * (50 KiB, one `read` page). A `{type:"file"}` submission part larger
-	 * than this inlines a head plus a workspace pointer instead of its
-	 * body: the file is already in the workspace where the agent's own
-	 * tools reach it, so the whole body buys nothing but a context window
+	 * than this delivers a workspace reference only (no body bytes): the
+	 * file is already in the workspace where the agent's own tools reach
+	 * it, so the whole body buys nothing but a context window
 	 * the model cannot hold. The same cap bounds an oversized tool
 	 * result's `details`, the other way a single entry grows without
 	 * limit.
@@ -1422,6 +1422,10 @@ export function envServerSection(env: Env): ServerSettings {
 	if (sqliteHeapLimitBytes !== undefined) {
 		section.sqliteHeapLimitBytes = sqliteHeapLimitBytes;
 	}
+	const maxInlineFileBytes = parsePositiveIntEnv(env, MAX_INLINE_FILE_BYTES_ENV);
+	if (maxInlineFileBytes !== undefined) {
+		section.maxInlineFileBytes = maxInlineFileBytes;
+	}
 	const publicUrl = parsePublicUrl(env[PUBLIC_URL_ENV], PUBLIC_URL_ENV);
 	if (publicUrl !== undefined) section.publicUrl = publicUrl;
 	const webui = pickDefined({
@@ -1539,6 +1543,7 @@ export function effectiveServerSection(
 	emit("maxUploadBytes", config.maxUploadBytes, ["maxUploadBytes"]);
 	emit("maxFileReadBytes", config.maxFileReadBytes, ["maxFileReadBytes"]);
 	emit("sqliteHeapLimitBytes", config.sqliteHeapLimitBytes, ["sqliteHeapLimitBytes"]);
+	emit("maxInlineFileBytes", config.maxInlineFileBytes, ["maxInlineFileBytes"]);
 	emit("dataDir", config.dataDir, ["dataDir"]);
 	emit("cacheDir", config.cacheDir, ["cacheDir"]);
 	emit("stateDir", config.stateDir, ["stateDir"]);

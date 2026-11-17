@@ -18,6 +18,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rescue returns the image as `structuredOutput` for nested tool callers.
 - Settings table-row saves expand dotted field names inside rows instead of
   persisting them flat and corrupting ext-mcp's settings file.
+- `server.maxInlineFileBytes` is settable in `settings.json` (env still wins),
+  reports its resolved value and source in effective settings, and applies at
+  restart; over-cap files are now documented as workspace references only.
 
 ## [0.20.2] - 2026-11-15
 

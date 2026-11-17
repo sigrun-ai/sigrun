@@ -652,6 +652,7 @@ function validateServer(server: unknown): void {
 		"maxUploadBytes",
 		"maxFileReadBytes",
 		"sqliteHeapLimitBytes",
+		"maxInlineFileBytes",
 		"dataDir",
 		"cacheDir",
 		"stateDir",
@@ -708,6 +709,17 @@ function validateServer(server: unknown): void {
 	) {
 		throw new SettingsValidationError(
 			"server.maxFileReadBytes",
+			"must be a positive integer",
+		);
+	}
+	// The inline-attachment cap is resolved from the file under env, then
+	// consumed by content parts and the tool-result cap at restart.
+	if (
+		record.maxInlineFileBytes !== undefined &&
+		!isPositiveInt(record.maxInlineFileBytes)
+	) {
+		throw new SettingsValidationError(
+			"server.maxInlineFileBytes",
 			"must be a positive integer",
 		);
 	}
