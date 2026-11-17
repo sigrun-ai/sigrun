@@ -269,7 +269,7 @@ export function expandableTemplates(
 }
 
 /**
- * Expand one input's leading text part, when it starts with `/` and
+ * Expand one input's first text part, when it starts with `/` and
  * names a skill or an expandable template. Everything else — non-`/`
  * text, a `/name` that is a command, an unknown skill or template —
  * passes through untouched; the OTHER parts (attachments, further text
@@ -288,15 +288,11 @@ export async function expandInput(
 	context: Context,
 	owner?: string,
 ): Promise<ExpansionResult> {
-	// Only a LEADING text part starting with `/` is a command: the
-	// command is what the user typed first (attachments and later text
-	// parts pass through untouched, in place).
-	const textPart = parts[0];
-	if (
-		textPart === undefined ||
-		textPart.type !== "text" ||
-		!textPart.text.startsWith("/")
-	) {
+	// Only the FIRST text part starting with `/` is a command candidate:
+	// leading attachments pass through untouched, and a text part after
+	// another text part is never a command.
+	const textPart = parts.find((part) => part.type === "text");
+	if (textPart === undefined || !textPart.text.startsWith("/")) {
 		return { parts };
 	}
 	const text = textPart.text;

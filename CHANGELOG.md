@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Commands and prompt templates now expand when typed after leading
+  attachments; only the first text part is a command candidate.
+
 ### Fixed
 
 - The `read` tool keeps pi-durable's `structuredOutputSchema`, and its image
