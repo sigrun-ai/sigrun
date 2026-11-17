@@ -1,3 +1,10 @@
+## [0.21.0] - 2026-11-17
+
+- Edit and Copy carry a turn's typed text (no attachment-marker
+  lines); Edit also carries the turn's attachments into the next
+  submit, ahead of the text, and expanded turns render one marker per
+  attachment.
+
 ## [0.20.2] - 2026-11-15
 
 - A `sigrun.user` entry renders its typed text plus one marker per

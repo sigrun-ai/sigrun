@@ -1,3 +1,9 @@
+## [0.21.0] - 2026-11-17
+
+- Version-locked bump with the 0.21.0 core line. The `settings`
+  doc comment now says an over-cap attachment delivers a workspace
+  reference only.
+
 ## [0.20.2] - 2026-11-15
 
 - New user-input helpers: `USER_KIND` (`sigrun.user`), `USER_INPUT_KINDS`,

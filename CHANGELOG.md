@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.0] - 2026-11-17
+
 ### Changed
 
 - Commands and prompt templates now expand when typed after leading
@@ -20,6 +22,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rescue returns the image as `structuredOutput` for nested tool callers.
 - Settings table-row saves expand dotted field names inside rows instead of
   persisting them flat and corrupting ext-mcp's settings file.
+  The render side flattens a row's nested groups back to their dotted
+  field names, so a stored group both displays and round-trips through
+  an unchanged re-save and through edits.
 - `server.maxInlineFileBytes` is settable in `settings.json` (env still wins),
   reports its resolved value and source in effective settings, and applies at
   restart; over-cap files are now documented as workspace references only.
