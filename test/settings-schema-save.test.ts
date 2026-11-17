@@ -836,6 +836,105 @@ test("dotted nested field names save through the generated form (provider-openai
 	expect(await file(rig)).toEqual({ group: { label: false }, mode: "auto" });
 });
 
+test("dotted fields inside a table row save as a nested object", async () => {
+	// E1: a table row's nested objects render as dotted form fields
+	// (oauth.authorizeUrl etc.); the channel submits them flat inside
+	// the row and the save must expand them against the ROW schema.
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.endpoint": "https://auth.example.invalid",
+				"auth.scopes": ["read"],
+			},
+		},
+	}, "dotted-table-row");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers.acme).toEqual({
+		url: "https://acme.example.invalid",
+		auth: { endpoint: "https://auth.example.invalid", scopes: ["read"] },
+	});
+	expect(Object.hasOwn(servers.acme, "auth.endpoint")).toBe(false);
+	expect(Object.hasOwn(servers.acme, "auth.scopes")).toBe(false);
+});
+
+test("a blank dotted group inside a table row is dropped", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.endpoint": "",
+				"auth.scopes": [],
+			},
+		},
+	}, "dotted-table-row-blank");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(Object.hasOwn(servers.acme, "auth")).toBe(false);
+	expect(Object.hasOwn(servers.acme, "auth.endpoint")).toBe(false);
+	expect(Object.hasOwn(servers.acme, "auth.scopes")).toBe(false);
+});
+
+test("a literal dotted property in a row schema stays literal", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"x.literal": "kept",
+			},
+		},
+	}, "dotted-literal-property");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers.acme["x.literal"]).toBe("kept");
+	expect(Object.hasOwn(servers.acme, "x")).toBe(false);
+});
+
+test("a table row whose NAME contains a dot stays a row", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			"acme.v2": { $from: "acme.v2", url: "https://acme.example.invalid" },
+		},
+		labels: { "a.b": { value: "kept", $from: "a.b" } },
+	}, "dotted-row-name");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers["acme.v2"]).toMatchObject({ url: "https://acme.example.invalid" });
+	expect(Object.hasOwn(servers, "acme")).toBe(false);
+	expect((stored.labels as Record<string, string>)["a.b"]).toBe("kept");
+	expect(Object.hasOwn(stored.labels as Record<string, unknown>, "a")).toBe(false);
+});
+
+test("a dotted key whose tail does not resolve stays literal", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.nope": "x",
+			},
+		},
+	}, "dotted-unknown-tail");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers.acme["auth.nope"]).toBe("x");
+	expect(Object.hasOwn(servers.acme, "auth")).toBe(false);
+});
+
 describe("blank means unset", () => {
 	const BLANKS_SURFACE = "/v1/ext/acme-blanks/surfaces/settings";
 

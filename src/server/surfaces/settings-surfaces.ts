@@ -867,29 +867,59 @@ function childSchema(node: unknown, key: string): JsonSchema | undefined {
  * form submits them flat) back into the nested JSON the schema and the
  * settings file use. Only keys whose dotted path resolves against the
  * schema expand: a literal `a.b` property name (the core sections use
- * dotted STORE keys) is indistinguishable by name alone, so the schema
- * decides — it has `a` → `b` or not.
- */
-/**
- * Expand the generated form's DOTTED field names (a nested object
- * without a title renders its children as `parent.child` fields — the
- * form submits them flat) back into the nested JSON the schema and the
- * settings file use. This surface family (schema-declared extension
- * settings) stores NESTED objects; the core sections' dotted STORE keys
- * never pass through here (saveCore folds them separately).
+ * dotted STORE keys — though those never pass through here; saveCore
+ * folds them separately) is indistinguishable by name alone, so the
+ * schema decides — it has `a` → `b` or not.
+ *
+ * Schema-aware: each segment must resolve through a DECLARED `properties`
+ * entry of its (dereffed) parent node. `additionalProperties` is NEVER
+ * used for the segment decision — that fallback would rewrite a table
+ * row NAMED `a.b` into `{a: {b: ...}}`. At a table node (no
+ * `properties`, only `additionalProperties`) every key is literal.
  */
 function expandDottedNames(
 	values: Record<string, unknown>,
+	root: JsonSchema,
+	node: JsonSchema | undefined,
 ): Record<string, unknown> {
 	const expanded: Record<string, unknown> = {};
+	const resolved = node === undefined ? undefined : deref(root, node);
+	const properties = resolved !== undefined && isRec(resolved.properties)
+		? resolved.properties
+		: undefined;
 	for (const [name, value] of Object.entries(values)) {
 		if (!name.includes(".")) {
 			expanded[name] = value;
 			continue;
 		}
+		const segments = name.split(".");
+		// Authorize EVERY segment against DECLARED properties only —
+		// never additionalProperties (that's the row table, not a named
+		// nested object, and rewriting a row named `a.b` would corrupt
+		// the file). The tail must also resolve: `auth.nope` where
+		// `auth` declares only `endpoint` / `scopes` stays a literal
+		// key rather than expanding into an unknown nested property.
+		let cursorNode: JsonSchema | undefined = resolved;
+		let authorized = properties !== undefined;
+		for (const segment of segments) {
+			if (cursorNode === undefined) { authorized = false; break; }
+			const cursorResolved = deref(root, cursorNode);
+			const cursorProperties = isRec(cursorResolved.properties) ? cursorResolved.properties : undefined;
+			if (cursorProperties === undefined || !Object.hasOwn(cursorProperties, segment)) {
+				authorized = false;
+				break;
+			}
+			const next = cursorProperties[segment];
+			cursorNode = isRec(next) ? next as JsonSchema : undefined;
+		}
+		if (!authorized) {
+			// Literal dotted property, or a tail that does not resolve:
+			// the name is not a dotted FIELD path the form generated.
+			expanded[name] = value;
+			continue;
+		}
 		// `chat.enabled: false` → `chat: { enabled: false }`, merging with
 		// any prior siblings under the same parent.
-		const segments = name.split(".");
 		let cursor = expanded;
 		for (const segment of segments.slice(0, -1)) {
 			const existing = cursor[segment];
@@ -920,8 +950,15 @@ function channelSubmissionToFile(
 		}
 		if (Array.isArray(value)) return value.map((entry) => unpack(entry, node.items));
 		if (!isRec(value)) return value as JsonValue;
+		// Dotted form names (a nested object without a title renders as
+		// `parent.child` fields) are expanded schema-aware at THIS level
+		// before descending — each row / nested object carries its own
+		// governing schema node so a table row's `auth.endpoint` resolves
+		// against the row's `properties`, not the root's.
+		const flat = value as Record<string, unknown>;
+		const expanded = expandDottedNames(flat, schema, node as JsonSchema);
 		const result: JsonObject = {};
-		for (const [key, child] of Object.entries(value)) {
+		for (const [key, child] of Object.entries(expanded)) {
 			// The reserved root-table field's schema is a synthetic object
 			// wrapping additionalProperties; unpacking straight into the VALUE
 			// schema would leave each scalar row packed as {value}.
@@ -932,7 +969,7 @@ function channelSubmissionToFile(
 		}
 		return result;
 	};
-	const unpacked = unpack(expandDottedNames(values), schema) as Record<string, unknown>;
+	const unpacked = unpack(values, schema) as Record<string, unknown>;
 	// A root additionalProperties table binds at the reserved empty field
 	// name. Flatten its rows back to root keys before validation/persistence;
 	// known properties keep their own slots.

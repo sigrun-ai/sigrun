@@ -36,6 +36,15 @@ export default function fixture(host) {
 								type: "object",
 								additionalProperties: { type: "string", writeOnly: true },
 							},
+							auth: {
+								type: "object",
+								title: "Auth",
+								properties: {
+									endpoint: { type: "string" },
+									scopes: { type: "array", items: { type: "string" }, minItems: 1 },
+								},
+							},
+							"x.literal": { type: "string" },
 						},
 						required: ["url"],
 					},
