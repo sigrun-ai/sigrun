@@ -862,6 +862,48 @@ test("dotted fields inside a table row save as a nested object", async () => {
 	expect(Object.hasOwn(servers.acme, "auth.scopes")).toBe(false);
 });
 
+test("a rendered row re-saved unchanged keeps its nested group", async () => {
+	const rig = await boot({
+		settings: {
+			servers: {
+				acme: {
+					url: "https://acme.example.invalid",
+					auth: { endpoint: "https://auth.example.invalid", scopes: ["read"] },
+				},
+			},
+		},
+	});
+	const rendered = await call(rig, "GET", SURFACE);
+	expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+	const settings = (rendered.body.data as { settings: Record<string, unknown> }).settings;
+	const servers = settings.servers as Record<string, Record<string, unknown>>;
+	// The form's defaultEntry seeds every generated row field, including
+	// dotted names, then spreads the stored row over those defaults.
+	const row = {
+		url: "",
+		label: "",
+		headers: {},
+		"auth.endpoint": "",
+		"auth.scopes": [],
+		"x.literal": "",
+		...servers.acme,
+		$from: "acme",
+	};
+	const result = await call(rig, "POST", `${SURFACE}/actions`, {
+		action: "save",
+		actionId: "round-trip-row",
+		params: {},
+		payload: { rev: rendered.body.rev, values: { servers: { acme: row } } },
+	});
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const storedServers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(storedServers.acme).toEqual({
+		url: "https://acme.example.invalid",
+		auth: { endpoint: "https://auth.example.invalid", scopes: ["read"] },
+	});
+});
+
 test("a blank dotted group inside a table row is dropped", async () => {
 	const rig = await boot({});
 	const result = await save(rig, {

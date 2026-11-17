@@ -884,9 +884,6 @@ function expandDottedNames(
 ): Record<string, unknown> {
 	const expanded: Record<string, unknown> = {};
 	const resolved = node === undefined ? undefined : deref(root, node);
-	const properties = resolved !== undefined && isRec(resolved.properties)
-		? resolved.properties
-		: undefined;
 	for (const [name, value] of Object.entries(values)) {
 		if (!name.includes(".")) {
 			expanded[name] = value;
@@ -900,7 +897,7 @@ function expandDottedNames(
 		// `auth` declares only `endpoint` / `scopes` stays a literal
 		// key rather than expanding into an unknown nested property.
 		let cursorNode: JsonSchema | undefined = resolved;
-		let authorized = properties !== undefined;
+		let authorized = true;
 		for (const segment of segments) {
 			if (cursorNode === undefined) { authorized = false; break; }
 			const cursorResolved = deref(root, cursorNode);
