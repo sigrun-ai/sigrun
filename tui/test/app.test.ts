@@ -10,6 +10,7 @@
 
 import { describe, expect, test, vi } from "vitest";
 import type { TUI } from "@earendil-works/pi-tui";
+import { SigrunClient as RealSigrunClient } from "../src/api.js";
 import type { JsonObject, SurfaceLoad } from "@sigrun/shared/blocks";
 import { SurfaceView } from "../src/blocks/surface-view.js";
 import { TuiApp } from "../src/ui/app.js";
@@ -21,8 +22,9 @@ import type {
 	ConversationList,
 	ConversationSummary,
 	ConversationViewWire,
-	SigrunClient,
+	SigrunClient as SigrunClientType,
 } from "../src/api.js";
+import type { WhenBusyMode } from "../src/api.js";
 import type { Unwatch, WatchHandlers, WatchOptions } from "../src/sse.js";
 
 // ─── Stub client (the brief's "against a stub client") ──────────────────
@@ -179,7 +181,7 @@ function stubClient(init: {
 		},
 	};
 	return {
-		client: client as unknown as SigrunClient,
+		client: client as unknown as SigrunClientType,
 		submitCalls,
 		forkCalls,
 		watchCalls,
@@ -623,7 +625,101 @@ describe("TuiApp edit carry", () => {
 		expect(last.attachments).toEqual(["uploads/1/notes.md"]);
 	});
 
-	test("carried attachments are dropped when the user switches conversations before submitting", async () => {
+	test("an expanded skill command's Edit submit keeps its attachments ahead of the typed command", async () => {
+		const { client: stub, submitCalls, watchCalls, watchRegistry } = stubClient({});
+		const requests: { path: string; input: unknown[] }[] = [];
+		const json = (body: unknown) => ({
+			ok: true,
+			status: 200,
+			json: async () => body,
+			text: async () => JSON.stringify(body),
+		});
+		// Submit alone uses the real HTTP client; the app's other interactions
+		// stay on the fixture. The stubbed transport exposes the real body's
+		// file/text part order without a network or a production test seam.
+		const httpClient = new RealSigrunClient({
+			baseUrl: "http://sigrun.example.invalid",
+			fetch: async (input, request) => {
+				const path = new URL(input).pathname;
+				if (request?.method !== "POST" || path !== "/v1/conversations/101/submissions") {
+					throw new Error(`unexpected HTTP request: ${request?.method ?? "GET"} ${path}`);
+				}
+				const body = JSON.parse(request.body ?? "{}") as { input?: unknown[] };
+				requests.push({ path, input: body.input ?? [] });
+				return json({ id: 1, conversationId: 101, type: "user", status: "answered" });
+			},
+		});
+		// SAFETY: the complete app stub supplies every client method; submit is
+		// the sole overridden member, recording then delegating to real transport.
+		const client = {
+			...stub,
+			submit(id: number, text: string, whenBusy: WhenBusyMode | undefined, attachments: readonly string[] | undefined) {
+				submitCalls.push({ id, text, attachments });
+				return httpClient.submit(id, text, whenBusy, attachments);
+			},
+		} as unknown as SigrunClientType;
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		watchRegistry.get(3)?.onSnapshot?.(
+			view(3, [
+				{ id: 50, kind: "pi.user", model: [{ role: "user", content: "earlier" }] },
+				{
+					id: 1,
+					kind: "sigrun.user.expanded",
+					data: {
+						typed: "/skill:x",
+						command: "skill:x",
+						attachments: [
+							{
+								path: "uploads/1/notes.md",
+								name: "notes.md",
+								mime: "text/markdown",
+								bytes: 1229,
+								delivery: "inline",
+								parts: [],
+							},
+						],
+					},
+					model: [
+						{
+							role: "user",
+							content: [{ type: "text", text: "expanded body" }],
+						},
+					],
+				},
+				{ id: 2, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+			]),
+		);
+		app.pane.setFocus(1);
+		await app.dispatch({ type: "edit-here" });
+		expect(app.activeConversationId).toBe(101);
+		expect(app.editor.getText()).toBe("/skill:x");
+
+		// The skill line goes through slash dispatch and reaches the real
+		// message-submit path with its carried attachment still attached.
+		app.editor.setText("/skill:x");
+		app.editor.onSubmit?.("/skill:x");
+		await vi.waitFor(() => {
+			expect(requests).toHaveLength(1);
+		});
+		expect(submitCalls.at(-1)).toEqual({
+			id: 101,
+			text: "/skill:x",
+			attachments: ["uploads/1/notes.md"],
+		});
+		expect(requests.at(-1)).toEqual({
+			path: "/v1/conversations/101/submissions",
+			input: [
+				{ type: "file", path: "uploads/1/notes.md" },
+				{ type: "text", text: "/skill:x" },
+			],
+		});
+	});
+
+	test("carried attachments are dropped when the user switches away and back before submitting", async () => {
 		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});
 		const app = new TuiApp(client, {
 			tui: fakeTui,
@@ -640,18 +736,20 @@ describe("TuiApp edit carry", () => {
 		app.pane.setFocus(1);
 		await app.dispatch({ type: "edit-here" });
 		expect(app.activeConversationId).toBe(101);
-		// Switch away (real selectConversation).
+		// Switch away and BACK to the fork (real selectConversation both
+		// ways). The away-only assertion could also pass through the submit-
+		// line's conversation-id filter; submitting on 101 pins the clear in
+		// selectConversation itself, because a surviving carry is now eligible.
 		await app.selectConversation(2);
 		expect(app.activeConversationId).toBe(2);
-		app.editor.setText("hello other conversation");
-		app.editor.onSubmit?.("hello other conversation");
+		await app.selectConversation(101);
+		expect(app.activeConversationId).toBe(101);
+		app.editor.setText("hello fork");
+		app.editor.onSubmit?.("hello fork");
 		await Promise.resolve();
-		// The submit carried NO attachments: the carry was bound to 101.
-		// (Pre-fix this is incidentally green — the empty-text guard eats
-		// the swap's first line; the real pin is the test above, which
-		// exercises the carry's LIFETIME on the same conversation.)
 		const last = submitCalls.at(-1)!;
-		expect(last.id).toBe(2);
+		expect(last.id).toBe(101);
+		expect(last.text).toBe("hello fork");
 		expect(last.attachments).toBeUndefined();
 	});
 });
