@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The `read` tool keeps pi-durable's `structuredOutputSchema`, and its image
+  rescue returns the image as `structuredOutput` for nested tool callers.
 - Settings table-row saves expand dotted field names inside rows instead of
   persisting them flat and corrupting ext-mcp's settings file.
 
