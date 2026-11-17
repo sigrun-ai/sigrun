@@ -418,6 +418,21 @@ describe("expandInput", () => {
 		}
 	});
 
+	test("a text part after another text part is never a command", async () => {
+		const parts = [
+			{ type: "text", text: "see this" },
+			{ type: "text", text: "/review security" },
+		] as const;
+		const result = await expandInput(
+			parts,
+			inertExpansion(),
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.parts).toEqual(parts);
+		expect(result.typed).toBeUndefined();
+	});
+
 	test("plain text after attachments is untouched", async () => {
 		const parts = [
 			{ type: "file", path: "uploads/1/a.md" },

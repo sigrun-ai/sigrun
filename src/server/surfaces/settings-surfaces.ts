@@ -861,6 +861,102 @@ function childSchema(node: unknown, key: string): JsonSchema | undefined {
 	return isRec(node.additionalProperties) ? node.additionalProperties : undefined;
 }
 
+/** The declared properties of one generated object form node. */
+function declaredProperties(root: JsonSchema, node: JsonSchema): Record<string, unknown> {
+	const properties = deref(root, node).properties;
+	return isRec(properties) ? properties : {};
+}
+
+/**
+ * Flatten the declared nested object groups in ONE generated row value.
+ * Return undefined for any undeclared/dotted nested segment: those values
+ * remain literal, including an unresolvable tail. An empty declared group
+ * produces no fields so the unchanged re-save keeps its stored {} shape.
+ */
+function flattenRowGroups(
+	value: JsonObject,
+	root: JsonSchema,
+	node: JsonSchema,
+): JsonObject | undefined {
+	const properties = declaredProperties(root, node);
+	const flattened: JsonObject = {};
+	for (const [name, child] of Object.entries(value)) {
+		const property = Object.hasOwn(properties, name) ? properties[name] : undefined;
+		const resolved = isRec(property) ? deref(root, property) : undefined;
+		if (
+			!name.includes(".") &&
+			resolved !== undefined &&
+			resolved.type === "object" &&
+			isRec(child) &&
+			isRec(resolved.properties)
+		) {
+			const nested = flattenRowGroupChildren(child, root, resolved);
+			if (nested === undefined) return undefined;
+			for (const [nestedName, nestedValue] of Object.entries(nested)) {
+				flattened[`${name}.${nestedName}`] = nestedValue;
+			}
+		} else {
+			flattened[name] = child as JsonValue;
+		}
+	}
+	return flattened;
+}
+
+/** Flatten one nested group, authorizing each segment against properties. */
+function flattenRowGroupChildren(
+	value: JsonObject,
+	root: JsonSchema,
+	node: JsonSchema,
+): JsonObject | undefined {
+	const properties = declaredProperties(root, node);
+	const flattened: JsonObject = {};
+	for (const [name, child] of Object.entries(value)) {
+		if (name.includes(".") || !Object.hasOwn(properties, name)) return undefined;
+		const property = properties[name]!;
+		if (!isRec(property)) return undefined;
+		const resolved = deref(root, property);
+		if (isRec(child) && resolved.type === "object" && isRec(resolved.properties)) {
+			const nested = flattenRowGroupChildren(child, root, resolved);
+			if (nested === undefined) return undefined;
+			for (const [nestedName, nestedValue] of Object.entries(nested)) {
+				flattened[`${name}.${nestedName}`] = nestedValue;
+			}
+		} else {
+			flattened[name] = child as JsonValue;
+		}
+	}
+	return flattened;
+}
+
+/**
+ * Render stored values in the shape their generated forms read. Only
+ * additionalProperties rows are flattened, not the table map or ordinary
+ * declared objects. This projection is shared by ordinary tables and the
+ * root table's reserved empty-name field.
+ */
+function renderSchemaValues(value: unknown, root: JsonSchema, node: unknown): JsonValue {
+	const schema = isRec(node) ? deref(root, node) : undefined;
+	if (Array.isArray(value)) {
+		return value.map((entry) => renderSchemaValues(entry, root, schema?.items));
+	}
+	if (!isRec(value)) return value as JsonValue;
+	const properties = schema === undefined ? {} : declaredProperties(root, schema);
+	const additional = isRec(schema?.additionalProperties) ? schema.additionalProperties : undefined;
+	const result: JsonObject = {};
+	for (const [name, child] of Object.entries(value)) {
+		const declared = Object.hasOwn(properties, name) && isRec(properties[name]);
+		const property = declared ? properties[name] : additional;
+		// Recurse into a row's nested tables first, then flatten that row's
+		// declared groups; narrow the child schema to the row, not the map.
+		const nested = renderSchemaValues(child, root, property);
+		const flattened = !declared && additional !== undefined && isRec(nested)
+			? flattenRowGroups(nested, root, additional)
+			: undefined;
+		result[name] = flattened ?? nested;
+	}
+	return result;
+}
+
 /**
  * Expand the generated form's DOTTED field names (a nested object
  * without a title renders its children as `parent.child` fields — the
@@ -1222,7 +1318,7 @@ export function schemaSettingsSurfaceFor(
 			if (access === "none") return { tree: generated.form, data: {}, access };
 			const { user, stored } = await readStored(ctx.principal);
 			const plain = splitSecrets(stored, generated.secrets).plain;
-			const settings = applyDefaults(schema, plain);
+			const settings = renderSchemaValues(applyDefaults(schema, plain), schema, schema) as JsonObject;
 			if (rootTable) {
 				// The root table's reserved empty-name field reads ONLY the
 				// additional-property keys; declared properties render through

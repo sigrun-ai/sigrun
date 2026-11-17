@@ -36,7 +36,8 @@
  * is a tool-name filter applied INSIDE the selected extensions, so no tool
  * list can de-select this hook. Boot's host default always re-adds the cap,
  * and lean retry is unrelated: it force-appends itself to every exact
- * selection and skips request hooks through its own wrap.
+ * selection the server's resolution paths produce and skips request hooks
+ * through its own wrap.
  */
 
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";
