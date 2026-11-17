@@ -191,6 +191,33 @@ describe("SigrunClient request shaping", () => {
 		);
 	});
 
+	test("submit carries attachments FIRST (file parts then text part) in composer order", async () => {
+		const { calls, fetchImpl } = stubFetch({
+			submission: { id: 1, conversationId: 7, type: "input", status: "placed", entry: 4 },
+		}, { status: 202 });
+		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
+		await client.submit(7, "hi", undefined, ["uploads/7/a.md"]);
+		const body = JSON.parse(calls[0]!.body as string);
+		expect(body.input).toEqual([
+			{ type: "file", path: "uploads/7/a.md" },
+			{ type: "text", text: "hi" },
+		]);
+		expect(body.whenBusy).toBeUndefined();
+	});
+
+	test("submit with attachments and EMPTY text sends only the file parts", async () => {
+		const { calls, fetchImpl } = stubFetch({
+			submission: { id: 1, conversationId: 7, type: "input", status: "placed", entry: 4 },
+		}, { status: 202 });
+		const client = new SigrunClient({ baseUrl: BASE, fetch: fetchImpl });
+		await client.submit(7, "", undefined, ["uploads/7/a.md", "uploads/7/b.md"]);
+		const body = JSON.parse(calls[0]!.body as string);
+		expect(body.input).toEqual([
+			{ type: "file", path: "uploads/7/a.md" },
+			{ type: "file", path: "uploads/7/b.md" },
+		]);
+	});
+
 	test("abort POSTs to .../abort", async () => {
 		const aborted = { result: "aborted", submissionId: 5 };
 		const { calls, fetchImpl } = stubFetch(aborted);

@@ -262,6 +262,14 @@ export class TuiApp implements Component, ActionHost {
 	 *  nothing and swallow keys). Exported for the launcher's mount. */
 	readonly mainContent: MainSlot;
 	#activeId: number | undefined;
+	/**
+	 * A1/A2's Edit carry: workspace paths captured from the focused user
+	 * turn on Edit, bound to the conversation the Edit switched to. The
+	 * next `#submitLine` on THAT conversation re-sends them as file parts
+	 * ahead of any text — then clears the carry. A conversation swap
+	 * drops the carry (a carry bound to 101 must never leak into 2).
+	 */
+	#carriedAttachments: { conversationId: number; paths: readonly string[] } | undefined;
 	/** Deleted-conversations Task 4: whether the ACTIVE conversation's
 	 *  RAW list row carries deleted:true. Re-checked on every sidebar
 	 *  refresh (sidebar.rows drops deleted rows, so the pane reads the
@@ -741,6 +749,15 @@ export class TuiApp implements Component, ActionHost {
 	 */
 	async selectConversation(id: number): Promise<void> {
 		if (id === this.#activeId) return;
+		// A1/A2: a carry whose conversationId != the new id is dropped —
+		// the carry must never leak across a swap. (Same-id is impossible
+		// here: the early return above already bailed.)
+		if (
+			this.#carriedAttachments !== undefined &&
+			this.#carriedAttachments.conversationId !== id
+		) {
+			this.#carriedAttachments = undefined;
+		}
 		this.editor.disableSubmit = true;
 		try {
 			this.#unwatch?.();
@@ -974,8 +991,13 @@ export class TuiApp implements Component, ActionHost {
 		// handleInput, not in the onSubmit callback — a programmatic
 		// onSubmit during a swap must no-op too, and never destroy a draft.
 		if (this.editor.disableSubmit) return;
+		// The empty guard waives when a carry exists for the ACTIVE
+		// conversation (A1/A2: attachments-only Edit's empty-text submit).
 		// Guard BEFORE clearing: a no-op submit must never destroy a draft.
-		if (text.trim() === "") return;
+		const carry = this.#carriedAttachments;
+		const hasCarry =
+			carry !== undefined && carry.conversationId === this.#activeId;
+		if (text.trim() === "" && !hasCarry) return;
 		if (text.startsWith("/")) {
 			// A command line is consumed by its dispatch (even when the
 			// outcome is an error line).
@@ -1002,9 +1024,19 @@ export class TuiApp implements Component, ActionHost {
 			);
 			return;
 		}
+		// A1/A2: consume the carry bound to THIS conversation (a swap
+		// already dropped any other conversation's carry in
+		// selectConversation). Empty text with a carry sends file parts
+		// only (the api client's input builder drops the text part).
+		const carry = this.#carriedAttachments;
+		const paths =
+			carry !== undefined && carry.conversationId === id
+				? carry.paths
+				: undefined;
+		this.#carriedAttachments = undefined;
 		this.editor.setText("");
 		const whenBusy: WhenBusyMode | undefined = this.#busy ? "steer" : undefined;
-		this.#client.submit(id, text, whenBusy).catch((error: unknown) => {
+		this.#client.submit(id, text, whenBusy, paths).catch((error: unknown) => {
 			this.pane.showError(describeCommandError("submit", error));
 		});
 	}
@@ -1749,15 +1781,32 @@ export class TuiApp implements Component, ActionHost {
 			return;
 		}
 		const text = this.pane.textOf(index);
+		// A1/A2: capture the paths BEFORE the swap — the pane will be
+		// showing the new conversation by the time selectConversation
+		// resolves, so pane.attachmentsOf(index) afterwards would be
+		// meaningless.
+		const paths = this.pane.attachmentsOf(index);
 		this.editor.disableSubmit = true;
 		try {
 			const newId =
 				index === 0
 					? (await this.#client.createConversation()).id
 					: (await this.#client.forkConversation(id, this.pane.entryIdOf(index - 1))).id;
-			await this.#client.patchMeta(newId, { draft: { text } });
+			await this.#client.patchMeta(newId, {
+				draft: { text, attachments: paths },
+			});
 			await this.sidebar.refresh();
 			await this.selectConversation(newId);
+			// Install the carry AFTER the swap (selectConversation clears
+			// any carry whose conversationId differs from the new id —
+			// setting it earlier would drop it).
+			this.#carriedAttachments =
+				paths.length === 0 ? undefined : { conversationId: newId, paths };
+			if (paths.length > 0) {
+				this.#flashStatus(
+					`${paths.length} attachment${paths.length === 1 ? "" : "s"} carried — sent with your next message`,
+				);
+			}
 			this.editor.setText(text);
 			this.#focus = "composer";
 			this.#applyFocusTarget();

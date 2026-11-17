@@ -72,7 +72,7 @@ function stubClient(init: {
 	 * tests, the settings view's fakeWire shape). */
 	fetch?: (input: RequestInfo | URL, requestInit?: RequestInit) => Promise<Response>;
 }) {
-	const submitCalls: { id: number; text: string }[] = [];
+	const submitCalls: { id: number; text: string; attachments?: readonly string[] }[] = [];
 	const forkCalls: number[] = [];
 	let forkSerial = 100;
 	const watchCalls: number[] = [];
@@ -149,8 +149,8 @@ function stubClient(init: {
 				],
 			});
 		},
-		submit(id: number, text: string) {
-			submitCalls.push({ id, text });
+		submit(id: number, text: string, whenBusy?: unknown, attachments?: readonly string[]) {
+			submitCalls.push({ id, text, attachments });
 			return Promise.resolve({ id: 1, conversationId: id, type: "user", status: "answered" });
 		},
 		getConversation(id: number) {
@@ -483,7 +483,178 @@ describe("TuiApp", () => {
 	});
 });
 
-// ─── Deleted conversations (Task 4) ────────────────────────────────────
+// ─── Edit carry (A1/A2): typed text + attachments into the draft ───────
+
+describe("TuiApp edit carry", () => {
+	/** An attachment-bearing sigrun.user entry: typed "look", one .md file. */
+	function attachmentEntry() {
+		return {
+			id: 1,
+			kind: "sigrun.user",
+			data: {
+				attachments: [
+					{
+						path: "uploads/1/notes.md",
+						name: "notes.md",
+						mime: "text/markdown",
+						bytes: 1229,
+						delivery: "inline",
+						parts: [1, 2, 3],
+					},
+				],
+			},
+			model: [
+				{
+					role: "user",
+					content: [
+						{ type: "text", text: "look" },
+						{ type: "text", text: "[attachment:start notes.md]" },
+						{ type: "text", text: "INLINE" },
+						{ type: "text", text: "[attachment:end notes.md]" },
+					],
+				},
+			],
+		};
+	}
+
+	test("Edit prefills draft.text with the typed text, draft.attachments with the paths, flashes a carry note, and the next submit sends the files first", async () => {
+		const { client, submitCalls, watchCalls, watchRegistry, patchCalls } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		// A mounted status bar lets #flashStatus be observed (mirror of
+		// the surface-notice flash idiom: the steady-state snapshot must
+		// exist BEFORE the flash).
+		const statusBar = new StatusBar({ theme: plainTuiTheme(), messageMs: 60_000 });
+		statusBar.set({ conversation: "acme", hints: [] });
+		app.setStatusBar(statusBar);
+		await app.refresh();
+		// The active conversation (id 3) carries an attachment-bearing user entry
+		// at turn index 1 (a leading pi.user keeps edit-here off the first-turn
+		// create-path so the test exercises the FORK path).
+		watchRegistry.get(3)?.onSnapshot?.(
+			view(3, [
+				{ id: 50, kind: "pi.user", model: [{ role: "user", content: "earlier" }] },
+				attachmentEntry(),
+				{ id: 2, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+			]),
+		);
+		app.pane.setFocus(1);
+		await app.dispatch({ type: "edit-here" });
+		// A fork conversation (id 101) was created and selected (real selectConversation).
+		expect(app.activeConversationId).toBe(101);
+		// patchMeta wrote BOTH the typed text AND the attachment paths.
+		const editPatch = patchCalls.find((call) => call.id === 101);
+		expect(editPatch).toBeDefined();
+		expect(editPatch!.patch).toMatchObject({
+			draft: { text: "look", attachments: ["uploads/1/notes.md"] },
+		});
+		// The composer holds the typed text (no markers).
+		expect(app.editor.getText()).toBe("look");
+		// The status note names the carried count.
+		expect(statusBar.getState().message).toBe("1 attachment carried — sent with your next message");
+		// Edit a bit and submit — file parts lead, text follows.
+		app.editor.setText("look again");
+		app.editor.onSubmit?.("look again");
+		await Promise.resolve();
+		const last = submitCalls.at(-1)!;
+		expect(last.id).toBe(101);
+		expect(last.text).toBe("look again");
+		expect(last.attachments).toEqual(["uploads/1/notes.md"]);
+		// A bare follow-up submit carries no attachments (carry was cleared).
+		app.editor.setText("second");
+		app.editor.onSubmit?.("second");
+		await Promise.resolve();
+		expect(submitCalls.at(-1)!.attachments).toBeUndefined();
+	});
+
+	test("attachments-only Edit: empty-text submit fires with file parts only", async () => {
+		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		// Attachment-only entry: typed "", focus at turn index 1.
+		watchRegistry.get(3)?.onSnapshot?.(
+			view(3, [
+				{ id: 50, kind: "pi.user", model: [{ role: "user", content: "earlier" }] },
+				{
+					id: 1,
+					kind: "sigrun.user",
+					data: {
+						attachments: [
+							{
+								path: "uploads/1/notes.md",
+								name: "notes.md",
+								mime: "text/markdown",
+								bytes: 1229,
+								delivery: "inline",
+								parts: [0, 1, 2],
+							},
+						],
+					},
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "[attachment:start notes.md]" },
+								{ type: "text", text: "INLINE" },
+								{ type: "text", text: "[attachment:end notes.md]" },
+							],
+						},
+					],
+				},
+				{ id: 2, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+			]),
+		);
+		app.pane.setFocus(1);
+		await app.dispatch({ type: "edit-here" });
+		expect(app.activeConversationId).toBe(101);
+		expect(app.editor.getText()).toBe("");
+		// With an empty composer but a carried attachment, submit FIRES.
+		app.editor.setText("");
+		app.editor.onSubmit?.("");
+		await Promise.resolve();
+		const last = submitCalls.at(-1)!;
+		expect(last.id).toBe(101);
+		expect(last.text).toBe("");
+		expect(last.attachments).toEqual(["uploads/1/notes.md"]);
+	});
+
+	test("carried attachments are dropped when the user switches conversations before submitting", async () => {
+		const { client, submitCalls, watchCalls, watchRegistry } = stubClient({});
+		const app = new TuiApp(client, {
+			tui: fakeTui,
+			watch: stubWatch(watchRegistry, watchCalls),
+		});
+		await app.refresh();
+		watchRegistry.get(3)?.onSnapshot?.(
+			view(3, [
+				{ id: 50, kind: "pi.user", model: [{ role: "user", content: "earlier" }] },
+				attachmentEntry(),
+				{ id: 2, kind: "pi.assistant", model: [{ role: "assistant", content: [{ type: "text", text: "ok" }] }] },
+			]),
+		);
+		app.pane.setFocus(1);
+		await app.dispatch({ type: "edit-here" });
+		expect(app.activeConversationId).toBe(101);
+		// Switch away (real selectConversation).
+		await app.selectConversation(2);
+		expect(app.activeConversationId).toBe(2);
+		app.editor.setText("hello other conversation");
+		app.editor.onSubmit?.("hello other conversation");
+		await Promise.resolve();
+		// The submit carried NO attachments: the carry was bound to 101.
+		// (Pre-fix this is incidentally green — the empty-text guard eats
+		// the swap's first line; the real pin is the test above, which
+		// exercises the carry's LIFETIME on the same conversation.)
+		const last = submitCalls.at(-1)!;
+		expect(last.id).toBe(2);
+		expect(last.attachments).toBeUndefined();
+	});
+});
 
 describe("TuiApp deleted conversations", () => {
 	test("/archive reaches its case (served by the catalog) and patches archived:true", async () => {

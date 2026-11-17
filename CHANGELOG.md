@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `server.maxInlineFileBytes` is settable in `settings.json` (env still wins),
   reports its resolved value and source in effective settings, and applies at
   restart; over-cap files are now documented as workspace references only.
+- TUI (A1/A2): copy/edit of a `sigrun.user` turn yields the typed text without
+  the inline `[attachment: …]` markers; Edit carries the attachments as
+  workspace-path file parts so an edited re-send re-attaches the files
+  instead of losing them. Expanded `sigrun.user.expanded` turns now show
+  their record attachment markers under the typed body. The next submit
+  carries the files once and clears the carry; switching conversations
+  drops it.
 
 ## [0.20.2] - 2026-11-15
 

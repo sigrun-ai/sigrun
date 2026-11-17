@@ -386,8 +386,11 @@ export class ConversationPane implements Component {
 				// wrote — re-submitting it re-expands server-side).
 				const expanded = expandedUserEntry(turn.entry);
 				if (expanded !== undefined) return expanded.typed;
+				// sigrun.user copies the typed prose ALONE — the record's
+				// inline markers are a render-only artifact (re-submitting
+				// them as prose would leak them back into the transcript).
 				return turn.entry.kind === "sigrun.user"
-					? recordUserText(turn.entry)
+					? typedText(turn.entry)
 					: userModelText(turn.entry);
 			}
 			case "assistant":
@@ -397,6 +400,18 @@ export class ConversationPane implements Component {
 			case "other":
 				return entryText(turn.entry);
 		}
+	}
+
+	/** The workspace paths of a user turn's non-error attachments (A1:
+	 *  the Edit carry's payload — what a re-send must re-attach). []
+	 *  for non-user turns, unknown indices, or attachments whose delivery
+	 *  failed (those never reached the workspace). */
+	attachmentsOf(index: number): readonly string[] {
+		const turn = this.#turns[index];
+		if (turn === undefined || turn.kind !== "user") return [];
+		return entryAttachments(turn.entry)
+			.filter((attachment) => attachment.delivery !== "error")
+			.map((attachment) => attachment.path);
 	}
 
 	/** The turn's wire identity: the user entry id / assistant lastEntryId. */
@@ -637,6 +652,13 @@ export class ConversationPane implements Component {
 					components.push(
 						body(new Markdown(expanded.typed, 0, 0, this.#markdownTheme)),
 					);
+					// A1/A2: an expanded turn's attachments render as record
+					// markers under the typed body — the expanded chip discloses
+					// the admitted text, but the marker row is what tells the
+					// user a file was sent alongside the command.
+					for (const marker of recordAttachmentMarkers(turn.entry)) {
+						components.push(body(new Markdown(marker, 0, 0, this.#markdownTheme)));
+					}
 					const slot = new RenderSlot();
 					slot.paint = () =>
 						this.#theme.dim(
@@ -660,7 +682,13 @@ export class ConversationPane implements Component {
 					}
 					break;
 				}
-				const text = this.textOf(index);
+				// The plain-user body: the typed prose + the record attachment
+				// markers (markers are RENDER-only — textOf is the copy/edit
+				// payload and must NOT carry them, A1/A2).
+				const text =
+					turn.entry.kind === "sigrun.user"
+						? recordUserText(turn.entry)
+						: userModelText(turn.entry);
 				if (text !== "") {
 					components.push(body(new Markdown(text, 0, 0, this.#markdownTheme)));
 				}
