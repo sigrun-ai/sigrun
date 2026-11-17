@@ -14,6 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- The lean-retry notice's display-name fallback now reads `Conversation <id>`
+  (capitalized, matching the notification service's fallback).
 - The `read` tool keeps pi-durable's `structuredOutputSchema`, and its image
   rescue returns the image as `structuredOutput` for nested tool callers.
 - Settings table-row saves expand dotted field names inside rows instead of

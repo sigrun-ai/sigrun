@@ -174,6 +174,36 @@ describe("attachment delivery by kind", () => {
 		});
 	});
 
+	test("an image exactly at the 5 MiB cap is delivered as an image", async () => {
+		// Boundary pin: the cap is inclusive — a `>` comparison, not `>=`.
+		const result = await resolve(
+			[{ type: "image", path: "uploads/7/exact.png" }],
+			{ "uploads/7/exact.png": new Uint8Array(MAX_IMAGE_BYTES) },
+			{ acceptsImages: true },
+		);
+		expect(result.content).toHaveLength(2);
+		expect(result.content[1]?.type).toBe("image");
+		expect(result.attachments[0]).toMatchObject({
+			bytes: MAX_IMAGE_BYTES,
+			delivery: "image",
+			parts: [0, 1],
+		});
+	});
+
+	test("an image part without mime derives it from the extension", async () => {
+		// Catches a missing extension fallback when the caller omits mime.
+		const result = await resolve(
+			[{ type: "image", path: "uploads/7/x.webp" }],
+			{ "uploads/7/x.webp": new Uint8Array(64) },
+			{ acceptsImages: true },
+		);
+		expect(result.attachments[0]).toMatchObject({
+			path: "uploads/7/x.webp",
+			mime: "image/webp",
+			delivery: "image",
+		});
+	});
+
 	test("a missing file records not_found alongside its explicit error part", async () => {
 		// Catches silent drops and losing the null byte count on read failures.
 		const result = await resolve(

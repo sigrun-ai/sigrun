@@ -28,7 +28,7 @@ import { SessionMetaDoc } from "./session-meta.js";
 /**
  * Post the lean-retry notice for every boot-recovered conversation.
  * Each conversation's `SessionMetaDoc` snapshot supplies the display
- * name (`name` ?? `autoName` ?? "conversation <id>") and the declared
+ * name (`name` ?? `autoName` ?? "Conversation <id>") and the declared
  * owner the recipient resolves from.
  */
 export async function noticeLeanRetries(deps: {
@@ -48,7 +48,7 @@ export async function noticeLeanRetries(deps: {
 			log(`lean retry: conversation ${id} is internal; no notice posted`);
 			continue;
 		}
-		const name = meta?.name ?? meta?.autoName ?? `conversation ${id}`;
+		const name = meta?.name ?? meta?.autoName ?? `Conversation ${id}`;
 		const body =
 			`The server restarted while preparing a reply in "${name}", so the reply was retried without extension request hooks. ` +
 			`Recall, reminders and similar additions were skipped for that reply.`;
