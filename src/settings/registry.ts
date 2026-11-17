@@ -265,6 +265,11 @@ export const CORE_SETTING_KEYS: readonly CoreSettingKey[] = [
 		reason: "a process-wide SQLite pragma applied once at boot",
 	},
 	{
+		key: "server.maxInlineFileBytes",
+		section: "server",
+		reason: "content parts and the tool-result cap read the boot-resolved config value",
+	},
+	{
 		key: "server.dataDir",
 		section: "server",
 		reason: "boot-resolved store root (resolveStoreRoots folds it once)",

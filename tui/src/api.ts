@@ -340,14 +340,28 @@ export class SigrunClient {
 	 * ADMISSION (§7.1) with the record as it stands. The TUI is
 	 * fire-and-forget: the reply arrives as view revisions on the stream,
 	 * not from this response.
+	 *
+	 * A1/A2: the optional `attachments` list carries workspace-relative
+	 * file paths. Input is `[...file parts, ...text part]` (the webui
+	 * composer's order); empty text with attachments sends file parts
+	 * only — the attachments-only Edit carry's shape.
 	 */
 	submit(
 		id: number,
 		text: string,
 		whenBusy?: WhenBusyMode,
+		attachments?: readonly string[],
 	): Promise<SubmissionResponse> {
+		const fileParts = (attachments ?? []).map((path) => ({
+			type: "file",
+			path,
+		}));
+		const input = [
+			...fileParts,
+			...(text === "" ? [] : [{ type: "text", text }]),
+		];
 		return this.#send("POST", `/v1/conversations/${id}/submissions`, {
-			input: [{ type: "text", text }],
+			input,
 			...(whenBusy === undefined ? {} : { whenBusy }),
 		});
 	}

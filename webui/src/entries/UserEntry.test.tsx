@@ -81,6 +81,28 @@ describe("UserEntry", () => {
 		renderer.unmount();
 	});
 
+	test("an attachment with bytes null renders its chip without a size", () => {
+		const entry = makeEntry(
+			"sigrun.user",
+			[
+				{
+					role: "user",
+					content: [{ type: "text", text: "what's in here?" }],
+				},
+			],
+			{ data: { attachments: [{ ...notesAttachment(), bytes: null }] } },
+		);
+		const renderer = render(h(UserEntry, { entry, onFork: noop, onEdit: noop }));
+		const chips = renderer.root.findAll(
+			(node) => node.props.className === "entry-attachment entry-attachment-chip",
+		);
+		expect(chips).toHaveLength(1);
+		expect(instanceText(chips[0]!)).toContain("notes.md");
+		expect(instanceText(chips[0]!)).not.toContain("12 B");
+		expect(instanceText(chips[0]!)).not.toContain("null");
+		renderer.unmount();
+	});
+
 	test("Copy writes the typed text without an attachment body", async () => {
 		const writeText = stubClipboard();
 		const renderer = render(

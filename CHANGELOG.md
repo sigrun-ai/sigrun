@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- Commands and prompt templates now expand when typed after leading
+  attachments; only the first text part is a command candidate.
+
+### Fixed
+
+- The lean-retry notice's display-name fallback now reads `Conversation <id>`
+  (capitalized, matching the notification service's fallback).
+- The `read` tool keeps pi-durable's `structuredOutputSchema`, and its image
+  rescue returns the image as `structuredOutput` for nested tool callers.
+- Settings table-row saves expand dotted field names inside rows instead of
+  persisting them flat and corrupting ext-mcp's settings file.
+- `server.maxInlineFileBytes` is settable in `settings.json` (env still wins),
+  reports its resolved value and source in effective settings, and applies at
+  restart; over-cap files are now documented as workspace references only.
+- TUI (A1/A2): copy/edit of a `sigrun.user` turn yields the typed text without
+  the inline `[attachment: …]` markers; Edit carries the attachments as
+  workspace-path file parts so an edited re-send re-attaches the files
+  instead of losing them. Expanded `sigrun.user.expanded` turns now show
+  their record attachment markers under the typed body. The next submit
+  carries the files once and clears the carry; switching conversations
+  drops it.
+
 ## [0.20.2] - 2026-11-15
 
 - Re-cut of 0.20.1: the registry smoke ran in a node:22 container,

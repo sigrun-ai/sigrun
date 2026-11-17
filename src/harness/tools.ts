@@ -28,7 +28,6 @@
  */
 
 import type { Context } from "@earendil-works/chord";
-import type { ImageContent } from "@earendil-works/pi-ai";
 import { Type } from "typebox";
 import {
 	createBashTool,
@@ -68,6 +67,7 @@ export const imageReadTool = defineTool({
 	name: "read",
 	description: `${textReadTool.description} Image files (PNG, JPEG, GIF, WebP, BMP) are returned as image content.`,
 	parameters: textReadTool.parameters,
+	structuredOutputSchema: textReadTool.structuredOutputSchema,
 	async execute(args, api, context) {
 		const result = await textReadTool.execute(args, api, context);
 		if (result.isError !== true) return result;
@@ -84,12 +84,12 @@ export const imageReadTool = defineTool({
 		if (!resolved.ok) return result;
 		const bytes = await api.env.readBinaryFile(resolved.value, context);
 		if (!bytes.ok) return result;
-		const image: ImageContent = {
-			type: "image",
+		const image = {
+			type: "image" as const,
 			data: Buffer.from(bytes.value).toString("base64"),
 			mimeType,
 		};
-		return { output: [image] };
+		return { output: [image], structuredOutput: image };
 	},
 });
 

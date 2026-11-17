@@ -587,6 +587,38 @@ test("a root additionalProperties table renders and saves its rows at the root",
 	expect(stored).toEqual({ known: "after", acme: false, other: true });
 });
 
+test("a root additionalProperties table renders nested rows as dotted fields", async () => {
+	const rig = await boot({ specifier: fixture("fixture-settings-root-table-nested") });
+	await mkdir(join(rig.configDir, "user-settings", "alice"), { recursive: true });
+	await writeFile(
+		join(rig.configDir, "user-settings", "alice", "acme-root-table-nested.json"),
+		JSON.stringify({ known: "before", acme: { features: { enabled: true } } }),
+	);
+	const rendered = await call(rig, "GET", "/v1/ext/acme-root-table-nested/surfaces/user-settings");
+	expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+	const data = rendered.body.data as Record<string, unknown>;
+	const settings = data.settings as Record<string, unknown>;
+	expect(settings[""]).toEqual({ acme: { "features.enabled": true } });
+	expect(data.unknownKeys).toEqual([]);
+
+	const saved = await save(rig, {
+		known: "after",
+		"": { acme: { $from: "acme", "features.enabled": false } },
+	}, "root-table-nested-edit", "/v1/ext/acme-root-table-nested/surfaces/user-settings");
+	expect(saved.body, JSON.stringify(saved.body)).toMatchObject({ ok: true });
+	expect(await fileForRootTable(rig)).toEqual({
+		known: "after",
+		acme: { features: { enabled: false } },
+	});
+});
+
+async function fileForRootTable(rig: Rig): Promise<Record<string, unknown>> {
+	return JSON.parse(await readFile(
+		join(rig.configDir, "user-settings", "alice", "acme-root-table-nested.json"),
+		"utf8",
+	)) as Record<string, unknown>;
+}
+
 test("a view named settings fails the load of a declaring extension", async () => {
 	const dir = await mkdtemp(join(tmpdir(), "sigrun-reserved-view-"));
 	const config = loadConfig({
@@ -834,6 +866,235 @@ test("dotted nested field names save through the generated form (provider-openai
 	const both = await save(rig, { "group.label": false, mode: "auto" }, "dotted-siblings");
 	expect(both.body).toMatchObject({ ok: true });
 	expect(await file(rig)).toEqual({ group: { label: false }, mode: "auto" });
+});
+
+test("dotted fields inside a table row save as a nested object", async () => {
+	// E1: a table row's nested objects render as dotted form fields
+	// (oauth.authorizeUrl etc.); the channel submits them flat inside
+	// the row and the save must expand them against the ROW schema.
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.endpoint": "https://auth.example.invalid",
+				"auth.scopes": ["read"],
+			},
+		},
+	}, "dotted-table-row");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers.acme).toEqual({
+		url: "https://acme.example.invalid",
+		auth: { endpoint: "https://auth.example.invalid", scopes: ["read"] },
+	});
+	expect(Object.hasOwn(servers.acme, "auth.endpoint")).toBe(false);
+	expect(Object.hasOwn(servers.acme, "auth.scopes")).toBe(false);
+});
+
+test("a rendered row re-saved unchanged keeps its nested group", async () => {
+	const rig = await boot({
+		settings: {
+			servers: {
+				acme: {
+					url: "https://acme.example.invalid",
+					auth: { endpoint: "https://auth.example.invalid", scopes: ["read"] },
+				},
+			},
+		},
+	});
+	const rendered = await call(rig, "GET", SURFACE);
+	expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+	const settings = (rendered.body.data as { settings: Record<string, unknown> }).settings;
+	const servers = settings.servers as Record<string, Record<string, unknown>>;
+	// The form's defaultEntry seeds every generated row field, including
+	// dotted names, then spreads the stored row over those defaults.
+	const row = {
+		url: "",
+		label: "",
+		headers: {},
+		"auth.endpoint": "",
+		"auth.scopes": [],
+		"x.literal": "",
+		...servers.acme,
+		$from: "acme",
+	};
+	const result = await call(rig, "POST", `${SURFACE}/actions`, {
+		action: "save",
+		actionId: "round-trip-row",
+		params: {},
+		payload: { rev: rendered.body.rev, values: { servers: { acme: row } } },
+	});
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const storedServers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(storedServers.acme).toEqual({
+		url: "https://acme.example.invalid",
+		auth: { endpoint: "https://auth.example.invalid", scopes: ["read"] },
+	});
+});
+
+test("a nested table-row group renders dotted fields and saves their edits", async () => {
+	const initialEndpoint = "https://initial-auth.example.invalid";
+	const editedEndpoint = "https://edited-auth.example.invalid";
+	const rig = await boot({});
+	const initial = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.endpoint": initialEndpoint,
+				"auth.scopes": ["read"],
+			},
+		},
+	}, "dotted-row-round-trip-create");
+	expect(initial.body, JSON.stringify(initial.body)).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({
+		servers: {
+			acme: {
+				url: "https://acme.example.invalid",
+				auth: { endpoint: initialEndpoint, scopes: ["read"] },
+			},
+		},
+	});
+
+	const rendered = await call(rig, "GET", SURFACE);
+	expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+	const settings = (rendered.body.data as { settings: Record<string, unknown> }).settings;
+	const servers = settings.servers as Record<string, Record<string, unknown>>;
+	const row = servers.acme;
+	expect(row["auth.endpoint"]).toBe(initialEndpoint);
+	expect(row["auth.scopes"]).toEqual(["read"]);
+	expect(Object.hasOwn(row, "auth")).toBe(false);
+
+	// This is the clients' exact save shape: defaultEntry seeds the dotted
+	// fields, the stored row overlays them, and one edited field is replaced.
+	const editedRow: Record<string, unknown> = {
+		url: "",
+		label: "",
+		headers: {},
+		"auth.endpoint": "",
+		"auth.scopes": [],
+		"x.literal": "",
+		...row,
+		$from: "acme",
+	};
+	editedRow["auth.endpoint"] = editedEndpoint;
+	const edited = await call(rig, "POST", `${SURFACE}/actions`, {
+		action: "save",
+		actionId: "dotted-row-round-trip-edit",
+		params: {},
+		payload: { rev: rendered.body.rev, values: { servers: { acme: editedRow } } },
+	});
+	expect(edited.body, JSON.stringify(edited.body)).toMatchObject({ ok: true });
+	expect(await file(rig)).toEqual({
+		servers: {
+			acme: {
+				url: "https://acme.example.invalid",
+				auth: { endpoint: editedEndpoint, scopes: ["read"] },
+			},
+		},
+	});
+});
+
+test("a blank dotted group inside a table row is dropped", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.endpoint": "",
+				"auth.scopes": [],
+			},
+		},
+	}, "dotted-table-row-blank");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(Object.hasOwn(servers.acme, "auth")).toBe(false);
+	expect(Object.hasOwn(servers.acme, "auth.endpoint")).toBe(false);
+	expect(Object.hasOwn(servers.acme, "auth.scopes")).toBe(false);
+});
+
+test("a literal dotted property in a row schema stays literal", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"x.literal": "kept",
+			},
+		},
+	}, "dotted-literal-property");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers.acme["x.literal"]).toBe("kept");
+	expect(Object.hasOwn(servers.acme, "x")).toBe(false);
+});
+
+test("rendering preserves dotted row names and schema-literal dotted keys", async () => {
+	const rig = await boot({
+		settings: {
+			servers: {
+				"acme.v2": {
+					url: "https://acme.example.invalid",
+					"x.literal": "literal",
+					"auth.nope": "unknown",
+				},
+			},
+		},
+	});
+	const rendered = await call(rig, "GET", SURFACE);
+	expect(rendered.status, JSON.stringify(rendered.body)).toBe(200);
+	const settings = (rendered.body.data as { settings: Record<string, unknown> }).settings;
+	const servers = settings.servers as Record<string, Record<string, unknown>>;
+	expect(servers["acme.v2"]).toMatchObject({
+		"x.literal": "literal",
+		"auth.nope": "unknown",
+	});
+	expect(Object.hasOwn(servers, "acme")).toBe(false);
+	expect(Object.hasOwn(servers["acme.v2"], "x")).toBe(false);
+	expect(Object.hasOwn(servers["acme.v2"], "auth")).toBe(false);
+});
+
+test("a table row whose NAME contains a dot stays a row", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			"acme.v2": { $from: "acme.v2", url: "https://acme.example.invalid" },
+		},
+		labels: { "a.b": { value: "kept", $from: "a.b" } },
+	}, "dotted-row-name");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers["acme.v2"]).toMatchObject({ url: "https://acme.example.invalid" });
+	expect(Object.hasOwn(servers, "acme")).toBe(false);
+	expect((stored.labels as Record<string, string>)["a.b"]).toBe("kept");
+	expect(Object.hasOwn(stored.labels as Record<string, unknown>, "a")).toBe(false);
+});
+
+test("a dotted key whose tail does not resolve stays literal", async () => {
+	const rig = await boot({});
+	const result = await save(rig, {
+		servers: {
+			acme: {
+				$from: "acme",
+				url: "https://acme.example.invalid",
+				"auth.nope": "x",
+			},
+		},
+	}, "dotted-unknown-tail");
+	expect(result.body, JSON.stringify(result.body)).toMatchObject({ ok: true });
+	const stored = await file(rig);
+	const servers = stored.servers as Record<string, Record<string, unknown>>;
+	expect(servers.acme["auth.nope"]).toBe("x");
+	expect(Object.hasOwn(servers.acme, "auth")).toBe(false);
 });
 
 describe("blank means unset", () => {

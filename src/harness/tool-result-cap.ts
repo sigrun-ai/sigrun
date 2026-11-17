@@ -25,11 +25,19 @@
  * (8.5 MB object)" instead of nothing, and programmatic callers see a
  * plain object rather than a silently missing field.
  *
- * INSTALLED BY BOOT, ALWAYS SELECTED. This is a host-owned invariant, not
- * an optional extension: `settings.extensions` filters user/curator
- * entries out of the host default, and boot installs this alongside the
- * other core-owned entries (coding tools, search tools, the decisions
- * placeholder), so no deployment can accidentally opt out of it.
+ * INSTALLED BY BOOT; SELECTED UNLESS THE EXTENSION ARRAY OPTS OUT. This is a
+ * host-owned invariant, not an optional extension: `settings.extensions`
+ * filters user/curator entries out of the host default, and boot installs
+ * this alongside the other core-owned entries (coding tools, search tools,
+ * the decisions placeholder). The one way out is an EXACT extension
+ * selection: a conversation whose stored `pi.agent.extensions` is an exact
+ * array that omits `sigrun.tool-result-cap` does not get the cap (bounded
+ * consequence: `details` is unbounded in that conversation). `agent.tools`
+ * is a tool-name filter applied INSIDE the selected extensions, so no tool
+ * list can de-select this hook. Boot's host default always re-adds the cap,
+ * and lean retry is unrelated: it force-appends itself to every exact
+ * selection the server's resolution paths produce and skips request hooks
+ * through its own wrap.
  */
 
 import { defineExtension, hook, ToolTask } from "@earendil-works/pi-durable";

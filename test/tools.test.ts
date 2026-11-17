@@ -34,11 +34,13 @@ import {
 	fauxToolCall,
 } from "@earendil-works/pi-ai/providers/faux";
 import { NodeExecutionEnv } from "@earendil-works/pi-durable/env/node";
+import { createReadTool } from "@earendil-works/pi-durable/tools";
 import { loadConfig } from "../src/config.js";
 import { openHarness, type OpenedHarness } from "../src/harness/boot.js";
 import {
 	findTool,
 	grepTool,
+	imageReadTool,
 	isIgnoredPath,
 	lsTool,
 	parseGitignore,
@@ -276,6 +278,13 @@ describe("agent shell environment (multi-user spec §8)", () => {
 // ---------------------------------------------------------------------------
 
 describe("coding tools end-to-end", () => {
+	test("the read wrapper declares the upstream structuredOutputSchema", () => {
+		expect(imageReadTool.structuredOutputSchema).toBeDefined();
+		expect(imageReadTool.structuredOutputSchema).toEqual(
+			createReadTool().structuredOutputSchema,
+		);
+	});
+
 	test("write → bash → edit → read execute against the real workspace", async () => {
 		const { app, opened, workspace } = await bootToolsServer([
 			toolRound(
@@ -362,6 +371,24 @@ describe("coding tools end-to-end", () => {
 		// returns the bytes as inline image content (Ruling X pins the wrapper).
 		expect(image?.mimeType).toBe("image/bmp");
 		expect(Buffer.from(image?.data ?? "", "base64")).toEqual(bmp);
+	});
+
+	test("the BMP rescue returns the image block as structuredOutput", async () => {
+		const { api, dir, cleanup } = await tempEnv();
+		try {
+			await writeFile(join(dir, "pic.bmp"), BMP_1X1);
+			// Upstream reads the active model's image limits before attempting
+			// its unsupported_image error. No configured model uses the defaults.
+			Object.assign(api, { agent: async () => ({ model: undefined }) });
+			const result = await imageReadTool.execute(
+				{ path: "pic.bmp" },
+				api,
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.structuredOutput).toEqual(result.output?.[0]);
+		} finally {
+			await cleanup();
+		}
 	});
 });
 

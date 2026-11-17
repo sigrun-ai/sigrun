@@ -384,6 +384,100 @@ describe("expandInput", () => {
 		}
 	});
 
+	test("a command after leading attachments expands in place", async () => {
+		const userDir = await mkdtemp(join(tmpdir(), "sigrun-expand-user-"));
+		try {
+			await mkdir(join(userDir, "prompts"), { recursive: true });
+			await writeFile(
+				join(userDir, "prompts", "review.md"),
+				"---\ndescription: Review\n---\nReview with focus: $1\n",
+			);
+			const expansion: CommandExpansion = {
+				...inertExpansion(),
+				templates: {
+					userDir: join(userDir, "prompts"),
+					packageRoots: (): readonly { extension: string; dir: string }[] => [],
+				},
+			};
+			const result = await expandInput(
+				[
+					{ type: "file", path: "uploads/1/a.md" },
+					{ type: "text", text: "/review security" },
+				],
+				expansion,
+				undefined,
+				BACKGROUND_CONTEXT,
+			);
+			expect(result.parts).toEqual([
+				{ type: "file", path: "uploads/1/a.md" },
+				{ type: "text", text: "Review with focus: security" },
+			]);
+			expect(result.typed).toBe("/review security");
+		} finally {
+			await rm(userDir, { recursive: true, force: true });
+		}
+	});
+
+	test("a text part after another text part is never a command", async () => {
+		const parts = [
+			{ type: "text", text: "see this" },
+			{ type: "text", text: "/review security" },
+		] as const;
+		const result = await expandInput(
+			parts,
+			inertExpansion(),
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.parts).toEqual(parts);
+		expect(result.typed).toBeUndefined();
+	});
+
+	test("plain text after attachments is untouched", async () => {
+		const parts = [
+			{ type: "file", path: "uploads/1/a.md" },
+			{ type: "text", text: "see attached" },
+		] as const;
+		const result = await expandInput(
+			parts,
+			inertExpansion(),
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.parts).toEqual(parts);
+		expect(result.typed).toBeUndefined();
+	});
+
+	test("attachments with no text part pass through", async () => {
+		const parts = [
+			{ type: "file", path: "uploads/1/a.md" },
+			{ type: "file", path: "uploads/1/b.md" },
+		] as const;
+		const result = await expandInput(
+			parts,
+			inertExpansion(),
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.parts).toEqual(parts);
+		expect(result.typed).toBeUndefined();
+	});
+
+	test("a reserved command after attachments keeps its meaning", async () => {
+		const parts = [
+			{ type: "file", path: "uploads/1/a.md" },
+			{ type: "text", text: "/fork at 12" },
+		] as const;
+		const result = await expandInput(
+			parts,
+			inertExpansion(["fork"]),
+			undefined,
+			BACKGROUND_CONTEXT,
+		);
+		expect(result.parts).toEqual(parts);
+		expect(result.typed).toBeUndefined();
+	});
+
 	test("a template colliding with a command name is skipped (never expands)", async () => {
 		const userDir = await mkdtemp(join(tmpdir(), "sigrun-expand-user-"));
 		try {

@@ -101,9 +101,9 @@ export interface ServerSettings {
 	readonly sqliteHeapLimitBytes?: number;
 	/**
 	 * `SIGRUN_MAX_INLINE_FILE_BYTES` — a positive integer. A `{type:"file"}`
-	 * submission part larger than this inlines a head plus a workspace
-	 * pointer instead of its body, and an oversized tool result's `details`
-	 * is bounded the same way. Default 50 KiB (one `read` page): the file
+	 * submission part larger than this delivers a workspace reference only
+	 * (no body bytes), and an oversized tool result's `details` is bounded
+	 * the same way. Default 50 KiB (one `read` page): the file
 	 * already sits in the workspace where the agent's own tools reach it.
 	 */
 	readonly maxInlineFileBytes?: number;

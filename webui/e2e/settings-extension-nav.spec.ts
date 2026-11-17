@@ -38,9 +38,30 @@ test("switching extension pages through the nav saves the new page's own values"
 	await expect(curatorPage).toBeVisible();
 	await expect(curatorPage.locator("[data-extension-part='user-settings']")).toBeVisible();
 	await expect(curatorPage.locator("[data-extension-part='settings']")).toHaveCount(0);
+	// `paused` and `idleModel` are overridable: each renders an InheritRow
+	// fragment whose <label> holding `.blk-field-inherit` is the immediate
+	// previous sibling of the field's FieldRow div. While inherit is checked
+	// the field input is disabled and displays the system value; uncheck
+	// both toggles so the controls become editable.
+	const pausedInherit = curatorPage
+		.locator("[data-name='paused']")
+		.locator("xpath=preceding-sibling::label[1]")
+		.locator(".blk-field-inherit");
+	const idleModelInherit = curatorPage
+		.locator("[data-name='idleModel']")
+		.locator("xpath=preceding-sibling::label[1]")
+		.locator(".blk-field-inherit");
+	await expect(pausedInherit).toBeChecked();
+	await expect(idleModelInherit).toBeChecked();
+	await expect(curatorPage.locator("[data-name='paused'] input")).toBeDisabled();
 	await expect(curatorPage.locator("[data-name='paused'] input")).not.toBeChecked();
 	const idleModel = curatorPage.locator("[data-name='idleModel'] input[role='combobox']");
+	await expect(idleModel).toBeDisabled();
 	await expect(idleModel).toHaveValue("Use the default (faux/m)");
+	await pausedInherit.uncheck();
+	await idleModelInherit.uncheck();
+	await expect(curatorPage.locator("[data-name='paused'] input")).toBeEnabled();
+	await expect(idleModel).toBeEnabled();
 	await curatorPage.locator("[data-name='paused'] input").check();
 	// Select the existing faux option; the allow-other text input remains
 	// empty, so the submitted field is a plain model id.

@@ -191,7 +191,7 @@ describe("dispatch: edit-here", () => {
 		await app.dispatch({ type: "edit-here" });
 		expect(stub.forkCalls).toEqual([]);
 		expect(stub.patchCalls).toEqual([
-			{ id: 101, patch: { draft: { text: "original prompt" } } },
+			{ id: 101, patch: { draft: { text: "original prompt", attachments: [] } } },
 		]);
 		expect(app.activeConversationId).toBe(101);
 		expect(app.editor.getText()).toBe("original prompt");
@@ -208,7 +208,7 @@ describe("dispatch: edit-here", () => {
 		await app.dispatch({ type: "edit-here" });
 		expect(stub.forkCalls).toEqual([{ id: 2, at: 41 }]);
 		expect(stub.patchCalls).toEqual([
-			{ id: 101, patch: { draft: { text: "reword me" } } },
+			{ id: 101, patch: { draft: { text: "reword me", attachments: [] } } },
 		]);
 		expect(app.editor.getText()).toBe("reword me");
 	});

@@ -39,8 +39,8 @@ import {
 	GenerationTask,
 	hook,
 	section,
-	UserEntry,
 } from "@earendil-works/pi-durable";
+import { isUserInput } from "@sigrun/shared/turns";
 import { Type } from "typebox";
 
 /** The stable placeholder text (mirrors the real package byte-for-byte). */
@@ -128,7 +128,7 @@ export default function createFixtureMemory() {
 				const page = await source.entries({}, 100, cursor, context);
 				for (const entry of page.items) {
 					scanned++;
-					const role = UserEntry.is(entry)
+					const role = isUserInput(entry)
 						? "user"
 						: AssistantEntry.is(entry)
 							? "assistant"

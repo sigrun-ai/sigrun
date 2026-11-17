@@ -43,16 +43,71 @@ top-level 0.2.1 copy, leaving two shared copies in the install tree.
    | `shared/package.json` | `test/package-manifest.test.ts` |
    | `tui/package.json` | `test/package-manifest.test.ts` |
    | **both** `sandbox/npm/linux-{x64,arm64}/package.json` | `test/package-manifest.test.ts` |
-   | every built-in's `@sigrun/shared` peer | `test/builtins-wiring.test.ts` |
+   | every built-in's `@sigrun/shared` peer accepts core's pin | `test/builtins-wiring.test.ts` |
 
-   A core bump that forgets the sandbox manifests or a built-in's
-   `@sigrun/shared` peer fails core's own suite — that is deliberate.
+   A core bump that forgets a sandbox manifest fails core's own suite — that
+   is deliberate.
+
+   **Built-in shared peers are open floors** (`>=0.4.2` on the gateway,
+   `>=0.20.0` on the curator and the rest), not a `||` ladder pinned to this
+   release. A core bump therefore needs **no extension bump**: a floor whose
+   lower bound core's pin already clears keeps accepting it, so the shared
+   floor and `@sigrun/sigrun`'s own `>=` peer are the only skew gate left.
+   The exception is a core release that adds a shared export or seam an
+   extension adopts — **then that extension raises its floor in the same
+   change**, because the old floor no longer describes what it needs. Bumping
+   a floor to an unrelated number just to match a core release re-creates the
+   problem the floors replaced (every core bump becomes a twelve-repo bump).
 
    The chart's `appVersion` is bumped WITH the core family (the in-tree value
    tracks the current core version); `chart-release.yml` additionally re-reads
    it from package.json at the tagged commit. The
    chart's `version` comes from the `chart-v<semver>` tag. The Dockerfile's
    version label comes from the `APP_VERSION` build-arg, derived from the tag.
+
+### Bump-order corner cases (C1–C3)
+
+These are the three ways the order above goes wrong in practice. None of them
+is hypothetical — each one cost a failed release run.
+
+**C1 — a non-built-in extension that needs NEW core APIs tags after core.**
+The extension's `@sigrun/sigrun` peer floor describes the core line whose API
+it was written against. If that API is in the core version you have not
+released yet, you cannot tag the extension first: `ext-test` resolves the
+**latest released** core (`scripts/ci-core-ref.mjs`) and the peer install
+fails (or the API is simply absent). Two honest options:
+
+- Tag it **after** core is live on the registry (the ordinary order, one step
+  later than the table suggests — this is exactly why core's `await-registry`
+  job exists), or
+- for a joint train, dispatch that extension's CI/release with
+  `core-ref: main` so it tests and builds against `main`, then **flip back to
+  the released default afterwards**. `core-ref: main` is a train-time setting,
+  never a committed one: leaving it on means the extension silently tracks
+  unreleased core.
+
+**C2 — the built-in-peer bootstrap corner.** Core's own publish cannot satisfy
+its built-ins' `@sigrun/sigrun >=<this version>` peer: the publish is the
+thing that creates that version, so a registry-mode resolve mid-publish
+returns `ETARGET` (0.20.0's tag died on exactly this). `release.yml`'s
+publish step handles it with an **ephemeral** lock — `publish-deps.mjs
+registry` for the manifest, `npm install --save-exact <pins>
+--package-lock-only --legacy-peer-deps` and `npm ci --legacy-peer-deps` for
+the install, `postpublish` restoring `file:` mode. The **committed lockfile
+never uses `--legacy-peer-deps`**; it is generated plain from the `file:`
+dev shape, and `test/workflows.test.ts` pins the order of that dance so a
+later "cleanup" cannot reorder it back into the ETARGET shape or leak the
+flag into the repo's lock.
+
+**C3 — an engines-floor raise moves the container image and the CI node
+default with it.** Core's `engines.node` is not just metadata:
+`scripts/smoke-registry.sh` runs the published tarball inside a fixed
+container image (`node:26-bookworm-slim`), `.github/actions/ext-test/action.yml`
+defaults its `setup-node` to `"26"` for every extension, and core's own
+workflows pin `node-version: "26"` in each job. Raise `engines.node` and
+update those in the **same change** — otherwise the smoke installs a package
+on a too-old node and the release gate goes red for a reason that reads like
+a packaging bug.
 
 ## Releasing the chart alongside a core release
 

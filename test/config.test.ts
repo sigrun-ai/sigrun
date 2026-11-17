@@ -31,6 +31,7 @@ import { join } from "node:path";
 import {
 	DEFAULT_BACKUP_STALE_AFTER_HOURS,
 	DEFAULT_COMPACTION,
+	DEFAULT_MAX_INLINE_FILE_BYTES,
 	DEFAULT_MAX_UPLOAD_BYTES,
 	DEFAULT_MEMORY_SEAM,
 	DEFAULT_PORT,
@@ -825,6 +826,48 @@ describe("the server.sqliteHeapLimitBytes knob", () => {
 				undefined,
 				loadConfig({ ...MODEL_ENV, SIGRUN_SQLITE_HEAP_LIMIT_BYTES: "1048576" }),
 			)["server.sqliteHeapLimitBytes"],
+		).toEqual({ value: 1048576, source: "env" });
+	});
+});
+
+describe("the server.maxInlineFileBytes knob", () => {
+	test("SIGRUN_MAX_INLINE_FILE_BYTES is strict: non-positive/non-integer values fail loud naming the variable", () => {
+		for (const bad of ["0", "x"]) {
+			expect(() =>
+				loadConfig({ ...MODEL_ENV, SIGRUN_MAX_INLINE_FILE_BYTES: bad }),
+			).toThrow(/SIGRUN_MAX_INLINE_FILE_BYTES/);
+		}
+	});
+
+	test("the default is one read page; env wins; the file value applies when env is absent", () => {
+		expect(loadConfig({ ...MODEL_ENV }).maxInlineFileBytes).toBe(
+			DEFAULT_MAX_INLINE_FILE_BYTES,
+		);
+		expect(
+			loadConfig({ ...MODEL_ENV, SIGRUN_MAX_INLINE_FILE_BYTES: "1048576" })
+				.maxInlineFileBytes,
+		).toBe(1048576);
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV },
+				{ server: { maxInlineFileBytes: 2097152 } },
+			).maxInlineFileBytes,
+		).toBe(2097152);
+		expect(
+			loadConfig(
+				{ ...MODEL_ENV, SIGRUN_MAX_INLINE_FILE_BYTES: "1048576" },
+				{ server: { maxInlineFileBytes: 2097152 } },
+			).maxInlineFileBytes,
+		).toBe(1048576);
+		expect(
+			envServerSection({ SIGRUN_MAX_INLINE_FILE_BYTES: "1048576" }),
+		).toEqual({ maxInlineFileBytes: 1048576 });
+		expect(
+			effectiveServerSection(
+				{ SIGRUN_MAX_INLINE_FILE_BYTES: "1048576" },
+				undefined,
+				loadConfig({ ...MODEL_ENV, SIGRUN_MAX_INLINE_FILE_BYTES: "1048576" }),
+			)["server.maxInlineFileBytes"],
 		).toEqual({ value: 1048576, source: "env" });
 	});
 });

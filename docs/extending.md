@@ -453,9 +453,11 @@ every method — the routes' 404 analog.
 ### User input kinds and attachments in the transcript
 
 A user submission lands in the entry stream under one of THREE kinds,
-all exported from `@sigrun/shared/turns`:
+all exported from `@sigrun/shared/turns` and named by `USER_INPUT_KINDS`
+(the set `isUserInput(entry)` tests against):
 
-- A plain text message uses the `"pi.user"` kind.
+- A plain text message (the base user kind, `"pi.user"` — match it through
+  `isUserInput`, never a literal).
 - `USER_KIND` (`"sigrun.user"`) — a message carrying attachments;
   `data.attachments` is an `EntryAttachment[]`, each `{path, name, mime,
   bytes, delivery, parts, error?}` where `delivery` is `"inline" |

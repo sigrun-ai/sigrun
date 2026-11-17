@@ -410,6 +410,201 @@ describe("ConversationPane (C2 turn rendering)", () => {
 		expect(rendered).toContain("[file: /workspace/acme/legacy.txt]");
 	});
 
+	// ── Attachments follow-ups (A1, A2): copy/edit payload vs render ───
+
+	test("textOf a sigrun.user turn is the typed text without markers", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "sigrun.user",
+					data: {
+						attachments: [
+							{
+								path: "uploads/1/notes.md",
+								name: "notes.md",
+								mime: "text/markdown",
+								bytes: 1229,
+								delivery: "inline",
+								parts: [1, 2, 3],
+							},
+						],
+					},
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "look" },
+								{ type: "text", text: "[attachment:start notes.md]" },
+								{ type: "text", text: "INLINE" },
+								{ type: "text", text: "[attachment:end notes.md]" },
+							],
+						},
+					],
+				},
+			]),
+		);
+		// The copy/edit payload is the typed text alone — markers and the
+		// admitted body never enter the composer's draft or the clipboard.
+		expect(pane.textOf(0)).toBe("look");
+	});
+
+	test("an expanded turn with attachments renders their markers under the typed body", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "sigrun.user.expanded",
+					data: {
+						typed: "/skill:x",
+						command: "skill:x",
+						attachments: [
+							{
+								path: "uploads/1/notes.md",
+								name: "notes.md",
+								mime: "text/markdown",
+								bytes: 1229,
+								delivery: "inline",
+								parts: [],
+							},
+						],
+					},
+					model: [
+						{
+							role: "user",
+							content: [{ type: "text", text: "expanded body" }],
+						},
+					],
+				},
+			]),
+		);
+		const rendered = pane.render(100).join("\n");
+		// The typed command and its attachment marker both surface.
+		expect(rendered).toContain("/skill:x");
+		expect(rendered).toContain("[attachment: notes.md · 1.2 KB]");
+		// And the copy payload for an expanded turn is still the typed line.
+		expect(pane.textOf(0)).toBe("/skill:x");
+	});
+
+	test("a bytes:null attachment marker omits the size", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "sigrun.user",
+					data: {
+						attachments: [
+							{
+								path: "uploads/1/gone.md",
+								name: "gone.md",
+								mime: null,
+								bytes: null,
+								delivery: "workspace",
+								parts: [],
+							},
+						],
+					},
+					model: [
+						{ role: "user", content: [{ type: "text", text: "see file" }] },
+					],
+				},
+			]),
+		);
+		const rendered = pane.render(100).join("\n");
+		expect(rendered).toContain("[attachment: gone.md]");
+		expect(rendered).not.toContain("[attachment: gone.md ·");
+	});
+
+	test("an attachments-only turn renders only markers (typed text is empty)", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "sigrun.user",
+					data: {
+						attachments: [
+							{
+								path: "uploads/1/notes.md",
+								name: "notes.md",
+								mime: "text/markdown",
+								bytes: 1229,
+								delivery: "inline",
+								parts: [0, 1, 2],
+							},
+						],
+					},
+					model: [
+						{
+							role: "user",
+							content: [
+								{ type: "text", text: "[attachment:start notes.md]" },
+								{ type: "text", text: "INLINE ONLY" },
+								{ type: "text", text: "[attachment:end notes.md]" },
+							],
+						},
+					],
+				},
+			]),
+		);
+		const rendered = pane.render(100).join("\n");
+		expect(rendered).toContain("[attachment: notes.md · 1.2 KB]");
+		// No admitted inline body leaks through; typed ""
+		expect(rendered).not.toContain("INLINE ONLY");
+		expect(pane.textOf(0)).toBe("");
+	});
+
+	test("attachmentsOf returns non-error paths and skips delivery:error entries", () => {
+		const pane = new ConversationPane();
+		pane.showView(
+			view(1, [
+				{
+					id: 1,
+					kind: "sigrun.user",
+					data: {
+						attachments: [
+							{
+								path: "uploads/1/notes.md",
+								name: "notes.md",
+								mime: "text/markdown",
+								bytes: 1229,
+								delivery: "inline",
+								parts: [],
+							},
+							{
+								path: "uploads/1/broken.txt",
+								name: "broken.txt",
+								mime: "text/plain",
+								bytes: 0,
+								delivery: "error",
+								parts: [],
+								error: "too large",
+							},
+						],
+					},
+					model: [
+						{ role: "user", content: [{ type: "text", text: "look" }] },
+					],
+				},
+				{
+					kind: "pi.assistant",
+					id: 2,
+					model: [
+						{ role: "assistant", content: [{ type: "text", text: "reply" }] },
+					],
+				},
+			]),
+		);
+		expect(pane.attachmentsOf(0)).toEqual(["uploads/1/notes.md"]);
+		// Non-user turns carry no attachments.
+		expect(pane.attachmentsOf(1)).toEqual([]);
+		// Out-of-range returns [].
+		expect(pane.attachmentsOf(99)).toEqual([]);
+	});
+
 	// ── Task 2c: the expanded-user chip ──────────────────────────────
 	// An expanded submission is ONE entry (kind `sigrun.user.expanded`,
 	// `data {typed, command}`, the EXPANDED text on `model`): the pane

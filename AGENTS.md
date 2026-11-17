@@ -45,6 +45,17 @@ npm --workspace @sigrun/tui run typecheck
 npm start              # tsx src/index.ts (== `sigrun serve`)
 ```
 
+An interrupted registry-mode `scripts/publish-deps.mjs registry` run leaves
+REAL directories in `node_modules/@sigrun/ext-*` — it replaces the sibling
+symlinks, and a later `file:` restore does not undo it. The symptom is
+`test/builtins.test.ts` version mismatches (the tree resolves published
+versions, not your checkouts). Recovery:
+
+```sh
+rm -rf node_modules/@sigrun/ext-* && npm install
+ln -s ../.. node_modules/@sigrun/sigrun   # npm install drops the self-link
+```
+
 ### E2E failure triage
 
 Run the release gate with `npm run test:e2e` (Chromium, one worker, no

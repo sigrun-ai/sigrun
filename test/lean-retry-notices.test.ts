@@ -253,7 +253,7 @@ describe("noticeLeanRetries (unit: real harness, injected post/log)", () => {
 			BACKGROUND_CONTEXT,
 		);
 		// Root: autoName only → display uses it. Second: no name at all →
-		// display falls back to "conversation <id>".
+		// display falls back to "Conversation <id>".
 		await setMeta(opened, root.id, { autoName: "Auto Summary", owner: "alice" });
 		await setMeta(opened, second.id, { owner: "alice" });
 		const { posts, post } = recordingPosts();
@@ -271,7 +271,7 @@ describe("noticeLeanRetries (unit: real harness, injected post/log)", () => {
 			`in "Auto Summary",`,
 		);
 		expect(byKey.get(`generation.lean-retry.${second.id}`)?.body).toContain(
-			`in "conversation ${second.id}",`,
+			`in "Conversation ${second.id}",`,
 		);
 	});
 

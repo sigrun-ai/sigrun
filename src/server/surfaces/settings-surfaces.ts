@@ -861,35 +861,158 @@ function childSchema(node: unknown, key: string): JsonSchema | undefined {
 	return isRec(node.additionalProperties) ? node.additionalProperties : undefined;
 }
 
+/** The declared properties of one generated object form node. */
+function declaredProperties(root: JsonSchema, node: JsonSchema): Record<string, unknown> {
+	const properties = deref(root, node).properties;
+	return isRec(properties) ? properties : {};
+}
+
+/**
+ * Flatten the declared nested object groups in ONE generated row value.
+ * Return undefined for any undeclared/dotted nested segment: those values
+ * remain literal, including an unresolvable tail. An empty declared group
+ * produces no fields so the unchanged re-save keeps its stored {} shape.
+ */
+function flattenRowGroups(
+	value: JsonObject,
+	root: JsonSchema,
+	node: JsonSchema,
+): JsonObject | undefined {
+	const properties = declaredProperties(root, node);
+	const flattened: JsonObject = {};
+	for (const [name, child] of Object.entries(value)) {
+		const property = Object.hasOwn(properties, name) ? properties[name] : undefined;
+		const resolved = isRec(property) ? deref(root, property) : undefined;
+		if (
+			!name.includes(".") &&
+			resolved !== undefined &&
+			resolved.type === "object" &&
+			isRec(child) &&
+			isRec(resolved.properties)
+		) {
+			const nested = flattenRowGroupChildren(child, root, resolved);
+			if (nested === undefined) return undefined;
+			for (const [nestedName, nestedValue] of Object.entries(nested)) {
+				flattened[`${name}.${nestedName}`] = nestedValue;
+			}
+		} else {
+			flattened[name] = child as JsonValue;
+		}
+	}
+	return flattened;
+}
+
+/** Flatten one nested group, authorizing each segment against properties. */
+function flattenRowGroupChildren(
+	value: JsonObject,
+	root: JsonSchema,
+	node: JsonSchema,
+): JsonObject | undefined {
+	const properties = declaredProperties(root, node);
+	const flattened: JsonObject = {};
+	for (const [name, child] of Object.entries(value)) {
+		if (name.includes(".") || !Object.hasOwn(properties, name)) return undefined;
+		const property = properties[name]!;
+		if (!isRec(property)) return undefined;
+		const resolved = deref(root, property);
+		if (isRec(child) && resolved.type === "object" && isRec(resolved.properties)) {
+			const nested = flattenRowGroupChildren(child, root, resolved);
+			if (nested === undefined) return undefined;
+			for (const [nestedName, nestedValue] of Object.entries(nested)) {
+				flattened[`${name}.${nestedName}`] = nestedValue;
+			}
+		} else {
+			flattened[name] = child as JsonValue;
+		}
+	}
+	return flattened;
+}
+
+/**
+ * Render stored values in the shape their generated forms read. Only
+ * additionalProperties rows are flattened, not the table map or ordinary
+ * declared objects. This projection is shared by ordinary tables and the
+ * root table's reserved empty-name field.
+ */
+function renderSchemaValues(value: unknown, root: JsonSchema, node: unknown): JsonValue {
+	const schema = isRec(node) ? deref(root, node) : undefined;
+	if (Array.isArray(value)) {
+		return value.map((entry) => renderSchemaValues(entry, root, schema?.items));
+	}
+	if (!isRec(value)) return value as JsonValue;
+	const properties = schema === undefined ? {} : declaredProperties(root, schema);
+	const additional = isRec(schema?.additionalProperties) ? schema.additionalProperties : undefined;
+	const result: JsonObject = {};
+	for (const [name, child] of Object.entries(value)) {
+		const declared = Object.hasOwn(properties, name) && isRec(properties[name]);
+		const property = declared ? properties[name] : additional;
+		// Recurse into a row's nested tables first, then flatten that row's
+		// declared groups; narrow the child schema to the row, not the map.
+		const nested = renderSchemaValues(child, root, property);
+		const flattened = !declared && additional !== undefined && isRec(nested)
+			? flattenRowGroups(nested, root, additional)
+			: undefined;
+		result[name] = flattened ?? nested;
+	}
+	return result;
+}
+
 /**
  * Expand the generated form's DOTTED field names (a nested object
  * without a title renders its children as `parent.child` fields — the
  * form submits them flat) back into the nested JSON the schema and the
  * settings file use. Only keys whose dotted path resolves against the
  * schema expand: a literal `a.b` property name (the core sections use
- * dotted STORE keys) is indistinguishable by name alone, so the schema
- * decides — it has `a` → `b` or not.
- */
-/**
- * Expand the generated form's DOTTED field names (a nested object
- * without a title renders its children as `parent.child` fields — the
- * form submits them flat) back into the nested JSON the schema and the
- * settings file use. This surface family (schema-declared extension
- * settings) stores NESTED objects; the core sections' dotted STORE keys
- * never pass through here (saveCore folds them separately).
+ * dotted STORE keys — though those never pass through here; saveCore
+ * folds them separately) is indistinguishable by name alone, so the
+ * schema decides — it has `a` → `b` or not.
+ *
+ * Schema-aware: each segment must resolve through a DECLARED `properties`
+ * entry of its (dereffed) parent node. `additionalProperties` is NEVER
+ * used for the segment decision — that fallback would rewrite a table
+ * row NAMED `a.b` into `{a: {b: ...}}`. At a table node (no
+ * `properties`, only `additionalProperties`) every key is literal.
  */
 function expandDottedNames(
 	values: Record<string, unknown>,
+	root: JsonSchema,
+	node: JsonSchema | undefined,
 ): Record<string, unknown> {
 	const expanded: Record<string, unknown> = {};
+	const resolved = node === undefined ? undefined : deref(root, node);
 	for (const [name, value] of Object.entries(values)) {
 		if (!name.includes(".")) {
 			expanded[name] = value;
 			continue;
 		}
+		const segments = name.split(".");
+		// Authorize EVERY segment against DECLARED properties only —
+		// never additionalProperties (that's the row table, not a named
+		// nested object, and rewriting a row named `a.b` would corrupt
+		// the file). The tail must also resolve: `auth.nope` where
+		// `auth` declares only `endpoint` / `scopes` stays a literal
+		// key rather than expanding into an unknown nested property.
+		let cursorNode: JsonSchema | undefined = resolved;
+		let authorized = true;
+		for (const segment of segments) {
+			if (cursorNode === undefined) { authorized = false; break; }
+			const cursorResolved = deref(root, cursorNode);
+			const cursorProperties = isRec(cursorResolved.properties) ? cursorResolved.properties : undefined;
+			if (cursorProperties === undefined || !Object.hasOwn(cursorProperties, segment)) {
+				authorized = false;
+				break;
+			}
+			const next = cursorProperties[segment];
+			cursorNode = isRec(next) ? next as JsonSchema : undefined;
+		}
+		if (!authorized) {
+			// Literal dotted property, or a tail that does not resolve:
+			// the name is not a dotted FIELD path the form generated.
+			expanded[name] = value;
+			continue;
+		}
 		// `chat.enabled: false` → `chat: { enabled: false }`, merging with
 		// any prior siblings under the same parent.
-		const segments = name.split(".");
 		let cursor = expanded;
 		for (const segment of segments.slice(0, -1)) {
 			const existing = cursor[segment];
@@ -920,8 +1043,15 @@ function channelSubmissionToFile(
 		}
 		if (Array.isArray(value)) return value.map((entry) => unpack(entry, node.items));
 		if (!isRec(value)) return value as JsonValue;
+		// Dotted form names (a nested object without a title renders as
+		// `parent.child` fields) are expanded schema-aware at THIS level
+		// before descending — each row / nested object carries its own
+		// governing schema node so a table row's `auth.endpoint` resolves
+		// against the row's `properties`, not the root's.
+		const flat = value as Record<string, unknown>;
+		const expanded = expandDottedNames(flat, schema, node as JsonSchema);
 		const result: JsonObject = {};
-		for (const [key, child] of Object.entries(value)) {
+		for (const [key, child] of Object.entries(expanded)) {
 			// The reserved root-table field's schema is a synthetic object
 			// wrapping additionalProperties; unpacking straight into the VALUE
 			// schema would leave each scalar row packed as {value}.
@@ -932,7 +1062,7 @@ function channelSubmissionToFile(
 		}
 		return result;
 	};
-	const unpacked = unpack(expandDottedNames(values), schema) as Record<string, unknown>;
+	const unpacked = unpack(values, schema) as Record<string, unknown>;
 	// A root additionalProperties table binds at the reserved empty field
 	// name. Flatten its rows back to root keys before validation/persistence;
 	// known properties keep their own slots.
@@ -1188,7 +1318,7 @@ export function schemaSettingsSurfaceFor(
 			if (access === "none") return { tree: generated.form, data: {}, access };
 			const { user, stored } = await readStored(ctx.principal);
 			const plain = splitSecrets(stored, generated.secrets).plain;
-			const settings = applyDefaults(schema, plain);
+			const settings = renderSchemaValues(applyDefaults(schema, plain), schema, schema) as JsonObject;
 			if (rootTable) {
 				// The root table's reserved empty-name field reads ONLY the
 				// additional-property keys; declared properties render through
