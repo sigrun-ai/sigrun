@@ -623,6 +623,15 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 				expect(body, `${name} must install ${dir}`).toContain(dir);
 			}
 		}
+		// The test job also loads the dev sibling memory-markdown (the
+		// curation e2e boots it as a configured extension); its committed
+		// dist/ imports @sigrun/shared/turns, so without its own install it
+		// quarantines and the e2e times out waiting for USER.md (main CI was
+		// red this way from 2026-11-15).
+		const testInstall = (jobs.test?.steps ?? []).find((s) =>
+			runOf(s).includes("npm ci --ignore-scripts"),
+		);
+		expect(runOf(testInstall as Step)).toContain("sigrun-memory-markdown");
 	});
 
 	test("the test job checks out all six repos in the sibling layout", () => {
@@ -690,7 +699,13 @@ describe(".github/workflows/ci.yml (image-workflow §3, CI half)", () => {
 		expect(steps.indexOf(gate as Step)).toBe(steps.indexOf(family as Step) + 1);
 		const body = runOf(gate as Step);
 		expect(body).toContain('pins="$(node scripts/publish-deps.mjs pins)"');
-		expect(body).toContain('npm view "${pin}" version 2>&1');
+		// The bundled @sigrun/shared at core's own pin is part of the
+		// registry-mode regen too, and on a release commit it publishes in
+		// THAT release run — after this job starts. Unchecked, the regen hit
+		// ERESOLVE on every release push (0.20.1, 0.20.2, 0.21.0).
+		expect(body).toContain(
+			`pins="\${pins} @sigrun/shared@$(node -p "require('./package.json').dependencies['@sigrun/shared']")"`,
+		);
 		expect(body).toContain('*E404*|*"not found"*) missing+=("${pin}")');
 		expect(body).toContain('echo "::error::npm view returned no version for ${pin}"');
 		expect(body).toMatch(

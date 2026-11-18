@@ -454,9 +454,15 @@ describe("built-in wiring (release workstream Task 1.2)", () => {
 				} else {
 					// A transitive host module (e.g. @earendil-works/pi-codemode,
 					// which arrives via pi-durable): the peer must equal the
-					// version core's tree actually resolves.
-					const resolved = manifest(
-						join(REPO_ROOT, "node_modules", module, "package.json"),
+					// version core's tree actually resolves. Core itself
+					// (ext-curator's `@sigrun/sigrun >=0.20.0` peer) resolves to
+					// its own manifest — a fresh `npm ci` never creates the
+					// node_modules/@sigrun/sigrun self-link, so reading it there
+					// failed with ENOENT in CI.
+					const resolved = (
+						module === core.name
+							? core
+							: manifest(join(REPO_ROOT, "node_modules", module, "package.json"))
 					).version as string;
 					const accepted = new Set(pin.split("||").map((part) => part.trim()));
 					expect(
