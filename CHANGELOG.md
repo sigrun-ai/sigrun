@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Generated settings pages showed the DEFAULTS of a nested settings group
+  declared at the top of an extension's schema instead of its stored values,
+  and saving such a page untouched wrote those defaults back (for example
+  provider-openai's chat/decisions switches and provider-bifrost's
+  `nativeProtocols`). Stored nested groups now render and survive a save.
+
 ## [0.21.0] - 2026-11-17
 
 ### Changed
