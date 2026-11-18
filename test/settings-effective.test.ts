@@ -499,6 +499,11 @@ describe("createEffectiveSettings", () => {
 		expect(await opened.effective.value("decisionModel", undefined)).toBe("acme/file-decision");
 
 		await opened.harness.close(BACKGROUND_CONTEXT);
-		await rm(dir, { recursive: true, force: true });
+		// The boot sweep's curation-history migration (boot.ts curationOf) is
+		// fire-and-forget and crash-safe by design; it writes
+		// data/users/<user>/curation/history/MIGRATED ~5 ms AFTER close
+		// returns. Under full-suite load that lands mid-rm (ENOTEMPTY, main
+		// CI 2026-11-18), so let rm retry like the neighbouring suites do.
+		await rm(dir, { recursive: true, force: true, maxRetries: 5 });
 	});
 });
