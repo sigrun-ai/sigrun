@@ -56,7 +56,8 @@ import { fieldForPointer } from "../../settings/schema/field-pointer.js";
 import type { ModelKindId, ModelRoster } from "../../settings/model-kinds.js";
 import { MODEL_KINDS } from "../../settings/model-kinds.js";
 import { systemModelRosterData, withUnserved } from "../model-roster.js";
-import { deref, MODEL_KEYWORD } from "../../settings/schema/keywords.js";
+import { deref, hasNonDrawableKeyword, MODEL_KEYWORD } from "../../settings/schema/keywords.js";
+import { drawsAsDottedSection } from "../../settings/schema/generate.js";
 import type { GeneratedForm, JsonSchema } from "../../settings/schema/index.js";
 import {
 	secretMoves,
@@ -868,71 +869,43 @@ function declaredProperties(root: JsonSchema, node: JsonSchema): Record<string, 
 }
 
 /**
- * Flatten the declared nested object groups in ONE generated row value.
- * Return undefined for any undeclared/dotted nested segment: those values
- * remain literal, including an unresolvable tail. An empty declared group
- * produces no fields so the unchanged re-save keeps its stored {} shape.
+ * Flatten one stored nested group into the `prefix.child` keys its dotted
+ * fields read (both clients read `bound[field.name]`; the generator names
+ * a dotted section's children `parent.child`). Only DECLARED children
+ * render: an undeclared key has no field (the save path's handling of it
+ * is unchanged). A child that is itself a dotted section recurses; any
+ * other child renders through `renderSchemaValues` (tables, lists).
  */
-function flattenRowGroups(
+function flattenGroup(
 	value: JsonObject,
 	root: JsonSchema,
 	node: JsonSchema,
-): JsonObject | undefined {
+	prefix: string,
+	out: JsonObject,
+): void {
 	const properties = declaredProperties(root, node);
-	const flattened: JsonObject = {};
 	for (const [name, child] of Object.entries(value)) {
 		const property = Object.hasOwn(properties, name) ? properties[name] : undefined;
-		const resolved = isRec(property) ? deref(root, property) : undefined;
-		if (
-			!name.includes(".") &&
-			resolved !== undefined &&
-			resolved.type === "object" &&
-			isRec(child) &&
-			isRec(resolved.properties)
-		) {
-			const nested = flattenRowGroupChildren(child, root, resolved);
-			if (nested === undefined) return undefined;
-			for (const [nestedName, nestedValue] of Object.entries(nested)) {
-				flattened[`${name}.${nestedName}`] = nestedValue;
-			}
-		} else {
-			flattened[name] = child as JsonValue;
-		}
-	}
-	return flattened;
-}
-
-/** Flatten one nested group, authorizing each segment against properties. */
-function flattenRowGroupChildren(
-	value: JsonObject,
-	root: JsonSchema,
-	node: JsonSchema,
-): JsonObject | undefined {
-	const properties = declaredProperties(root, node);
-	const flattened: JsonObject = {};
-	for (const [name, child] of Object.entries(value)) {
-		if (name.includes(".") || !Object.hasOwn(properties, name)) return undefined;
-		const property = properties[name]!;
-		if (!isRec(property)) return undefined;
+		if (!isRec(property)) continue;
 		const resolved = deref(root, property);
-		if (isRec(child) && resolved.type === "object" && isRec(resolved.properties)) {
-			const nested = flattenRowGroupChildren(child, root, resolved);
-			if (nested === undefined) return undefined;
-			for (const [nestedName, nestedValue] of Object.entries(nested)) {
-				flattened[`${name}.${nestedName}`] = nestedValue;
-			}
+		const key = `${prefix}${name}`;
+		if (isRec(child) && drawsAsDottedSection(root, resolved)) {
+			flattenGroup(child as JsonObject, root, resolved, `${key}.`, out);
 		} else {
-			flattened[name] = child as JsonValue;
+			out[key] = renderSchemaValues(child, root, property);
 		}
 	}
-	return flattened;
 }
 
 /**
- * Render stored values in the shape their generated forms read. Only
- * additionalProperties rows are flattened, not the table map or ordinary
- * declared objects. This projection is shared by ordinary tables and the
- * root table's reserved empty-name field.
+ * Render stored values in the shape their generated forms read: every
+ * declared property the generator draws as a dotted section
+ * (`drawsAsDottedSection` — the generator's own precedence: a table or a
+ * JSON box is NOT a section) flattens into `parent.child` keys, at the
+ * root, in table rows, and in array items alike. A node the generator
+ * draws as a JSON box renders raw (nothing inside it flattens). This
+ * projection is shared by ordinary tables and the root table's reserved
+ * empty-name field.
  */
 function renderSchemaValues(value: unknown, root: JsonSchema, node: unknown): JsonValue {
 	const schema = isRec(node) ? deref(root, node) : undefined;
@@ -940,19 +913,18 @@ function renderSchemaValues(value: unknown, root: JsonSchema, node: unknown): Js
 		return value.map((entry) => renderSchemaValues(entry, root, schema?.items));
 	}
 	if (!isRec(value)) return value as JsonValue;
+	if (schema !== undefined && hasNonDrawableKeyword(schema)) return value as JsonValue;
 	const properties = schema === undefined ? {} : declaredProperties(root, schema);
 	const additional = isRec(schema?.additionalProperties) ? schema.additionalProperties : undefined;
 	const result: JsonObject = {};
 	for (const [name, child] of Object.entries(value)) {
 		const declared = Object.hasOwn(properties, name) && isRec(properties[name]);
 		const property = declared ? properties[name] : additional;
-		// Recurse into a row's nested tables first, then flatten that row's
-		// declared groups; narrow the child schema to the row, not the map.
-		const nested = renderSchemaValues(child, root, property);
-		const flattened = !declared && additional !== undefined && isRec(nested)
-			? flattenRowGroups(nested, root, additional)
-			: undefined;
-		result[name] = flattened ?? nested;
+		if (declared && isRec(child) && drawsAsDottedSection(root, deref(root, property as JsonSchema))) {
+			flattenGroup(child as JsonObject, root, deref(root, property as JsonSchema), `${name}.`, result);
+			continue;
+		}
+		result[name] = renderSchemaValues(child, root, property);
 	}
 	return result;
 }
