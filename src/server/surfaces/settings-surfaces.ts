@@ -909,11 +909,12 @@ function flattenGroup(
  */
 function renderSchemaValues(value: unknown, root: JsonSchema, node: unknown): JsonValue {
 	const schema = isRec(node) ? deref(root, node) : undefined;
+	// A node the generator draws as a JSON box (arrays included) renders raw.
+	if (schema !== undefined && hasNonDrawableKeyword(schema)) return value as JsonValue;
 	if (Array.isArray(value)) {
 		return value.map((entry) => renderSchemaValues(entry, root, schema?.items));
 	}
 	if (!isRec(value)) return value as JsonValue;
-	if (schema !== undefined && hasNonDrawableKeyword(schema)) return value as JsonValue;
 	const properties = schema === undefined ? {} : declaredProperties(root, schema);
 	const additional = isRec(schema?.additionalProperties) ? schema.additionalProperties : undefined;
 	const result: JsonObject = {};
@@ -1290,13 +1291,19 @@ export function schemaSettingsSurfaceFor(
 			if (access === "none") return { tree: generated.form, data: {}, access };
 			const { user, stored } = await readStored(ctx.principal);
 			const plain = splitSecrets(stored, generated.secrets).plain;
-			const settings = renderSchemaValues(applyDefaults(schema, plain), schema, schema) as JsonObject;
+			const withDefaults = applyDefaults(schema, plain);
+			const settings = renderSchemaValues(withDefaults, schema, schema) as JsonObject;
 			if (rootTable) {
 				// The root table's reserved empty-name field reads ONLY the
 				// additional-property keys; declared properties render through
-				// their own fields and must not become extra table rows.
+				// their own fields and must not become extra table rows. Rows
+				// come from the STORED top-level keys: a root group's flattened
+				// `group.child` keys are not stored keys, so they never turn
+				// into phantom rows.
 				settings[""] = Object.fromEntries(
-					Object.entries(settings).filter(([key]) => !Object.hasOwn(properties, key)),
+					Object.keys(withDefaults)
+						.filter((key) => !Object.hasOwn(properties, key))
+						.map((key) => [key, settings[key] ?? null]),
 				) as JsonObject;
 			}
 			const statusList = user === undefined

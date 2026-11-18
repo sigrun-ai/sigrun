@@ -187,6 +187,37 @@ describe.each(["webui", "tui"] as RoundTripClient[])("settings round trip (%s)",
 		expectRoundTrip(OPENAI, {}, after);
 	});
 
+	test("a root group beside a root table never becomes a table row", async () => {
+		const schema: JsonSchema = {
+			type: "object",
+			properties: { chat: { type: "object", properties: { enabled: onOff } } },
+			additionalProperties: { type: "boolean" },
+		};
+		const stored = { chat: { enabled: false }, extra: true };
+		const { rendered, initial, after } = await roundTrip(schema, stored, client);
+		expect(initial["chat.enabled"]).toBe(false);
+		expect(Object.keys(rendered[""] as Record<string, unknown>)).toEqual(["extra"]);
+		expect(Object.hasOwn(after, "chat.enabled")).toBe(false);
+		expectRoundTrip(schema, stored, after);
+	});
+
+	test("an array drawn as a JSON box renders its raw items", async () => {
+		const schema: JsonSchema = {
+			type: "object",
+			properties: {
+				list: {
+					type: "array",
+					items: { type: "object", properties: { g: { type: "object", properties: { x: { type: "integer" } } } } },
+					contains: { type: "object" },
+				},
+			},
+		};
+		const stored = { list: [{ g: { x: 1 } }] };
+		const { rendered, after } = await roundTrip(schema, stored, client);
+		expect(rendered.list).toEqual([{ g: { x: 1 } }]);
+		expectRoundTrip(schema, stored, after);
+	});
+
 	test("personal page: an overridable leaf inside a group inherits until overridden", async () => {
 		const schema: JsonSchema = {
 			type: "object",
