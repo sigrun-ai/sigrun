@@ -33,6 +33,8 @@ import {
 	generateForm,
 	type JsonSchema,
 } from "../src/settings/schema/index.js";
+import { drawsAsDottedSection } from "../src/settings/schema/generate.js";
+import { propertiesOf } from "../src/settings/schema/keywords.js";
 
 it("the public authoring surface exports the stored-settings check", () => {
 	expect(checkStoredSettings({ type: "object", properties: {} }, {}).value).toEqual({});
@@ -978,5 +980,53 @@ describe("assertDrawable", () => {
 		expect(() => assertDrawable(schema)).toThrowError(/\/a/);
 		expect(() => assertDrawable(schema)).toThrowError(/\/b/);
 		expect(() => assertDrawable(objectSchema({ fine: { type: "string" } }))).not.toThrow();
+	});
+});
+
+describe("drawsAsDottedSection agrees with generateForm", () => {
+	const group = { type: "object", properties: { a: { type: "boolean" } } };
+	const cases: readonly [string, JsonSchema, Record<string, unknown> | undefined, boolean][] = [
+		["a properties object", group, undefined, true],
+		["a titled properties object", { ...group, title: "Group" }, undefined, true],
+		[
+			"properties + additionalProperties (the table wins)",
+			{ type: "object", properties: { a: { type: "string" } }, additionalProperties: { type: "string" } },
+			undefined,
+			false,
+		],
+		[
+			"a non-drawable keyword (JSON box)",
+			{ type: "object", properties: { a: { type: "string" } }, patternProperties: { "^x": {} } },
+			undefined,
+			false,
+		],
+		["an object without properties", { type: "object" }, undefined, false],
+		["a writeOnly object", { ...group, writeOnly: true }, undefined, false],
+		["a resolved $ref to a group", { $ref: "#/$defs/G" }, { G: group }, true],
+		["an unresolved $ref", { $ref: "#/$defs/missing" }, undefined, false],
+		["a scalar", { type: "boolean" }, undefined, false],
+	];
+	it.each(cases)("%s", (_label, property, defs, expected) => {
+		const root: JsonSchema = {
+			type: "object",
+			properties: { p: property },
+			...(defs === undefined ? {} : { $defs: defs }),
+		};
+		const [[, resolved]] = propertiesOf(root, root) as [[string, JsonSchema]];
+		const generated = generateForm(root, { idPrefix: "t" });
+		// A dotted section shows as `p.<child>` field names anywhere in the
+		// tree (secrets move into a Credentials section, so the top-level
+		// node's type alone is not the property's drawing).
+		const names: string[] = [];
+		const walk = (nodes: readonly unknown[]): void => {
+			for (const node of nodes as { name?: string; children?: unknown[] }[]) {
+				if (typeof node.name === "string") names.push(node.name);
+				if (Array.isArray(node.children)) walk(node.children);
+			}
+		};
+		walk(generated.form.root.type === "form" ? generated.form.root.children : []);
+		const drawn = names.some((name) => name.startsWith("p."));
+		expect(drawsAsDottedSection(root, resolved)).toBe(expected);
+		expect(drawn).toBe(expected);
 	});
 });

@@ -264,6 +264,27 @@ function fallbackNode(ctx: Ctx, name: string, pointer: string, reason: string): 
 }
 
 /**
+ * Whether `propertyNode` draws this property as a `section` whose children
+ * carry dotted `parent.child` names — the shape the settings render must
+ * flatten stored nested objects into (both clients read
+ * `bound[field.name]`). `schema` is a property as `propertiesOf` yields it
+ * (dereffed; an unresolved `$ref` stays on it). Keep in step with
+ * `propertyNode`: same checks, same order.
+ */
+export function drawsAsDottedSection(root: JsonSchema, schema: JsonSchema): boolean {
+	if (typeof schema.$ref === "string" && resolveRef(root, schema.$ref) === undefined) return false;
+	if (schema.writeOnly === true) return false;
+	if (!hasOtherNonDrawableKeyword(schema) && (choiceOptions(schema) || variantBranches(schema))) {
+		return false;
+	}
+	if (modelKindOf(schema) !== undefined) return false;
+	if (hasNonDrawableKeyword(schema)) return false;
+	if (schema.type !== "object") return false;
+	if (isRecord(schema.additionalProperties)) return false;
+	return isRecord(schema.properties);
+}
+
+/**
  * Generate one property as a field, or as a section when it is a titled
  * nested object (spec §2: nested object with title → section, dotted
  * child names).
@@ -400,7 +421,8 @@ function propertyNode(
 				};
 			}
 			if (isRecord(schema.properties)) {
-				// Dotted child names inside the nested object's grouping.
+				// Dotted child names inside the nested object's grouping
+				// (drawsAsDottedSection mirrors this precedence — keep in step).
 				const children = objectChildren({ ...ctx, namePrefix: `${name}.` }, schema, pointer);
 				return {
 					type: "section",
