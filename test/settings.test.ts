@@ -532,6 +532,8 @@ describe("SettingsStore", () => {
 		}
 		expect(rejected).toBeInstanceOf(SettingsValidationError);
 		expect(rejected!.field).toBe("server.maxInlineFileBytes");
+		// A rejected update leaves the stored value intact.
+		expect(store.read().server?.maxInlineFileBytes).toBe(65536);
 	});
 
 	test("server PATCHes sub-merge: the bootstrap fields survive a port PATCH", () => {

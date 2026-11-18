@@ -419,18 +419,32 @@ describe("expandInput", () => {
 	});
 
 	test("a text part after another text part is never a command", async () => {
-		const parts = [
-			{ type: "text", text: "see this" },
-			{ type: "text", text: "/review security" },
-		] as const;
-		const result = await expandInput(
-			parts,
-			inertExpansion(),
-			undefined,
-			BACKGROUND_CONTEXT,
-		);
-		expect(result.parts).toEqual(parts);
-		expect(result.typed).toBeUndefined();
+		// A REAL template for /review: an implementation that scanned past the
+		// first text part would expand it, so this pin discriminates.
+		const userDir = await mkdtemp(join(tmpdir(), "sigrun-expand-user-"));
+		try {
+			await mkdir(join(userDir, "prompts"), { recursive: true });
+			await writeFile(
+				join(userDir, "prompts", "review.md"),
+				"---\ndescription: Review\n---\nReview with focus: $1\n",
+			);
+			const expansion: CommandExpansion = {
+				...inertExpansion(),
+				templates: {
+					userDir: join(userDir, "prompts"),
+					packageRoots: (): readonly { extension: string; dir: string }[] => [],
+				},
+			};
+			const parts = [
+				{ type: "text", text: "see this" },
+				{ type: "text", text: "/review security" },
+			] as const;
+			const result = await expandInput(parts, expansion, undefined, BACKGROUND_CONTEXT);
+			expect(result.parts).toEqual(parts);
+			expect(result.typed).toBeUndefined();
+		} finally {
+			await rm(userDir, { recursive: true, force: true });
+		}
 	});
 
 	test("plain text after attachments is untouched", async () => {
