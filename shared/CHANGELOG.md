@@ -1,3 +1,7 @@
+## [0.21.1] - 2026-11-18
+
+- Version-locked bump with the 0.21.1 core line (no changes).
+
 ## [0.21.0] - 2026-11-17
 
 - Version-locked bump with the 0.21.0 core line. The `settings`
