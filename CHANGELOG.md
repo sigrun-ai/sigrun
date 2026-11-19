@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.21.2] - 2026-11-19
+
+### Changed
+
+- The image and package bundle the built-in `@sigrun/ext-curator` 0.6.4
+  (empty digest frames stay queued; attachment-only owner turns are
+  reviewed), so a deployment no longer needs a configured
+  `@sigrun/ext-curator` entry to get it.
+
 ## [0.21.1] - 2026-11-18
 
 ### Fixed
